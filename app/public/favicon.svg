@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <style>
+    .globe { stroke: #3b82f6; fill: none; stroke-width: 1.5; }
+    .layer { fill: #3b82f6; opacity: 0.15; stroke: #3b82f6; stroke-width: 1; }
+    .layer2 { fill: #3b82f6; opacity: 0.3; stroke: #3b82f6; stroke-width: 1; }
+    .layer3 { fill: #3b82f6; opacity: 0.5; stroke: #3b82f6; stroke-width: 1; }
+  </style>
+  <!-- Globe circle -->
+  <circle cx="16" cy="13" r="10" class="globe"/>
+  <!-- Globe meridian -->
+  <ellipse cx="16" cy="13" rx="4" ry="10" class="globe"/>
+  <!-- Globe equator -->
+  <ellipse cx="16" cy="13" rx="10" ry="4" class="globe"/>
+  <!-- Stacked layers at bottom -->
+  <polygon points="6,24 16,20 26,24 16,28" class="layer"/>
+  <polygon points="6,26 16,22 26,26 16,30" class="layer2"/>
+</svg>

@@ -1,0 +1,8 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { CollectionListPage } from "../../components/collections/CollectionList";
+---
+
+<Layout title="Collections">
+  <CollectionListPage client:only="react" />
+</Layout>

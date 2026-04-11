@@ -1,0 +1,10 @@
+---
+import Layout from "../../../../layouts/Layout.astro";
+import { ItemListPage } from "../../../../components/items/ItemList";
+
+const { collectionId } = Astro.params;
+---
+
+<Layout title={`Items in ${collectionId}`}>
+  <ItemListPage client:only="react" collectionId={collectionId!} />
+</Layout>

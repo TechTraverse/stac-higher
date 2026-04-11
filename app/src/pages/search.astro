@@ -1,0 +1,8 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { SearchPageComponent } from "../components/search/SearchPage";
+---
+
+<Layout title="Search">
+  <SearchPageComponent client:only="react" />
+</Layout>

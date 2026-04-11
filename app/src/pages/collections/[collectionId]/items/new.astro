@@ -1,0 +1,10 @@
+---
+import Layout from "../../../../layouts/Layout.astro";
+import { ItemFormPage } from "../../../../components/items/ItemForm";
+
+const { collectionId } = Astro.params;
+---
+
+<Layout title="Create Item">
+  <ItemFormPage client:only="react" collectionId={collectionId!} />
+</Layout>

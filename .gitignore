@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+app/dist/
+app/.astro/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code local (not shared)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/plans/
+
+# Test artifacts
+app/test-results/
+app/playwright-report/
+app/blob-report/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Docker
+pgdata/

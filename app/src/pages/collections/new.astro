@@ -1,0 +1,8 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { CollectionFormPage } from "../../components/collections/CollectionForm";
+---
+
+<Layout title="Create Collection">
+  <CollectionFormPage client:only="react" />
+</Layout>

@@ -1,0 +1,8 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { DashboardPage } from "../components/layout/DashboardPage";
+---
+
+<Layout title="Dashboard">
+  <DashboardPage client:only="react" />
+</Layout>

@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  database:
+    image: ghcr.io/stac-utils/pgstac:latest
+    environment:
+      - POSTGRES_USER=username
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=postgis
+      - PGUSER=username
+      - PGPASSWORD=password
+      - PGDATABASE=postgis
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "username", "-d", "postgis"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ghcr.io/stac-utils/stac-fastapi-pgstac:latest
+    environment:
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8082
+      - ENVIRONMENT=local
+      - PGUSER=username
+      - PGPASSWORD=password
+      - PGDATABASE=postgis
+      - PGHOST=database
+      - PGPORT=5432
+      - WEB_CONCURRENCY=1
+      - ENABLE_TRANSACTIONS_EXTENSIONS=TRUE
+    ports:
+      - "8082:8082"
+    depends_on:
+      database:
+        condition: service_healthy
+    command: >
+      bash -c "
+      uvicorn stac_fastapi.pgstac.app:app --host 0.0.0.0 --port 8082 --proxy-headers --forwarded-allow-ips=*
+      "
+
+volumes:
+  pgdata:

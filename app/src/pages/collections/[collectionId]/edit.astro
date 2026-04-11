@@ -1,0 +1,10 @@
+---
+import Layout from "../../../layouts/Layout.astro";
+import { CollectionEditPage } from "../../../components/collections/CollectionEditPage";
+
+const { collectionId } = Astro.params;
+---
+
+<Layout title={`Edit: ${collectionId}`}>
+  <CollectionEditPage client:only="react" collectionId={collectionId!} />
+</Layout>
