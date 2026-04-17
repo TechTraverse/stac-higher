@@ -2,16 +2,16 @@ import { test, expect } from "@playwright/test";
 
 test.describe("Proxy feature", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/endpoints");
+    await page.goto("/catalogs");
     await page.evaluate(() => localStorage.clear());
     await page.reload();
   });
 
-  test("can add endpoint with proxy enabled and see Proxied badge", async ({
+  test("can add catalog with proxy enabled and see Proxied badge", async ({
     page,
   }) => {
     await page
-      .getByRole("button", { name: "Add Your First Endpoint" })
+      .getByRole("button", { name: "Add Your First Catalog" })
       .click();
 
     await page.getByLabel("Name").fill("Proxied API");
@@ -25,11 +25,11 @@ test.describe("Proxy feature", () => {
     await expect(main.getByText("Active")).toBeVisible();
   });
 
-  test("endpoint without proxy does not show Proxied badge", async ({
+  test("catalog without proxy does not show Proxied badge", async ({
     page,
   }) => {
     await page
-      .getByRole("button", { name: "Add Your First Endpoint" })
+      .getByRole("button", { name: "Add Your First Catalog" })
       .click();
 
     await page.getByLabel("Name").fill("Direct API");
@@ -45,7 +45,7 @@ test.describe("Proxy feature", () => {
     page,
   }) => {
     await page
-      .getByRole("button", { name: "Add Your First Endpoint" })
+      .getByRole("button", { name: "Add Your First Catalog" })
       .click();
 
     await page.getByLabel("Name").fill("Proxied Local");

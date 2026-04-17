@@ -1,15 +1,15 @@
 import { useStore } from "@nanostores/react";
-import { $activeEndpoint } from "@/stores/endpointStore";
+import { $activeCatalog } from "@/stores/catalogStore";
 import { useCollection } from "@/lib/query/collections";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
 import { CollectionFormPage } from "./CollectionForm";
-import { LoadingState } from "@/components/shared/LoadingState";
-import { ErrorState } from "@/components/shared/ErrorState";
+import { LoadingState } from "@stac-higher/shared";
+import { ErrorState } from "@stac-higher/shared";
 
 function CollectionEditInner({ collectionId }: { collectionId: string }) {
-  const endpoint = useStore($activeEndpoint);
-  const endpointUrl = endpoint?.url ?? "";
+  const catalog = useStore($activeCatalog);
+  const endpointUrl = catalog?.url ?? "";
   const { data, isLoading, error, refetch } = useCollection(endpointUrl, collectionId);
 
   if (isLoading) {

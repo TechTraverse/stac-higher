@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "workspaces": ["app", "packages/*"],
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

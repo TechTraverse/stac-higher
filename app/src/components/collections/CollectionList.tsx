@@ -1,33 +1,33 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $activeEndpoint } from "@/stores/endpointStore";
+import { $activeCatalog } from "@/stores/catalogStore";
 import { useCollections } from "@/lib/query/collections";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
-import { CollectionCard } from "./CollectionCard";
-import { LoadingState } from "@/components/shared/LoadingState";
-import { EmptyState } from "@/components/shared/EmptyState";
-import { ErrorState } from "@/components/shared/ErrorState";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { CollectionCard } from "@stac-higher/shared";
+import { LoadingState } from "@stac-higher/shared";
+import { EmptyState } from "@stac-higher/shared";
+import { ErrorState } from "@stac-higher/shared";
+import { Button } from "@stac-higher/shared";
+import { Input } from "@stac-higher/shared";
 import { Layers, Plus, Search } from "lucide-react";
 
 function CollectionListInner() {
-  const endpoint = useStore($activeEndpoint);
-  const endpointUrl = endpoint?.url ?? "";
+  const catalog = useStore($activeCatalog);
+  const endpointUrl = catalog?.url ?? "";
   const { data, isLoading, error, refetch } = useCollections(endpointUrl);
   const [search, setSearch] = useState("");
 
-  if (!endpoint) {
+  if (!catalog) {
     return (
       <>
         <Header />
         <main className="flex-1 p-6">
           <EmptyState
             icon={Layers}
-            title="No endpoint configured"
-            description="Add a STAC API endpoint to browse collections."
-            action={{ label: "Add Endpoint", href: "/endpoints" }}
+            title="No catalog configured"
+            description="Add a STAC catalog to browse collections."
+            action={{ label: "Add Catalog", href: "/catalogs" }}
           />
         </main>
       </>

@@ -1,5 +1,5 @@
 import { useStore } from "@nanostores/react";
-import { $activeEndpoint, $endpoints } from "@/stores/endpointStore";
+import { $activeCatalog, $catalogs } from "@/stores/catalogStore";
 import { useLandingPage } from "@/lib/query/search";
 import { useCollections } from "@/lib/query/collections";
 import { QueryProvider } from "./QueryProvider";
@@ -10,30 +10,30 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+} from "@stac-higher/shared";
+import { Badge } from "@stac-higher/shared";
+import { Button } from "@stac-higher/shared";
+import { Skeleton } from "@stac-higher/shared";
 import {
   Layers,
   Search,
   ArrowRight,
   CheckCircle2,
   AlertCircle,
-  Settings,
+  Database,
 } from "lucide-react";
 
 function DashboardContent() {
-  const endpoint = useStore($activeEndpoint);
-  const endpoints = useStore($endpoints);
-  const endpointUrl = endpoint?.url ?? "";
+  const catalog = useStore($activeCatalog);
+  const catalogs = useStore($catalogs);
+  const endpointUrl = catalog?.url ?? "";
 
   const { data: landing, isLoading: landingLoading, error: landingError } =
     useLandingPage(endpointUrl);
   const { data: collections, isLoading: collectionsLoading } =
     useCollections(endpointUrl);
 
-  if (endpoints.length === 0) {
+  if (catalogs.length === 0) {
     return (
       <main className="flex-1 p-6">
         <div className="max-w-2xl mx-auto text-center py-20">
@@ -43,12 +43,12 @@ function DashboardContent() {
           <h1 className="text-3xl font-bold mb-3">Welcome to STAC Higher</h1>
           <p className="text-muted-foreground mb-8 text-lg">
             A modern interface for managing SpatioTemporal Asset Catalogs.
-            Connect to a STAC API to get started.
+            Connect to a STAC catalog to get started.
           </p>
-          <a href="/endpoints">
+          <a href="/catalogs">
             <Button size="lg">
-              <Settings className="h-4 w-4 mr-2" />
-              Add Your First Endpoint
+              <Database className="h-4 w-4 mr-2" />
+              Add Your First Catalog
             </Button>
           </a>
         </div>
@@ -64,7 +64,7 @@ function DashboardContent() {
       <div className="mb-8">
         <h1 className="text-2xl font-bold">Dashboard</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          {endpoint?.name ?? "No endpoint selected"}
+          {catalog?.name ?? "No catalog selected"}
         </p>
       </div>
 

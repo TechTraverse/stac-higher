@@ -1,33 +1,33 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $activeEndpoint } from "@/stores/endpointStore";
+import { $activeCatalog } from "@/stores/catalogStore";
 import { useCollections } from "@/lib/query/collections";
 import { useStacSearch } from "@/lib/query/search";
 import type { StacSearchBody } from "@/lib/stac-api/types";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
-import { StacMap } from "@/components/map/StacMap";
-import { FootprintLayer } from "@/components/map/FootprintLayer";
-import { ItemCard } from "@/components/items/ItemCard";
-import { BboxInput } from "@/components/shared/BboxInput";
-import { ErrorState } from "@/components/shared/ErrorState";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+import { StacMap } from "@stac-higher/shared";
+import { FootprintLayer } from "@stac-higher/shared";
+import { ItemCard } from "@stac-higher/shared";
+import { BboxInput } from "@stac-higher/shared";
+import { ErrorState } from "@stac-higher/shared";
+import { Button } from "@stac-higher/shared";
+import { Input } from "@stac-higher/shared";
+import { Textarea } from "@stac-higher/shared";
+import { Label } from "@stac-higher/shared";
+import { Badge } from "@stac-higher/shared";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+} from "@stac-higher/shared";
+import { Skeleton } from "@stac-higher/shared";
 import { Search, X } from "lucide-react";
 
 function SearchInner() {
-  const endpoint = useStore($activeEndpoint);
-  const endpointUrl = endpoint?.url ?? "";
+  const catalog = useStore($activeCatalog);
+  const endpointUrl = catalog?.url ?? "";
   const { data: collectionsData } = useCollections(endpointUrl);
   const collections = collectionsData?.collections ?? [];
 

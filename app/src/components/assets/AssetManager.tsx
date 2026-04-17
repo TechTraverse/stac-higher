@@ -1,17 +1,17 @@
 import { useState } from "react";
 import type { StacAsset, StacCollection } from "@/lib/stac-api/types";
 import { useUpdateCollection } from "@/lib/query/collections";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@stac-higher/shared";
+import { Input } from "@stac-higher/shared";
+import { Label } from "@stac-higher/shared";
+import { Textarea } from "@stac-higher/shared";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+} from "@stac-higher/shared";
+import { Badge } from "@stac-higher/shared";
 import {
   Dialog,
   DialogContent,

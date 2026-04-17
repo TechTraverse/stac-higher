@@ -1,26 +1,26 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $activeEndpoint } from "@/stores/endpointStore";
+import { $activeCatalog } from "@/stores/catalogStore";
 import { useCollection, useDeleteCollection } from "@/lib/query/collections";
 import { useItems } from "@/lib/query/items";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
-import { JsonViewer } from "@/components/shared/JsonViewer";
-import { ErrorState } from "@/components/shared/ErrorState";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ItemCard } from "@/components/items/ItemCard";
+import { JsonViewer } from "@stac-higher/shared";
+import { ErrorState } from "@stac-higher/shared";
+import { Skeleton } from "@stac-higher/shared";
+import { ItemCard } from "@stac-higher/shared";
 import { AssetManager } from "@/components/assets/AssetManager";
-import { StacMap } from "@/components/map/StacMap";
-import { ExtentLayer } from "@/components/map/ExtentLayer";
+import { StacMap } from "@stac-higher/shared";
+import { ExtentLayer } from "@stac-higher/shared";
 import { bboxToLngLatBounds } from "@/lib/map/bbox";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@stac-higher/shared";
+import { Badge } from "@stac-higher/shared";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@stac-higher/shared";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -51,8 +51,8 @@ interface CollectionDetailInnerProps {
 }
 
 function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
-  const endpoint = useStore($activeEndpoint);
-  const endpointUrl = endpoint?.url ?? "";
+  const catalog = useStore($activeCatalog);
+  const endpointUrl = catalog?.url ?? "";
   const { data: collection, isLoading, error, refetch } = useCollection(endpointUrl, collectionId);
   const { data: itemsData } = useItems(endpointUrl, collectionId, { limit: 10 });
   const deleteMutation = useDeleteCollection(endpointUrl);
@@ -234,6 +234,16 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
             <div className="flex flex-wrap gap-2">
               <Badge variant="secondary">{collection.license}</Badge>
               <Badge variant="outline">STAC {collection.stac_version}</Badge>
+              {collection.stac_extensions?.map((url) => {
+                const label = url.split("/").filter(Boolean).slice(-3, -1).join(" ") || url;
+                return (
+                  <a key={url} href={url} target="_blank" rel="noopener noreferrer" title={url}>
+                    <Badge variant="outline" className="text-xs font-mono hover:bg-accent/50 transition-colors">
+                      {label}
+                    </Badge>
+                  </a>
+                );
+              })}
             </div>
 
             {collection.providers && collection.providers.length > 0 && (

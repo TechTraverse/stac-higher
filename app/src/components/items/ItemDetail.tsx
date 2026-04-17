@@ -1,23 +1,23 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $activeEndpoint } from "@/stores/endpointStore";
+import { $activeCatalog } from "@/stores/catalogStore";
 import { useItem, useDeleteItem } from "@/lib/query/items";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
-import { JsonViewer } from "@/components/shared/JsonViewer";
-import { ErrorState } from "@/components/shared/ErrorState";
-import { Skeleton } from "@/components/ui/skeleton";
-import { StacMap } from "@/components/map/StacMap";
+import { JsonViewer } from "@stac-higher/shared";
+import { ErrorState } from "@stac-higher/shared";
+import { Skeleton } from "@stac-higher/shared";
+import { StacMap } from "@stac-higher/shared";
 import { Source, Layer } from "react-map-gl/maplibre";
 import { bboxToLngLatBounds } from "@/lib/map/bbox";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@stac-higher/shared";
+import { Badge } from "@stac-higher/shared";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@stac-higher/shared";
 import {
   Table,
   TableBody,
@@ -49,8 +49,8 @@ interface ItemDetailInnerProps {
 }
 
 function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
-  const endpoint = useStore($activeEndpoint);
-  const endpointUrl = endpoint?.url ?? "";
+  const catalog = useStore($activeCatalog);
+  const endpointUrl = catalog?.url ?? "";
   const { data: item, isLoading, error, refetch } = useItem(endpointUrl, collectionId, itemId);
   const deleteMutation = useDeleteItem(endpointUrl, collectionId);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -179,6 +179,20 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
           </TabsList>
 
           <TabsContent value="properties">
+            {item.stac_extensions && item.stac_extensions.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {item.stac_extensions.map((url) => {
+                  const label = url.split("/").filter(Boolean).slice(-3, -1).join(" ") || url;
+                  return (
+                    <a key={url} href={url} target="_blank" rel="noopener noreferrer" title={url}>
+                      <Badge variant="outline" className="text-xs font-mono hover:bg-accent/50 transition-colors">
+                        {label}
+                      </Badge>
+                    </a>
+                  );
+                })}
+              </div>
+            )}
             <Card>
               <CardContent className="pt-6">
                 <Table>

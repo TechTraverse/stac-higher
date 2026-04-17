@@ -6,21 +6,21 @@ import { StacApiError } from "@/lib/stac-api/types";
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-const $endpoints = atom([
+const $catalogs = atom([
   { id: "1", name: "Test", url: "http://localhost:8082", isDefault: true },
 ]);
-const $activeEndpointId = atom("1");
-const $mockActiveEndpoint = computed(
-  [$endpoints, $activeEndpointId],
-  (endpoints, id) => endpoints.find((e) => e.id === id) ?? null,
+const $activeCatalogId = atom("1");
+const $mockActiveCatalog = computed(
+  [$catalogs, $activeCatalogId],
+  (catalogs, id) => catalogs.find((c) => c.id === id) ?? null,
 );
 
-vi.mock("@/stores/endpointStore", () => ({
-  get $activeEndpoint() {
-    return $mockActiveEndpoint;
+vi.mock("@/stores/catalogStore", () => ({
+  get $activeCatalog() {
+    return $mockActiveCatalog;
   },
-  get $endpoints() {
-    return $endpoints;
+  get $catalogs() {
+    return $catalogs;
   },
 }));
 
@@ -38,7 +38,7 @@ beforeEach(() => {
 
 describe("stacFetch", () => {
   describe("URL construction", () => {
-    it("uses active endpoint URL as base", async () => {
+    it("uses active catalog URL as base", async () => {
       mockFetch.mockResolvedValue(jsonResponse({ collections: [] }));
       await stacFetch("/collections");
       expect(mockFetch).toHaveBeenCalledWith(

@@ -2,10 +2,10 @@ import { useState, useCallback, useRef } from "react";
 import Map, { Source, Layer, NavigationControl } from "react-map-gl/maplibre";
 import type { MapRef, MapMouseEvent } from "react-map-gl/maplibre";
 import type { DrawMode } from "@/stores/mapStore";
-import { DrawingToolbar } from "@/components/map/DrawingToolbar";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
+import { DrawingToolbar } from "@stac-higher/shared";
+import { Button } from "@stac-higher/shared";
+import { Textarea } from "@stac-higher/shared";
+import { Label } from "@stac-higher/shared";
 import { Trash2 } from "lucide-react";
 import "maplibre-gl/dist/maplibre-gl.css";
 

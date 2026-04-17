@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@/": new URL("./src/", import.meta.url).pathname,
+      "@shared/": new URL("../packages/shared/src/", import.meta.url).pathname,
     },
   },
 });

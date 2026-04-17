@@ -1,21 +1,21 @@
 import { useState, useCallback } from "react";
 import { useStore } from "@nanostores/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { $activeEndpoint } from "@/stores/endpointStore";
+import { $activeCatalog } from "@/stores/catalogStore";
 import { useItems } from "@/lib/query/items";
 import { stacKeys } from "@/lib/query/keys";
 import { createItem } from "@/lib/stac-api/items";
 import type { StacItem } from "@/lib/stac-api/types";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
-import { ItemCard } from "./ItemCard";
-import { StacMap } from "@/components/map/StacMap";
-import { FootprintLayer } from "@/components/map/FootprintLayer";
-import { LoadingState } from "@/components/shared/LoadingState";
-import { EmptyState } from "@/components/shared/EmptyState";
-import { ErrorState } from "@/components/shared/ErrorState";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { ItemCard } from "@stac-higher/shared";
+import { StacMap } from "@stac-higher/shared";
+import { FootprintLayer } from "@stac-higher/shared";
+import { LoadingState } from "@stac-higher/shared";
+import { EmptyState } from "@stac-higher/shared";
+import { ErrorState } from "@stac-higher/shared";
+import { Button } from "@stac-higher/shared";
+import { Textarea } from "@stac-higher/shared";
 import {
   Dialog,
   DialogContent,
@@ -45,8 +45,8 @@ function extractToken(links: Array<{ href: string; rel: string }>, rel: string):
 const PAGE_SIZE = 20;
 
 function ItemListInner({ collectionId }: ItemListInnerProps) {
-  const endpoint = useStore($activeEndpoint);
-  const endpointUrl = endpoint?.url ?? "";
+  const catalog = useStore($activeCatalog);
+  const endpointUrl = catalog?.url ?? "";
   const qc = useQueryClient();
   const [token, setToken] = useState<string | undefined>();
   const [tokenHistory, setTokenHistory] = useState<string[]>([]);
