@@ -1,0 +1,8 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { CatalogManagerPage } from "../components/catalogs/CatalogManager";
+---
+
+<Layout title="Catalogs">
+  <CatalogManagerPage client:only="react" />
+</Layout>

@@ -1,26 +1,26 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
 import {
-  $endpoints,
-  $activeEndpoint,
-  addEndpoint,
-  updateEndpoint,
-  removeEndpoint,
-  setActiveEndpoint,
-  type StacEndpoint,
-} from "@/stores/endpointStore";
+  $catalogs,
+  $activeCatalog,
+  addCatalog,
+  updateCatalog,
+  removeCatalog,
+  setActiveCatalog,
+  type StacCatalog,
+} from "@/stores/catalogStore";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
-import { EndpointForm } from "./EndpointForm";
-import { Button } from "@/components/ui/button";
+import { CatalogForm } from "./CatalogForm";
+import { Button } from "@stac-higher/shared";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+} from "@stac-higher/shared";
+import { Badge } from "@stac-higher/shared";
 import {
   Dialog,
   DialogContent,
@@ -40,14 +40,14 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-function EndpointCard({
-  endpoint,
+function CatalogCard({
+  catalog,
   isActive,
   onEdit,
   onDelete,
   onSetActive,
 }: {
-  endpoint: StacEndpoint;
+  catalog: StacCatalog;
   isActive: boolean;
   onEdit: () => void;
   onDelete: () => void;
@@ -60,27 +60,27 @@ function EndpointCard({
     setTesting(true);
     setStatus("idle");
     try {
-      const testUrl = endpoint.url.replace(/\/+$/, "") + "/";
-      const fetchUrl = endpoint.proxy ? "/api/proxy" : testUrl;
-      const fetchOptions: RequestInit = endpoint.proxy
+      const testUrl = catalog.url.replace(/\/+$/, "") + "/";
+      const fetchUrl = catalog.proxy ? "/api/proxy" : testUrl;
+      const fetchOptions: RequestInit = catalog.proxy
         ? {
             headers: {
               "X-Proxy-Target": testUrl,
-              "X-Proxy-Endpoint": endpoint.url,
+              "X-Proxy-Endpoint": catalog.url,
             },
           }
         : {};
       const res = await fetch(fetchUrl, fetchOptions);
       if (res.ok) {
         setStatus("ok");
-        toast.success(`Connected to ${endpoint.name}`);
+        toast.success(`Connected to ${catalog.name}`);
       } else {
         setStatus("error");
         toast.error(`Failed: ${res.status} ${res.statusText}`);
       }
     } catch (err) {
       setStatus("error");
-      toast.error(`Cannot reach ${endpoint.url}`);
+      toast.error(`Cannot reach ${catalog.url}`);
     }
     setTesting(false);
   };
@@ -90,21 +90,21 @@ function EndpointCard({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <CardTitle className="text-base">{endpoint.name}</CardTitle>
+            <CardTitle className="text-base">{catalog.name}</CardTitle>
             {isActive && <Badge variant="default">Active</Badge>}
-            {endpoint.proxy && <Badge variant="secondary">Proxied</Badge>}
+            {catalog.proxy && <Badge variant="secondary">Proxied</Badge>}
           </div>
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={onEdit} aria-label="Edit endpoint">
+            <Button variant="ghost" size="icon" onClick={onEdit} aria-label="Edit catalog">
               <Pencil className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete endpoint">
+            <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete catalog">
               <Trash2 className="h-4 w-4 text-destructive" />
             </Button>
           </div>
         </div>
         <CardDescription className="font-mono text-xs">
-          {endpoint.url}
+          {catalog.url}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -130,29 +130,29 @@ function EndpointCard({
   );
 }
 
-function EndpointManagerInner() {
-  const endpoints = useStore($endpoints);
-  const active = useStore($activeEndpoint);
+function CatalogManagerInner() {
+  const catalogs = useStore($catalogs);
+  const active = useStore($activeCatalog);
   const [formOpen, setFormOpen] = useState(false);
-  const [editing, setEditing] = useState<StacEndpoint | undefined>();
-  const [deleteTarget, setDeleteTarget] = useState<StacEndpoint | null>(null);
+  const [editing, setEditing] = useState<StacCatalog | undefined>();
+  const [deleteTarget, setDeleteTarget] = useState<StacCatalog | null>(null);
 
   const handleAdd = (data: { name: string; url: string; proxy: boolean }) => {
-    addEndpoint({ ...data, isDefault: endpoints.length === 0 });
-    toast.success(`Added endpoint: ${data.name}`);
+    addCatalog({ ...data, isDefault: catalogs.length === 0 });
+    toast.success(`Added catalog: ${data.name}`);
   };
 
   const handleEdit = (data: { name: string; url: string; proxy: boolean }) => {
     if (!editing) return;
-    updateEndpoint(editing.id, data);
-    toast.success(`Updated endpoint: ${data.name}`);
+    updateCatalog(editing.id, data);
+    toast.success(`Updated catalog: ${data.name}`);
     setEditing(undefined);
   };
 
   const handleDelete = () => {
     if (!deleteTarget) return;
-    removeEndpoint(deleteTarget.id);
-    toast.success(`Removed endpoint: ${deleteTarget.name}`);
+    removeCatalog(deleteTarget.id);
+    toast.success(`Removed catalog: ${deleteTarget.name}`);
     setDeleteTarget(null);
   };
 
@@ -162,57 +162,57 @@ function EndpointManagerInner() {
       <main className="flex-1 p-6 max-w-4xl mx-auto w-full">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold">STAC Endpoints</h1>
+            <h1 className="text-2xl font-bold">Catalogs</h1>
             <p className="text-sm text-muted-foreground mt-1">
               Manage your STAC API connections
             </p>
           </div>
           <Button onClick={() => setFormOpen(true)}>
             <Plus className="h-4 w-4 mr-1.5" />
-            Add Endpoint
+            Add Catalog
           </Button>
         </div>
 
-        {endpoints.length === 0 ? (
+        {catalogs.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-12 text-center">
               <Globe className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-medium mb-2">No endpoints configured</h3>
+              <h3 className="text-lg font-medium mb-2">No catalogs configured</h3>
               <p className="text-sm text-muted-foreground mb-4 max-w-sm">
-                Add a STAC API endpoint to get started browsing and managing your
+                Add a STAC catalog to get started browsing and managing your
                 spatiotemporal data.
               </p>
               <Button onClick={() => setFormOpen(true)}>
                 <Plus className="h-4 w-4 mr-1.5" />
-                Add Your First Endpoint
+                Add Your First Catalog
               </Button>
             </CardContent>
           </Card>
         ) : (
           <div className="grid gap-4">
-            {endpoints.map((ep) => (
-              <EndpointCard
-                key={ep.id}
-                endpoint={ep}
-                isActive={active?.id === ep.id}
+            {catalogs.map((cat) => (
+              <CatalogCard
+                key={cat.id}
+                catalog={cat}
+                isActive={active?.id === cat.id}
                 onEdit={() => {
-                  setEditing(ep);
+                  setEditing(cat);
                 }}
-                onDelete={() => setDeleteTarget(ep)}
-                onSetActive={() => setActiveEndpoint(ep.id)}
+                onDelete={() => setDeleteTarget(cat)}
+                onSetActive={() => setActiveCatalog(cat.id)}
               />
             ))}
           </div>
         )}
 
-        <EndpointForm
+        <CatalogForm
           open={formOpen}
           onOpenChange={setFormOpen}
           onSubmit={handleAdd}
         />
 
         {editing && (
-          <EndpointForm
+          <CatalogForm
             open={!!editing}
             onOpenChange={(open) => !open && setEditing(undefined)}
             onSubmit={handleEdit}
@@ -223,7 +223,7 @@ function EndpointManagerInner() {
         <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Delete Endpoint</DialogTitle>
+              <DialogTitle>Delete Catalog</DialogTitle>
               <DialogDescription>
                 Are you sure you want to remove "{deleteTarget?.name}"? This action
                 cannot be undone.
@@ -244,10 +244,10 @@ function EndpointManagerInner() {
   );
 }
 
-export function EndpointManagerPage() {
+export function CatalogManagerPage() {
   return (
     <QueryProvider>
-      <EndpointManagerInner />
+      <CatalogManagerInner />
     </QueryProvider>
   );
 }

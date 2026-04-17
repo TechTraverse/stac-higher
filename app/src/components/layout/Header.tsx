@@ -1,12 +1,14 @@
-import { EndpointSelector } from "@/components/endpoints/EndpointSelector";
-import { ThemeToggle } from "./ThemeToggle";
-import { Layers, Search, Settings } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { CatalogSelector } from "@/components/catalogs/CatalogSelector";
+import { ThemeToggle } from "@stac-higher/shared";
+import { Layers, Search, Puzzle, Database } from "lucide-react";
+import { Button } from "@stac-higher/shared";
 
 const navLinks = [
   { href: "/", label: "Dashboard", icon: null },
+  { href: "/catalogs", label: "Catalogs", icon: Database },
   { href: "/collections", label: "Collections", icon: Layers },
   { href: "/search", label: "Search", icon: Search },
+  { href: "/extensions", label: "Extensions", icon: Puzzle },
 ];
 
 export function Header() {
@@ -44,13 +46,7 @@ export function Header() {
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
-          <EndpointSelector />
-          <a href="/endpoints">
-            <Button variant="ghost" size="icon">
-              <Settings className="h-4 w-4" />
-              <span className="sr-only">Manage endpoints</span>
-            </Button>
-          </a>
+          <CatalogSelector />
           <ThemeToggle />
         </div>
       </div>

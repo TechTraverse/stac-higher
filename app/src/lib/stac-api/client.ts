@@ -1,5 +1,5 @@
-import { $activeEndpoint, $endpoints } from "@/stores/endpointStore";
-import type { StacEndpoint } from "@/stores/endpointStore";
+import { $activeCatalog, $catalogs } from "@/stores/catalogStore";
+import type { StacCatalog } from "@/stores/catalogStore";
 import { StacApiError } from "./types";
 
 interface FetchOptions {
@@ -11,23 +11,23 @@ interface FetchOptions {
 
 function getBaseUrl(overrideUrl?: string): string {
   if (overrideUrl) return overrideUrl.replace(/\/+$/, "");
-  const endpoint = $activeEndpoint.get();
-  if (!endpoint) throw new StacApiError("No active STAC endpoint configured", 0);
-  return endpoint.url.replace(/\/+$/, "");
+  const catalog = $activeCatalog.get();
+  if (!catalog) throw new StacApiError("No active STAC catalog configured", 0);
+  return catalog.url.replace(/\/+$/, "");
 }
 
-function getEndpointForUrl(url: string): StacEndpoint | undefined {
+function getCatalogForUrl(url: string): StacCatalog | undefined {
   const normalized = url.replace(/\/+$/, "");
-  return $endpoints.get().find((e) => normalized.startsWith(e.url.replace(/\/+$/, "")));
+  return $catalogs.get().find((c) => normalized.startsWith(c.url.replace(/\/+$/, "")));
 }
 
 function shouldProxy(endpointUrl?: string): { proxy: boolean; endpointBase: string } {
   if (endpointUrl) {
-    const ep = getEndpointForUrl(endpointUrl);
-    return { proxy: ep?.proxy === true, endpointBase: ep?.url ?? endpointUrl };
+    const cat = getCatalogForUrl(endpointUrl);
+    return { proxy: cat?.proxy === true, endpointBase: cat?.url ?? endpointUrl };
   }
-  const ep = $activeEndpoint.get();
-  return { proxy: ep?.proxy === true, endpointBase: ep?.url ?? "" };
+  const cat = $activeCatalog.get();
+  return { proxy: cat?.proxy === true, endpointBase: cat?.url ?? "" };
 }
 
 export async function stacFetch<T>(

@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
+import { Button } from "@stac-higher/shared";
+import { Input } from "@stac-higher/shared";
+import { Label } from "@stac-higher/shared";
+import { Switch } from "@stac-higher/shared";
 import {
   Dialog,
   DialogContent,
@@ -10,21 +10,21 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import type { StacEndpoint } from "@/stores/endpointStore";
+import type { StacCatalog } from "@/stores/catalogStore";
 
-interface EndpointFormProps {
+interface CatalogFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (data: { name: string; url: string; proxy: boolean }) => void;
-  initial?: StacEndpoint;
+  initial?: StacCatalog;
 }
 
-export function EndpointForm({
+export function CatalogForm({
   open,
   onOpenChange,
   onSubmit,
   initial,
-}: EndpointFormProps) {
+}: CatalogFormProps) {
   const [name, setName] = useState(initial?.name ?? "");
   const [url, setUrl] = useState(initial?.url ?? "");
   const [proxy, setProxy] = useState(initial?.proxy ?? false);
@@ -46,14 +46,14 @@ export function EndpointForm({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {initial ? "Edit Endpoint" : "Add STAC Endpoint"}
+            {initial ? "Edit Catalog" : "Add STAC Catalog"}
           </DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="ep-name">Name</Label>
+            <Label htmlFor="cat-name">Name</Label>
             <Input
-              id="ep-name"
+              id="cat-name"
               placeholder="My STAC API"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -61,9 +61,9 @@ export function EndpointForm({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="ep-url">URL</Label>
+            <Label htmlFor="cat-url">URL</Label>
             <Input
-              id="ep-url"
+              id="cat-url"
               placeholder="http://localhost:8082"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -73,7 +73,7 @@ export function EndpointForm({
           </div>
           <div className="flex items-center justify-between rounded-md border p-3">
             <div className="space-y-0.5">
-              <Label htmlFor="ep-proxy" className="text-sm font-medium">
+              <Label htmlFor="cat-proxy" className="text-sm font-medium">
                 Proxy through server
               </Label>
               <p className="text-xs text-muted-foreground">
@@ -81,7 +81,7 @@ export function EndpointForm({
               </p>
             </div>
             <Switch
-              id="ep-proxy"
+              id="cat-proxy"
               checked={proxy}
               onCheckedChange={setProxy}
             />
