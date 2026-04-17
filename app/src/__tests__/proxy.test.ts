@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ALL } from "@/pages/api/proxy";
 
 const mockFetch = vi.fn();
@@ -6,6 +6,11 @@ vi.stubGlobal("fetch", mockFetch);
 
 beforeEach(() => {
   mockFetch.mockReset();
+  vi.stubEnv("SAFE_FETCH_ALLOW_HOSTS", "example.com");
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 function makeRequest(
@@ -88,11 +93,12 @@ describe("proxy API route", () => {
     });
     const res = await ALL(makeContext(req));
 
-    expect(mockFetch).toHaveBeenCalledWith("http://example.com/collections", {
-      method: "GET",
-      headers: { accept: "application/json" },
-      body: undefined,
-    });
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [getUrl, getOpts] = mockFetch.mock.calls[0];
+    expect(getUrl).toBe("http://example.com/collections");
+    expect(getOpts.method).toBe("GET");
+    expect(getOpts.headers).toEqual({ accept: "application/json" });
+    expect(getOpts.body).toBeUndefined();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ collections: [] });
@@ -155,6 +161,34 @@ describe("proxy API route", () => {
     });
     const res = await ALL(makeContext(req));
     expect(res.headers.get("Content-Type")).toBe("application/geo+json");
+  });
+
+  it("returns 403 when target resolves to loopback (SSRF guard)", async () => {
+    const req = makeRequest({
+      "X-Proxy-Target": "http://127.0.0.1:9999/collections",
+      "X-Proxy-Endpoint": "http://127.0.0.1:9999",
+    });
+    const res = await ALL(makeContext(req));
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/private|loopback/i);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 when request body exceeds size cap", async () => {
+    const big = "x".repeat(16);
+    const req = makeRequest(
+      {
+        "X-Proxy-Target": "http://example.com/collections",
+        "X-Proxy-Endpoint": "http://example.com",
+        "Content-Type": "application/json",
+        "Content-Length": String(10 * 1024 * 1024),
+      },
+      { method: "POST", body: big },
+    );
+    const res = await ALL(makeContext(req));
+    expect(res.status).toBe(413);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("returns 502 when upstream fetch fails", async () => {

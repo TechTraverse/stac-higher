@@ -20,8 +20,15 @@ const UI_SCHEMA = {
 };
 
 async function fetchSchema(url: string): Promise<RJSFSchema> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch schema: ${res.status}`);
+  const res = await fetch("/api/extensions/resolve-schema", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `Failed to fetch schema: ${res.status}`);
+  }
   return res.json();
 }
 

@@ -1,3 +1,5 @@
+import { SafeFetchError, safeFetch } from "@/lib/http/safe-fetch";
+
 interface CacheEntry {
   schema: unknown;
   expiresAt: number;
@@ -25,11 +27,16 @@ export async function getOrFetchSchema(url: string): Promise<unknown> {
   const cached = getCachedSchema(url);
   if (cached !== null) return cached;
 
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch schema from ${url}: ${res.status} ${res.statusText}`);
+  const result = await safeFetch(url);
+  if (result.status < 200 || result.status >= 300) {
+    throw new SafeFetchError(
+      `Failed to fetch schema from ${url}: ${result.status}`,
+      "upstream",
+      502,
+    );
   }
-  const schema = await res.json();
+  const text = new TextDecoder().decode(result.body);
+  const schema = JSON.parse(text);
   setCachedSchema(url, schema);
   return schema;
 }

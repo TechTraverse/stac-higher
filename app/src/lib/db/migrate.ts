@@ -1,4 +1,6 @@
-import { query } from "./connection";
+import { getClient, query } from "./connection";
+
+const ADVISORY_KEY = 0x5ac_a1ed;
 
 const MIGRATIONS = [
   {
@@ -40,18 +42,31 @@ export async function runMigrations(): Promise<void> {
     )
   `);
 
-  for (const migration of MIGRATIONS) {
-    const result = await query(
-      `SELECT 1 FROM stac_higher.migrations WHERE name = $1`,
-      [migration.name],
-    );
-    if (result.rowCount === 0) {
-      await query(migration.sql);
-      await query(
-        `INSERT INTO stac_higher.migrations (name) VALUES ($1)`,
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [ADVISORY_KEY]);
+
+    for (const migration of MIGRATIONS) {
+      const result = await client.query(
+        `SELECT 1 FROM stac_higher.migrations WHERE name = $1`,
         [migration.name],
       );
+      if (result.rowCount === 0) {
+        await client.query(migration.sql);
+        await client.query(
+          `INSERT INTO stac_higher.migrations (name) VALUES ($1)`,
+          [migration.name],
+        );
+      }
     }
+
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
 
   migrated = true;

@@ -1,6 +1,7 @@
 import type { APIRoute } from "astro";
 import { z } from "zod";
 import { getOrFetchSchema } from "@/lib/extensions/schema-cache";
+import { SafeFetchError } from "@/lib/http/safe-fetch";
 
 const bodySchema = z.object({
   url: z.string().url("Must be a valid URL"),
@@ -42,6 +43,12 @@ export const POST: APIRoute = async ({ request }) => {
       headers: { "Content-Type": "application/schema+json" },
     });
   } catch (err) {
+    if (err instanceof SafeFetchError) {
+      return new Response(JSON.stringify({ error: err.message }), {
+        status: err.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     const message = err instanceof Error ? err.message : "Failed to fetch schema";
     return new Response(JSON.stringify({ error: message }), {
       status: 502,
