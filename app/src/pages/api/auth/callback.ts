@@ -6,7 +6,9 @@
  * writes the encrypted session cookie, and redirects to the original page.
  */
 import type { APIRoute } from "astro";
+import { decodeJwt } from "jose";
 import { getAuthConfig } from "@/lib/auth/config";
+import { loadClaimsMapping, mapClaims } from "@/lib/auth/claims";
 import {
   discover,
   exchangeCodeForTokens,
@@ -18,6 +20,7 @@ import {
   openValue,
   writeSession,
 } from "@/lib/auth/session";
+import { writeAudit } from "@/lib/audit/log";
 import { sanitizeReturnTo } from "./login";
 
 interface LoginTxn {
@@ -70,6 +73,26 @@ export const GET: APIRoute = async ({ url, cookies, redirect }) => {
       sessionMaxAgeS: cfg.sessionMaxAgeS,
       redirectUri: cfg.redirectUri,
     });
+
+    // Audit the login (ROADMAP §5.5). Best-effort: identity derivation or
+    // the audit write itself failing must never fail the login.
+    try {
+      const identity = mapClaims(
+        decodeJwt(tokens.access_token) as Record<string, unknown>,
+        loadClaimsMapping(),
+      );
+      await writeAudit({
+        actor: identity.sub,
+        actorGroups: identity.groups,
+        action: "login",
+        resourceType: "session",
+        detail: { mode: "oidc" },
+      });
+    } catch (auditErr) {
+      const msg = auditErr instanceof Error ? auditErr.message : String(auditErr);
+      console.error(`[audit] Could not audit login: ${msg}`);
+    }
+
     return redirect(sanitizeReturnTo(txn.returnTo), 302);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

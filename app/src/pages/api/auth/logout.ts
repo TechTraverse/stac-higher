@@ -9,8 +9,9 @@ import type { APIRoute } from "astro";
 import { getAuthConfig } from "@/lib/auth/config";
 import { discover } from "@/lib/auth/oidc";
 import { clearSession, readSession } from "@/lib/auth/session";
+import { writeAudit } from "@/lib/audit/log";
 
-export const GET: APIRoute = async ({ request, cookies, redirect }) => {
+export const GET: APIRoute = async ({ request, cookies, redirect, locals }) => {
   // Same guard as /api/proxy: never act on a cross-site request.
   const secFetchSite = request.headers.get("sec-fetch-site");
   if (secFetchSite === "cross-site") {
@@ -27,6 +28,20 @@ export const GET: APIRoute = async ({ request, cookies, redirect }) => {
     ? await readSession(cookies, cfg.sessionSecret)
     : null;
   clearSession(cookies);
+
+  // Audit the logout (ROADMAP §5.5). `locals.auth` was resolved by the
+  // middleware from the session cookie before it was cleared. `writeAudit`
+  // never throws, so this cannot break logout.
+  const auth = locals.auth;
+  if (auth?.authenticated && auth.mode === "oidc") {
+    await writeAudit({
+      actor: auth.identity.sub,
+      actorGroups: auth.identity.groups,
+      action: "logout",
+      resourceType: "session",
+      detail: { mode: "oidc" },
+    });
+  }
 
   try {
     const endpoints = await discover(cfg);

@@ -83,6 +83,28 @@ type AuthContext =
   | { authenticated: false; mode: "oidc" | "bypass"; identity: null };
 ```
 
-**RBAC seam**: the Phase 1 follow-on permission middleware consumes
-`locals.auth` exclusively (capabilities per ROADMAP §7). No enforcement
-exists yet; no page or route is gated on login.
+## RBAC & audit (ROADMAP §7, §5.5)
+
+The permission guard (`src/lib/authz/guard.ts`, called from
+`src/middleware.ts`) consumes `locals.auth` exclusively:
+
+- **Reads stay open** — no existing page or read route is gated on login.
+- **Gated API mutations** (extensions CRUD today: `POST /api/extensions`,
+  `POST /api/extensions/import`, `PUT|DELETE /api/extensions/[id]`) require
+  the `operator` or `admin` role. Anonymous → `401`, insufficient role →
+  `403`, both with the JSON shape `{ error, code }`
+  (`code: "unauthenticated" | "forbidden"`). The gated-route table lives in
+  `src/lib/authz/permissions.ts`.
+- **Every gated mutation lands one `stac_higher.audit_log` row** (allowed or
+  denied), as do OIDC login/logout. The table is append-only (DB triggers
+  reject UPDATE/DELETE/TRUNCATE); `detail` is redacted of credential-shaped
+  keys/values before insert (`src/lib/audit/log.ts`) and audit failures log
+  loudly but never fail the audited request.
+- `GET /api/audit?limit&before` — paginated viewer seam for the Phase 6 UI.
+  Operators see rows whose `actor_groups` overlap their own groups; admins
+  see everything; members/anonymous are rejected.
+
+Compatibility: the dev-bypass identity defaults to an **operator**, so local
+dev, unit tests, and the e2e suite keep passing without an IdP or login.
+Collection ownership defaults for pre-existing collections:
+`docs/decisions/0003-preexisting-collections.md`.

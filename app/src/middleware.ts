@@ -3,19 +3,20 @@ import { runMigrations } from "@/lib/db/migrate";
 import { resolveAuthContext } from "@/lib/auth/resolve";
 import { getAuthConfig } from "@/lib/auth/config";
 import { anonymous } from "@/lib/auth/types";
+import { applyApiGuard } from "@/lib/authz/guard";
 
 export const onRequest = defineMiddleware(async (context, next) => {
-  if (context.url.pathname.startsWith("/api/extensions")) {
+  const { pathname } = context.url;
+  if (
+    pathname.startsWith("/api/extensions") ||
+    pathname.startsWith("/api/audit")
+  ) {
     await runMigrations();
   }
 
   // Resolve the canonical identity for every request (session cookie →
   // claims mapping; refreshes the access token when it is near expiry).
   // Auth failures never break a page — they degrade to anonymous.
-  //
-  // RBAC seam: `locals.auth` is the single input for the upcoming permission
-  // middleware (ROADMAP §7). Enforcement does NOT happen here; no existing
-  // page or route is gated on login in Phase 1.
   try {
     context.locals.auth = await resolveAuthContext(context.cookies);
   } catch (err) {
@@ -24,5 +25,10 @@ export const onRequest = defineMiddleware(async (context, next) => {
     context.locals.auth = anonymous(getAuthConfig().mode);
   }
 
-  return next();
+  // RBAC enforcement (ROADMAP §7): gated API mutations require
+  // operator|admin and land one audit_log row each (allowed or denied).
+  // Reads stay open — no existing page or read route is gated on login in
+  // Phase 1, and the dev-bypass identity (operator) keeps existing flows
+  // working without an IdP.
+  return applyApiGuard(context, next);
 });

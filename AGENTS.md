@@ -92,11 +92,19 @@ Astro server routes:
 | `/api/auth/callback` | GET | OIDC redirect URI — code exchange, sets the session cookie |
 | `/api/auth/logout` | GET | Clear session + IdP end-session redirect |
 | `/api/auth/me` | GET | Current canonical identity (`locals.auth`) |
+| `/api/audit` | GET | Paginated audit log (operator: own groups; admin: all) |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
 (static identity, default in dev — unit tests/e2e need no IdP). Middleware
 exposes `locals.auth` to all server routes. Full env-var reference and flow
 details: `docs/auth.md`.
+
+**RBAC & audit**: the permission guard in `src/middleware.ts` requires the
+`operator`/`admin` role for API mutations (extensions CRUD today; reads stay
+open) and writes one append-only `stac_higher.audit_log` row per gated
+mutation (allowed or denied) plus login/logout. The dev-bypass identity is an
+operator, so existing flows keep working without login. Details:
+`docs/auth.md` ("RBAC & audit").
 
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in
