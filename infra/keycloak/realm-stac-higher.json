@@ -23,12 +23,16 @@
     {
       "name": "earth-observation",
       "path": "/earth-observation",
-      "realmRoles": ["member"]
+      "realmRoles": [
+        "member"
+      ]
     },
     {
       "name": "weather",
       "path": "/weather",
-      "realmRoles": ["member"]
+      "realmRoles": [
+        "member"
+      ]
     }
   ],
   "users": [
@@ -40,10 +44,18 @@
       "firstName": "Alice",
       "lastName": "Operator",
       "credentials": [
-        { "type": "password", "value": "alice-password", "temporary": false }
+        {
+          "type": "password",
+          "value": "alice-password",
+          "temporary": false
+        }
       ],
-      "realmRoles": ["operator"],
-      "groups": ["/earth-observation"]
+      "realmRoles": [
+        "operator"
+      ],
+      "groups": [
+        "/earth-observation"
+      ]
     },
     {
       "username": "bob",
@@ -53,10 +65,18 @@
       "firstName": "Bob",
       "lastName": "Member",
       "credentials": [
-        { "type": "password", "value": "bob-password", "temporary": false }
+        {
+          "type": "password",
+          "value": "bob-password",
+          "temporary": false
+        }
       ],
-      "realmRoles": ["member"],
-      "groups": ["/weather"]
+      "realmRoles": [
+        "member"
+      ],
+      "groups": [
+        "/weather"
+      ]
     },
     {
       "username": "carol",
@@ -66,9 +86,15 @@
       "firstName": "Carol",
       "lastName": "Admin",
       "credentials": [
-        { "type": "password", "value": "carol-password", "temporary": false }
+        {
+          "type": "password",
+          "value": "carol-password",
+          "temporary": false
+        }
       ],
-      "realmRoles": ["admin"],
+      "realmRoles": [
+        "admin"
+      ],
       "groups": []
     }
   ],
@@ -84,8 +110,12 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["http://localhost:4321/*"],
-      "webOrigins": ["http://localhost:4321"],
+      "redirectUris": [
+        "http://localhost:4321/*"
+      ],
+      "webOrigins": [
+        "http://localhost:4321"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:4321/*"
@@ -120,7 +150,7 @@
     {
       "clientId": "stac-higher-test",
       "name": "STAC Higher integration tests",
-      "description": "Confidential client with direct-access grants (resource-owner password grant) for LOCAL integration tests only. Kept separate from the public app client so the browser client stays PKCE-only with direct grants disabled. The secret is committed on purpose for local dev; never reuse this client in a real deployment.",
+      "description": "LOCAL-ONLY confidential client with direct-access (password) grants for integration tests. Never deploy. See docs/decisions/0002-auth-proxy-enforcement.md.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -161,7 +191,7 @@
     {
       "clientId": "stac-higher-test-noaud",
       "name": "STAC Higher integration tests (no audience)",
-      "description": "Identical to stac-higher-test but WITHOUT the stac-higher audience mapper. Exists solely so integration tests can mint a validly-signed same-realm token whose aud claim does not satisfy ALLOWED_JWT_AUDIENCES, proving the proxy's audience enforcement. Local dev only.",
+      "description": "LOCAL-ONLY twin of stac-higher-test without the audience mapper, for negative (wrong-audience) integration tests. Never deploy.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,

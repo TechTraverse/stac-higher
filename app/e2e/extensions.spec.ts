@@ -35,7 +35,9 @@ test.describe("Extensions", () => {
 
   test("create extension and verify it appears in list", async ({ page }) => {
     await page.goto("/extensions");
-    await page.getByRole("link", { name: "Create Extension" }).click();
+    // Header link; an empty DB renders a second empty-state link with the
+    // same name, so pick the first.
+    await page.getByRole("link", { name: "Create Extension" }).first().click();
 
     await expect(page).toHaveURL("/extensions/new");
 
