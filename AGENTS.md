@@ -27,7 +27,7 @@ Facts:
 - **Unit tests**: `npm test` (from `app/`); `npm run test:watch` for watch mode
 - **E2E**: `npm run test:e2e:ci` (from `app/` — list reporter, agent-friendly). Read the `run-e2e` skill first; the suite has real preconditions and gotchas.
 - **Storybook**: `npm run storybook` (from `packages/shared/`, http://localhost:6006)
-- **Backend**: `docker compose up -d` (repo root — pgstac + stac-fastapi on :8082)
+- **Backend**: `docker compose up -d` (repo root — full local stack: pgstac (:5433), stac-fastapi (:8082), stac-auth-proxy (:8081, pass-through), Keycloak (:8180, admin/admin), MinIO (:9000 API / :9001 console), pipeline service (:8083 `/health`))
 
 ## Architecture
 
@@ -53,12 +53,29 @@ read the `project-conventions` skill before any non-trivial change.
 
 ## Backend & API Routes
 
-docker-compose runs pgstac (PostgreSQL + PostGIS) and stac-fastapi-pgstac with the
-Transaction extension (full CRUD) at `http://localhost:8082`. Users configure
-catalogs in the `/catalogs` page (localStorage). The same PostgreSQL instance
-(port 5433) backs the Astro app's extension storage (`stac_higher.extensions`);
-`DATABASE_URL` overrides the default connection string. Migrations run on the
-first API request via middleware.
+docker-compose runs the full local platform stack:
+
+- **pgstac** (PostgreSQL + PostGIS, host :5433) and **stac-fastapi-pgstac** with
+  the Transaction extension (full CRUD) at `http://localhost:8082`.
+- **stac-auth-proxy** at `http://localhost:8081` in front of stac-fastapi —
+  pass-through mode in Phase 0 (`DEFAULT_PUBLIC=true`); Phase 1 tightens it.
+  The client's **built-in catalog** points here
+  (`PUBLIC_BUILTIN_CATALOG_URL`, default `http://localhost:8081`) and is
+  seeded as an undeletable entry in the `/catalogs` page.
+- **Keycloak** at `http://localhost:8180` (admin/admin, realm `stac-higher`
+  imported from `infra/keycloak/realm-stac-higher.json`). Realm import is
+  skipped once the realm exists in the persisted volume — edits to the realm
+  file only take effect after `docker compose down -v`.
+- **MinIO** at :9000 (console :9001, minioadmin/minioadmin, bucket
+  `stac-higher`).
+- **pipeline service** (`services/pipeline`, Python) — queue worker +
+  scheduler with `/health` on :8083. See
+  `docs/decisions/0001-migration-ownership.md` for schema ownership.
+
+Users configure additional catalogs in the `/catalogs` page (localStorage).
+The same PostgreSQL instance (port 5433) backs the Astro app's extension
+storage (`stac_higher.extensions`); `DATABASE_URL` overrides the default
+connection string. Migrations run on the first API request via middleware.
 
 Astro server routes:
 

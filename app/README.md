@@ -98,9 +98,9 @@ npm install
 npm run dev
 ```
 
-The frontend starts at [http://localhost:4321](http://localhost:4321). The STAC API runs at [http://localhost:8082](http://localhost:8082).
+The frontend starts at [http://localhost:4321](http://localhost:4321). The built-in catalog is served through stac-auth-proxy at [http://localhost:8081](http://localhost:8081) (stac-fastapi directly at [http://localhost:8082](http://localhost:8082)).
 
-On first launch, go to the Catalogs page and add `http://localhost:8082` as your STAC catalog. From there you can create collections, add items, search, and manage extensions.
+On first launch, the Catalogs page already contains the undeletable **Built-in Catalog** entry pointing at `http://localhost:8081` (override with `PUBLIC_BUILTIN_CATALOG_URL`). From there you can create collections, add items, search, and manage extensions — or add further external catalogs.
 
 ### Storybook
 
