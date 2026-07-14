@@ -1,4 +1,4 @@
-version: "3.8"
+name: stac-higher
 
 services:
   database:
@@ -42,6 +42,133 @@ services:
       bash -c "
       uvicorn stac_fastapi.pgstac.app:app --host 0.0.0.0 --port 8082 --proxy-headers --forwarded-allow-ips=*
       "
+    healthcheck:
+      # Image ships no curl/wget; use the bundled Python against the
+      # stac-fastapi liveness endpoint.
+      test:
+        - CMD-SHELL
+        - python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8082/_mgmt/ping")'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # STAC API auth gateway (github.com/developmentseed/stac-auth-proxy).
+  # Phase 0 runs it in pass-through mode: DEFAULT_PUBLIC=true plus an empty
+  # PRIVATE_ENDPOINTS map makes every route (reads AND transactions) reachable
+  # without a token. Phase 1 flips DEFAULT_PUBLIC to false / restores the
+  # default PRIVATE_ENDPOINTS and adds CQL2 filtering from OIDC claims.
+  auth-proxy:
+    image: ghcr.io/developmentseed/stac-auth-proxy:latest
+    environment:
+      - UPSTREAM_URL=http://api:8082
+      # Public discovery URL (issuer as browser clients see it) vs. the
+      # in-network URL the proxy uses to actually fetch metadata/JWKS.
+      - OIDC_DISCOVERY_URL=http://localhost:8080/realms/stac-higher/.well-known/openid-configuration
+      - OIDC_DISCOVERY_INTERNAL_URL=http://keycloak:8080/realms/stac-higher/.well-known/openid-configuration
+      - DEFAULT_PUBLIC=true
+      - PRIVATE_ENDPOINTS={}
+    ports:
+      # The container listens on 8000 (fixed by the image); host port is 8081.
+      - "8081:8000"
+    depends_on:
+      api:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/healthz")'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    command: start-dev --import-realm
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+      # Exposes /health/* on the management interface (container port 9000,
+      # not published to the host — no clash with MinIO's host :9000).
+      - KC_HEALTH_ENABLED=true
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist the dev-mode H2 database so realm state (users, sessions)
+      # survives restarts. --import-realm skips realms that already exist.
+      - keycloak-data:/opt/keycloak/data/h2
+      - ./infra/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # No curl/wget in the image; use bash's /dev/tcp against the management
+      # port's readiness endpoint.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          echo -e 'GET /health/ready HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '200 OK' <&3
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      # `local` is the alias mc auto-resolves inside the server container.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # One-shot bootstrap: creates the default bucket, then exits.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/stac-higher
+    restart: "no"
+
+  # Data plane (ROADMAP §3). Source lives in services/pipeline (separate
+  # workstream); this entry assumes services/pipeline/Dockerfile.
+  pipeline:
+    build: ./services/pipeline
+    environment:
+      - DATABASE_URL=postgresql://username:password@database:5432/postgis
+      - HEALTH_PORT=8083
+    ports:
+      - "8083:8083"
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8083/health")'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   pgdata:
+  keycloak-data:
+  minio-data:

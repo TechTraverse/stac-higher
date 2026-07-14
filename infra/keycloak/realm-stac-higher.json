@@ -1,0 +1,69 @@
+{
+  "realm": "stac-higher",
+  "displayName": "STAC Higher",
+  "enabled": true,
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "member",
+        "description": "View group connections and associate them with collections"
+      },
+      {
+        "name": "operator",
+        "description": "Create, edit, and operate group connections"
+      },
+      {
+        "name": "admin",
+        "description": "Cross-group administration"
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "earth-observation",
+      "path": "/earth-observation",
+      "realmRoles": ["member"]
+    },
+    {
+      "name": "weather",
+      "path": "/weather",
+      "realmRoles": ["member"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "stac-higher-app",
+      "name": "STAC Higher app",
+      "description": "Public OIDC client for the Astro app (authorization code + PKCE)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:4321/*"],
+      "webOrigins": ["http://localhost:4321"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:4321/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "claim.name": "groups",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}
