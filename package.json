@@ -1,8 +1,10 @@
 {
+  "name": "stac-higher",
   "private": true,
   "workspaces": ["app", "packages/*"],
   "scripts": {
-    "verify": "npm run build --workspace app && npm run test --workspace app"
+    "verify": "npm run build --workspace app && npm run test --workspace app",
+    "test:integration": "node --test \"tests/integration/**/*.test.mjs\""
   },
   "engines": {
     "node": ">=22.12.0"

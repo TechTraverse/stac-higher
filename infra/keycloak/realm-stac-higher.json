@@ -31,6 +31,47 @@
       "realmRoles": ["member"]
     }
   ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@stac-higher.local",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Operator",
+      "credentials": [
+        { "type": "password", "value": "alice-password", "temporary": false }
+      ],
+      "realmRoles": ["operator"],
+      "groups": ["/earth-observation"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@stac-higher.local",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Member",
+      "credentials": [
+        { "type": "password", "value": "bob-password", "temporary": false }
+      ],
+      "realmRoles": ["member"],
+      "groups": ["/weather"]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "email": "carol@stac-higher.local",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Admin",
+      "credentials": [
+        { "type": "password", "value": "carol-password", "temporary": false }
+      ],
+      "realmRoles": ["admin"],
+      "groups": []
+    }
+  ],
   "clients": [
     {
       "clientId": "stac-higher-app",
@@ -49,6 +90,88 @@
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:4321/*"
       },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "claim.name": "groups",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "stac-higher-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "stac-higher",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "stac-higher-test",
+      "name": "STAC Higher integration tests",
+      "description": "Confidential client with direct-access grants (resource-owner password grant) for LOCAL integration tests only. Kept separate from the public app client so the browser client stays PKCE-only with direct grants disabled. The secret is committed on purpose for local dev; never reuse this client in a real deployment.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "stac-higher-test-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "claim.name": "groups",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "stac-higher-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "stac-higher",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "stac-higher-test-noaud",
+      "name": "STAC Higher integration tests (no audience)",
+      "description": "Identical to stac-higher-test but WITHOUT the stac-higher audience mapper. Exists solely so integration tests can mint a validly-signed same-realm token whose aud claim does not satisfy ALLOWED_JWT_AUDIENCES, proving the proxy's audience enforcement. Local dev only.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "stac-higher-test-noaud-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": [],
       "protocolMappers": [
         {
           "name": "groups",
