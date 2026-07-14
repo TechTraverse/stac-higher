@@ -34,6 +34,7 @@ class ProcrastinateQueue(QueueBackend):
             raise ValueError(f"invalid schema name: {schema!r}")
         self.database_url = database_url
         self.schema = schema
+        self._opened = False
         self.app = procrastinate.App(
             connector=procrastinate.PsycopgConnector(
                 conninfo=database_url,
@@ -52,13 +53,22 @@ class ProcrastinateQueue(QueueBackend):
         task = self.app.task(func, name=name, queueing_lock=name)
         self.app.periodic(cron=cron)(task)
 
+    async def _ensure_open(self) -> None:
+        # deferring/working needs the app's connection pool; open it once for
+        # the process lifetime (aclose releases it)
+        if not self._opened:
+            await self.app.open_async()
+            self._opened = True
+
     async def enqueue(self, job_name: str, payload: JobPayload | None = None) -> str:
+        await self._ensure_open()
         job_id = await self.app.tasks[job_name].defer_async(**dict(payload or {}))
         return str(job_id)
 
     async def enqueue_batch(self, job_name: str, payloads: Sequence[JobPayload]) -> list[str]:
         if not payloads:
             return []
+        await self._ensure_open()
         job_ids = await self.app.tasks[job_name].batch_defer_async(
             *[dict(p) for p in payloads]
         )
@@ -90,13 +100,18 @@ class ProcrastinateQueue(QueueBackend):
             )
             return
 
-        async with self.app.open_async():
-            await self.app.schema_manager.apply_schema_async()
+        await self._ensure_open()
+        await self.app.schema_manager.apply_schema_async()
         logger.info("procrastinate schema applied", extra={"schema": self.schema})
 
     async def run_worker(self) -> None:
-        async with self.app.open_async():
-            await self.app.run_worker_async()
+        await self._ensure_open()
+        await self.app.run_worker_async()
+
+    async def aclose(self) -> None:
+        if self._opened:
+            self._opened = False
+            await self.app.close_async()
 
     async def check_connection(self) -> None:
         try:

@@ -46,7 +46,10 @@ async def run(settings: Settings) -> None:
         "pipeline service starting",
         extra={"health_port": settings.health_port, "queue_backend": queue.name},
     )
-    await asyncio.gather(server.serve(), queue.run_worker())
+    try:
+        await asyncio.gather(server.serve(), queue.run_worker())
+    finally:
+        await queue.aclose()
 
 
 def main() -> None:

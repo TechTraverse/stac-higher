@@ -72,3 +72,6 @@ class QueueBackend(abc.ABC):
     @abc.abstractmethod
     async def check_connection(self) -> None:
         """Raise :class:`QueueConnectionError` if the backend is unreachable."""
+
+    async def aclose(self) -> None:  # noqa: B027 — optional hook, default no-op
+        """Release backend resources (connection pools). Safe to call twice."""

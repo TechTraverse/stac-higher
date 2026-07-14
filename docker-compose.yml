@@ -64,7 +64,7 @@ services:
       - UPSTREAM_URL=http://api:8082
       # Public discovery URL (issuer as browser clients see it) vs. the
       # in-network URL the proxy uses to actually fetch metadata/JWKS.
-      - OIDC_DISCOVERY_URL=http://localhost:8080/realms/stac-higher/.well-known/openid-configuration
+      - OIDC_DISCOVERY_URL=http://localhost:8180/realms/stac-higher/.well-known/openid-configuration
       - OIDC_DISCOVERY_INTERNAL_URL=http://keycloak:8080/realms/stac-higher/.well-known/openid-configuration
       - DEFAULT_PUBLIC=true
       - PRIVATE_ENDPOINTS={}
@@ -95,11 +95,16 @@ services:
       # not published to the host — no clash with MinIO's host :9000).
       - KC_HEALTH_ENABLED=true
     ports:
-      - "8080:8080"
+      # Host 8180 (container 8080): 8080 is chronically contested on dev
+      # machines (editors, other stacks); Keycloak stays 8080 in-network.
+      - "8180:8080"
     volumes:
-      # Persist the dev-mode H2 database so realm state (users, sessions)
-      # survives restarts. --import-realm skips realms that already exist.
-      - keycloak-data:/opt/keycloak/data/h2
+      # Persist the dev-mode data dir (H2 database) so realm state survives
+      # restarts. --import-realm skips realms that already exist. Mounted at
+      # /opt/keycloak/data (exists in the image, owned by uid 1000) rather
+      # than .../data/h2 (doesn't exist → volume would be created root-owned
+      # and Keycloak couldn't write its H2 files).
+      - keycloak-data:/opt/keycloak/data
       - ./infra/keycloak:/opt/keycloak/data/import:ro
     healthcheck:
       # No curl/wget in the image; use bash's /dev/tcp against the management

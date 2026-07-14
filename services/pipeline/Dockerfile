@@ -14,7 +14,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 FROM python:3.12-slim-bookworm
-RUN groupadd --system pipeline && useradd --system --gid pipeline pipeline
+# libpq5: runtime C library for psycopg (pure-python build links against libpq)
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system pipeline && useradd --system --gid pipeline pipeline
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
