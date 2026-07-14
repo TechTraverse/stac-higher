@@ -26,6 +26,7 @@ Facts:
 - **Build**: `npm run build` (from `app/`, outputs to `app/dist/`)
 - **Unit tests**: `npm test` (from `app/`); `npm run test:watch` for watch mode
 - **E2E**: `npm run test:e2e:ci` (from `app/` — list reporter, agent-friendly). Read the `run-e2e` skill first; the suite has real preconditions and gotchas.
+- **Proxy integration tests**: `npm run test:integration` (repo root — needs the Docker stack in auth-enforced mode, so lead/human only; skips cleanly otherwise. See `tests/integration/README.md`.)
 - **Storybook**: `npm run storybook` (from `packages/shared/`, http://localhost:6006)
 - **Backend**: `docker compose up -d` (repo root — full local stack: pgstac (:5433), stac-fastapi (:8082), stac-auth-proxy (:8081, pass-through), Keycloak (:8180, admin/admin), MinIO (:9000 API / :9001 console), pipeline service (:8083 `/health`))
 
@@ -58,7 +59,11 @@ docker-compose runs the full local platform stack:
 - **pgstac** (PostgreSQL + PostGIS, host :5433) and **stac-fastapi-pgstac** with
   the Transaction extension (full CRUD) at `http://localhost:8082`.
 - **stac-auth-proxy** at `http://localhost:8081` in front of stac-fastapi —
-  pass-through mode in Phase 0 (`DEFAULT_PUBLIC=true`); Phase 1 tightens it.
+  pass-through by default (`DEFAULT_PUBLIC=true`, no login needed). Opt-in
+  enforcement (authenticated transactions + audience check, reads still
+  public) via `docker compose -f docker-compose.yml -f
+  infra/compose.auth-enforced.yml up -d --wait` — see
+  `docs/decisions/0002-auth-proxy-enforcement.md`.
   The client's **built-in catalog** points here
   (`PUBLIC_BUILTIN_CATALOG_URL`, default `http://localhost:8081`) and is
   seeded as an undeletable entry in the `/catalogs` page.

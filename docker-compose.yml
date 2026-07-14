@@ -54,10 +54,13 @@ services:
       start_period: 15s
 
   # STAC API auth gateway (github.com/developmentseed/stac-auth-proxy).
-  # Phase 0 runs it in pass-through mode: DEFAULT_PUBLIC=true plus an empty
+  # Default mode is pass-through: DEFAULT_PUBLIC=true plus an empty
   # PRIVATE_ENDPOINTS map makes every route (reads AND transactions) reachable
-  # without a token. Phase 1 flips DEFAULT_PUBLIC to false / restores the
-  # default PRIVATE_ENDPOINTS and adds CQL2 filtering from OIDC claims.
+  # without a token, so existing dev/e2e flows need no login. Phase 1
+  # enforcement is opt-in via a compose override that restores transaction
+  # protection and audience validation (reads stay public):
+  #   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --wait
+  # See docs/decisions/0002-auth-proxy-enforcement.md.
   auth-proxy:
     image: ghcr.io/developmentseed/stac-auth-proxy:latest
     environment:

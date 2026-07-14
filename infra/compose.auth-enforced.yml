@@ -1,0 +1,60 @@
+# Compose override: stac-auth-proxy enforcement mode (Phase 1).
+#
+# The base docker-compose.yml runs the proxy in pass-through mode
+# (DEFAULT_PUBLIC=true + PRIVATE_ENDPOINTS={}), so nothing requires a token.
+# Layering this file on top turns on transaction protection WITHOUT touching
+# read behavior — anonymous catalog reads keep working (DEFAULT_PUBLIC stays
+# true this phase; see docs/decisions/0002-auth-proxy-enforcement.md).
+#
+# Usage (from the repo root):
+#
+#   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --wait
+#
+# NOTE: the realm file (infra/keycloak/realm-stac-higher.json) only re-imports
+# into a fresh Keycloak volume. If Keycloak has run before, do
+# `docker compose down -v` first so the test users/clients exist.
+#
+# Compose merges `environment` entries by variable name, so only the variables
+# listed here change; everything else on the auth-proxy service is inherited.
+# Literal `$` in the endpoint regexes is escaped as `$$` for compose
+# interpolation.
+
+services:
+  auth-proxy:
+    environment:
+      # Reads stay public this phase. Visibility filtering is additive and is
+      # NOT enabled by default — see the commented COLLECTIONS_FILTER_* block
+      # below and ADR 0002 for why.
+      - DEFAULT_PUBLIC=true
+
+      # Restore stac-auth-proxy's transaction protection. This is exactly the
+      # proxy's own default PRIVATE_ENDPOINTS map, pinned explicitly so an
+      # upstream default change can't silently alter what we protect
+      # (transaction filtering is v1.0-era — ROADMAP §4 says test, don't
+      # assume). Every STAC Transaction endpoint requires a valid JWT; no
+      # scopes are required (scope/role gating is not config-expressible for
+      # Keycloak realm roles — ADR 0002).
+      - PRIVATE_ENDPOINTS={"^/collections$$":["POST"],"^/collections/([^/]+)$$":["PUT","PATCH","DELETE"],"^/collections/([^/]+)/items$$":["POST"],"^/collections/([^/]+)/items/([^/]+)$$":["PUT","PATCH","DELETE"],"^/collections/([^/]+)/bulk_items$$":["POST"]}
+
+      # Tokens must carry the "stac-higher" audience (added by the
+      # oidc-audience-mapper on the app + test clients in the realm file).
+      # Rejects validly-signed tokens minted for other consumers.
+      - ALLOWED_JWT_AUDIENCES=stac-higher
+
+      # --- NOT ENABLED: collection read-visibility filtering ----------------
+      # stac-auth-proxy can filter collection reads (and validate writes)
+      # from token claims via a CQL2 filter factory, config-only:
+      #
+      #   - COLLECTIONS_FILTER_CLS=stac_auth_proxy.filters:Template
+      #   - COLLECTIONS_FILTER_ARGS=["{% if payload %}true{% else %}\"stac_higher:visibility\" = 'public'{% endif %}"]
+      #
+      # It stays off by default because (ADR 0002, "What config alone cannot
+      # do"): (1) group-ownership visibility lives in stac_higher.
+      #   collection_settings, which the proxy cannot consult via config —
+      #   that needs OPA or a custom filter factory; (2) a Template that
+      #   interpolates the groups claim into CQL2-text is injection-prone and
+      #   breaks on empty group lists; (3) the proxy's conformance check
+      #   requires the upstream to advertise the Filter Extension on
+      #   /collections (collection-search) — verify stac-fastapi-pgstac's
+      #   conformance before enabling, or the proxy will refuse to start.
+      # ----------------------------------------------------------------------
