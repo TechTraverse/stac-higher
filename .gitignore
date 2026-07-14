@@ -25,6 +25,9 @@ Thumbs.db
 .claude/scheduled_tasks.lock
 .claude/plans/
 
+# AI worktrees (see AGENTS.md — Workflow)
+.claude/worktrees/
+
 # Test artifacts
 app/test-results/
 app/playwright-report/

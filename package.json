@@ -1,6 +1,9 @@
 {
   "private": true,
   "workspaces": ["app", "packages/*"],
+  "scripts": {
+    "verify": "npm run build --workspace app && npm run test --workspace app"
+  },
   "engines": {
     "node": ">=22.12.0"
   }
