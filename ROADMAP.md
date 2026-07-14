@@ -32,55 +32,58 @@ to be implemented over 1–3 working sessions and to be independently shippable.
 
 ```mermaid
 flowchart TB
-    subgraph clients["Users & external clients (OIDC)"]
-        UI_USER[Browser users]
-        EXT[External API clients]
+    subgraph clients["Users and external clients (OIDC)"]
+        UI_USER["Browser users"]
+        EXT["External API clients"]
     end
 
     subgraph idp["Identity"]
-        KC[Keycloak / pluggable IdP]
+        KC["Keycloak / pluggable IdP"]
     end
 
     subgraph control["Control plane (TypeScript)"]
-        APP["Astro app — UI + API\nconnections CRUD · associations ·\nuploads · asset access · monitoring"]
+        APP["Astro app — UI + API<br/>connections CRUD · associations ·<br/>uploads · asset access · monitoring"]
     end
 
     subgraph catalog["Catalog plane"]
-        SAP[stac-auth-proxy\nOIDC + CQL2 filtering]
-        SF[stac-fastapi-pgstac\nbuilt-in catalog]
+        SAP["stac-auth-proxy<br/>OIDC + CQL2 filtering"]
+        SF["stac-fastapi-pgstac<br/>built-in catalog"]
     end
 
     subgraph data["Data plane (Python) — services/pipeline"]
-        SCHED[Ingest scheduler]
-        IW[Ingest workers\ndiscover → group → fetch →\nextract → itemize]
-        DW[Delivery workers\nfan-out per item × destination]
-        HC[Health checks &\nflow monitor]
-        ADP["Connection adapters\nssh · sftp · ftp · ftps · s3"]
+        SCHED["Ingest scheduler"]
+        IW["Ingest workers<br/>discover → group → fetch →<br/>extract → itemize"]
+        DW["Delivery workers<br/>fan-out per item × destination"]
+        HC["Health checks and<br/>flow monitor"]
+        ADP["Connection adapters<br/>ssh · sftp · ftp · ftps · s3"]
     end
 
     subgraph store["State"]
-        PG[("PostgreSQL\npgstac schema +\nstac_higher schema +\nProcrastinate queue")]
-        OS[("Object storage\nMinIO / S3")]
+        PG[("PostgreSQL<br/>pgstac schema +<br/>stac_higher schema +<br/>Procrastinate queue")]
+        OS[("Object storage<br/>MinIO / S3")]
     end
 
     subgraph external["External systems"]
-        SRC[Sources\nFTP/SFTP/SSH/S3 servers]
-        DST[Destinations\nFTP/SFTP/SSH/S3 servers]
+        SRC["Sources<br/>FTP/SFTP/SSH/S3 servers"]
+        DST["Destinations<br/>FTP/SFTP/SSH/S3 servers"]
     end
 
     UI_USER --> APP
     EXT --> SAP
-    EXT -- presigned upload --> OS
+    EXT -- "presigned upload" --> OS
     APP <--> KC
     SAP <--> KC
     APP --> SAP
     SAP --> SF
     SF <--> PG
     APP <--> PG
-    APP -- presigned redirect --> OS
+    APP -- "presigned redirect" --> OS
 
     PG -- "NOTIFY (item events)" --> DW
-    PG <--> SCHED & IW & DW & HC
+    PG <--> SCHED
+    PG <--> IW
+    PG <--> DW
+    PG <--> HC
     SCHED --> IW
     IW --> ADP
     DW --> ADP
@@ -275,12 +278,12 @@ erDiagram
 
 ```mermaid
 flowchart LR
-    S[Scheduler\nper association,\npoll_frequency] --> D[DISCOVER\nadapter.list → diff vs\ningest_files ledger\n+ settled check]
-    D --> G[GROUP\napply grouping rule\nincomplete groups wait]
-    G --> F[FETCH\nstream → object storage\nchecksum recorded]
-    F --> E[EXTRACT\nrio-stac / stactools /\nsidecar / defaults]
-    E --> I[ITEMIZE\nbuild STAC item\nupsert via pypgstac]
-    I --> P[post-ingest action\nleave / move / delete]
+    S["Scheduler<br/>per association,<br/>poll_frequency"] --> D["DISCOVER<br/>adapter.list → diff vs<br/>ingest_files ledger<br/>+ settled check"]
+    D --> G["GROUP<br/>apply grouping rule<br/>incomplete groups wait"]
+    G --> F["FETCH<br/>stream → object storage<br/>checksum recorded"]
+    F --> E["EXTRACT<br/>rio-stac / stactools /<br/>sidecar / defaults"]
+    E --> I["ITEMIZE<br/>build STAC item<br/>upsert via pypgstac"]
+    I --> P["post-ingest action<br/>leave / move / delete"]
 ```
 
 - Every stage is a separate Procrastinate job → per-stage retry, and the
@@ -323,10 +326,10 @@ as flow B, driven by our frontend.
 
 ```mermaid
 flowchart LR
-    T[pgstac item\ninsert/update] -->|"trigger / eoapi-notifier\n(seconds)"| DIS[Dispatcher\nmatch delivery associations\napply item + asset filters]
-    DIS -->|"fan-out: one job per\nitem × association"| W[Delivery worker\nstream store → adapter.put\nwrite .part → rename]
-    W --> L[delivery_log\nattempts · bytes · latency]
-    W -->|"failure"| R[retry w/ backoff\n→ dead-letter + alert\n→ manual redeliver in UI]
+    T["pgstac item<br/>insert/update"] -->|"trigger / eoapi-notifier<br/>(seconds)"| DIS["Dispatcher<br/>match delivery associations<br/>apply item + asset filters"]
+    DIS -->|"fan-out: one job per<br/>item × association"| W["Delivery worker<br/>stream store → adapter.put<br/>write .part → rename"]
+    W --> L["delivery_log<br/>attempts · bytes · latency"]
+    W -->|"failure"| R["retry w/ backoff<br/>→ dead-letter + alert<br/>→ manual redeliver in UI"]
 ```
 
 - **Isolation:** one job per (item × destination) — a slow FTP server never
