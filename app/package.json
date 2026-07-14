@@ -16,7 +16,6 @@
     "test:e2e:ci": "playwright test --reporter=list"
   },
   "dependencies": {
-    "@stac-higher/shared": "*",
     "@astrojs/check": "^0.9.8",
     "@astrojs/node": "^10.0.4",
     "@astrojs/react": "^5.0.3",
@@ -26,6 +25,7 @@
     "@rjsf/core": "^6.4.2",
     "@rjsf/utils": "^6.4.2",
     "@rjsf/validator-ajv8": "^6.4.2",
+    "@stac-higher/shared": "*",
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-query": "^5.97.0",
     "@types/react": "^19.2.14",
@@ -33,6 +33,7 @@
     "astro": "^6.1.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jose": "^6.2.3",
     "lucide-react": "^1.8.0",
     "maplibre-gl": "^5.22.0",
     "nanostores": "^1.2.0",

@@ -88,6 +88,15 @@ Astro server routes:
 | `/api/extensions/import` | POST | Fetch + store external JSON Schema |
 | `/api/extensions/preview` | POST | Preview external schema metadata |
 | `/api/extensions/resolve-schema` | POST | Fetch + cache a JSON Schema (5-min TTL) |
+| `/api/auth/login` | GET | Start OIDC login (PKCE redirect to the IdP) |
+| `/api/auth/callback` | GET | OIDC redirect URI — code exchange, sets the session cookie |
+| `/api/auth/logout` | GET | Clear session + IdP end-session redirect |
+| `/api/auth/me` | GET | Current canonical identity (`locals.auth`) |
+
+**Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
+(static identity, default in dev — unit tests/e2e need no IdP). Middleware
+exposes `locals.auth` to all server routes. Full env-var reference and flow
+details: `docs/auth.md`.
 
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in

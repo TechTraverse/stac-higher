@@ -1,4 +1,5 @@
 import { CatalogSelector } from "@/components/catalogs/CatalogSelector";
+import { UserMenu } from "@/components/layout/UserMenu";
 import { ThemeToggle } from "@stac-higher/shared";
 import { Layers, Search, Puzzle, Database } from "lucide-react";
 import { Button } from "@stac-higher/shared";
@@ -47,6 +48,7 @@ export function Header() {
 
         <div className="ml-auto flex items-center gap-3">
           <CatalogSelector />
+          <UserMenu />
           <ThemeToggle />
         </div>
       </div>
