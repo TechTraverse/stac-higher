@@ -1,30 +1,39 @@
+import { query } from "@/lib/db/connection";
 import { SafeFetchError, safeFetch } from "@/lib/http/safe-fetch";
 
-interface CacheEntry {
+const TTL_MS = 5 * 60 * 1000;
+
+interface SchemaCacheRow {
   schema: unknown;
-  expiresAt: number;
 }
 
-const TTL_MS = 5 * 60 * 1000; // 5 minutes
-
-const cache = new Map<string, CacheEntry>();
-
-export function getCachedSchema(url: string): unknown | null {
-  const entry = cache.get(url);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    cache.delete(url);
-    return null;
-  }
-  return entry.schema;
+export async function getCachedSchema(url: string): Promise<unknown | null> {
+  const result = await query<SchemaCacheRow>(
+    `SELECT schema FROM stac_higher.schema_cache
+     WHERE url = $1 AND expires_at > now()`,
+    [url],
+  );
+  return result.rows[0]?.schema ?? null;
 }
 
-export function setCachedSchema(url: string, schema: unknown): void {
-  cache.set(url, { schema, expiresAt: Date.now() + TTL_MS });
+export async function setCachedSchema(
+  url: string,
+  schema: unknown,
+): Promise<void> {
+  const expiresAt = new Date(Date.now() + TTL_MS);
+  await query(
+    `INSERT INTO stac_higher.schema_cache (url, schema, fetched_at, expires_at)
+     VALUES ($1, $2::jsonb, now(), $3)
+     ON CONFLICT (url) DO UPDATE
+       SET schema = EXCLUDED.schema,
+           fetched_at = EXCLUDED.fetched_at,
+           expires_at = EXCLUDED.expires_at`,
+    [url, JSON.stringify(schema), expiresAt],
+  );
 }
 
 export async function getOrFetchSchema(url: string): Promise<unknown> {
-  const cached = getCachedSchema(url);
+  const cached = await getCachedSchema(url);
   if (cached !== null) return cached;
 
   const result = await safeFetch(url);
@@ -37,6 +46,6 @@ export async function getOrFetchSchema(url: string): Promise<unknown> {
   }
   const text = new TextDecoder().decode(result.body);
   const schema = JSON.parse(text);
-  setCachedSchema(url, schema);
+  await setCachedSchema(url, schema);
   return schema;
 }

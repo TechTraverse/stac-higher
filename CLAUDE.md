@@ -37,8 +37,18 @@ Testing (from `app/`):
 ```bash
 npm test              # Vitest unit tests (single run)
 npm run test:watch    # Vitest in watch mode
-npm run test:e2e      # Playwright E2E tests (auto-starts dev server)
+npm run test:e2e      # Playwright E2E tests (auto-starts dev server, HTML reporter)
+npm run test:e2e:ci   # Playwright E2E tests with `list` reporter — use for non-interactive / agent runs
 ```
+
+For non-interactive runs (e.g. Claude Code), prefer `npm run test:e2e:ci` — it streams to stdout and does not spawn a browser on failure. Playwright reuses an existing dev server on `:4321` if one is running; otherwise it auto-starts one. `extensions.spec.ts` and `proxy.spec.ts` require the Docker Compose backend on `:8082` (`docker compose up -d` from the repo root). There is also a `/e2e [filter]` slash command that wraps this workflow.
+
+### E2E gotchas
+- **Astro CSRF**: POST/PUT/DELETE require an `Origin` header matching the dev server. Playwright config sets `use.extraHTTPHeaders.Origin`; don't remove it or API calls 403.
+- **Astro IPv6 default**: `astro dev` binds `::1` only — webServer must pass `--host 127.0.0.1` so Playwright (and `baseURL`) on `127.0.0.1` can reach it.
+- **Shared DB**: e2e hits a real pgstac + `stac_higher.extensions`. Tests must run serially (`fullyParallel: false`, `workers: 1`); delete-by-prefix helpers race across workers.
+- **shadcn `CardTitle` is a `<div>`**, not a heading. Use `getByText(..., { exact: true })` or a more specific role; `getByRole("heading")` won't match card titles.
+- `/collections/new` has two `role=combobox` (license + extension picker). Disambiguate with `.filter({ hasText: /select extensions|extensions? selected/i })`.
 
 Storybook (from `packages/shared/`):
 ```bash
@@ -113,6 +123,10 @@ docker-compose runs pgstac (PostgreSQL + PostGIS) and stac-fastapi-pgstac with t
 The same PostgreSQL instance (port 5433) is also used by the Astro app itself for extension storage. Set `DATABASE_URL` env var to override the default connection string (`postgresql://username:password@localhost:5433/postgis`). Migrations run automatically on the first API request via Astro middleware.
 
 Server-side outbound fetches (`/api/proxy`, extension schema fetches) block private/loopback targets by default via the `safeFetch` helper. For dev against the local pgstac API, set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in `.env.local`.
+
+`safeFetch` emits one structured JSON log per call (`{ event: "safe_fetch", method, host, status, bytes, elapsed_ms, outcome, code? }`) — info-level on success, warn-level on error. Opt out with `SAFE_FETCH_LOG=0` (Playwright sets this to keep CI output quiet).
+
+`/api/proxy` rejects requests with `Sec-Fetch-Site: cross-site`, so other origins can't use it as a free relay. For deployments that need full lockdown, set `PROXY_AUTH_TOKEN`; the proxy will then require a matching `X-Proxy-Auth` header on every request (the deployer is responsible for injecting it — typically via a trusted reverse proxy or Astro middleware).
 
 ## API Routes (Astro server-side)
 

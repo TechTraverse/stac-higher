@@ -191,6 +191,76 @@ describe("proxy API route", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("returns 403 when Sec-Fetch-Site is cross-site", async () => {
+    const req = makeRequest({
+      "X-Proxy-Target": "http://example.com/collections",
+      "X-Proxy-Endpoint": "http://example.com",
+      "Sec-Fetch-Site": "cross-site",
+    });
+    const res = await ALL(makeContext(req));
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/Cross-site/);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("allows same-origin Sec-Fetch-Site", async () => {
+    mockFetch.mockResolvedValue(
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const req = makeRequest({
+      "X-Proxy-Target": "http://example.com/collections",
+      "X-Proxy-Endpoint": "http://example.com",
+      "Sec-Fetch-Site": "same-origin",
+    });
+    const res = await ALL(makeContext(req));
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 401 when PROXY_AUTH_TOKEN is set and X-Proxy-Auth is missing", async () => {
+    vi.stubEnv("PROXY_AUTH_TOKEN", "supersecret");
+    const req = makeRequest({
+      "X-Proxy-Target": "http://example.com/collections",
+      "X-Proxy-Endpoint": "http://example.com",
+    });
+    const res = await ALL(makeContext(req));
+    expect(res.status).toBe(401);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when X-Proxy-Auth does not match PROXY_AUTH_TOKEN", async () => {
+    vi.stubEnv("PROXY_AUTH_TOKEN", "supersecret");
+    const req = makeRequest({
+      "X-Proxy-Target": "http://example.com/collections",
+      "X-Proxy-Endpoint": "http://example.com",
+      "X-Proxy-Auth": "wrong",
+    });
+    const res = await ALL(makeContext(req));
+    expect(res.status).toBe(401);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards request when X-Proxy-Auth matches PROXY_AUTH_TOKEN", async () => {
+    vi.stubEnv("PROXY_AUTH_TOKEN", "supersecret");
+    mockFetch.mockResolvedValue(
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const req = makeRequest({
+      "X-Proxy-Target": "http://example.com/collections",
+      "X-Proxy-Endpoint": "http://example.com",
+      "X-Proxy-Auth": "supersecret",
+    });
+    const res = await ALL(makeContext(req));
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+
   it("returns 502 when upstream fetch fails", async () => {
     mockFetch.mockRejectedValue(new Error("Connection refused"));
 

@@ -148,3 +148,46 @@ describe("safeFetch — size cap", () => {
     expect(new TextDecoder().decode(result.body)).toBe("hello");
   });
 });
+
+describe("safeFetch — observability", () => {
+  it("emits a structured info log on success", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mockFetch.mockResolvedValue(new Response("hi", { status: 200 }));
+
+    await safeFetch("http://8.8.8.8/path", { method: "POST" });
+
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(infoSpy.mock.calls[0][0] as string);
+    expect(payload.event).toBe("safe_fetch");
+    expect(payload.method).toBe("POST");
+    expect(payload.host).toBe("8.8.8.8");
+    expect(payload.status).toBe(200);
+    expect(payload.bytes).toBe(2);
+    expect(payload.outcome).toBe("ok");
+    expect(typeof payload.elapsed_ms).toBe("number");
+    infoSpy.mockRestore();
+  });
+
+  it("emits a warn log with error code on blocked host", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(safeFetch("http://127.0.0.1/")).rejects.toBeInstanceOf(
+      SafeFetchError,
+    );
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(warnSpy.mock.calls[0][0] as string);
+    expect(payload.outcome).toBe("error");
+    expect(payload.code).toBe("blocked_host");
+    expect(payload.host).toBe("127.0.0.1");
+    expect(payload.status).toBe(403);
+    warnSpy.mockRestore();
+  });
+
+  it("suppresses logging when SAFE_FETCH_LOG=0", async () => {
+    vi.stubEnv("SAFE_FETCH_LOG", "0");
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mockFetch.mockResolvedValue(new Response("x", { status: 200 }));
+    await safeFetch("http://8.8.8.8/");
+    expect(infoSpy).not.toHaveBeenCalled();
+    infoSpy.mockRestore();
+  });
+});

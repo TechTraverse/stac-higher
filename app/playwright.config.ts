@@ -1,15 +1,21 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const PORT = process.env.E2E_PORT ?? "4321";
+const BASE_URL = `http://127.0.0.1:${PORT}`;
+
 export default defineConfig({
   testDir: "./e2e",
-  fullyParallel: true,
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  workers: 1,
   reporter: "html",
   use: {
-    baseURL: "http://localhost:4321",
+    baseURL: BASE_URL,
     trace: "on-first-retry",
+    extraHTTPHeaders: {
+      Origin: BASE_URL,
+    },
   },
   projects: [
     {
@@ -18,9 +24,13 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev -- --port 4321",
-    url: "http://localhost:4321",
+    command: `npm run dev -- --host 127.0.0.1 --port ${PORT}`,
+    url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
+    env: {
+      SAFE_FETCH_ALLOW_HOSTS: "localhost,127.0.0.1",
+      SAFE_FETCH_LOG: "0",
+    },
   },
 });

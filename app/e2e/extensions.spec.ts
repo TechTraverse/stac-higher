@@ -7,13 +7,22 @@ async function deleteTestExtensions(request: APIRequestContext) {
   const res = await request.get("/api/extensions");
   if (!res.ok()) return;
   const data = await res.json();
-  const exts = (data.extensions ?? []) as Array<{ id: string; name: string }>;
+  const exts = (data.extensions ?? []) as Array<{
+    id: string;
+    name: string;
+    prefix: string;
+  }>;
   for (const ext of exts) {
-    if (ext.name === TEST_EXTENSION_NAME) {
+    if (
+      ext.name === TEST_EXTENSION_NAME ||
+      ext.prefix === TEST_EXTENSION_PREFIX
+    ) {
       await request.delete(`/api/extensions/${ext.id}`);
     }
   }
 }
+
+test.describe.configure({ mode: "serial" });
 
 test.describe("Extensions", () => {
   test.beforeEach(async ({ request }) => {
@@ -45,7 +54,9 @@ test.describe("Extensions", () => {
 
     // Should redirect to detail page
     await expect(page).toHaveURL(/\/extensions\//);
-    await expect(page.getByText(TEST_EXTENSION_NAME)).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: TEST_EXTENSION_NAME }),
+    ).toBeVisible();
   });
 
   test("extension appears in list after creation", async ({ page, request }) => {
@@ -69,8 +80,11 @@ test.describe("Extensions", () => {
 
     await page.goto("/extensions");
 
-    await expect(page.getByText(TEST_EXTENSION_NAME)).toBeVisible();
-    await expect(page.getByText(TEST_EXTENSION_PREFIX)).toBeVisible();
+    const card = page.getByRole("link", {
+      name: new RegExp(TEST_EXTENSION_NAME),
+    });
+    await expect(card.first()).toBeVisible();
+    await expect(card.first()).toContainText(TEST_EXTENSION_PREFIX);
   });
 
   test("view extension detail page", async ({ page, request }) => {
@@ -94,7 +108,9 @@ test.describe("Extensions", () => {
 
     await page.goto(`/extensions/${ext.id}`);
 
-    await expect(page.getByText(TEST_EXTENSION_NAME)).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: TEST_EXTENSION_NAME }),
+    ).toBeVisible();
     await expect(
       page.getByText("Test extension for detail view"),
     ).toBeVisible();
@@ -173,6 +189,9 @@ test.describe("Extensions", () => {
 
     // Should redirect to list
     await expect(page).toHaveURL("/extensions");
-    await expect(page.getByText(TEST_EXTENSION_NAME)).not.toBeVisible();
+    // The deleted extension's detail page link should be gone
+    await expect(
+      page.locator(`a[href="/extensions/${ext.id}"]`),
+    ).toHaveCount(0);
   });
 });

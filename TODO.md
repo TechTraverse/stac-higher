@@ -96,3 +96,11 @@ Tasks for agent loop iteration. Pick the top unchecked item, implement it, run `
 
 - [x] 6.1 Update `app/README.md` (document proxy, extensions, DATABASE_URL env var) and `CLAUDE.md` (add extension file locations, API routes, database info).
 - [x] 6.2 Full verification pass: `npx astro check` (0 errors), `npx astro build` (success), `npm test` (all pass), `npm run test:e2e` (all pass).
+
+## PLAN.md follow-ups
+
+See `/Users/caesterlein/.claude/plans/read-the-plan-md-fill-delightful-forest.md` for full task detail. Tasks 4–7 remain in `PLAN.md` behind trigger gates.
+
+- [x] Fix `proxy.spec.ts` strict-mode ambiguity — used `getByText('Proxied', { exact: true })`.
+- [x] Realign `extensions.spec.ts` locators — switched to `getByRole('heading')` on detail page and `a[href="/extensions/${id}"]` for delete assertion; helper now deletes by name OR prefix.
+- [x] Realign `extension-forms.spec.ts` locators — picker is `role=combobox`; use `.filter({ hasText: /select extensions|selected/i })` where the license combobox collides on `/collections/new`; Extensions card title uses `getByText("Extensions", { exact: true })` since `CardTitle` is a div. Config: `workers: 1`, IPv4 binding, `Origin` header for CSRF. All 20 e2e tests pass.

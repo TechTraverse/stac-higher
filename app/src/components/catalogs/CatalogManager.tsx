@@ -12,6 +12,7 @@ import {
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
 import { CatalogForm } from "./CatalogForm";
+import { StacIndexImportDialog } from "./StacIndexImportDialog";
 import { Button } from "@stac-higher/shared";
 import {
   Card,
@@ -37,6 +38,7 @@ import {
   XCircle,
   Loader2,
   Globe,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -134,6 +136,7 @@ function CatalogManagerInner() {
   const catalogs = useStore($catalogs);
   const active = useStore($activeCatalog);
   const [formOpen, setFormOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<StacCatalog | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<StacCatalog | null>(null);
 
@@ -167,10 +170,16 @@ function CatalogManagerInner() {
               Manage your STAC API connections
             </p>
           </div>
-          <Button onClick={() => setFormOpen(true)}>
-            <Plus className="h-4 w-4 mr-1.5" />
-            Add Catalog
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setImportOpen(true)}>
+              <Download className="h-4 w-4 mr-1.5" />
+              Import from StacIndex
+            </Button>
+            <Button onClick={() => setFormOpen(true)}>
+              <Plus className="h-4 w-4 mr-1.5" />
+              Add Catalog
+            </Button>
+          </div>
         </div>
 
         {catalogs.length === 0 ? (
@@ -182,10 +191,16 @@ function CatalogManagerInner() {
                 Add a STAC catalog to get started browsing and managing your
                 spatiotemporal data.
               </p>
-              <Button onClick={() => setFormOpen(true)}>
-                <Plus className="h-4 w-4 mr-1.5" />
-                Add Your First Catalog
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" onClick={() => setImportOpen(true)}>
+                  <Download className="h-4 w-4 mr-1.5" />
+                  Import from StacIndex
+                </Button>
+                <Button onClick={() => setFormOpen(true)}>
+                  <Plus className="h-4 w-4 mr-1.5" />
+                  Add Your First Catalog
+                </Button>
+              </div>
             </CardContent>
           </Card>
         ) : (
@@ -209,6 +224,11 @@ function CatalogManagerInner() {
           open={formOpen}
           onOpenChange={setFormOpen}
           onSubmit={handleAdd}
+        />
+
+        <StacIndexImportDialog
+          open={importOpen}
+          onOpenChange={setImportOpen}
         />
 
         {editing && (

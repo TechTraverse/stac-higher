@@ -121,103 +121,166 @@ async function assertHostAllowed(hostname: string): Promise<void> {
   }
 }
 
+interface FetchLogEntry {
+  method: string;
+  host: string;
+  status: number;
+  bytes: number;
+  elapsed_ms: number;
+  outcome: "ok" | "error";
+  code?: SafeFetchError["code"] | "unknown";
+}
+
+function emitFetchLog(entry: FetchLogEntry): void {
+  if (process.env.SAFE_FETCH_LOG === "0") return;
+  const line = JSON.stringify({ event: "safe_fetch", ...entry });
+  if (entry.outcome === "error") console.warn(line);
+  else console.info(line);
+}
+
 export async function safeFetch(
   url: string,
   opts: SafeFetchOptions = {},
 ): Promise<SafeFetchResult> {
-  let parsed: URL;
+  const startedAt = Date.now();
+  const method = opts.method ?? "GET";
+  let host = "";
+
   try {
-    parsed = new URL(url);
-  } catch {
-    throw new SafeFetchError("Invalid URL", "invalid_url", 400);
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new SafeFetchError(
-      "Only http and https URLs are allowed",
-      "invalid_url",
-      403,
-    );
-  }
-
-  await assertHostAllowed(parsed.hostname);
-
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-
-  let upstream: Response;
-  try {
-    upstream = await fetch(url, {
-      method: opts.method ?? "GET",
-      headers: opts.headers,
-      body: opts.body,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === "TimeoutError") {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new SafeFetchError("Invalid URL", "invalid_url", 400);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new SafeFetchError(
-        `Upstream request timed out after ${timeoutMs}ms`,
-        "timeout",
-        504,
+        "Only http and https URLs are allowed",
+        "invalid_url",
+        403,
       );
     }
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    throw new SafeFetchError(`Upstream request failed: ${msg}`, "upstream", 502);
-  }
+    host = stripBrackets(parsed.hostname.toLowerCase());
 
-  const declared = upstream.headers.get("content-length");
-  if (declared && Number(declared) > maxBytes) {
-    throw new SafeFetchError(
-      `Upstream response exceeds ${maxBytes} bytes`,
-      "too_large",
-      413,
-    );
-  }
+    await assertHostAllowed(parsed.hostname);
 
-  const chunks: Uint8Array[] = [];
-  let received = 0;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
 
-  if (upstream.body) {
-    const reader = upstream.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        received += value.byteLength;
-        if (received > maxBytes) {
-          try {
-            await reader.cancel();
-          } catch {
-            // ignore
-          }
-          throw new SafeFetchError(
-            `Upstream response exceeds ${maxBytes} bytes`,
-            "too_large",
-            413,
-          );
-        }
-        chunks.push(value);
+    let upstream: Response;
+    try {
+      upstream = await fetch(url, {
+        method,
+        headers: opts.headers,
+        body: opts.body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        throw new SafeFetchError(
+          `Upstream request timed out after ${timeoutMs}ms`,
+          "timeout",
+          504,
+        );
       }
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      throw new SafeFetchError(
+        `Upstream request failed: ${msg}`,
+        "upstream",
+        502,
+      );
     }
-  } else {
-    const buf = new Uint8Array(await upstream.arrayBuffer());
-    if (buf.byteLength > maxBytes) {
+
+    const declared = upstream.headers.get("content-length");
+    if (declared && Number(declared) > maxBytes) {
       throw new SafeFetchError(
         `Upstream response exceeds ${maxBytes} bytes`,
         "too_large",
         413,
       );
     }
-    chunks.push(buf);
-  }
 
-  const body = new Uint8Array(received || chunks.reduce((n, c) => n + c.byteLength, 0));
-  let offset = 0;
-  for (const c of chunks) {
-    body.set(c, offset);
-    offset += c.byteLength;
-  }
+    const chunks: Uint8Array[] = [];
+    let received = 0;
 
-  return { status: upstream.status, headers: upstream.headers, body };
+    if (upstream.body) {
+      const reader = upstream.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          received += value.byteLength;
+          if (received > maxBytes) {
+            try {
+              await reader.cancel();
+            } catch {
+              // ignore
+            }
+            throw new SafeFetchError(
+              `Upstream response exceeds ${maxBytes} bytes`,
+              "too_large",
+              413,
+            );
+          }
+          chunks.push(value);
+        }
+      }
+    } else {
+      const buf = new Uint8Array(await upstream.arrayBuffer());
+      if (buf.byteLength > maxBytes) {
+        throw new SafeFetchError(
+          `Upstream response exceeds ${maxBytes} bytes`,
+          "too_large",
+          413,
+        );
+      }
+      chunks.push(buf);
+    }
+
+    const body = new Uint8Array(
+      received || chunks.reduce((n, c) => n + c.byteLength, 0),
+    );
+    let offset = 0;
+    for (const c of chunks) {
+      body.set(c, offset);
+      offset += c.byteLength;
+    }
+
+    emitFetchLog({
+      method,
+      host,
+      status: upstream.status,
+      bytes: received,
+      elapsed_ms: Date.now() - startedAt,
+      outcome: "ok",
+    });
+
+    return { status: upstream.status, headers: upstream.headers, body };
+  } catch (err) {
+    const elapsed_ms = Date.now() - startedAt;
+    if (err instanceof SafeFetchError) {
+      emitFetchLog({
+        method,
+        host,
+        status: err.status,
+        bytes: 0,
+        elapsed_ms,
+        outcome: "error",
+        code: err.code,
+      });
+    } else {
+      emitFetchLog({
+        method,
+        host,
+        status: 0,
+        bytes: 0,
+        elapsed_ms,
+        outcome: "error",
+        code: "unknown",
+      });
+    }
+    throw err;
+  }
 }
 
 export function errorToResponse(err: unknown): Response {

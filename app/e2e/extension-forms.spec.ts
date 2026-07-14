@@ -9,9 +9,13 @@ async function deleteTestExtensions(request: APIRequestContext) {
   const res = await request.get("/api/extensions");
   if (!res.ok()) return;
   const data = await res.json();
-  const exts = (data.extensions ?? []) as Array<{ id: string; name: string }>;
+  const exts = (data.extensions ?? []) as Array<{
+    id: string;
+    name: string;
+    prefix: string;
+  }>;
   for (const ext of exts) {
-    if (ext.name === TEST_EXT_NAME) {
+    if (ext.name === TEST_EXT_NAME || ext.prefix === TEST_EXT_PREFIX) {
       await request.delete(`/api/extensions/${ext.id}`);
     }
   }
@@ -46,7 +50,34 @@ async function createTestExtension(request: APIRequestContext) {
 
 // --- tests ---
 
+test.describe.configure({ mode: "serial" });
+
+const STAC_API = "http://localhost:8082";
+const TEST_COLLECTION_ID = "test-collection";
+
+async function ensureTestCollection(request: APIRequestContext) {
+  const existing = await request.get(`${STAC_API}/collections/${TEST_COLLECTION_ID}`);
+  if (existing.ok()) return;
+  await request.post(`${STAC_API}/collections`, {
+    data: {
+      type: "Collection",
+      id: TEST_COLLECTION_ID,
+      stac_version: "1.0.0",
+      description: "Collection for E2E tests",
+      license: "proprietary",
+      extent: {
+        spatial: { bbox: [[-180, -90, 180, 90]] },
+        temporal: { interval: [["2020-01-01T00:00:00Z", null]] },
+      },
+    },
+  });
+}
+
 test.describe("Dynamic extension forms", () => {
+  test.beforeAll(async ({ request }) => {
+    await ensureTestCollection(request);
+  });
+
   test.beforeEach(async ({ request }) => {
     await deleteTestExtensions(request);
   });
@@ -67,12 +98,12 @@ test.describe("Dynamic extension forms", () => {
 
     // Scroll to the Extensions card
     await page
-      .getByRole("heading", { name: "Extensions" })
+      .getByText("Extensions", { exact: true })
       .last()
       .scrollIntoViewIfNeeded();
 
     // Open the extension picker
-    await page.getByRole("button", { name: /add extensions/i }).click();
+    await page.getByRole("combobox").click();
 
     // Wait for the picker dropdown to show our extension
     await expect(page.getByText(TEST_EXT_NAME)).toBeVisible();
@@ -92,7 +123,7 @@ test.describe("Dynamic extension forms", () => {
     // It shows the extension title (schema title or derived from URL)
     await expect(
       page.locator('[data-testid="extension-fields"]').or(
-        page.getByRole("heading", { name: new RegExp(TEST_EXT_PREFIX, "i") }).last(),
+        page.getByText(new RegExp(TEST_EXT_PREFIX, "i")).last(),
       ),
     ).toBeVisible({ timeout: 10_000 });
   });
@@ -106,7 +137,7 @@ test.describe("Dynamic extension forms", () => {
     await page.goto("/collections/test-collection/items/new");
 
     // Open the extension picker
-    await page.getByRole("button", { name: /add extensions/i }).click();
+    await page.getByRole("combobox").click();
 
     // Our extension should appear with correct prefix badge
     await expect(page.getByText(TEST_EXT_NAME)).toBeVisible();
@@ -131,9 +162,9 @@ test.describe("Dynamic extension forms", () => {
     expect(schema.properties[`${TEST_EXT_PREFIX}:platform`]).toBeDefined();
   });
 
-  test("resolve-schema route returns cached schema", async ({ request }) => {
+  test("resolve-schema route returns cached schema", async ({ request, baseURL }) => {
     const ext = await createTestExtension(request);
-    const schemaUrl = `http://localhost:4321/api/extensions/${ext.id}/schema`;
+    const schemaUrl = `${baseURL}/api/extensions/${ext.id}/schema`;
 
     // First call — fresh fetch
     const first = await request.post("/api/extensions/resolve-schema", {
@@ -176,11 +207,15 @@ test.describe("Dynamic extension forms", () => {
 
     // Scroll to Extensions section
     await page
-      .getByRole("heading", { name: "Extensions" })
+      .getByText("Extensions", { exact: true })
+      .last()
       .scrollIntoViewIfNeeded();
 
-    // Open the extension picker
-    await page.getByRole("button", { name: /add extensions/i }).click();
+    // Open the extension picker (filter to the one with placeholder text)
+    await page
+      .getByRole("combobox")
+      .filter({ hasText: /select extensions|extensions? selected/i })
+      .click();
 
     // Select our extension
     await expect(page.getByText(TEST_EXT_NAME)).toBeVisible();
@@ -194,7 +229,7 @@ test.describe("Dynamic extension forms", () => {
 
     // Dynamic RJSF card should appear with extension title/prefix
     await expect(
-      page.getByRole("heading", { name: new RegExp(TEST_EXT_PREFIX, "i") }).last(),
+      page.getByText(new RegExp(TEST_EXT_PREFIX, "i")).last(),
     ).toBeVisible({ timeout: 10_000 });
   });
 
@@ -207,7 +242,7 @@ test.describe("Dynamic extension forms", () => {
     await page.goto("/collections/test-collection/items/new");
 
     // Open picker and select
-    await page.getByRole("button", { name: /add extensions/i }).click();
+    await page.getByRole("combobox").click();
     await expect(page.getByText(TEST_EXT_NAME)).toBeVisible();
     await page.getByText(TEST_EXT_NAME).click();
     await page.keyboard.press("Escape");

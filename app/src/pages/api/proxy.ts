@@ -1,4 +1,5 @@
 import type { APIRoute } from "astro";
+import { timingSafeEqual } from "node:crypto";
 import {
   DEFAULT_MAX_BYTES,
   SafeFetchError,
@@ -21,7 +22,32 @@ function jsonError(message: string, status: number): Response {
   });
 }
 
+function tokensMatch(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
+}
+
 export const ALL: APIRoute = async ({ request }) => {
+  // Layer 1: reject explicitly cross-site browser calls. Sec-Fetch-Site is set
+  // by all modern browsers; absent header (server-to-server, older clients)
+  // falls through to the token check below.
+  if (request.headers.get("sec-fetch-site") === "cross-site") {
+    return jsonError("Cross-site proxy requests are not allowed", 403);
+  }
+
+  // Layer 2: deployer-opt-in shared token. When PROXY_AUTH_TOKEN is set the
+  // proxy is locked down; clients must inject X-Proxy-Auth with the matching
+  // value (e.g. via a trusted reverse proxy or Astro middleware).
+  const expectedToken = process.env.PROXY_AUTH_TOKEN;
+  if (expectedToken) {
+    const provided = request.headers.get("x-proxy-auth") ?? "";
+    if (!provided || !tokensMatch(provided, expectedToken)) {
+      return jsonError("Unauthorized", 401);
+    }
+  }
+
   const targetUrl = request.headers.get("X-Proxy-Target");
   if (!targetUrl) return jsonError("Missing X-Proxy-Target header", 400);
 

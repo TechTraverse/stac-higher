@@ -27,6 +27,20 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    name: "002_create_schema_cache_table",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.schema_cache (
+        url TEXT PRIMARY KEY,
+        schema JSONB NOT NULL,
+        fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS schema_cache_expires_at_idx
+        ON stac_higher.schema_cache (expires_at);
+    `,
+  },
 ];
 
 let migrated = false;

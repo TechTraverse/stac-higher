@@ -21,7 +21,7 @@ test.describe("Proxy feature", () => {
 
     const main = page.getByRole("main");
     await expect(main.getByText("Proxied API")).toBeVisible();
-    await expect(main.getByText("Proxied")).toBeVisible();
+    await expect(main.getByText("Proxied", { exact: true })).toBeVisible();
     await expect(main.getByText("Active")).toBeVisible();
   });
 
