@@ -1,6 +1,6 @@
 # TODO — STAC Higher
 
-Tasks for agent loop iteration. Pick the top unchecked item, implement it, run `npx astro check` to verify 0 errors, then check it off.
+Tasks for agent loop iteration. Pick the top unchecked item, implement it in a worktree off `ai/main` (see `AGENTS.md` — Workflow), run `npm run verify` from the repo root, then check it off.
 
 ## High Priority — Map Integration
 
@@ -104,3 +104,8 @@ See `/Users/caesterlein/.claude/plans/read-the-plan-md-fill-delightful-forest.md
 - [x] Fix `proxy.spec.ts` strict-mode ambiguity — used `getByText('Proxied', { exact: true })`.
 - [x] Realign `extensions.spec.ts` locators — switched to `getByRole('heading')` on detail page and `a[href="/extensions/${id}"]` for delete assertion; helper now deletes by name OR prefix.
 - [x] Realign `extension-forms.spec.ts` locators — picker is `role=combobox`; use `.filter({ hasText: /select extensions|selected/i })` where the license combobox collides on `/collections/new`; Extensions card title uses `getByText("Extensions", { exact: true })` since `CardTitle` is a div. Config: `workers: 1`, IPv4 binding, `Origin` header for CSRF. All 20 e2e tests pass.
+
+## Follow-ups — AI Workflow
+
+- [ ] Adopt the GitHub agent pipeline: label/comment-driven issue lifecycle (`@claude clarify/plan/implement/review`) plus automated PR review on PRs into `main`. Port `.github/workflows/claude.yml` + `claude-code-review.yml` and the label setup from `~/Projects/TechTraverse/map-traverse/docs/GITHUB_PIPELINE.md`. Requires `ANTHROPIC_API_KEY` secret in `ogc-maps/stac-higher`; adapt branch references so agent-created branches are `ai/*` and PRs target `ai/main`.
+- [ ] Fix the `npx astro check` OOM (Vite/rolldown plugin type conflict between root and `app/node_modules`), then add it back to `npm run verify`.
