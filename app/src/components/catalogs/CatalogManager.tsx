@@ -94,16 +94,19 @@ function CatalogCard({
           <div className="flex items-center gap-2">
             <CardTitle className="text-base">{catalog.name}</CardTitle>
             {isActive && <Badge variant="default">Active</Badge>}
+            {catalog.builtIn && <Badge variant="outline">Built-in</Badge>}
             {catalog.proxy && <Badge variant="secondary">Proxied</Badge>}
           </div>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={onEdit} aria-label="Edit catalog">
-              <Pencil className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete catalog">
-              <Trash2 className="h-4 w-4 text-destructive" />
-            </Button>
-          </div>
+          {!catalog.builtIn && (
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="icon" onClick={onEdit} aria-label="Edit catalog">
+                <Pencil className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete catalog">
+                <Trash2 className="h-4 w-4 text-destructive" />
+              </Button>
+            </div>
+          )}
         </div>
         <CardDescription className="font-mono text-xs">
           {catalog.url}
