@@ -1,7 +1,7 @@
 import { CatalogSelector } from "@/components/catalogs/CatalogSelector";
 import { UserMenu } from "@/components/layout/UserMenu";
 import { ThemeToggle } from "@stac-higher/shared";
-import { Layers, Search, Puzzle, Database } from "lucide-react";
+import { Layers, Search, Puzzle, Database, Plug } from "lucide-react";
 import { Button } from "@stac-higher/shared";
 
 const navLinks = [
@@ -10,6 +10,7 @@ const navLinks = [
   { href: "/collections", label: "Collections", icon: Layers },
   { href: "/search", label: "Search", icon: Search },
   { href: "/extensions", label: "Extensions", icon: Puzzle },
+  { href: "/connections", label: "Connections", icon: Plug },
 ];
 
 export function Header() {

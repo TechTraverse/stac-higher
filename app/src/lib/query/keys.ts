@@ -11,6 +11,15 @@ export const extensionKeys = {
   detail: (id: string) => [...extensionKeys.all(), id] as const,
 };
 
+export const connectionKeys = {
+  all: () => ["connections"] as const,
+  list: () => [...connectionKeys.all(), "list"] as const,
+  detail: (id: string) => [...connectionKeys.all(), id] as const,
+  checks: (id: string) => [...connectionKeys.detail(id), "checks"] as const,
+  check: (id: string, checkId: string) =>
+    [...connectionKeys.checks(id), checkId] as const,
+};
+
 export const stacKeys = {
   all: (endpointUrl: string) => ["stac", endpointUrl] as const,
 
