@@ -202,6 +202,19 @@ function cleanRecord(value: unknown): Record<string, unknown> {
   return out;
 }
 
+/** Order-insensitive equality for two cleaned config records (flat, primitive
+ *  values per the per-protocol schemas). Used to skip resending an unchanged
+ *  config on edit. */
+function sameConfig(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  const ak = Object.keys(a).sort();
+  const bk = Object.keys(b).sort();
+  if (ak.length !== bk.length) return false;
+  return ak.every((k, i) => bk[i] === k && a[k] === b[bk[i]]);
+}
+
 interface FormValues {
   name: string;
   description: string;
@@ -366,8 +379,10 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
     register,
     control,
     handleSubmit,
-    formState: { errors, isSubmitting },
+    formState: { errors },
   } = form;
+
+  const isSaving = createMutation.isPending || updateMutation.isPending;
 
   const configErrors = (errors.config ?? {}) as Record<
     string,
@@ -388,8 +403,14 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
         description: data.description ?? "",
         group_id: data.group_id,
         enabled: data.enabled,
-        config,
       };
+      // Only send config when it actually changed: the server resets a
+      // verified connection's status to 'unverified' (and clears an SSH
+      // host-key pin on host/port changes) whenever config is present, so an
+      // unchanged edit must omit it to avoid a spurious status reset.
+      if (!sameConfig(config, cleanRecord(initial.config ?? {}))) {
+        input.config = config;
+      }
       if (Object.keys(credentials).length > 0) {
         input.credentials = credentials;
       }
@@ -609,8 +630,8 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
         <Button type="button" variant="outline" onClick={onDone}>
           Cancel
         </Button>
-        <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Saving…" : isEdit ? "Save" : "Create"}
+        <Button type="submit" disabled={isSaving}>
+          {isSaving ? "Saving…" : isEdit ? "Save" : "Create"}
         </Button>
       </DialogFooter>
     </form>

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { connectionKeys } from "@/lib/query/keys";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
 import {
@@ -57,6 +59,7 @@ function ConnectionCard({
 }) {
   const [testing, setTesting] = useState(false);
   const resetMutation = useResetHostKey();
+  const qc = useQueryClient();
   const ssh = isSshFamily(connection.protocol);
 
   const handleTest = async () => {
@@ -76,6 +79,9 @@ function ConnectionCard({
       );
     } finally {
       setTesting(false);
+      // The drain job updates status/last_error/host_key on the row; refresh
+      // the list so the badge and fingerprint reflect the test outcome.
+      void qc.invalidateQueries({ queryKey: connectionKeys.all() });
     }
   };
 
