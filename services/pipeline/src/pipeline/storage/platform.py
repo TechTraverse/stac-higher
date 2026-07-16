@@ -20,9 +20,6 @@ from botocore.client import Config
 from pipeline.config import Settings
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
 
-#: Batch size for S3 DeleteObjects (the API caps a single call at 1000 keys).
-_DELETE_BATCH = 1000
-
 
 class S3Like(Protocol):
     """The slice of a boto3 S3 client the cleanup primitive uses."""
@@ -94,16 +91,18 @@ def cleanup_expired(
     objects deleted. ``cutoff`` must be timezone-aware (boto3 ``LastModified``
     is tz-aware UTC).
     """
-    expired: list[dict[str, str]] = []
+    deleted = 0
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            if obj["LastModified"] < cutoff:
-                expired.append({"Key": obj["Key"]})
-
-    deleted = 0
-    for start in range(0, len(expired), _DELETE_BATCH):
-        batch = expired[start : start + _DELETE_BATCH]
-        client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
-        deleted += len(batch)
+        # list_objects_v2 caps a page at 1000 keys and DeleteObjects caps a call
+        # at 1000, so one page is at most one delete — delete as we go rather
+        # than buffering every expired key across all pages in memory.
+        batch = [
+            {"Key": obj["Key"]}
+            for obj in page.get("Contents", [])
+            if obj["LastModified"] < cutoff
+        ]
+        if batch:
+            client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+            deleted += len(batch)
     return deleted

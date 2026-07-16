@@ -42,8 +42,9 @@ export function assertSafeSegment(value: string, label: string): string {
 export function sanitizeFilename(name: string): string {
   // strip any directory portion a client may have sent (foo/bar.tif, C:\x.tif)
   const base = name.split(/[/\\]/).pop() ?? "";
+  // stripping all leading dots means the result can never be "." or ".."
   const cleaned = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
-  if (!cleaned || cleaned === "." || cleaned === "..") {
+  if (!cleaned) {
     throw new StorageKeyError(`filename ${JSON.stringify(name)} is not usable`);
   }
   return cleaned;

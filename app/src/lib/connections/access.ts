@@ -13,6 +13,7 @@
 import type { AuthContext, CanonicalIdentity } from "@/lib/auth/types";
 import { authzError } from "@/lib/authz/guard";
 import { canMutate, isAdmin } from "@/lib/authz/permissions";
+import { jsonResponse } from "@/lib/http/response";
 import { getConnection } from "./storage";
 import type { ApiConnection } from "./storage";
 
@@ -31,12 +32,8 @@ export function isUuid(value: string | undefined): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
-export function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+// Re-exported so existing importers (`@/lib/connections/access`) keep working.
+export { jsonResponse };
 
 export function notFound(): Response {
   return jsonResponse(404, { error: "Connection not found" });

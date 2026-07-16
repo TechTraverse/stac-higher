@@ -18,6 +18,7 @@ import type { APIRoute } from "astro";
 import { z } from "zod";
 import { authzError } from "@/lib/authz/guard";
 import { canMutate } from "@/lib/authz/permissions";
+import { jsonResponse } from "@/lib/http/response";
 import { canonicalAssetKey, assetHref, StorageKeyError } from "@/lib/storage/keys";
 import { presignPutUrl } from "@/lib/storage/presign";
 
@@ -35,13 +36,6 @@ const uploadRequestSchema = z.object({
     .max(50, "Too many files in one request"),
 });
 
-function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
 export const POST: APIRoute = async ({ request, locals }) => {
   const auth = locals.auth;
   if (!auth?.authenticated) {
@@ -54,7 +48,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
   const body = await request.json().catch(() => null);
   const parsed = uploadRequestSchema.safeParse(body);
   if (!parsed.success) {
-    return json(400, { error: "Validation failed", details: parsed.error.issues });
+    return jsonResponse(400, { error: "Validation failed", details: parsed.error.issues });
   }
 
   const { collection, item, files } = parsed.data;
@@ -67,12 +61,12 @@ export const POST: APIRoute = async ({ request, locals }) => {
         return { filename, key, url, href: assetHref(collection, item, filename) };
       }),
     );
-    return json(200, { uploads });
+    return jsonResponse(200, { uploads });
   } catch (err) {
     if (err instanceof StorageKeyError) {
-      return json(400, { error: err.message });
+      return jsonResponse(400, { error: err.message });
     }
     const message = err instanceof Error ? err.message : "Failed to presign upload";
-    return json(500, { error: message });
+    return jsonResponse(500, { error: message });
   }
 };

@@ -16,6 +16,7 @@
  */
 import type { APIRoute } from "astro";
 import { authzError } from "@/lib/authz/guard";
+import { jsonResponse } from "@/lib/http/response";
 import { resolveAssetTarget } from "@/lib/storage/resolve";
 import { StorageKeyError } from "@/lib/storage/keys";
 
@@ -27,10 +28,7 @@ export const GET: APIRoute = async ({ params, locals }) => {
 
   const { collection, item, asset } = params;
   if (!collection || !item || !asset) {
-    return new Response(JSON.stringify({ error: "Asset not found" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResponse(404, { error: "Asset not found" });
   }
 
   try {
@@ -46,15 +44,9 @@ export const GET: APIRoute = async ({ params, locals }) => {
     });
   } catch (err) {
     if (err instanceof StorageKeyError) {
-      return new Response(JSON.stringify({ error: "Invalid asset path" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+      return jsonResponse(400, { error: "Invalid asset path" });
     }
     const message = err instanceof Error ? err.message : "Failed to resolve asset";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResponse(500, { error: message });
   }
 };

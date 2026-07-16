@@ -5,8 +5,8 @@
  * URL. PUT → the upload endpoint hands the browser a short-lived upload URL so
  * bytes go straight to object storage, never through the app.
  *
- * Signing is offline (HMAC), so these never touch the network. `client`/`config`
- * are injectable for tests; production calls fall back to `defaultStorage()`.
+ * Signing is offline (HMAC), so these never touch the network. `config` is
+ * injectable for tests; production calls fall back to `defaultStorage()`.
  */
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -19,17 +19,14 @@ export const GET_TTL_SECONDS = 300; // 5 min
 export const PUT_TTL_SECONDS = 900; // 15 min
 
 interface PresignOptions {
-  client?: S3Client;
   config?: StorageConfig;
   expiresIn?: number;
 }
 
 function resolve(opts?: PresignOptions): { client: S3Client; config: StorageConfig } {
-  if (opts?.config) {
-    return { client: opts.client ?? buildClient(opts.config), config: opts.config };
-  }
-  const def = defaultStorage();
-  return { client: opts?.client ?? def.client, config: def.config };
+  return opts?.config
+    ? { client: buildClient(opts.config), config: opts.config }
+    : defaultStorage();
 }
 
 /** Presigned GET URL for a canonical object key. */

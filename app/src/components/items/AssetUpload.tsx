@@ -9,17 +9,12 @@ import { useRef, useState } from "react";
 import { Button } from "@stac-higher/shared";
 import { Upload, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-
-interface UploadResult {
-  href: string;
-  filename: string;
-  contentType: string;
-}
+import { uploadAsset, type UploadedAsset } from "@/lib/storage/upload";
 
 interface AssetUploadProps {
   collection: string;
   itemId: string;
-  onUploaded: (result: UploadResult) => void;
+  onUploaded: (result: UploadedAsset) => void;
 }
 
 export function AssetUpload({ collection, itemId, onUploaded }: AssetUploadProps) {
@@ -33,34 +28,8 @@ export function AssetUpload({ collection, itemId, onUploaded }: AssetUploadProps
   const handleFile = async (file: File) => {
     setUploading(true);
     try {
-      const presignRes = await fetch("/api/uploads", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          collection,
-          item: itemId,
-          files: [{ filename: file.name, contentType: file.type || undefined }],
-        }),
-      });
-      if (!presignRes.ok) {
-        const body = await presignRes.json().catch(() => ({}));
-        throw new Error(body.error ?? `Presign failed (${presignRes.status})`);
-      }
-      const { uploads } = (await presignRes.json()) as {
-        uploads: { url: string; href: string }[];
-      };
-      const target = uploads[0];
-
-      const putRes = await fetch(target.url, {
-        method: "PUT",
-        body: file,
-        headers: file.type ? { "Content-Type": file.type } : undefined,
-      });
-      if (!putRes.ok) {
-        throw new Error(`Upload to storage failed (${putRes.status})`);
-      }
-
-      onUploaded({ href: target.href, filename: file.name, contentType: file.type });
+      const result = await uploadAsset(file, { collection, item: itemId });
+      onUploaded(result);
       toast.success(`Uploaded ${file.name}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Upload failed");
