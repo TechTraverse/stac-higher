@@ -1,7 +1,8 @@
 """Outbound egress policy for connection adapters (ROADMAP §5.2 SSRF guard).
 
-Every adapter resolves its target host through :func:`enforce` BEFORE opening a
-socket. A host is BLOCKED when any of its resolved addresses is loopback,
+Every adapter resolves its target host through :func:`resolve_pinned` BEFORE
+opening a socket, then dials the returned validated IP. A host is BLOCKED when
+any of its resolved addresses is loopback,
 private, link-local, unique-local, multicast, reserved, unspecified, or the
 cloud metadata address (169.254.169.254 / its IPv6 forms) — including
 IPv4-mapped IPv6 forms. The only escape hatch is an explicit allowlist
@@ -116,28 +117,3 @@ def resolve_pinned(host: str, allow_hosts: Iterable[str] = ()) -> list[str]:
         if ip not in pinned:
             pinned.append(ip)
     return pinned
-
-
-def enforce(host: str, allow_hosts: Iterable[str] = ()) -> None:
-    """Resolve ``host`` and raise :class:`EgressBlocked` if it is not permitted.
-
-    Thin wrapper over :func:`resolve_pinned` so there is exactly one resolution
-    codepath. Callers that can pin the validated IP (SFTP/FTP/FTPS/S3) call
-    :func:`resolve_pinned` directly and dial the returned address; this shim
-    stays for callers that only need the allow/deny decision.
-    """
-    resolve_pinned(host, allow_hosts)
-
-
-def assert_ip_allowed(ip: str, host_allowlisted: bool) -> None:
-    """Guard a server-advertised address (e.g. an FTP PASV/EPSV data IP).
-
-    Raises :class:`EgressBlocked` when the host was NOT operator-allowlisted and
-    ``ip`` falls in a blocked range. An allowlisted host bypasses the check — its
-    data channel may legitimately live on a private compose-internal address.
-    """
-    if not host_allowlisted and is_blocked_address(ip):
-        raise EgressBlocked(
-            f"egress to server-advertised data address {ip} is blocked "
-            f"(non-public) and the host is not in EGRESS_ALLOW_HOSTS"
-        )

@@ -89,13 +89,10 @@ function iso(value: Date | string | null): string | null {
 export function hostKeyFingerprint(hostKey: string): string {
   const parts = hostKey.trim().split(/\s+/);
   const blob = parts.length >= 2 ? parts[1] : parts[0];
-  let material: Buffer;
-  try {
-    material = Buffer.from(blob, "base64");
-    if (material.length === 0) material = Buffer.from(blob, "utf8");
-  } catch {
-    material = Buffer.from(blob, "utf8");
-  }
+  // Buffer.from(..., "base64") never throws (it decodes best-effort); the empty
+  // result is the only case needing the raw-string fallback.
+  let material = Buffer.from(blob, "base64");
+  if (material.length === 0) material = Buffer.from(blob, "utf8");
   const digest = createHash("sha256").update(material).digest("base64");
   // OpenSSH prints SHA256 fingerprints without base64 padding.
   return `SHA256:${digest.replace(/=+$/, "")}`;

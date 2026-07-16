@@ -17,9 +17,9 @@ from __future__ import annotations
 import logging
 
 from pipeline.config import Settings
-from pipeline.connections.envelope import CredentialKeyError, load_master_key
 from pipeline.connections.probe import probe_connection
 from pipeline.connections.repo import ConnectionsRepo, PgConnectionsRepo
+from pipeline.jobs._common import load_key_or_skip
 from pipeline.queue.interface import QueueBackend
 
 logger = logging.getLogger(__name__)
@@ -77,12 +77,8 @@ async def drain_tick(
 
 def register(queue: QueueBackend, settings: Settings) -> None:
     async def drain(timestamp: int) -> None:
-        try:
-            master_key = load_master_key(
-                {"CREDENTIALS_MASTER_KEY": settings.credentials_master_key}
-            )
-        except CredentialKeyError as exc:
-            logger.error("connection drain skipped: %s", exc, extra={"job": JOB_NAME})
+        master_key = load_key_or_skip(settings, JOB_NAME)
+        if master_key is None:
             return
         repo = PgConnectionsRepo(settings.database_url)
         count = await drain_tick(repo, master_key, settings.egress_allow_hosts)

@@ -12,6 +12,8 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  ErrorState,
+  LoadingState,
 } from "@stac-higher/shared";
 import {
   Dialog,
@@ -190,7 +192,13 @@ function ConnectionCard({
 
 function ConnectionsInner() {
   const { data: auth } = useAuthMe();
-  const { data: connections, isLoading, isError, error } = useConnections();
+  const {
+    data: connections,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useConnections();
   const deleteMutation = useDeleteConnection();
 
   const [formOpen, setFormOpen] = useState(false);
@@ -234,18 +242,16 @@ function ConnectionsInner() {
         </div>
 
         {isLoading ? (
-          <div className="flex items-center justify-center py-12 text-muted-foreground">
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-            Loading connections…
-          </div>
+          <LoadingState message="Loading connections…" />
         ) : isError ? (
-          <Card className="border-destructive/50">
-            <CardContent className="py-8 text-center text-sm text-destructive">
-              {error instanceof Error
+          <ErrorState
+            message={
+              error instanceof Error
                 ? error.message
-                : "Failed to load connections"}
-            </CardContent>
-          </Card>
+                : "Failed to load connections"
+            }
+            onRetry={() => refetch()}
+          />
         ) : !connections || connections.length === 0 ? (
           <EmptyState
             icon={Plug}

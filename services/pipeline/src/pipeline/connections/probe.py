@@ -87,6 +87,19 @@ async def run_adapter_test(
         return {"ok": False, "message": f"test error: {type(exc).__name__}"}
 
 
+def _fail(message: str, result: TestResult) -> ProbeOutcome:
+    """A failed outcome: status=error, last_error=message, and the check result
+    flipped to ``ok=False`` carrying ``message``."""
+    failed: TestResult = {**result, "ok": False, "message": message}
+    return ProbeOutcome(
+        ok=False,
+        connection_status="error",
+        last_error=message,
+        host_key_to_pin=None,
+        result=failed,
+    )
+
+
 def evaluate_test_outcome(
     protocol: str,
     pinned_host_key: str | None,
@@ -101,17 +114,8 @@ def evaluate_test_outcome(
     - test ok, SSH mismatch    -> HARD FAIL: status=error, result flipped to
                                   ok=False with the mismatch message.
     """
-    raw_ok = bool(result.get("ok"))
-
-    if not raw_ok:
-        message = result.get("message", "connection test failed")
-        return ProbeOutcome(
-            ok=False,
-            connection_status="error",
-            last_error=message,
-            host_key_to_pin=None,
-            result=result,
-        )
+    if not result.get("ok"):
+        return _fail(result.get("message", "connection test failed"), result)
 
     if protocol not in _SSH_FAMILY:
         return ProbeOutcome(
@@ -126,30 +130,11 @@ def evaluate_test_outcome(
     if not observed:
         # SSH family must surface a host key; treat its absence as a failure
         # rather than silently pinning nothing.
-        message = "SSH test returned no host key"
-        failed = dict(result)
-        failed["ok"] = False
-        failed["message"] = message
-        return ProbeOutcome(
-            ok=False,
-            connection_status="error",
-            last_error=message,
-            host_key_to_pin=None,
-            result=failed,  # type: ignore[arg-type]
-        )
+        return _fail("SSH test returned no host key", result)
 
     decision = evaluate_host_key(pinned_host_key, observed)
     if decision.verdict is TofuVerdict.MISMATCH:
-        failed = dict(result)
-        failed["ok"] = False
-        failed["message"] = decision.message or "host key mismatch"
-        return ProbeOutcome(
-            ok=False,
-            connection_status="error",
-            last_error=decision.message,
-            host_key_to_pin=None,
-            result=failed,  # type: ignore[arg-type]
-        )
+        return _fail(decision.message or "host key mismatch", result)
 
     return ProbeOutcome(
         ok=True,

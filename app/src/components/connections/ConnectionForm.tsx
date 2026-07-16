@@ -57,6 +57,18 @@ interface FieldDef {
   help?: string;
 }
 
+// Per-protocol field descriptors. ssh/sftp share one config + credential shape
+// (mirroring schemas.ts, where the Zod schemas are the same object), and
+// ftp/ftps share credentials — defined once and aliased so an edit can't drift
+// between "identical" copies.
+const hostConfigFields = (placeholder: string): FieldDef[] => [
+  { name: "host", label: "Host", type: "text", placeholder },
+  { name: "port", label: "Port", type: "number" },
+  { name: "root_path", label: "Root path", type: "text", placeholder: "/" },
+];
+const sshConfigFields = hostConfigFields("sftp.example.com");
+const ftpConfigFields = hostConfigFields("ftp.example.com");
+
 const CONFIG_FIELDS: Record<WritableProtocol, FieldDef[]> = {
   s3: [
     { name: "bucket", label: "Bucket", type: "text", placeholder: "my-bucket" },
@@ -82,28 +94,37 @@ const CONFIG_FIELDS: Record<WritableProtocol, FieldDef[]> = {
       optional: true,
     },
   ],
-  ssh: [
-    { name: "host", label: "Host", type: "text", placeholder: "sftp.example.com" },
-    { name: "port", label: "Port", type: "number" },
-    { name: "root_path", label: "Root path", type: "text", placeholder: "/" },
-  ],
-  sftp: [
-    { name: "host", label: "Host", type: "text", placeholder: "sftp.example.com" },
-    { name: "port", label: "Port", type: "number" },
-    { name: "root_path", label: "Root path", type: "text", placeholder: "/" },
-  ],
-  ftp: [
-    { name: "host", label: "Host", type: "text", placeholder: "ftp.example.com" },
-    { name: "port", label: "Port", type: "number" },
-    { name: "root_path", label: "Root path", type: "text", placeholder: "/" },
-  ],
+  ssh: sshConfigFields,
+  sftp: sshConfigFields,
+  ftp: ftpConfigFields,
   ftps: [
-    { name: "host", label: "Host", type: "text", placeholder: "ftp.example.com" },
-    { name: "port", label: "Port", type: "number" },
-    { name: "root_path", label: "Root path", type: "text", placeholder: "/" },
+    ...ftpConfigFields,
     { name: "implicit", label: "Implicit TLS", type: "switch", optional: true },
   ],
 };
+
+const sshCredFields: FieldDef[] = [
+  { name: "username", label: "Username", type: "text" },
+  {
+    name: "password",
+    label: "Password",
+    type: "password",
+    optional: true,
+    help: "Provide a password or a private key (at least one).",
+  },
+  {
+    name: "private_key",
+    label: "Private key",
+    type: "textarea",
+    optional: true,
+    placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----",
+  },
+  { name: "passphrase", label: "Key passphrase", type: "password", optional: true },
+];
+const ftpCredFields: FieldDef[] = [
+  { name: "username", label: "Username", type: "text" },
+  { name: "password", label: "Password", type: "password" },
+];
 
 const CRED_FIELDS: Record<WritableProtocol, FieldDef[]> = {
   s3: [
@@ -116,58 +137,10 @@ const CRED_FIELDS: Record<WritableProtocol, FieldDef[]> = {
       optional: true,
     },
   ],
-  ssh: [
-    { name: "username", label: "Username", type: "text" },
-    {
-      name: "password",
-      label: "Password",
-      type: "password",
-      optional: true,
-      help: "Provide a password or a private key (at least one).",
-    },
-    {
-      name: "private_key",
-      label: "Private key",
-      type: "textarea",
-      optional: true,
-      placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----",
-    },
-    { name: "passphrase", label: "Key passphrase", type: "password", optional: true },
-  ],
-  sftp: [
-    { name: "username", label: "Username", type: "text" },
-    {
-      name: "password",
-      label: "Password",
-      type: "password",
-      optional: true,
-      help: "Provide a password or a private key (at least one).",
-    },
-    {
-      name: "private_key",
-      label: "Private key",
-      type: "textarea",
-      optional: true,
-      placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----",
-    },
-    { name: "passphrase", label: "Key passphrase", type: "password", optional: true },
-  ],
-  ftp: [
-    { name: "username", label: "Username", type: "text" },
-    { name: "password", label: "Password", type: "password" },
-  ],
-  ftps: [
-    { name: "username", label: "Username", type: "text" },
-    { name: "password", label: "Password", type: "password" },
-  ],
-};
-
-const DEFAULT_PORT: Record<WritableProtocol, number> = {
-  s3: 0,
-  ssh: 22,
-  sftp: 22,
-  ftp: 21,
-  ftps: 21,
+  ssh: sshCredFields,
+  sftp: sshCredFields,
+  ftp: ftpCredFields,
+  ftps: ftpCredFields,
 };
 
 function defaultConfig(protocol: WritableProtocol): Record<string, unknown> {
@@ -490,15 +463,9 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
         ) : (
           <Input
             id={id}
-            type={
-              field.type === "password"
-                ? "password"
-                : field.type === "number"
-                  ? "number"
-                  : field.type === "url"
-                    ? "url"
-                    : "text"
-            }
+            // switch/textarea are handled above; the rest (text/number/
+            // password/url) are all valid input[type] values.
+            type={field.type}
             placeholder={field.placeholder}
             autoComplete={field.type === "password" ? "new-password" : undefined}
             {...register(
