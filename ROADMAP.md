@@ -574,7 +574,8 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 0 — Foundations | ✅ Done | Merged to `ai/main`, full stack verified live (`docker compose up`, heartbeat through the queue, client on the built-in catalog). |
 | 1 — Auth, RBAC & audit | ✅ Done | Merged & verified. One item carried forward: per-collection **read-visibility** filtering at the proxy needs OPA / a custom filter factory (ADR 0002) — transaction protection + audience validation are done and integration-tested. |
 | 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
-| 3–8 | ⬜ Not started | — |
+| 3 — Object storage & asset service | ✅ Done | App storage lib + `GET /api/assets/{collection}/{item}/{asset}` (RBAC → presigned 302) + `POST /api/uploads` (operator+, presigned PUT) + manual asset upload in the item form + pipeline staging-TTL cleanup job. No new tables. Live-verified: upload → PUT to MinIO → asset-route 302 → byte round-trip; staging sweep deletes an expired upload and leaves canonical assets intact. ADR 0005. |
+| 4–8 | ⬜ Not started | — |
 
 Per-phase detail and any carried-forward items are noted inline below.
 
@@ -673,16 +674,42 @@ Repo and runtime scaffolding so every later phase has a place to land.
   delete`) are the seam the object-storage/asset service and ingestion phases
   build on. `CREDENTIALS_MASTER_KEY` must be shared by the app and the pipeline.
 
-### Phase 3 — Object storage & asset service ⬜ **Not started**
-- Storage abstraction in app + pipeline (S3 SDK against MinIO/S3), bucket
-  layout per §5.3.
-- `/api/assets/{collection}/{item}/{asset}`: RBAC check → presigned 302
-  (canonical) — with the redirect target abstracted so `reference` mode
-  (Phase 4) slots in.
-- `POST /api/uploads`: presigned PUT URLs into staging (auth'd users).
-- Manual asset upload in item forms (flow C); staging TTL cleanup job.
+### Phase 3 — Object storage & asset service ✅ **Done (2026-07-16)**
+- ✅ Storage abstraction in app + pipeline (S3 SDK against MinIO/S3), bucket
+  layout per §5.3. App: `app/src/lib/storage/` (config/keys/client/presign/
+  resolve); pipeline: `services/pipeline/.../storage/platform.py` (egress-pinned
+  platform-bucket client). New app deps: `@aws-sdk/client-s3` +
+  `@aws-sdk/s3-request-presigner`. **No new tables** — keys derive from URL
+  params / request bodies.
+- ✅ `/api/assets/{collection}/{item}/{asset}`: auth check → presigned 302
+  (canonical). The redirect target is abstracted behind `resolveAssetTarget`, so
+  `reference` mode (Phase 4) branches there without touching the route. The
+  `{asset}` segment is the object filename (ADR 0005).
+- ✅ `POST /api/uploads`: presigned PUT URLs (operator+, gated + audited).
+  Manual UI uploads write **direct to canonical** — the app is a trusted RBAC'd
+  writer that owns the item id; the staging+finalize path (§6.2) is for the
+  untrusted external push flow (Phase 7), and its `stagingKey` layout + the TTL
+  sweep already exist as that seam.
+- ✅ Manual asset upload in item forms (flow C): `AssetUpload` wired into the
+  item form's asset rows (pick file → presign → browser PUT → href written
+  back). Staging TTL cleanup job (`0 * * * *`) sweeps abandoned `staging/`
+  uploads older than `STAGING_TTL_SECONDS` (24h default).
 - **Done when:** a user uploads a file in the item form, the item's asset
-  href resolves through the asset route, and unauthorized users get 403.
+  href resolves through the asset route, and unauthorized users get 403. —
+  **Met.**
+- **Verified live (2026-07-16):** full `docker compose up` (MinIO + database) +
+  the app dev server drove the real routes — `POST /api/uploads` → presigned PUT
+  to MinIO (200) → `GET /api/assets/...` → 302 → follow → the original bytes came
+  back. The pipeline `cleanup_expired` primitive ran against live MinIO: a seeded
+  `staging/` object was deleted while the canonical asset was left intact. The
+  unauthenticated-→-403 path is unit-verified (dev-bypass is always an operator,
+  so it can't be reached live).
+- **Cross-runtime contract (consumed by Phase 4+):** the §5.3 key layout
+  (`assets/{collection}/{item}/{filename}`, `staging/{upload_id}/{filename}`),
+  the `resolveAssetTarget` seam (where `storage_mode: reference` branches), and
+  the platform-storage client are what ingest/delivery build on. Manually
+  uploaded bytes are not yet server-side validated (no finalize step) — that
+  arrives with the Phase 7 push path.
 
 ### Phase 4 — Ingest pipeline ⬜ **Not started**
 - `collection_connections` (ingest direction) + `ingest_files` ledger

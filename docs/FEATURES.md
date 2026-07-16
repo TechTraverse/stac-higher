@@ -70,6 +70,23 @@ Reference: [`connections.md`](connections.md). Decisions: [ADR 0001 — migratio
 
 ---
 
-## Phases 3–8 — Not started ⬜
+## Phase 3 — Object storage & asset service ✅
 
-Object storage & asset service, ingestion, delivery, retention/GC, observability, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md). Phase 3 builds directly on the Phase 2 adapter interface, connection tables, and credential envelope.
+Item asset bytes live in platform object storage (MinIO locally / S3 in cloud) and are reached only through the app. Live-verified end-to-end on 2026-07-16 (upload → PUT to MinIO → asset route 302 → byte round-trip; staging TTL sweep deletes an expired upload and leaves canonical assets untouched).
+
+| Feature | Status | Entry points |
+|---|---|---|
+| App storage abstraction | ✅ | `app/src/lib/storage/`: `config` (S3_* env, MinIO defaults), `keys` (§5.3 layout + path-traversal hardening), `client`, `presign` (offline GET/PUT signing), `resolve` (`resolveAssetTarget` — the `reference`-mode seam) |
+| Asset access route | ✅ | `GET /api/assets/[collection]/[item]/[asset]` — auth check → 302 to presigned canonical URL (`no-store`); unauthenticated → 403. `{asset}` = filename (ADR 0005) |
+| Upload presign route | ✅ | `POST /api/uploads` — operator+ (gated + audited), returns presigned PUT URLs + `/api/assets/...` hrefs; path-traversal rejected |
+| Manual asset upload (flow C) | ✅ | `app/src/components/items/AssetUpload.tsx`, wired into `ItemForm.tsx` asset rows: pick file → presign → browser PUT → href written back; disabled until Item ID is set |
+| Platform storage (pipeline) | ✅ | `services/pipeline/.../storage/platform.py`: egress-pinned boto3 client for the platform bucket + `cleanup_expired` |
+| Staging TTL cleanup job | ✅ | `services/pipeline/.../jobs/staging_cleanup.py` (`0 * * * *`): sweeps `staging/` uploads older than `STAGING_TTL_SECONDS` (24h default); deterministic cutoff from the scheduled tick |
+
+No new tables: the asset route derives keys from URL params; uploads derive from the request body. New deps: `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner` (app). Decision: [ADR 0005 — asset service](decisions/0005-asset-service.md). Residuals/caveats in [`ISSUES.md`](ISSUES.md).
+
+---
+
+## Phases 4–8 — Not started ⬜
+
+Ingestion, delivery, retention/GC, observability, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md). Phase 4 (ingest) is the first live consumer of the connection adapter `get/put` methods and lands the `storage_mode: reference` branch in `resolveAssetTarget`.

@@ -64,3 +64,23 @@ Reserved in the enum; create/update reject it and the adapter factory raises `No
 
 ### I-12 · `connection_checks` accumulation ⚪
 Test-result rows are never pruned; a partial index keeps the drain's pending scan cheap, but the table grows. Retention/GC is Phase 6 hygiene.
+
+---
+
+## Phase 3 — asset service
+
+### I-13 · Asset-read authorization is authentication-only 🟡
+`GET /api/assets/...` requires an authenticated identity (unauthenticated → 403) but does **not** yet scope reads to the caller's groups / the collection's visibility — that is the same capability deferred as I-1 (read-visibility). Until it lands, any authenticated user can mint a download URL for any asset. In dev-bypass the static operator satisfies the check, so local flows work.
+- Tracked in: [ADR 0005](decisions/0005-asset-service.md); depends on I-1 / [ADR 0002](decisions/0002-auth-proxy-enforcement.md).
+
+### I-14 · Manual uploads go direct-to-canonical; no server-side validation ⚪
+Item-form uploads presign straight into canonical storage (trusted RBAC'd writer, ADR 0005) — there is **no finalize step** validating/checksumming the bytes, and no staging quarantine. The untrusted external push path (staging → validate → move to canonical) is Phase 7; `stagingKey` + the TTL sweep already exist as its seam.
+- Tracked in: [ADR 0005](decisions/0005-asset-service.md); ROADMAP §6.2.
+
+### I-15 · Presign endpoint must be browser-reachable 🟡
+The app signs URLs offline, so `S3_ENDPOINT` must be reachable by the **browser** that uses them. On the host, `http://localhost:9000` works. If the app is ever run **inside compose**, `S3_ENDPOINT` must be set to a browser-reachable host — never `http://minio:9000`, which the browser can't resolve. Defaults assume the host-run dev server.
+- Tracked in: header comment in `app/src/lib/storage/config.ts`; `.env.example`.
+
+### I-16 · Endpoint-pinning logic duplicated app-side vs. pipeline ⚪
+The egress IP-pinning for a custom http (MinIO) endpoint exists twice: `S3Adapter._pinned_endpoint` (per-connection) and `storage/platform._pinned_endpoint_url` (platform bucket). Parallel, small, and independently tested; a shared helper is a possible future refactor, not a bug.
+- Tracked in: here.

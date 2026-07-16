@@ -103,6 +103,8 @@ Astro server routes:
 | `/api/connections/[id]/test` | POST | Request a connectivity test (inserts a `connection_checks` row the pipeline drains — ADR 0004) |
 | `/api/connections/[id]/checks/[checkId]` | GET | Poll a test request |
 | `/api/connections/[id]/host-key/reset` | POST | Clear the TOFU host-key pin so the next test re-pins (ssh/sftp) |
+| `/api/uploads` | POST | Mint presigned PUT URLs for asset uploads (operator+); returns the `/api/assets/...` hrefs to persist (ADR 0005) |
+| `/api/assets/[collection]/[item]/[asset]` | GET | Authorize → 302 to a short-lived presigned URL for the canonical asset object (`{asset}` = filename) |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
 (static identity, default in dev — unit tests/e2e need no IdP). Middleware
@@ -123,6 +125,18 @@ operator, so existing flows keep working without login. Details:
 command) and TOFU host-key pinning. Test-connection bridges to the pipeline
 through `stac_higher.connection_checks`
 (`docs/decisions/0004-app-pipeline-bridge.md`).
+
+**Object storage & asset service (Phase 3)**: item asset bytes live in
+platform object storage (MinIO locally, `stac_higher` bucket / S3 in cloud) and
+are reached only through the app. `app/src/lib/storage/` signs URLs **offline**
+(the app never streams bytes): `GET /api/assets/{collection}/{item}/{filename}`
+authorizes then 302s to a presigned URL (via `resolveAssetTarget`, the
+`reference`-mode seam); `POST /api/uploads` (operator+) mints presigned PUTs into
+canonical storage. Key layout is §5.3. App env: `S3_ENDPOINT` (must be
+**browser-reachable** — presigning is offline), `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
+`S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_FORCE_PATH_STYLE` (MinIO defaults work
+locally). The pipeline sweeps abandoned `staging/` uploads via a TTL cleanup job
+(`STAGING_*` env). Details: [ADR 0005](docs/decisions/0005-asset-service.md).
 
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in

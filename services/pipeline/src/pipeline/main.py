@@ -15,7 +15,7 @@ import uvicorn
 
 from pipeline.config import Settings
 from pipeline.health import create_health_app
-from pipeline.jobs import drain, health_sweep, heartbeat
+from pipeline.jobs import drain, health_sweep, heartbeat, staging_cleanup
 from pipeline.log import configure_logging
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
 
@@ -28,6 +28,8 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # Phase 2 connection bridge (ADR 0004): drain user-requested tests + sweep.
     drain.register(queue, settings)
     health_sweep.register(queue, settings)
+    # Phase 3: sweep abandoned push-ingest uploads out of staging/.
+    staging_cleanup.register(queue, settings)
     return queue
 
 

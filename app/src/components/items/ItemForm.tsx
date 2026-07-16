@@ -9,6 +9,7 @@ import { geometryToBbox } from "@/lib/map/bbox";
 import { QueryProvider } from "@/components/layout/QueryProvider";
 import { Header } from "@/components/layout/Header";
 import { ItemGeometryEditor } from "./ItemGeometryEditor";
+import { AssetUpload } from "./AssetUpload";
 import { JsonViewer } from "@stac-higher/shared";
 import { Button } from "@stac-higher/shared";
 import { Input } from "@stac-higher/shared";
@@ -373,10 +374,31 @@ function ItemFormInner({ collectionId, existingItem }: ItemFormInnerProps) {
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-xs">URL</Label>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs">URL</Label>
+                        <AssetUpload
+                          collection={collectionId}
+                          itemId={watchAll.id ?? ""}
+                          onUploaded={({ href, filename, contentType }) => {
+                            setValue(`assets.${index}.asset.href`, href, {
+                              shouldValidate: true,
+                              shouldDirty: true,
+                            });
+                            if (!watch(`assets.${index}.asset.type`) && contentType) {
+                              setValue(`assets.${index}.asset.type`, contentType);
+                            }
+                            if (!watch(`assets.${index}.key`)) {
+                              setValue(`assets.${index}.key`, filename, {
+                                shouldValidate: true,
+                                shouldDirty: true,
+                              });
+                            }
+                          }}
+                        />
+                      </div>
                       <Input
                         {...register(`assets.${index}.asset.href`)}
-                        placeholder="https://..."
+                        placeholder="https://... or upload a file"
                       />
                     </div>
                     <div className="space-y-1">

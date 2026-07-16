@@ -83,6 +83,12 @@ export function matchGatedRoute(
   if (m === "POST" && path === "/api/connections") {
     return { action: "create", resourceType: "connection", resourceId: null };
   }
+
+  // Phase 3: minting presigned upload URLs is a gated mutation (operator+),
+  // audited by the guard. The resource is the target collection, not a row id.
+  if (m === "POST" && path === "/api/uploads") {
+    return { action: "create", resourceType: "upload", resourceId: null };
+  }
   const connTest = path.match(/^\/api\/connections\/([^/]+)\/test$/);
   if (m === "POST" && connTest) {
     return { action: "test", resourceType: "connection", resourceId: connTest[1] };
