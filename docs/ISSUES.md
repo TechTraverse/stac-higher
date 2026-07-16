@@ -64,11 +64,3 @@ Reserved in the enum; create/update reject it and the adapter factory raises `No
 
 ### I-12 · `connection_checks` accumulation ⚪
 Test-result rows are never pruned; a partial index keeps the drain's pending scan cheap, but the table grows. Retention/GC is Phase 6 hygiene.
-
----
-
-## Repo / process
-
-### I-13 · `ai/main` ahead of origin, unpushed 🟡
-AI work lands on `ai/main`; promotion to `main` is a **human-reviewed PR** (AI never commits to `main`). As of the Phase 2 work, `ai/main` is ahead of `origin/ai/main` and not pushed pending review.
-- Tracked in: `AGENTS.md` "Workflow".
