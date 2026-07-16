@@ -3,6 +3,15 @@
 Honors a custom ``endpoint`` (e.g. MinIO), ``region``, and
 ``force_path_style``. ``test()`` performs a HEAD-bucket (falling back to a
 1-key list) so it proves both reachability and auth without listing the world.
+
+Egress hardening: :func:`resolve_pinned` resolves+validates the endpoint host
+once (fail-closed on any internal/metadata address). For a **custom http**
+endpoint (e.g. MinIO — no TLS) the endpoint URL is rewritten to the validated
+IP so a DNS rebind between check and connect cannot reach an internal address.
+For an **https** custom endpoint or the default AWS endpoint the hostname is
+kept (rewriting to an IP would break TLS SNI / certificate validation); the
+pre-connect ``resolve_pinned`` check still applies, leaving only a narrow
+rebind window against a public/TLS endpoint (low risk).
 """
 
 from __future__ import annotations
@@ -17,7 +26,7 @@ from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from pipeline.connections.adapters.base import StorageAdapter, TestResult
-from pipeline.connections.egress import EgressBlocked, enforce
+from pipeline.connections.egress import EgressBlocked, resolve_pinned
 
 
 def _endpoint_host(endpoint: str | None, region: str | None) -> str:
@@ -56,7 +65,25 @@ class S3Adapter(StorageAdapter):
     def _host(self) -> str:
         return _endpoint_host(self._endpoint, self._region)
 
-    def _make_client(self) -> Any:
+    def _pinned_endpoint(self) -> str | None:
+        """Resolve+validate the endpoint host and return the ``endpoint_url`` to
+        pass to boto3 (IP-pinned for custom http endpoints, unchanged
+        otherwise). Raises :class:`EgressBlocked` for a disallowed host.
+        """
+        pinned = resolve_pinned(self._host(), self._allow_hosts)
+        if not self._endpoint:
+            # default AWS endpoint: keep boto3's own resolution (public host).
+            return None
+        parsed = urlparse(self._endpoint)
+        if pinned and parsed.scheme == "http":
+            # plaintext (MinIO) — safe to dial the validated IP; no TLS/SNI.
+            netloc = pinned[0] if not parsed.port else f"{pinned[0]}:{parsed.port}"
+            return parsed._replace(netloc=netloc).geturl()
+        # https custom endpoint or allowlisted host: keep the hostname so TLS
+        # validates; resolve_pinned already rejected internal addresses.
+        return self._endpoint
+
+    def _make_client(self, endpoint_url: str | None) -> Any:
         boto_config = Config(
             s3={"addressing_style": "path" if self._force_path_style else "auto"},
             connect_timeout=10,
@@ -66,7 +93,7 @@ class S3Adapter(StorageAdapter):
         return boto3.client(
             "s3",
             region_name=self._region,
-            endpoint_url=self._endpoint,
+            endpoint_url=endpoint_url,
             aws_access_key_id=self._creds.get("access_key_id"),
             aws_secret_access_key=self._creds.get("secret_access_key"),
             aws_session_token=self._creds.get("session_token"),
@@ -76,12 +103,12 @@ class S3Adapter(StorageAdapter):
     async def test(self) -> TestResult:
         started = time.monotonic()
         try:
-            enforce(self._host(), self._allow_hosts)
+            endpoint_url = self._pinned_endpoint()
         except EgressBlocked as exc:
             return {"ok": False, "message": str(exc)}
 
         def _probe() -> None:
-            client = self._make_client()
+            client = self._make_client(endpoint_url)
             try:
                 client.head_bucket(Bucket=self._bucket)
             except ClientError:
@@ -101,10 +128,10 @@ class S3Adapter(StorageAdapter):
         }
 
     async def list(self, prefix: str = "") -> list[str]:
-        enforce(self._host(), self._allow_hosts)
+        endpoint_url = self._pinned_endpoint()
 
         def _list() -> list[str]:
-            client = self._make_client()
+            client = self._make_client(endpoint_url)
             paginator = client.get_paginator("list_objects_v2")
             keys: list[str] = []
             for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
@@ -114,29 +141,29 @@ class S3Adapter(StorageAdapter):
         return await asyncio.to_thread(_list)
 
     async def get(self, path: str) -> bytes:
-        enforce(self._host(), self._allow_hosts)
+        endpoint_url = self._pinned_endpoint()
 
         def _get() -> bytes:
-            client = self._make_client()
+            client = self._make_client(endpoint_url)
             resp = client.get_object(Bucket=self._bucket, Key=path)
             return resp["Body"].read()
 
         return await asyncio.to_thread(_get)
 
     async def put(self, path: str, data: bytes) -> None:
-        enforce(self._host(), self._allow_hosts)
+        endpoint_url = self._pinned_endpoint()
 
         def _put() -> None:
-            client = self._make_client()
+            client = self._make_client(endpoint_url)
             client.put_object(Bucket=self._bucket, Key=path, Body=data)
 
         await asyncio.to_thread(_put)
 
     async def delete(self, path: str) -> None:
-        enforce(self._host(), self._allow_hosts)
+        endpoint_url = self._pinned_endpoint()
 
         def _delete() -> None:
-            client = self._make_client()
+            client = self._make_client(endpoint_url)
             client.delete_object(Bucket=self._bucket, Key=path)
 
         await asyncio.to_thread(_delete)

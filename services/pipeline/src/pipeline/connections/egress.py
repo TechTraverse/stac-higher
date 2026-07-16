@@ -60,16 +60,29 @@ def is_blocked_address(ip: str) -> bool:
     )
 
 
-def enforce(host: str, allow_hosts: Iterable[str] = ()) -> None:
-    """Resolve ``host`` and raise :class:`EgressBlocked` if it is not permitted.
+def resolve_pinned(host: str, allow_hosts: Iterable[str] = ()) -> list[str]:
+    """Resolve + validate ``host`` ONCE and return the IP(s) to connect to.
 
-    A host on the allowlist is permitted without resolution checks (the operator
-    has vouched for it — e.g. compose-internal SFTP). Otherwise every resolved
-    address must be a public/global address.
+    This is the single resolution codepath that defeats the DNS-rebinding TOCTOU
+    hole: adapters resolve/validate here and then dial the returned IP literal,
+    instead of handing the hostname to a client library that would independently
+    re-resolve it at socket time (a low-TTL rebind between check and connect
+    could otherwise reach an internal/metadata IP).
+
+    Return value:
+
+    - **Allowlisted host** (operator-vouched, e.g. compose-internal
+      ``sftp-test`` that legitimately resolves to a private IP) → ``[]``, a
+      sentinel meaning "connect by hostname, do not pin". DNS is not consulted.
+    - **IP literal** → range-checked; returns ``[host]`` or raises
+      :class:`EgressBlocked`.
+    - **Hostname** → ``getaddrinfo``; if ANY resolved address is blocked, raise
+      :class:`EgressBlocked` (fail closed). Otherwise return the validated IP
+      strings, deduped with resolution order preserved.
     """
     allow = {h.lower() for h in allow_hosts}
     if host.lower() in allow:
-        return
+        return []
 
     # A bare IP literal short-circuits DNS but still gets range-checked.
     try:
@@ -82,7 +95,7 @@ def enforce(host: str, allow_hosts: Iterable[str] = ()) -> None:
                 f"egress to {host} is blocked (resolves to a non-public address) "
                 f"and it is not in EGRESS_ALLOW_HOSTS"
             )
-        return
+        return [host]
 
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
@@ -92,11 +105,39 @@ def enforce(host: str, allow_hosts: Iterable[str] = ()) -> None:
     if not infos:
         raise EgressBlocked(f"egress to {host} is blocked: no addresses resolved")
 
+    pinned: list[str] = []
     for info in infos:
-        sockaddr = info[4]
-        ip = sockaddr[0]
+        ip = info[4][0]
         if is_blocked_address(ip):
             raise EgressBlocked(
                 f"egress to {host} is blocked: it resolves to a non-public "
                 f"address, and it is not in EGRESS_ALLOW_HOSTS"
             )
+        if ip not in pinned:
+            pinned.append(ip)
+    return pinned
+
+
+def enforce(host: str, allow_hosts: Iterable[str] = ()) -> None:
+    """Resolve ``host`` and raise :class:`EgressBlocked` if it is not permitted.
+
+    Thin wrapper over :func:`resolve_pinned` so there is exactly one resolution
+    codepath. Callers that can pin the validated IP (SFTP/FTP/FTPS/S3) call
+    :func:`resolve_pinned` directly and dial the returned address; this shim
+    stays for callers that only need the allow/deny decision.
+    """
+    resolve_pinned(host, allow_hosts)
+
+
+def assert_ip_allowed(ip: str, host_allowlisted: bool) -> None:
+    """Guard a server-advertised address (e.g. an FTP PASV/EPSV data IP).
+
+    Raises :class:`EgressBlocked` when the host was NOT operator-allowlisted and
+    ``ip`` falls in a blocked range. An allowlisted host bypasses the check — its
+    data channel may legitimately live on a private compose-internal address.
+    """
+    if not host_allowlisted and is_blocked_address(ip):
+        raise EgressBlocked(
+            f"egress to server-advertised data address {ip} is blocked "
+            f"(non-public) and the host is not in EGRESS_ALLOW_HOSTS"
+        )

@@ -1,7 +1,8 @@
 """Adapter ``test()`` behaviour with fully mocked clients — no live servers.
 
-Each adapter's ``enforce`` symbol is monkeypatched to a spy so we assert the
-egress gate is invoked with the config host, without touching real DNS.
+Each adapter's ``resolve_pinned`` symbol is monkeypatched to a spy so we assert
+the egress gate is invoked with the config host and that adapters dial the
+*pinned* IP it returns (the DNS-rebinding defence), without touching real DNS.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import pathlib
 from typing import ClassVar
 
+import aioftp
 import pytest
 
 from pipeline.connections.adapters import (
@@ -22,18 +24,29 @@ from pipeline.connections.adapters import ftp as ftp_mod
 from pipeline.connections.adapters import ftps as ftps_mod
 from pipeline.connections.adapters import s3 as s3_mod
 from pipeline.connections.adapters import sftp as sftp_mod
+from pipeline.connections.adapters.ftp import _EgressFtpClient
 from pipeline.connections.egress import EgressBlocked
 
+#: a public (TEST-NET-3) IP the pin spy returns — never in a blocked range.
+_PINNED_IP = "203.0.113.10"
 
-class _EgressSpy:
-    def __init__(self, blocked: bool = False):
+
+class _PinSpy:
+    """Stand-in for :func:`egress.resolve_pinned`: records the host and returns
+    a fixed pinned-IP list (``[]`` to simulate an allowlisted host), or raises
+    :class:`EgressBlocked` when ``blocked``.
+    """
+
+    def __init__(self, pinned=(_PINNED_IP,), blocked: bool = False):
         self.calls: list[str] = []
-        self.blocked = blocked
+        self._pinned = list(pinned)
+        self._blocked = blocked
 
     def __call__(self, host, allow_hosts=()):
         self.calls.append(host)
-        if self.blocked:
+        if self._blocked:
             raise EgressBlocked(f"blocked: {host}")
+        return list(self._pinned)
 
 
 # --------------------------------------------------------------------------- #
@@ -58,8 +71,8 @@ class _FakeS3Client:
 
 
 async def test_s3_test_ok(monkeypatch):
-    spy = _EgressSpy()
-    monkeypatch.setattr(s3_mod, "enforce", spy)
+    spy = _PinSpy()
+    monkeypatch.setattr(s3_mod, "resolve_pinned", spy)
     fake = _FakeS3Client()
     monkeypatch.setattr(s3_mod.boto3, "client", lambda *a, **k: fake)
 
@@ -74,10 +87,40 @@ async def test_s3_test_ok(monkeypatch):
     assert spy.calls == ["s3.us-east-1.amazonaws.com"]
 
 
-async def test_s3_endpoint_host_used_for_egress(monkeypatch):
-    spy = _EgressSpy()
-    monkeypatch.setattr(s3_mod, "enforce", spy)
-    monkeypatch.setattr(s3_mod.boto3, "client", lambda *a, **k: _FakeS3Client())
+async def test_s3_http_endpoint_pinned_to_ip(monkeypatch):
+    """A custom http endpoint (MinIO) is rewritten to the validated IP so a DNS
+    rebind cannot redirect the connection."""
+    spy = _PinSpy()
+    monkeypatch.setattr(s3_mod, "resolve_pinned", spy)
+    seen: dict[str, object] = {}
+
+    def _client(*a, **k):
+        seen["endpoint_url"] = k.get("endpoint_url")
+        return _FakeS3Client()
+
+    monkeypatch.setattr(s3_mod.boto3, "client", _client)
+
+    adapter = S3Adapter(
+        {"bucket": "b", "endpoint": "http://minio:9000", "force_path_style": True},
+        {"access_key_id": "x", "secret_access_key": "y"},
+    )
+    await adapter.test()
+    assert spy.calls == ["minio"]
+    assert seen["endpoint_url"] == f"http://{_PINNED_IP}:9000"
+
+
+async def test_s3_https_endpoint_keeps_hostname(monkeypatch):
+    """An https custom endpoint keeps its hostname (TLS/SNI) while still being
+    egress-checked."""
+    spy = _PinSpy(pinned=[])  # allowlisted-style: no pin
+    monkeypatch.setattr(s3_mod, "resolve_pinned", spy)
+    seen: dict[str, object] = {}
+
+    def _client(*a, **k):
+        seen["endpoint_url"] = k.get("endpoint_url")
+        return _FakeS3Client()
+
+    monkeypatch.setattr(s3_mod.boto3, "client", _client)
 
     adapter = S3Adapter(
         {"bucket": "b", "endpoint": "https://minio:9000", "force_path_style": True},
@@ -86,12 +129,13 @@ async def test_s3_endpoint_host_used_for_egress(monkeypatch):
     )
     await adapter.test()
     assert spy.calls == ["minio"]
+    assert seen["endpoint_url"] == "https://minio:9000"
 
 
 async def test_s3_test_failure(monkeypatch):
     from botocore.exceptions import ClientError
 
-    monkeypatch.setattr(s3_mod, "enforce", _EgressSpy())
+    monkeypatch.setattr(s3_mod, "resolve_pinned", _PinSpy())
     err = ClientError({"Error": {"Code": "403", "Message": "denied"}}, "HeadBucket")
     fake = _FakeS3Client(head_error=err)
 
@@ -108,7 +152,7 @@ async def test_s3_test_failure(monkeypatch):
 
 
 async def test_s3_egress_blocked_short_circuits(monkeypatch):
-    monkeypatch.setattr(s3_mod, "enforce", _EgressSpy(blocked=True))
+    monkeypatch.setattr(s3_mod, "resolve_pinned", _PinSpy(blocked=True))
     # boto3.client must never be called when egress blocks.
     monkeypatch.setattr(
         s3_mod.boto3, "client", lambda *a, **k: pytest.fail("client built despite block")
@@ -162,12 +206,14 @@ class _FakeSSHConn:
 
 
 async def test_sftp_test_ok_exposes_host_key(monkeypatch):
-    spy = _EgressSpy()
-    monkeypatch.setattr(sftp_mod, "enforce", spy)
+    spy = _PinSpy()
+    monkeypatch.setattr(sftp_mod, "resolve_pinned", spy)
     sftp = _FakeSFTP()
 
     async def _connect(**kwargs):
         assert kwargs["known_hosts"] is None
+        # dials the PINNED IP, not the hostname (DNS-rebinding defence)
+        assert kwargs["host"] == _PINNED_IP
         return _FakeSSHConn(sftp)
 
     monkeypatch.setattr(sftp_mod.asyncssh, "connect", _connect)
@@ -186,8 +232,27 @@ async def test_sftp_test_ok_exposes_host_key(monkeypatch):
     assert spy.calls == ["sftp.example"]
 
 
+async def test_sftp_allowlisted_dials_hostname(monkeypatch):
+    """An allowlisted host (resolve_pinned -> []) is dialed by name."""
+    monkeypatch.setattr(sftp_mod, "resolve_pinned", _PinSpy(pinned=[]))
+    sftp = _FakeSFTP()
+
+    async def _connect(**kwargs):
+        assert kwargs["host"] == "sftp-test"
+        return _FakeSSHConn(sftp)
+
+    monkeypatch.setattr(sftp_mod.asyncssh, "connect", _connect)
+    adapter = SftpAdapter(
+        {"host": "sftp-test"},
+        {"username": "u", "password": "p"},
+        allow_hosts=frozenset({"sftp-test"}),
+    )
+    result = await adapter.test()
+    assert result["ok"] is True
+
+
 async def test_sftp_test_failure(monkeypatch):
-    monkeypatch.setattr(sftp_mod, "enforce", _EgressSpy())
+    monkeypatch.setattr(sftp_mod, "resolve_pinned", _PinSpy())
 
     async def _connect(**kwargs):
         raise OSError("connection refused")
@@ -200,7 +265,7 @@ async def test_sftp_test_failure(monkeypatch):
 
 
 async def test_sftp_egress_blocked(monkeypatch):
-    monkeypatch.setattr(sftp_mod, "enforce", _EgressSpy(blocked=True))
+    monkeypatch.setattr(sftp_mod, "resolve_pinned", _PinSpy(blocked=True))
 
     async def _connect(**kwargs):  # pragma: no cover - must not run
         pytest.fail("connected despite egress block")
@@ -227,7 +292,11 @@ class _FakeFtpClient:
         self.listed = None
         self.quit_called = False
         self.upgraded = False
+        self.egress = None
         _FakeFtpClient.instances.append(self)
+
+    def configure_egress(self, control_host, host_allowlisted):
+        self.egress = (control_host, host_allowlisted)
 
     async def connect(self, host, port):
         self.connected = (host, port)
@@ -256,9 +325,9 @@ def _reset_ftp_instances():
 
 
 async def test_ftp_test_ok(monkeypatch):
-    spy = _EgressSpy()
-    monkeypatch.setattr(ftp_mod, "enforce", spy)
-    monkeypatch.setattr(ftp_mod.aioftp, "Client", _FakeFtpClient)
+    spy = _PinSpy()
+    monkeypatch.setattr(ftp_mod, "resolve_pinned", spy)
+    monkeypatch.setattr(ftp_mod, "_EgressFtpClient", _FakeFtpClient)
 
     adapter = FtpAdapter(
         {"host": "ftp.example", "port": 21, "root_path": "/pub"},
@@ -269,7 +338,9 @@ async def test_ftp_test_ok(monkeypatch):
     assert result["ok"] is True
     assert "latency_ms" in result
     client = _FakeFtpClient.instances[-1]
-    assert client.connected == ("ftp.example", 21)
+    # plain FTP dials the PINNED IP, not the hostname
+    assert client.connected == (_PINNED_IP, 21)
+    assert client.egress == (_PINNED_IP, False)
     assert client.logged_in == ("u", "p")
     assert client.listed == "/pub"
     assert client.quit_called
@@ -277,25 +348,34 @@ async def test_ftp_test_ok(monkeypatch):
 
 
 async def test_ftp_test_failure(monkeypatch):
-    import aioftp
-
-    monkeypatch.setattr(ftp_mod, "enforce", _EgressSpy())
+    monkeypatch.setattr(ftp_mod, "resolve_pinned", _PinSpy())
 
     class _BadClient(_FakeFtpClient):
         async def login(self, user="anonymous", password=""):
             raise aioftp.StatusCodeError("530", "530", "login failed")
 
-    monkeypatch.setattr(ftp_mod.aioftp, "Client", _BadClient)
+    monkeypatch.setattr(ftp_mod, "_EgressFtpClient", _BadClient)
     adapter = FtpAdapter({"host": "h"}, {"username": "u", "password": "bad"})
     result = await adapter.test()
     assert result["ok"] is False
     assert "FTP test failed" in result["message"]
 
 
+async def test_ftp_egress_blocked(monkeypatch):
+    monkeypatch.setattr(ftp_mod, "resolve_pinned", _PinSpy(blocked=True))
+    monkeypatch.setattr(
+        ftp_mod, "_EgressFtpClient", lambda *a, **k: pytest.fail("client built despite block")
+    )
+    adapter = FtpAdapter({"host": "internal"}, {"username": "u", "password": "p"})
+    result = await adapter.test()
+    assert result["ok"] is False
+    assert "blocked" in result["message"]
+
+
 async def test_ftps_explicit_upgrades_tls(monkeypatch):
-    # test() is inherited from FtpAdapter, so it uses the ftp module's enforce.
-    monkeypatch.setattr(ftp_mod, "enforce", _EgressSpy())
-    monkeypatch.setattr(ftps_mod.aioftp, "Client", _FakeFtpClient)
+    # test() is inherited from FtpAdapter; it resolves via the ftp module.
+    monkeypatch.setattr(ftp_mod, "resolve_pinned", _PinSpy())
+    monkeypatch.setattr(ftps_mod, "_EgressFtpClient", _FakeFtpClient)
 
     adapter = FtpsAdapter(
         {"host": "ftps.example", "implicit": False},
@@ -307,11 +387,13 @@ async def test_ftps_explicit_upgrades_tls(monkeypatch):
     assert client.upgraded is True  # AUTH TLS happened
     # explicit mode: no ssl passed to the constructor
     assert client.kwargs.get("ssl") is None
+    # FTPS dials the HOSTNAME (TLS cert validation), not the pinned IP
+    assert client.connected == ("ftps.example", 21)
 
 
 async def test_ftps_implicit_passes_ssl_context(monkeypatch):
-    monkeypatch.setattr(ftp_mod, "enforce", _EgressSpy())
-    monkeypatch.setattr(ftps_mod.aioftp, "Client", _FakeFtpClient)
+    monkeypatch.setattr(ftp_mod, "resolve_pinned", _PinSpy())
+    monkeypatch.setattr(ftps_mod, "_EgressFtpClient", _FakeFtpClient)
 
     adapter = FtpsAdapter(
         {"host": "ftps.example", "implicit": True},
@@ -322,6 +404,67 @@ async def test_ftps_implicit_passes_ssl_context(monkeypatch):
     client = _FakeFtpClient.instances[-1]
     assert client.upgraded is False  # implicit: no explicit AUTH TLS
     assert client.kwargs.get("ssl") is not None
+
+
+# --------------------------------------------------------------------------- #
+# PASV/EPSV data-channel egress guard (the second SSRF hole)
+# --------------------------------------------------------------------------- #
+
+
+async def test_ftp_passive_data_channel_forced_to_control_host(monkeypatch):
+    """A PASV/EPSV reply advertising an internal IP must NOT open a data
+    connection there — it is forced to the validated control host."""
+    opened: list[tuple[str, int]] = []
+
+    async def _super_open(self, host, port):
+        opened.append((host, port))
+        return ("reader", "writer")
+
+    monkeypatch.setattr(aioftp.Client, "_open_connection", _super_open)
+
+    client = _EgressFtpClient()
+    client.configure_egress(_PINNED_IP, host_allowlisted=False)
+    client._stream = object()  # simulate an established control channel
+
+    # server advertises the cloud metadata address for the data channel
+    await client._open_connection("169.254.169.254", 50000)
+    assert opened == [(_PINNED_IP, 50000)]  # forced to control host; port kept
+
+
+async def test_ftp_passive_allowlisted_host_not_forced(monkeypatch):
+    """An operator-allowlisted (compose-internal) host may use its advertised
+    private data address."""
+    opened: list[tuple[str, int]] = []
+
+    async def _super_open(self, host, port):
+        opened.append((host, port))
+        return ("reader", "writer")
+
+    monkeypatch.setattr(aioftp.Client, "_open_connection", _super_open)
+
+    client = _EgressFtpClient()
+    client.configure_egress("sftp-test", host_allowlisted=True)
+    client._stream = object()
+    await client._open_connection("10.0.0.9", 50000)
+    assert opened == [("10.0.0.9", 50000)]  # allowlisted: advertised addr kept
+
+
+async def test_ftp_control_connection_not_forced(monkeypatch):
+    """The control connection itself (stream not yet established) passes through
+    unchanged."""
+    opened: list[tuple[str, int]] = []
+
+    async def _super_open(self, host, port):
+        opened.append((host, port))
+        return ("reader", "writer")
+
+    monkeypatch.setattr(aioftp.Client, "_open_connection", _super_open)
+
+    client = _EgressFtpClient()
+    client.configure_egress(_PINNED_IP, host_allowlisted=False)
+    # _stream is None -> control connection
+    await client._open_connection(_PINNED_IP, 21)
+    assert opened == [(_PINNED_IP, 21)]
 
 
 # --------------------------------------------------------------------------- #

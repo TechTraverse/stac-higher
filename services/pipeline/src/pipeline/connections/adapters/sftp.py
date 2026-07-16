@@ -15,7 +15,7 @@ from typing import Any
 import asyncssh
 
 from pipeline.connections.adapters.base import StorageAdapter, TestResult
-from pipeline.connections.egress import EgressBlocked, enforce
+from pipeline.connections.egress import EgressBlocked, resolve_pinned
 
 
 def host_key_string(key: asyncssh.SSHKey) -> str:
@@ -51,9 +51,19 @@ class SftpAdapter(StorageAdapter):
         """Join a caller path under root_path (defends against absolute paths)."""
         return posixpath.normpath(posixpath.join(self._root, path.lstrip("/")))
 
-    def _connect_kwargs(self) -> dict[str, Any]:
+    def _pinned_host(self) -> str:
+        """Resolve+validate once, return the IP to dial (defeats rebinding).
+
+        Allowlisted (operator-vouched, compose-internal) hosts resolve to ``[]``
+        and we fall back to the hostname. Host identity is verified by our TOFU
+        layer against the observed server key, so dialing a bare IP is safe.
+        """
+        pinned = resolve_pinned(self._host, self._allow_hosts)
+        return pinned[0] if pinned else self._host
+
+    def _connect_kwargs(self, host: str) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
-            "host": self._host,
+            "host": host,
             "port": self._port,
             "username": self._creds.get("username"),
             # our TOFU layer verifies the key; disable asyncssh's own check.
@@ -70,17 +80,17 @@ class SftpAdapter(StorageAdapter):
         return kwargs
 
     async def _connect(self) -> asyncssh.SSHClientConnection:
-        enforce(self._host, self._allow_hosts)
-        return await asyncssh.connect(**self._connect_kwargs())
+        host = self._pinned_host()
+        return await asyncssh.connect(**self._connect_kwargs(host))
 
     async def test(self) -> TestResult:
         started = time.monotonic()
         try:
-            enforce(self._host, self._allow_hosts)
+            host = self._pinned_host()
         except EgressBlocked as exc:
             return {"ok": False, "message": str(exc)}
         try:
-            async with await asyncssh.connect(**self._connect_kwargs()) as conn:
+            async with await asyncssh.connect(**self._connect_kwargs(host)) as conn:
                 observed = host_key_string(conn.get_server_host_key())
                 async with conn.start_sftp_client() as sftp:
                     # prove the root is reachable/authorized
