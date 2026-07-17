@@ -4,6 +4,7 @@ from pipeline.config import Settings
 from pipeline.jobs.drain import JOB_NAME as DRAIN_JOB
 from pipeline.jobs.health_sweep import JOB_NAME as SWEEP_JOB
 from pipeline.jobs.heartbeat import JOB_NAME as HEARTBEAT_JOB
+from pipeline.jobs.ingest import JOB_DISCOVER, JOB_FETCH, JOB_GROUP, JOB_ITEMIZE, JOB_POLL
 from pipeline.jobs.staging_cleanup import JOB_NAME as CLEANUP_JOB
 from pipeline.main import build_queue
 
@@ -13,3 +14,4 @@ def test_build_queue_registers_all_periodic_jobs():
     queue = build_queue(Settings.from_env(env={}))
     registered = set(queue.app.tasks)
     assert {HEARTBEAT_JOB, DRAIN_JOB, SWEEP_JOB, CLEANUP_JOB} <= registered
+    assert {JOB_POLL, JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE} <= registered

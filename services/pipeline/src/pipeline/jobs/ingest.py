@@ -19,10 +19,12 @@ from pipeline.ingest.config import IngestConfig, parse_ingest_config
 from pipeline.ingest.discover import discover_stage
 from pipeline.ingest.fetch import fetch_stage
 from pipeline.ingest.group import group_stage
+from pipeline.ingest.itemize import run_itemize
 from pipeline.ingest.repo import IngestAssociation, PgIngestRepo
 from pipeline.ingest.scheduler import due_associations
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.queue.interface import QueueBackend
+from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ JOB_POLL = "pipeline.ingest_poll"
 JOB_DISCOVER = "pipeline.ingest_discover"
 JOB_GROUP = "pipeline.ingest_group"
 JOB_FETCH = "pipeline.ingest_fetch"
+JOB_ITEMIZE = "pipeline.ingest_itemize"
 CRON = "* * * * *"
 
 
@@ -108,7 +111,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             association.connection, master_key, settings.egress_allow_hosts
         )
         s3_client = build_platform_client(settings)
-        await fetch_stage(
+        stored = await fetch_stage(
             repo,
             association,
             config,
@@ -118,8 +121,44 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             item_id,
             source_paths,
         )
+        if stored:
+            await queue.enqueue(
+                JOB_ITEMIZE,
+                {
+                    "association_id": association_id,
+                    "item_id": item_id,
+                    "source_paths": source_paths,
+                },
+            )
+
+    async def itemize(association_id: str, item_id: str, source_paths: list[str]) -> None:
+        master_key = load_key_or_skip(settings, JOB_ITEMIZE)
+        if master_key is None:
+            return
+        loaded = await _load_association(settings, association_id)
+        if loaded is None:
+            return
+        repo, association, config = loaded
+        adapter = build_adapter(
+            association.connection, master_key, settings.egress_allow_hosts
+        )
+        s3_client = build_platform_client(settings)
+        writer = PgPgstacWriter(settings.database_url)
+        await run_itemize(
+            repo,
+            writer,
+            adapter,
+            s3_client,
+            association=association,
+            config=config,
+            item_id=item_id,
+            source_paths=source_paths,
+            bucket=settings.staging_bucket,
+            asset_href_base=settings.asset_href_base,
+        )
 
     queue.register_periodic(poll, name=JOB_POLL, cron=CRON)
     queue.register_task(discover, name=JOB_DISCOVER)
     queue.register_task(group, name=JOB_GROUP)
     queue.register_task(fetch, name=JOB_FETCH)
+    queue.register_task(itemize, name=JOB_ITEMIZE)
