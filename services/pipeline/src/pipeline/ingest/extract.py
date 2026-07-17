@@ -12,6 +12,7 @@ bad item.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import posixpath
@@ -19,12 +20,15 @@ from dataclasses import dataclass
 from typing import Any
 from xml.etree.ElementTree import Element, ParseError  # types only
 
+import pystac
+
 # defusedxml hardens against XXE + entity-expansion DoS (billion-laughs /
 # quadratic-blowup) that stdlib xml.etree does NOT defend against. Required by
 # the FISMA-High posture — never swap this back to stdlib.
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _xml_fromstring
 
+from pipeline.storage import platform
 from pipeline.storage.keys import asset_href
 
 STAC_VERSION = "1.0.0"
@@ -247,3 +251,112 @@ def build_defaults_only(
         ),
         "links": [],
     }
+
+
+def build_raster_auto(
+    collection_id: str,
+    item_id: str,
+    members: list[ExtractMember],
+    cfg: MetadataConfig,
+    raster_bytes: bytes,
+    asset_href_base: str,
+) -> dict[str, Any]:
+    """rio-stac over the primary raster (read from an in-memory file), with asset
+    hrefs rewritten to the app route and all group members attached as assets.
+
+    ``rasterio``/``rio_stac`` are imported here, not at module scope, so
+    importing this module stays cheap and non-raster tests don't require GDAL.
+    """
+    import rasterio
+    from rio_stac.stac import create_stac_item
+
+    primary = _primary(members)
+    when = resolve_datetime(None, cfg, primary) if cfg.default_datetime else None
+    try:
+        with rasterio.io.MemoryFile(raster_bytes) as mem, mem.open() as src:
+            item = create_stac_item(
+                source=src,
+                id=item_id,
+                collection=collection_id,
+                input_datetime=when,  # None → rio-stac uses dataset/now
+                asset_name=posixpath.splitext(primary.filename)[0],
+                asset_href=asset_href(
+                    collection_id, item_id, primary.filename, base=asset_href_base
+                ),
+                asset_roles=["data"],
+                asset_media_type=media_type_for(primary.filename),
+                with_proj=True,
+                with_raster=True,
+            )
+    except Exception as exc:
+        raise ExtractError(f"raster_auto extraction failed: {exc}") from exc
+
+    # Attach non-primary members as additional assets. A member sharing the
+    # primary's stem (e.g. a scene.xml sidecar next to scene.tif) must not
+    # clobber the data asset create_stac_item already added under that key —
+    # the data asset wins on stem collision, same rule as build_assets.
+    for m in members:
+        if m.filename == primary.filename:
+            continue
+        key = posixpath.splitext(m.filename)[0]
+        if key in item.assets:
+            continue
+        item.add_asset(
+            key,
+            pystac.Asset(
+                href=asset_href(collection_id, item_id, m.filename, base=asset_href_base),
+                media_type=media_type_for(m.filename),
+                roles=["metadata"],
+            ),
+        )
+    return item.to_dict(include_self_link=False, transform_hrefs=False)
+
+
+async def build_item(
+    *,
+    collection_id: str,
+    item_id: str,
+    members: list[ExtractMember],
+    metadata: dict[str, Any],
+    s3_client: platform.S3Like,
+    bucket: str,
+    asset_href_base: str,
+) -> dict[str, Any]:
+    """Dispatch on metadata.strategy, reading member bytes from canonical storage
+    only when the strategy needs them."""
+    if not members:
+        raise ExtractError("no members to itemize")
+    cfg = parse_metadata(metadata)
+
+    if cfg.strategy == "defaults_only":
+        return build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
+
+    if cfg.strategy == "sidecar":
+        sidecar = _match_sidecar(members, cfg)
+        data = await asyncio.to_thread(
+            platform.get_object, s3_client, bucket, sidecar.canonical_key
+        )
+        return build_sidecar(collection_id, item_id, members, cfg, data, asset_href_base)
+
+    # raster_auto
+    primary = _primary(members)
+    if not is_raster(primary.filename):
+        # No raster to read — fall back to a null-geometry item.
+        return build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
+    data = await asyncio.to_thread(
+        platform.get_object, s3_client, bucket, primary.canonical_key
+    )
+    return build_raster_auto(collection_id, item_id, members, cfg, data, asset_href_base)
+
+
+def _match_sidecar(members: list[ExtractMember], cfg: MetadataConfig) -> ExtractMember:
+    """Locate the sidecar member by pattern (`{basename}.xml` → suffix match)."""
+    if cfg.sidecar_pattern:
+        suffix = cfg.sidecar_pattern.split("}", 1)[-1]  # `{basename}.xml` → `.xml`
+        for m in members:
+            if m.filename.endswith(suffix) and not is_raster(m.filename):
+                return m
+    for m in members:
+        if not is_raster(m.filename):
+            return m
+    raise ExtractError("sidecar strategy but no sidecar member found")

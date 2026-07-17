@@ -1,11 +1,17 @@
 import datetime as dt
+import io
 
+import numpy as np
 import pytest
+from rasterio.io import MemoryFile
+from rasterio.transform import from_bounds
 
 from pipeline.ingest.extract import (
     ExtractError,
     ExtractMember,
     build_defaults_only,
+    build_item,
+    build_raster_auto,
     build_sidecar,
     media_type_for,
     parse_metadata,
@@ -124,3 +130,86 @@ def test_build_sidecar_uses_extracted_datetime():
     assert item["properties"]["datetime"] == "2023-05-05T10:00:00Z"
     assert set(item["assets"]) == {"scene"}  # both members, keyed by stem
     assert item["assets"]["scene"]["roles"] == ["data"]
+
+
+def _geotiff_bytes():
+    arr = np.arange(16, dtype="uint8").reshape(1, 4, 4)
+    transform = from_bounds(-1, -1, 1, 1, 4, 4)
+    with MemoryFile() as mem:
+        with mem.open(
+            driver="GTiff", height=4, width=4, count=1, dtype="uint8",
+            crs="EPSG:4326", transform=transform,
+        ) as ds:
+            ds.write(arr)
+        return mem.read()
+
+
+class _FakeS3:
+    def __init__(self, objects):
+        self.objects = objects
+
+    def get_object(self, Bucket, Key):
+        return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
+
+
+def test_build_raster_auto_sets_geometry_and_href():
+    members = [_member("scene.tif")]
+    cfg = parse_metadata({"strategy": "raster_auto"})
+    item = build_raster_auto("col", "scene", members, cfg, _geotiff_bytes(), "/api/assets")
+    assert item["id"] == "scene"
+    assert item["collection"] == "col"
+    assert item["geometry"] is not None and item["geometry"]["type"] == "Polygon"
+    assert item["bbox"] is not None
+    assert item["assets"]["scene"]["href"] == "/api/assets/col/scene/scene.tif"
+    assert "proj:epsg" in item["properties"] or "proj:code" in item["properties"]
+
+
+def test_build_raster_auto_sidecar_does_not_clobber_primary_asset():
+    # A sidecar sharing the primary's stem (scene.xml next to scene.tif) must
+    # not overwrite the data asset create_stac_item already added under that
+    # key — the data asset wins on stem collision, same as build_assets.
+    members = [
+        _member("scene.tif"),
+        ExtractMember("products/scene.xml", "scene.xml", "assets/col/scene/scene.xml", None),
+    ]
+    cfg = parse_metadata({"strategy": "raster_auto"})
+    item = build_raster_auto("col", "scene", members, cfg, _geotiff_bytes(), "/api/assets")
+    assert set(item["assets"]) == {"scene"}
+    assert item["assets"]["scene"]["roles"] == ["data"]
+    assert item["assets"]["scene"]["href"] == "/api/assets/col/scene/scene.tif"
+
+
+async def test_build_item_dispatches_raster_auto_reads_from_storage():
+    members = [_member("scene.tif")]
+    s3 = _FakeS3({("bucket", "assets/col/scene/scene.tif"): _geotiff_bytes()})
+    item = await build_item(
+        collection_id="col", item_id="scene", members=members,
+        metadata={"strategy": "raster_auto"}, s3_client=s3, bucket="bucket",
+        asset_href_base="/api/assets",
+    )
+    assert item["geometry"] is not None
+
+
+async def test_build_item_defaults_only_reads_nothing():
+    members = [_member("scene.bin")]
+    s3 = _FakeS3({})  # no objects — defaults_only must not read
+    item = await build_item(
+        collection_id="col", item_id="scene", members=members,
+        metadata={"strategy": "defaults_only", "defaults": {"datetime": "2021-01-01T00:00:00Z"}},
+        s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+    )
+    assert item["geometry"] is None
+
+
+async def test_build_item_dispatches_sidecar_reads_sidecar_bytes():
+    members = [
+        _member("scene.tif"),
+        ExtractMember("products/scene.xml", "scene.xml", "assets/col/scene/scene.xml", None),
+    ]
+    s3 = _FakeS3({("bucket", "assets/col/scene/scene.xml"): _XML})
+    item = await build_item(
+        collection_id="col", item_id="scene", members=members,
+        metadata={"strategy": "sidecar", "sidecar": {"pattern": "{basename}.xml"}},
+        s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+    )
+    assert item["properties"]["datetime"] == "2023-05-05T10:00:00Z"
