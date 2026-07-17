@@ -10,6 +10,7 @@ import { ErrorState } from "@stac-higher/shared";
 import { Skeleton } from "@stac-higher/shared";
 import { ItemCard } from "@stac-higher/shared";
 import { AssetManager } from "@/components/assets/AssetManager";
+import { DataFlowTab } from "./DataFlowTab";
 import { StacMap } from "@stac-higher/shared";
 import { ExtentLayer } from "@stac-higher/shared";
 import { bboxToLngLatBounds } from "@/lib/map/bbox";
@@ -160,6 +161,11 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
             <TabsTrigger value="assets">
               Assets {collection.assets ? `(${Object.keys(collection.assets).length})` : ""}
             </TabsTrigger>
+            {/* Data flow (ingest/delivery) applies to the built-in catalog only
+                — external catalogs are browse-only (ROADMAP §1). */}
+            {catalog?.builtIn && (
+              <TabsTrigger value="dataflow">Data flow</TabsTrigger>
+            )}
             <TabsTrigger value="json">Raw JSON</TabsTrigger>
           </TabsList>
 
@@ -317,6 +323,12 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
           <TabsContent value="assets">
             <AssetManager collection={collection} endpointUrl={endpointUrl} />
           </TabsContent>
+
+          {catalog?.builtIn && (
+            <TabsContent value="dataflow">
+              <DataFlowTab collectionId={collectionId} />
+            </TabsContent>
+          )}
 
           <TabsContent value="json">
             <JsonViewer data={collection} defaultOpen />

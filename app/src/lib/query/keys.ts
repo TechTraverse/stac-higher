@@ -17,6 +17,15 @@ export const connectionKeys = {
   detail: (id: string) => [...connectionKeys.all(), id] as const,
 };
 
+/** Ingest/delivery associations, scoped per collection (Phase 4). */
+export const associationKeys = {
+  all: () => ["associations"] as const,
+  list: (collectionId: string) =>
+    [...associationKeys.all(), collectionId] as const,
+  detail: (collectionId: string, id: string) =>
+    [...associationKeys.list(collectionId), id] as const,
+};
+
 export const stacKeys = {
   all: (endpointUrl: string) => ["stac", endpointUrl] as const,
 

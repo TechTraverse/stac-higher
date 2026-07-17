@@ -575,7 +575,8 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 1 — Auth, RBAC & audit | ✅ Done | Merged & verified. One item carried forward: per-collection **read-visibility** filtering at the proxy needs OPA / a custom filter factory (ADR 0002) — transaction protection + audience validation are done and integration-tested. |
 | 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
 | 3 — Object storage & asset service | ✅ Done | App storage lib + `GET /api/assets/{collection}/{item}/{asset}` (RBAC → presigned 302) + `POST /api/uploads` (operator+, presigned PUT) + manual asset upload in the item form + pipeline staging-TTL cleanup job. No new tables. Live-verified: upload → PUT to MinIO → asset-route 302 → byte round-trip; staging sweep deletes an expired upload and leaves canonical assets intact. ADR 0005. |
-| 4–8 | ⬜ Not started | — |
+| 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. Pipeline ingest chain (Slice B) + `storage_mode: reference` (Slice C) pending. |
+| 5–8 | ⬜ Not started | — |
 
 Per-phase detail and any carried-forward items are noted inline below.
 
@@ -711,8 +712,17 @@ Repo and runtime scaffolding so every later phase has a place to land.
   uploaded bytes are not yet server-side validated (no finalize step) — that
   arrives with the Phase 7 push path.
 
-### Phase 4 — Ingest pipeline ⬜ **Not started**
-- `collection_connections` (ingest direction) + `ingest_files` ledger
+### Phase 4 — Ingest pipeline 🚧 **In progress**
+- ✅ **Slice A (app associations + Data-flow UI):** `collection_connections` +
+  `ingest_files` ledger (migration 005; app owns DDL, pipeline reads/writes
+  rows). Ingest `config` Zod schema (§5.1) as the cross-runtime contract.
+  `/api/collections/[id]/connections` CRUD — operator+ gated & audited, group
+  ownership enforced in-route, `reference` mode restricted to s3 connections,
+  duplicate (collection,connection,direction) → 409. Data-flow tab (ingest
+  half) on built-in-catalog collections. `ingest_files` is a plain table here;
+  Phase 6 time-partitions it (mirrors the audit_log deferral). Slices B/C below
+  are pending.
+- ⬜ `collection_connections` (ingest direction) + `ingest_files` ledger
   (time-partitioned, versioned rows).
 - Scheduler (per-association poll) + DISCOVER/GROUP/FETCH/EXTRACT/ITEMIZE
   **batch-oriented** job chain per §6.1, with settled-check, grouping timeout,

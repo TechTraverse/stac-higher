@@ -172,6 +172,93 @@ const MIGRATIONS = [
         WHERE status = 'pending';
     `,
   },
+  {
+    // Phase 4 (ROADMAP §5 COLLECTION_CONNECTIONS + INGEST_FILES, §6.1): the
+    // collection↔connection associations that drive ingest/delivery, and the
+    // per-file ingest ledger the pipeline maintains. Both follow the
+    // cross-runtime contract — the Python pipeline reads collection_connections
+    // and reads/writes ingest_files, and NEVER creates them
+    // (docs/decisions/0001-migration-ownership.md). The app owns this DDL; the
+    // app writes associations (this slice) and the pipeline writes the ledger
+    // (Phase 4 pipeline slice).
+    //
+    // collection_id is TEXT (pgstac collection ids are strings, created
+    // out-of-band), matching collection_settings. The direction CHECK admits
+    // both 'ingest' and 'deliver' so Phase 5 delivery reuses this table without
+    // a further migration; the app's association CRUD only writes 'ingest' rows
+    // this phase. config is the §5.1 shape (validated app-side by the ingest
+    // Zod schema, mirrored in the pipeline). flow_stats is PIPELINE-written
+    // telemetry (files/bytes/last_activity_at/latency) — the app reads it for
+    // the Data-flow UI but never writes it, so no trigger touches it.
+    name: "005_ingest_associations_and_files",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.collection_connections (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        collection_id text NOT NULL,
+        connection_id uuid NOT NULL REFERENCES stac_higher.connections(id) ON DELETE CASCADE,
+        direction text NOT NULL CHECK (direction IN ('ingest','deliver')),
+        enabled boolean NOT NULL DEFAULT true,
+        config jsonb NOT NULL DEFAULT '{}'::jsonb,
+        expectation jsonb,
+        flow_stats jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_by text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        -- One association per (collection, connection, direction): a source is
+        -- either wired for ingest into a collection or not.
+        UNIQUE (collection_id, connection_id, direction)
+      );
+
+      CREATE INDEX IF NOT EXISTS collection_connections_collection_idx
+        ON stac_higher.collection_connections (collection_id);
+      CREATE INDEX IF NOT EXISTS collection_connections_connection_idx
+        ON stac_higher.collection_connections (connection_id);
+      -- The pipeline poll scheduler scans enabled ingest associations.
+      CREATE INDEX IF NOT EXISTS collection_connections_ingest_enabled_idx
+        ON stac_higher.collection_connections (direction, enabled)
+        WHERE direction = 'ingest' AND enabled;
+
+      -- ingest_files is the per-source-file ledger (ROADMAP §5, §6.1). Every
+      -- ingest stage is idempotent against it. version increments when a
+      -- previously-itemized source file changes (re-ingest = new version of the
+      -- same product, same item_id). Written by the pipeline FETCH/EXTRACT/
+      -- ITEMIZE stages; the app only reads it (activity/latency in the UI).
+      --
+      -- Phase 6 hygiene (do NOT build now, mirrors the audit_log deferral in
+      -- migration 003): this is an envelope-scale high-volume table — Phase 6
+      -- time-partitions it on created_at and adds a partition-drop retention
+      -- job. Kept a plain table here so the ingest slice can land first.
+      CREATE TABLE IF NOT EXISTS stac_higher.ingest_files (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        association_id uuid NOT NULL REFERENCES stac_higher.collection_connections(id) ON DELETE CASCADE,
+        source_path text NOT NULL,
+        version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
+        size bigint,
+        fingerprint text,
+        checksum text,
+        status text NOT NULL DEFAULT 'seen'
+          CHECK (status IN ('seen','settled','fetching','stored','itemized','failed')),
+        item_id text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        -- The ledger is keyed by (association, source_path, version): the
+        -- pipeline UPSERTs the current version and inserts a new version row on
+        -- a fingerprint change.
+        UNIQUE (association_id, source_path, version)
+      );
+
+      CREATE INDEX IF NOT EXISTS ingest_files_association_idx
+        ON stac_higher.ingest_files (association_id);
+      -- DISCOVER diffs the live listing against the ledger by source_path.
+      CREATE INDEX IF NOT EXISTS ingest_files_association_path_idx
+        ON stac_higher.ingest_files (association_id, source_path);
+      -- The asset route's reference-mode branch (Phase 4 Slice C) and the
+      -- Data-flow UI look files up by the itemized item_id.
+      CREATE INDEX IF NOT EXISTS ingest_files_item_idx
+        ON stac_higher.ingest_files (item_id)
+        WHERE item_id IS NOT NULL;
+    `,
+  },
 ];
 
 let migrated = false;

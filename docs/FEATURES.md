@@ -87,6 +87,23 @@ No new tables: the asset route derives keys from URL params; uploads derive from
 
 ---
 
-## Phases 4–8 — Not started ⬜
+## Phase 4 — Ingest pipeline 🚧
 
-Ingestion, delivery, retention/GC, observability, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md). Phase 4 (ingest) is the first live consumer of the connection adapter `get/put` methods and lands the `storage_mode: reference` branch in `resolveAssetTarget`.
+Poll-based ingest of files from source connections into built-in-catalog collections. Delivered in slices: **Slice A (app associations + Data-flow UI) is done**; the pipeline ingest chain (Slice B) and `storage_mode: reference` wiring (Slice C) are pending.
+
+| Feature | Status | Entry points |
+|---|---|---|
+| Association + ledger tables | ✅ | migration `005_ingest_associations_and_files`: `stac_higher.collection_connections` (both directions; app writes `ingest` this phase) + `stac_higher.ingest_files` ledger (app owns DDL; pipeline reads/writes rows — ADR 0001) |
+| Ingest `config` Zod schema (§5.1) | ✅ | `app/src/lib/associations/schemas.ts` — cross-runtime contract (source_path, include/exclude, poll_frequency, storage_mode, grouping, metadata, post_ingest); nested defaults filled via function-defaults |
+| Association CRUD API | ✅ | `GET/POST /api/collections/[id]/connections`, `GET/PUT/DELETE /api/collections/[id]/connections/[assocId]` — operator+ gated & audited; group ownership enforced in-route; `reference` mode restricted to s3 connections; duplicate (collection,connection,direction) → 409 |
+| Data-flow tab (ingest half) | ✅ | `app/src/components/collections/DataFlowTab.tsx`, wired into `CollectionDetail.tsx` (built-in catalog only): add/edit ingest sources, enable/disable, remove |
+| Pipeline ingest chain (DISCOVER→…→ITEMIZE) | ⬜ | Slice B — scheduler + batch job chain, `raster_auto`/sidecar EXTRACT, stac-pydantic validate, **pypgstac** upsert; enriched adapter `list` metadata; copy-mode FETCH |
+| `storage_mode: reference` | ⬜ | Slice C — `resolveAssetTarget` branch to source href (persisted in `ingest_files`) |
+
+No new client deps in Slice A. Decisions: [ADR 0001 — migration ownership](decisions/0001-migration-ownership.md). Residuals in [`ISSUES.md`](ISSUES.md) (I-17, I-18).
+
+---
+
+## Phases 5–8 — Not started ⬜
+
+Delivery, retention/GC, observability, push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).

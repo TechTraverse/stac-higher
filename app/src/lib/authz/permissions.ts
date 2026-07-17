@@ -89,6 +89,37 @@ export function matchGatedRoute(
   if (m === "POST" && path === "/api/uploads") {
     return { action: "create", resourceType: "upload", resourceId: null };
   }
+
+  // Phase 4: collection↔connection ingest associations. Create is audited with
+  // the new association id (extracted from the 201 body); update/delete carry
+  // the association id from the path. Group ownership is enforced in-route.
+  const collConnCreate = path.match(/^\/api\/collections\/([^/]+)\/connections$/);
+  if (m === "POST" && collConnCreate) {
+    return {
+      action: "create",
+      resourceType: "collection_connection",
+      resourceId: null,
+    };
+  }
+  const collConnId = path.match(
+    /^\/api\/collections\/([^/]+)\/connections\/([^/]+)$/,
+  );
+  if (collConnId) {
+    if (m === "PUT" || m === "PATCH") {
+      return {
+        action: "update",
+        resourceType: "collection_connection",
+        resourceId: collConnId[2],
+      };
+    }
+    if (m === "DELETE") {
+      return {
+        action: "delete",
+        resourceType: "collection_connection",
+        resourceId: collConnId[2],
+      };
+    }
+  }
   const connTest = path.match(/^\/api\/connections\/([^/]+)\/test$/);
   if (m === "POST" && connTest) {
     return { action: "test", resourceType: "connection", resourceId: connTest[1] };

@@ -105,6 +105,8 @@ Astro server routes:
 | `/api/connections/[id]/host-key/reset` | POST | Clear the TOFU host-key pin so the next test re-pins (ssh/sftp) |
 | `/api/uploads` | POST | Mint presigned PUT URLs for asset uploads (operator+); returns the `/api/assets/...` hrefs to persist (ADR 0005) |
 | `/api/assets/[collection]/[item]/[asset]` | GET | Authorize → 302 to a short-lived presigned URL for the canonical asset object (`{asset}` = filename) |
+| `/api/collections/[id]/connections` | GET, POST | List / create ingest associations for a built-in-catalog collection (member+ scoped list; operator+ create, group-owned — Phase 4) |
+| `/api/collections/[id]/connections/[assocId]` | GET, PUT, DELETE | Get / update (enabled, `config`, expectation) / delete an ingest association |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
 (static identity, default in dev — unit tests/e2e need no IdP). Middleware
@@ -137,6 +139,17 @@ canonical storage. Key layout is §5.3. App env: `S3_ENDPOINT` (must be
 `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_FORCE_PATH_STYLE` (MinIO defaults work
 locally). The pipeline sweeps abandoned `staging/` uploads via a TTL cleanup job
 (`STAGING_*` env). Details: [ADR 0005](docs/decisions/0005-asset-service.md).
+
+**Ingest associations (Phase 4, Slice A)**: `stac_higher.collection_connections`
+(migration 005) wires a connection to a built-in-catalog collection as an ingest
+source with a §5.1 `config`; `stac_higher.ingest_files` is the per-file ledger
+the pipeline maintains. The app owns both tables' DDL and writes associations
+(`app/src/lib/associations/*`, `/api/collections/[id]/connections*`); the
+pipeline (Slice B) reads associations and writes the ledger, never DDL (ADR
+0001). The ingest `config` Zod schema (`associations/schemas.ts`) is the
+cross-runtime contract with the pipeline. Group ownership is enforced in-route
+(operator+ to mutate; `reference` storage mode is s3-only). UI: the **Data flow**
+tab on built-in-catalog collection pages.
 
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in

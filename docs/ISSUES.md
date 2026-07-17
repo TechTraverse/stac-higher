@@ -84,3 +84,19 @@ The app signs URLs offline, so `S3_ENDPOINT` must be reachable by the **browser*
 ### I-16 · Endpoint-pinning logic duplicated app-side vs. pipeline ⚪
 The egress IP-pinning for a custom http (MinIO) endpoint exists twice: `S3Adapter._pinned_endpoint` (per-connection) and `storage/platform._pinned_endpoint_url` (platform bucket). Parallel, small, and independently tested; a shared helper is a possible future refactor, not a bug.
 - Tracked in: here.
+
+---
+
+## Phase 4 — ingest pipeline (Slice A)
+
+### I-17 · Association `collection_id` not verified against the built-in catalog 🟡
+`POST /api/collections/[id]/connections` stores the `collection_id` from the path as-is; it does **not** yet confirm the collection exists in the built-in catalog (ROADMAP §1 "enforced in the API"). The UI only surfaces the Data-flow tab for the built-in catalog, so this isn't reachable through the client, but the API accepts any string. Hardening = a server-side existence check against the built-in catalog (or a FK once collections are registered in `stac_higher`).
+- Tracked in: `app/src/pages/api/collections/[id]/connections/index.ts`.
+
+### I-18 · Associating is gated at operator+, not member ⚪
+ROADMAP §7 grants "associate connections ↔ collections" to **member**, but the mutation guard (`matchGatedRoute` → `canMutate`) is binary operator|admin, so association create/edit/delete requires operator+. Reads (list/detail) are open to any authenticated caller who can see the row. A per-route role floor (member for associate, operator for connection CRUD) is the eventual refinement.
+- Tracked in: `app/src/lib/authz/permissions.ts`, `app/src/lib/associations/access.ts`.
+
+### I-19 · Adapter `list` lacks size/mtime; `get` fully buffers (Slice B) ⚪
+The DISCOVER settled-check needs per-file size/mtime, which `StorageAdapter.list()` currently drops, and FETCH of large assets needs streaming, which `get() -> bytes` doesn't provide. Slice B enriches `list` (required for the settled-check) and defers true streaming FETCH (buffered `get→put_object` works for local/small assets); the large-asset streaming gap is logged then.
+- Tracked in: here; `services/pipeline/.../adapters/base.py`.
