@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pipeline.storage import platform
-from pipeline.storage.keys import InvalidKeySegment, canonical_asset_key
+from pipeline.storage.keys import InvalidKeySegment, asset_href, canonical_asset_key
 
 
 def test_canonical_asset_key_layout():
@@ -43,3 +43,14 @@ def test_put_object_sets_content_type_when_given():
     client = _CaptureS3()
     platform.put_object(client, "b", "k", b"1", content_type="image/tiff")
     assert client.calls[0]["ContentType"] == "image/tiff"
+
+
+def test_asset_href_is_root_relative_and_encoded():
+    assert (
+        asset_href("col lection", "item/id", "a b.tif")
+        == "/api/assets/col%20lection/item%2Fid/a%20b.tif"
+    )
+
+
+def test_asset_href_respects_custom_base():
+    assert asset_href("c", "i", "f.tif", base="/assets") == "/assets/c/i/f.tif"

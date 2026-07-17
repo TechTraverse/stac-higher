@@ -13,6 +13,8 @@ mangled key.
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 CANONICAL_PREFIX = "assets"
 
 
@@ -34,3 +36,13 @@ def canonical_asset_key(collection: str, item_id: str, filename: str) -> str:
     item_id = _safe_segment(item_id, field="item_id")
     filename = _safe_segment(filename, field="filename")
     return f"{CANONICAL_PREFIX}/{collection}/{item_id}/{filename}"
+
+
+def asset_href(
+    collection: str, item_id: str, filename: str, *, base: str = "/api/assets"
+) -> str:
+    """Root-relative `/api/assets/{collection}/{item_id}/{filename}` href, each
+    segment URL-encoded. Mirrors the app's `assetHref` so pipeline-created items
+    resolve through the same asset route as manually uploaded ones."""
+    seg = lambda s: quote(s, safe="")  # noqa: E731
+    return f"{base.rstrip('/')}/{seg(collection)}/{seg(item_id)}/{seg(filename)}"

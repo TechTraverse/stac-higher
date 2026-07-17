@@ -24,6 +24,9 @@ S3 in cloud; distinct from per-connection endpoints):
 - ``STAGING_BUCKET`` — platform bucket name.
 - ``STAGING_S3_FORCE_PATH_STYLE`` — path-style addressing (MinIO needs it).
 - ``STAGING_TTL_SECONDS`` — age after which a ``staging/`` upload is swept.
+- ``ASSET_HREF_BASE`` — root-relative base path for asset hrefs the pipeline
+  writes into ``item.assets[*].href`` (ingest EXTRACT/ITEMIZE). Must match the
+  app's asset route prefix (default ``/api/assets``).
 """
 
 from __future__ import annotations
@@ -43,6 +46,8 @@ DEFAULT_STAGING_S3_ACCESS_KEY = "minioadmin"
 DEFAULT_STAGING_S3_SECRET_KEY = "minioadmin"
 DEFAULT_STAGING_BUCKET = "stac-higher"
 DEFAULT_STAGING_TTL_SECONDS = 86400  # 24h
+
+DEFAULT_ASSET_HREF_BASE = "/api/assets"
 
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
@@ -75,6 +80,7 @@ class Settings:
     staging_bucket: str = DEFAULT_STAGING_BUCKET
     staging_s3_force_path_style: bool = True
     staging_ttl_seconds: int = DEFAULT_STAGING_TTL_SECONDS
+    asset_href_base: str = DEFAULT_ASSET_HREF_BASE
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -102,4 +108,5 @@ class Settings:
             staging_ttl_seconds=int(
                 env.get("STAGING_TTL_SECONDS", str(DEFAULT_STAGING_TTL_SECONDS))
             ),
+            asset_href_base=env.get("ASSET_HREF_BASE", DEFAULT_ASSET_HREF_BASE),
         )

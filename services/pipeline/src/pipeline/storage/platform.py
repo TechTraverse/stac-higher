@@ -27,6 +27,7 @@ class S3Like(Protocol):
     def get_paginator(self, operation_name: str) -> Any: ...
     def delete_objects(self, **kwargs: Any) -> Any: ...
     def put_object(self, **kwargs: Any) -> Any: ...
+    def get_object(self, **kwargs: Any) -> Any: ...
 
 
 def _pinned_endpoint_url(
@@ -99,6 +100,15 @@ def put_object(
     if content_type:
         kwargs["ContentType"] = content_type
     client.put_object(**kwargs)
+
+
+def get_object(client: S3Like, bucket: str, key: str) -> bytes:
+    """Read the object at ``key`` back as bytes (ingest EXTRACT reads what FETCH
+    stored). Pure over an injected client; synchronous boto3 — wrap in
+    ``asyncio.to_thread`` on the event loop. Fully buffered (ISSUES I-19).
+    """
+    resp = client.get_object(Bucket=bucket, Key=key)
+    return resp["Body"].read()
 
 
 def cleanup_expired(

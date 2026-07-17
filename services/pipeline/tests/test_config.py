@@ -51,3 +51,10 @@ def test_env_overrides():
     assert settings.health_port == 9999
     assert settings.queue_schema == "queue"
     assert settings.log_level == "DEBUG"
+
+
+def test_asset_href_base_defaults_and_env(monkeypatch):
+    from pipeline.config import Settings
+
+    assert Settings.from_env({}).asset_href_base == "/api/assets"
+    assert Settings.from_env({"ASSET_HREF_BASE": "/assets"}).asset_href_base == "/assets"
