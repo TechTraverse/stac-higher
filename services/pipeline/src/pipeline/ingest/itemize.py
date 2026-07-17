@@ -49,7 +49,23 @@ _GLOBAL_BBOX_EPSILON = 1e-6
 
 
 def _is_global_bbox(bbox: Sequence[float]) -> bool:
-    return all(abs(v - w) < _GLOBAL_BBOX_EPSILON for v, w in zip(bbox, _WORLD_BBOX, strict=True))
+    return all(abs(v - w) < _GLOBAL_BBOX_EPSILON for v, w in zip(bbox, _WORLD_BBOX, strict=False))
+
+
+def _normalize_bbox_2d(bbox: Sequence[float]) -> list[float] | None:
+    """Reduce a STAC bbox to its horizontal 2D extent `[west, south, east,
+    north]`. STAC spatial extents may be 3D — `[w, s, min_elev, e, n,
+    max_elev]` — and `PgstacWriter.get_collection_bbox` faithfully returns
+    whatever pgstac stores. A naive `bbox[:4]` slice on a 6-element bbox
+    mangles `min_elev` into "east" and silently drops `north`, so this
+    normalizes by position instead of truncating. Any other length is
+    unusable and returns `None` (the caller then falls back to the global
+    world polygon)."""
+    if len(bbox) == 6:
+        return [bbox[0], bbox[1], bbox[3], bbox[4]]
+    if len(bbox) == 4:
+        return list(bbox)
+    return None
 
 
 async def _build_collection_fallback(
@@ -61,14 +77,14 @@ async def _build_collection_fallback(
     collection has no usable (non-global) extent."""
     if cfg.default_geometry != "collection":
         return None
-    bbox = await writer.get_collection_bbox(association.collection_id)
-    if not bbox or len(bbox) < 4 or _is_global_bbox(bbox):
+    raw_bbox = await writer.get_collection_bbox(association.collection_id)
+    bbox = _normalize_bbox_2d(raw_bbox) if raw_bbox else None
+    if not bbox or _is_global_bbox(bbox):
         return {
             "geometry": bbox_to_polygon(_WORLD_BBOX),
             "bbox": list(_WORLD_BBOX),
             "source": "global_fallback",
         }
-    bbox = list(bbox[:4])
     return {"geometry": bbox_to_polygon(bbox), "bbox": bbox, "source": "collection_extent"}
 
 

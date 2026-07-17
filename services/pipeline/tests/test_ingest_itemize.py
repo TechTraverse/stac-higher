@@ -366,6 +366,124 @@ async def test_run_itemize_defaults_only_opted_in_no_collection_extent_uses_glob
     assert row.status == STATUS_ITEMIZED
 
 
+async def test_run_itemize_defaults_only_opted_in_6d_bbox_reduces_to_2d():
+    # A 3D collection extent bbox (`[w, s, min_elev, e, n, max_elev]`, as
+    # pgstac's `get_collection_bbox` faithfully returns for 3D spatial
+    # extents) must reduce to the horizontal 2D extent `[w, s, e, n]` — NOT
+    # a naive `bbox[:4]` slice, which mangles `min_elev` into "east" and
+    # drops `north` entirely.
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _FakeWriter(collection_bbox=[10, 20, 5, 30, 40, 100])
+
+    out = await run_itemize(
+        repo,
+        writer,
+        FakeAdapter(),
+        FakeS3(),
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.bin"],
+        bucket="b",
+        asset_href_base="/api/assets",
+    )
+
+    assert out == ItemizeOutcome("itemized", "scene")
+    item = writer.items[0]
+    assert item["bbox"] == [10, 20, 30, 40]
+    assert item["properties"]["stac_higher:geometry_source"] == "collection_extent"
+    assert item["geometry"]["coordinates"][0][0] == [10, 20]
+    assert item["geometry"]["coordinates"][0][2] == [30, 40]
+    row = await repo.get_latest_ledger(assoc.id, "scene.bin")
+    assert row.status == STATUS_ITEMIZED
+
+
+async def test_run_itemize_defaults_only_opted_in_4d_bbox_still_works():
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _FakeWriter(collection_bbox=[10, 20, 30, 40])
+
+    out = await run_itemize(
+        repo,
+        writer,
+        FakeAdapter(),
+        FakeS3(),
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.bin"],
+        bucket="b",
+        asset_href_base="/api/assets",
+    )
+
+    assert out == ItemizeOutcome("itemized", "scene")
+    item = writer.items[0]
+    assert item["bbox"] == [10, 20, 30, 40]
+    assert item["properties"]["stac_higher:geometry_source"] == "collection_extent"
+
+
+async def test_run_itemize_defaults_only_opted_in_6d_global_bbox_uses_global():
+    # A 3D global extent (min/max elevation on top of the world horizontal
+    # bbox) should still classify as `global_fallback` after normalization.
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _FakeWriter(collection_bbox=[-180, -90, 0, 180, 90, 5000])
+
+    out = await run_itemize(
+        repo,
+        writer,
+        FakeAdapter(),
+        FakeS3(),
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.bin"],
+        bucket="b",
+        asset_href_base="/api/assets",
+    )
+
+    assert out == ItemizeOutcome("itemized", "scene")
+    item = writer.items[0]
+    assert item["properties"]["stac_higher:geometry_source"] == "global_fallback"
+
+
 async def test_run_itemize_defaults_only_not_opted_in_fails_without_geometry():
     repo = FakeIngestRepo()
     assoc = _assoc(
