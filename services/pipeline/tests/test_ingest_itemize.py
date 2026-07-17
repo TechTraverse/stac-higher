@@ -47,6 +47,17 @@ class _FakeWriter(PgstacWriter):
         self.items.extend(items)
 
 
+class _RaisingWriter(PgstacWriter):
+    """Writer whose upsert_items raises an unexpected (non-CollectionMissing)
+    error, e.g. a transient DB connection failure."""
+
+    def __init__(self):
+        self.items: list = []
+
+    async def upsert_items(self, items):
+        raise RuntimeError("connection refused")
+
+
 def _valid_item():
     return {
         "type": "Feature",
@@ -147,10 +158,11 @@ async def test_run_itemize_collection_missing_marks_failed():
 async def test_run_itemize_skips_when_no_stored_members():
     repo = FakeIngestRepo()
     assoc = _assoc({"source_path": "/out"})
+    writer = _FakeWriter()
 
     out = await run_itemize(
         repo,
-        _FakeWriter(),
+        writer,
         FakeAdapter(),
         FakeS3(),
         association=assoc,
@@ -162,3 +174,48 @@ async def test_run_itemize_skips_when_no_stored_members():
     )
 
     assert out.status == "skipped"
+    # a skip must be a true no-op: the writer must never be invoked
+    assert writer.items == []
+
+
+async def test_run_itemize_propagates_unexpected_writer_error():
+    # Same happy-path fixtures as
+    # test_run_itemize_defaults_only_upserts_and_marks_itemized: EXTRACT and
+    # validation succeed and control reaches the writer, but this time the
+    # writer raises an unexpected (non-CollectionMissing) error simulating a
+    # transient DB failure.
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _RaisingWriter()
+
+    with pytest.raises(RuntimeError):
+        await run_itemize(
+            repo,
+            writer,
+            FakeAdapter(),
+            FakeS3(),
+            association=assoc,
+            config=config,
+            item_id="scene",
+            source_paths=["scene.bin"],
+            bucket="b",
+            asset_href_base="/api/assets",
+        )
+
+    # the ledger row must NOT be advanced past `stored` — a stray
+    # `except Exception` here would silently swallow the error and lose the
+    # item; leaving it at `stored` lets the job retry cleanly.
+    row = await repo.get_latest_ledger(assoc.id, "scene.bin")
+    assert row.status == STATUS_STORED
