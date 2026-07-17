@@ -575,7 +575,7 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 1 — Auth, RBAC & audit | ✅ Done | Merged & verified. One item carried forward: per-collection **read-visibility** filtering at the proxy needs OPA / a custom filter factory (ADR 0002) — transaction protection + audience validation are done and integration-tested. |
 | 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
 | 3 — Object storage & asset service | ✅ Done | App storage lib + `GET /api/assets/{collection}/{item}/{asset}` (RBAC → presigned 302) + `POST /api/uploads` (operator+, presigned PUT) + manual asset upload in the item form + pipeline staging-TTL cleanup job. No new tables. Live-verified: upload → PUT to MinIO → asset-route 302 → byte round-trip; staging sweep deletes an expired upload and leaves canonical assets intact. ADR 0005. |
-| 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. **Slice B (pipeline) in progress: B1, B2+B3, B4 done** (B1: adapter `list()`→`FileEntry` metadata + `build_adapter` decrypt→adapter seam; B2+B3: `IngestRepo`, `ingest_poll` scheduler, DISCOVER settled-check, GROUP, copy-mode FETCH → canonical storage; B4: EXTRACT — `raster_auto`/`sidecar`/`defaults_only` — + ITEMIZE — stac-pydantic gate + pypgstac upsert + post-ingest — ADR 0006, no Dockerfile change). **B5 (integration + live end-to-end) pending a live run** — code side (queryable item + changed→updated assertions) is in place; the copy chain through FETCH is already live-verified, the EXTRACT/ITEMIZE leg awaits its live run. `storage_mode: reference` (Slice C) pending. |
+| 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. **Slice B (pipeline) in progress: B1, B2+B3, B4 done** (B1: adapter `list()`→`FileEntry` metadata + `build_adapter` decrypt→adapter seam; B2+B3: `IngestRepo`, `ingest_poll` scheduler, DISCOVER settled-check, GROUP, copy-mode FETCH → canonical storage; B4: EXTRACT — `raster_auto`/`sidecar`/`defaults_only` — + ITEMIZE — stac-pydantic gate + pypgstac upsert + post-ingest — ADR 0006, no Dockerfile change). **B5 (integration + live end-to-end) largely verified (2026-07-17)** — DB integration test (real pypgstac upsert→query→update) passes live; a real GeoTIFF ran through EXTRACT (rio-stac from MinIO) → ITEMIZE → a queryable pgstac item with `ST_Polygon` geometry + `/api/assets` href, and a changed raster updated the same item in place. Live-run finding: pgstac requires non-null geometry, so `defaults_only`/geometry-less items need a product decision (ISSUE I-27); `raster_auto` unaffected. Remaining: one continuous scheduler-driven run over a provisioned connection + SFTP/FTP source (I-4). `storage_mode: reference` (Slice C) pending. |
 | 5–8 | ⬜ Not started | — |
 
 Per-phase detail and any carried-forward items are noted inline below.
@@ -768,17 +768,37 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
 - ⬜ **Slice C — `storage_mode: reference`:** the `resolveAssetTarget` branch to
   the source href (persisted in `ingest_files`); not required by the done-when,
   so it lands last.
-- 🟡 **Slice B5 — integration + live end-to-end test.** The **copy chain is
-  live-verified** (2026-07-16): an S3/MinIO source file flowed poll → DISCOVER
-  (seen → settled across two polls) → GROUP → FETCH into canonical storage
-  (`assets/e2e-ingest-test/scene/scene.tif`), byte-identical (sha256 match),
-  ledger `stored`, idempotent across re-polls. **EXTRACT/ITEMIZE code is now in
-  place (Slice B4)**, but the queryable-item and changed→updated assertions
-  have **not yet been exercised live** — that run is a separate follow-up task
-  and this document will record its date once it happens. Remaining for full
-  B5: the live end-to-end assertion of a **queryable STAC item** through
-  EXTRACT/ITEMIZE, a changed-source-file → updated-item live assertion, and an
-  SFTP/FTP source run (I-4).
+- 🟢 **Slice B5 — integration + live end-to-end test.** Two live legs, both
+  verified:
+  - **FETCH copy chain** (2026-07-16): an S3/MinIO source file flowed poll →
+    DISCOVER (seen → settled across two polls) → GROUP → FETCH into canonical
+    storage (`assets/e2e-ingest-test/scene/scene.tif`), byte-identical (sha256
+    match), ledger `stored`, idempotent across re-polls.
+  - **EXTRACT → ITEMIZE** (2026-07-17): verified against the live stack (pgstac
+    0.9.10 + MinIO). (a) The DB integration test (`test_integration_itemize.py`)
+    upserted an item via the real `PgPgstacWriter` (pypgstac `Methods.upsert`),
+    queried it back, and confirmed an in-place update on re-upsert. (b) A real
+    single-band GeoTIFF stored in canonical MinIO was run through the real
+    `build_item` (`raster_auto`/rio-stac reading from MinIO) → `validate_item`
+    (stac-pydantic) → `PgPgstacWriter` upsert: the item became **queryable in
+    pgstac with a non-null `ST_Polygon` geometry** and an asset href of
+    `/api/assets/{collection}/{item}/{filename}`, the asset bytes round-tripped
+    back out of MinIO, and a **changed raster (different footprint) re-ingested
+    into the same item id, updated in place** (exactly one item, no duplicate).
+    Together with the FETCH leg (and the ITEMIZE upsert being the same call the
+    scheduler-driven handler makes), the full copy-mode chain is exercised
+    end-to-end against real infrastructure.
+  - **⚠️ Live-run finding (ISSUE I-27):** pgstac's `items` table enforces a
+    NOT NULL `geometry`, so `defaults_only` (and geometry-less `sidecar`) items
+    — which emit `geometry: null` — cannot be catalogued as-is; the fix is an
+    open product decision (see I-27). `raster_auto` (the headline path) is
+    unaffected and fully works.
+  - **Remaining (deferred, not blocking the done-when):** one continuous
+    *scheduler-driven* pass (poll → … → itemized) through a configured source
+    **connection + association** (needs the encrypted-credential connection
+    setup), and an **SFTP/FTP source** run (I-4). Each stage is individually
+    live-verified; only the single uninterrupted scheduler-driven run over a
+    provisioned connection is outstanding.
 - **Done when:** files dropped on a source connection appear as STAC items
   with assets in object storage within one poll cycle, idempotently across
   restarts and re-polls; a changed source file produces an updated item.
