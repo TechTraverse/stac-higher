@@ -87,7 +87,7 @@ The egress IP-pinning for a custom http (MinIO) endpoint exists twice: `S3Adapte
 
 ---
 
-## Phase 4 — ingest pipeline (Slice A)
+## Phase 4 — ingest pipeline (Slice A + B)
 
 ### I-17 · Association `collection_id` not verified against the built-in catalog 🟡
 `POST /api/collections/[id]/connections` stores the `collection_id` from the path as-is; it does **not** yet confirm the collection exists in the built-in catalog (ROADMAP §1 "enforced in the API"). The UI only surfaces the Data-flow tab for the built-in catalog, so this isn't reachable through the client, but the API accepts any string. Hardening = a server-side existence check against the built-in catalog (or a FK once collections are registered in `stac_higher`).
@@ -98,5 +98,13 @@ ROADMAP §7 grants "associate connections ↔ collections" to **member**, but th
 - Tracked in: `app/src/lib/authz/permissions.ts`, `app/src/lib/associations/access.ts`.
 
 ### I-19 · Adapter `get` fully buffers large assets (streaming deferred) ⚪
-The list-metadata half is **done (Slice B1)**: `StorageAdapter.list()` now returns `FileEntry` with size/mtime/etag, which the DISCOVER settled-check needs. The remaining gap: `get() -> bytes` buffers the whole object in memory, so FETCH of multi-GB assets is unsafe at envelope scale. Copy-mode FETCH (Slice B2+B3) uses buffered `get → put_object`, which is fine for local/small assets; true streaming (a streaming read + S3 multipart upload) is deferred and logged here.
-- Tracked in: here; `services/pipeline/.../adapters/base.py`.
+The list-metadata half is **done (Slice B1)**: `StorageAdapter.list()` now returns `FileEntry` with size/mtime/etag, which the DISCOVER settled-check needs. The remaining gap: `get() -> bytes` buffers the whole object in memory, and copy-mode FETCH (Slice B2+B3) buffers `get → platform.put_object`, so FETCH of multi-GB assets is unsafe at envelope scale. Fine for local/small assets; true streaming (a streaming read + S3 multipart upload) is deferred and logged here.
+- Tracked in: here; `services/pipeline/.../adapters/base.py`, `services/pipeline/.../ingest/fetch.py`.
+
+### I-20 · Ingest discovery is non-recursive (one directory level) ⚪
+DISCOVER lists `source_path` once. S3's prefix listing is naturally deep (all keys under the prefix), but SFTP/FTP `list()` returns a single directory level, so nested products under an SFTP/FTP source are not discovered. Adequate for the common flat-drop-directory case; a recursive walk (descend into `is_dir` entries, guarding depth/symlink loops) is the follow-up.
+- Tracked in: here; `services/pipeline/.../ingest/discover.py`. Also underpins the `StorageAdapter.list()` path-convention divergence surfaced by DISCOVER (S3 full-key vs SFTP/FTP relative-name), which `relative_source_path`/`source_fetch_path` normalize (I-4).
+
+### I-21 · Reference-mode ingest stalls at `settled` until Slice C ⚪
+`storage_mode: reference` associations run DISCOVER (files reach `settled`) but GROUP forms no groups and FETCH skips the copy, so nothing advances to `stored`/`itemized`. This is intentional — reference itemization (asset hrefs pointing at the source via `resolveAssetTarget`) is Slice C — but a reference association created now will accumulate `settled` ledger rows that don't progress. Slice C consumes them.
+- Tracked in: here; `services/pipeline/.../ingest/group.py`, `services/pipeline/.../ingest/fetch.py`.

@@ -22,10 +22,11 @@ from pipeline.connections.egress import EgressBlocked, resolve_pinned
 
 
 class S3Like(Protocol):
-    """The slice of a boto3 S3 client the cleanup primitive uses."""
+    """The slice of a boto3 S3 client the platform primitives use."""
 
     def get_paginator(self, operation_name: str) -> Any: ...
     def delete_objects(self, **kwargs: Any) -> Any: ...
+    def put_object(self, **kwargs: Any) -> Any: ...
 
 
 def _pinned_endpoint_url(
@@ -77,6 +78,27 @@ def build_platform_client(settings: Settings) -> Any:
         aws_secret_access_key=settings.staging_s3_secret_key,
         config=boto_config,
     )
+
+
+def put_object(
+    client: S3Like,
+    bucket: str,
+    key: str,
+    data: bytes,
+    *,
+    content_type: str | None = None,
+) -> None:
+    """Write ``data`` to the platform bucket at ``key`` (ingest FETCH → canonical).
+
+    Pure over an injected client (no network in tests). Synchronous boto3 —
+    callers on the event loop wrap it in ``asyncio.to_thread``. The bytes are
+    fully buffered by the caller; streaming/multipart for envelope-scale assets
+    is deferred (ISSUES I-19).
+    """
+    kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key, "Body": data}
+    if content_type:
+        kwargs["ContentType"] = content_type
+    client.put_object(**kwargs)
 
 
 def cleanup_expired(

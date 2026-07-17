@@ -15,7 +15,7 @@ import uvicorn
 
 from pipeline.config import Settings
 from pipeline.health import create_health_app
-from pipeline.jobs import drain, health_sweep, heartbeat, staging_cleanup
+from pipeline.jobs import drain, health_sweep, heartbeat, ingest, staging_cleanup
 from pipeline.log import configure_logging
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
 
@@ -30,6 +30,8 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     health_sweep.register(queue, settings)
     # Phase 3: sweep abandoned push-ingest uploads out of staging/.
     staging_cleanup.register(queue, settings)
+    # Phase 4: poll-based ingest — scheduler + DISCOVER/GROUP/FETCH chain.
+    ingest.register(queue, settings)
     return queue
 
 
