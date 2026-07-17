@@ -75,11 +75,12 @@ def _member(entry: LedgerEntry, collection_id: str, item_id: str) -> ExtractMemb
 async def _mark(
     repo: IngestRepo, entries: list[LedgerEntry], status: str, item_id: str | None
 ) -> None:
-    for e in entries:
-        fields: dict[str, Any] = {"status": status}
-        if item_id is not None:
-            fields["item_id"] = item_id
-        await repo.set_ledger_fields(e.id, **fields)
+    # One statement for all members (all-or-nothing): a crash mid-mark must
+    # never leave the group split across statuses, which would let a retry
+    # rebuild the item from a subset of members (§ final-review fix).
+    if not entries:
+        return
+    await repo.set_ledger_status_many([e.id for e in entries], status=status, item_id=item_id)
 
 
 async def run_itemize(

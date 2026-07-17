@@ -155,6 +155,55 @@ async def test_run_itemize_collection_missing_marks_failed():
     assert row.item_id is None
 
 
+async def test_run_itemize_marks_all_members_atomically():
+    # A two-member group (e.g. scene.tif + scene.xml) under a defaults_only
+    # association: both members are `stored` and must end `itemized` with the
+    # item_id set together, via a single set_ledger_status_many call — not two
+    # independent set_ledger_fields calls that could leave the group split if
+    # the process crashed between them.
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.tif", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.xml", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _FakeWriter()
+
+    out = await run_itemize(
+        repo,
+        writer,
+        FakeAdapter(),
+        FakeS3(),
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.tif", "scene.xml"],
+        bucket="b",
+        asset_href_base="/api/assets",
+    )
+
+    assert out == ItemizeOutcome("itemized", "scene")
+    tif_row = await repo.get_latest_ledger(assoc.id, "scene.tif")
+    xml_row = await repo.get_latest_ledger(assoc.id, "scene.xml")
+    assert tif_row.status == STATUS_ITEMIZED
+    assert tif_row.item_id == "scene"
+    assert xml_row.status == STATUS_ITEMIZED
+    assert xml_row.item_id == "scene"
+    # exactly one atomic call, not one per member
+    assert repo.set_ledger_status_many_calls == 1
+
+
 async def test_run_itemize_skips_when_no_stored_members():
     repo = FakeIngestRepo()
     assoc = _assoc({"source_path": "/out"})

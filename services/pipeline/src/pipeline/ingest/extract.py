@@ -195,6 +195,36 @@ def parse_sidecar(data: bytes, parser: str) -> dict[str, Any]:
     raise ExtractError(f"unknown sidecar parser {parser!r}")
 
 
+def _collect_coordinate_pairs(coordinates: Any, out: list[tuple[float, float]]) -> None:
+    """Recursively walk a GeoJSON ``coordinates`` structure, collecting the
+    first two ordinates (x, y) of every leaf position."""
+    if not coordinates:
+        return
+    first = coordinates[0]
+    if isinstance(first, int | float):
+        # A leaf position: [x, y] or [x, y, z].
+        out.append((coordinates[0], coordinates[1]))
+        return
+    for item in coordinates:
+        _collect_coordinate_pairs(item, out)
+
+
+def bbox_from_geometry(geom: dict[str, Any]) -> list[float]:
+    """Compute a 2D ``[min_x, min_y, max_x, max_y]`` bbox from a GeoJSON
+    geometry's ``coordinates`` (Point/LineString/Polygon/MultiPoint/
+    MultiLineString/MultiPolygon). Raises ``ExtractError`` if the geometry has
+    no usable coordinates (e.g. a ``GeometryCollection``)."""
+    pairs: list[tuple[float, float]] = []
+    _collect_coordinate_pairs(geom.get("coordinates"), pairs)
+    if not pairs:
+        raise ExtractError(
+            f"cannot compute bbox for geometry type {geom.get('type')!r}: no coordinates"
+        )
+    xs = [p[0] for p in pairs]
+    ys = [p[1] for p in pairs]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
 def build_sidecar(
     collection_id: str,
     item_id: str,
@@ -223,6 +253,8 @@ def build_sidecar(
     }
     if parsed["geometry"] is None:
         item.pop("bbox", None)  # keep null geometry without a bbox
+    else:
+        item["bbox"] = bbox_from_geometry(parsed["geometry"])
     return item
 
 

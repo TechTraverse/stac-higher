@@ -121,6 +121,16 @@ class IngestRepo(abc.ABC):
         ``fingerprint``, ``checksum``, ``item_id``) and bump ``updated_at``.
         Unknown columns are rejected."""
 
+    @abc.abstractmethod
+    async def set_ledger_status_many(
+        self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
+    ) -> None:
+        """Update ``status`` (and ``item_id``) for ALL given ledger rows in a
+        single statement — all-or-nothing. Used by ITEMIZE so a group's members
+        are marked together: a crash mid-mark must never leave the group split
+        across statuses, which would let a retry rebuild the item from a
+        subset of members."""
+
 
 # --------------------------------------------------------------------------- #
 # psycopg implementation
@@ -280,5 +290,18 @@ class PgIngestRepo(IngestRepo):
                 f"UPDATE stac_higher.ingest_files SET {assignments}, updated_at = now()"
                 " WHERE id = %s",
                 (*values, entry_id),
+            )
+            await conn.commit()
+
+    async def set_ledger_status_many(  # pragma: no cover
+        self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
+    ) -> None:
+        if not entry_ids:
+            return
+        async with await self._connect() as conn:
+            await conn.execute(
+                "UPDATE stac_higher.ingest_files SET status = %s, item_id = %s, updated_at = now()"
+                " WHERE id = ANY(%s)",
+                (status, item_id, list(entry_ids)),
             )
             await conn.commit()

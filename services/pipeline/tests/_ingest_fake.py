@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,6 +25,7 @@ class FakeIngestRepo(IngestRepo):
     rows: dict[str, LedgerEntry] = field(default_factory=dict)
     now: dt.datetime = EPOCH
     _next_id: int = 1
+    set_ledger_status_many_calls: int = 0
 
     async def list_enabled_ingest_associations(self) -> list[IngestAssociation]:
         return [a for a in self.associations if a.enabled]
@@ -95,6 +97,19 @@ class FakeIngestRepo(IngestRepo):
         for key, value in fields.items():
             setattr(row, key, value)
         row.updated_at = self.now
+
+    async def set_ledger_status_many(
+        self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
+    ) -> None:
+        self.set_ledger_status_many_calls += 1
+        # A simple loop is fine in the fake — the invariant under test is that
+        # the production Pg path is a single statement; the fake just needs to
+        # update all rows as one logical operation.
+        for entry_id in entry_ids:
+            row = self.rows[entry_id]
+            row.status = status
+            row.item_id = item_id
+            row.updated_at = self.now
 
 
 @dataclass

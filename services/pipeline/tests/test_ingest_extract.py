@@ -1,5 +1,6 @@
 import datetime as dt
 import io
+import json
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from rasterio.transform import from_bounds
 from pipeline.ingest.extract import (
     ExtractError,
     ExtractMember,
+    bbox_from_geometry,
     build_defaults_only,
     build_item,
     build_raster_auto,
@@ -18,6 +20,7 @@ from pipeline.ingest.extract import (
     parse_sidecar,
     resolve_datetime,
 )
+from pipeline.ingest.itemize import validate_item
 
 
 def _member(name="scene.tif", observed=None):
@@ -130,6 +133,60 @@ def test_build_sidecar_uses_extracted_datetime():
     assert item["properties"]["datetime"] == "2023-05-05T10:00:00Z"
     assert set(item["assets"]) == {"scene"}  # both members, keyed by stem
     assert item["assets"]["scene"]["roles"] == ["data"]
+
+
+def test_bbox_from_geometry_polygon():
+    geom = {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [2, 0], [2, 3], [0, 3], [0, 0]]],
+    }
+    assert bbox_from_geometry(geom) == [0, 0, 2, 3]
+
+
+def test_bbox_from_geometry_point():
+    geom = {"type": "Point", "coordinates": [5, 7]}
+    assert bbox_from_geometry(geom) == [5, 7, 5, 7]
+
+
+def test_bbox_from_geometry_geometry_collection_raises():
+    geom = {"type": "GeometryCollection", "geometries": []}
+    with pytest.raises(ExtractError):
+        bbox_from_geometry(geom)
+
+
+def test_build_sidecar_with_geometry_sets_bbox_and_validates():
+    members = [
+        ExtractMember("products/scene.json", "scene.json", "assets/col/scene/scene.json", None),
+    ]
+    cfg = parse_metadata(
+        {"strategy": "sidecar", "sidecar": {"pattern": "{basename}.json", "parser": "json"}}
+    )
+    sidecar_bytes = json.dumps(
+        {
+            "datetime": "2023-05-05T10:00:00Z",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0, 0], [2, 0], [2, 3], [0, 3], [0, 0]]],
+            },
+        }
+    ).encode()
+    item = build_sidecar("col", "scene", members, cfg, sidecar_bytes, "/api/assets")
+    assert item["bbox"] == [0, 0, 2, 3]
+    validate_item(item)  # must not raise ("bbox is required if geometry is not null")
+
+
+def test_build_sidecar_null_geometry_still_has_no_bbox():
+    members = [
+        ExtractMember("products/scene.json", "scene.json", "assets/col/scene/scene.json", None),
+    ]
+    cfg = parse_metadata(
+        {"strategy": "sidecar", "sidecar": {"pattern": "{basename}.json", "parser": "json"}}
+    )
+    sidecar_bytes = json.dumps({"datetime": "2023-05-05T10:00:00Z"}).encode()
+    item = build_sidecar("col", "scene", members, cfg, sidecar_bytes, "/api/assets")
+    assert item["geometry"] is None
+    assert "bbox" not in item
+    validate_item(item)
 
 
 def _geotiff_bytes():
