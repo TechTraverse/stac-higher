@@ -20,14 +20,34 @@ SSRF hardening (two egress holes an adversarial review found):
 
 from __future__ import annotations
 
+import datetime as dt
 import posixpath
 import time
 from typing import Any
 
 import aioftp
 
-from pipeline.connections.adapters.base import StorageAdapter, TestResult
+from pipeline.connections.adapters.base import FileEntry, StorageAdapter, TestResult
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
+
+
+def _parse_modify(value: str | None) -> float | None:
+    """Parse an MLSD ``modify`` fact (``YYYYMMDDHHMMSS[.frac]``, UTC) to epoch
+    seconds. Returns None when absent or unparseable."""
+    if not value:
+        return None
+    try:
+        stamp = dt.datetime.strptime(value[:14], "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    return stamp.replace(tzinfo=dt.UTC).timestamp()
+
+
+def _parse_size(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class _EgressFtpClient(aioftp.Client):
@@ -143,13 +163,24 @@ class FtpAdapter(StorageAdapter):
             "latency_ms": latency_ms,
         }
 
-    async def list(self, prefix: str = "") -> list[str]:
+    async def list(self, prefix: str = "") -> list[FileEntry]:
         client = await self._connect_client()
         try:
             target = self._resolve(prefix)
-            return [str(path) for path, _info in await client.list(target)]
+            listing = await client.list(target)
         finally:
             await _safe_quit(client)
+        entries: list[FileEntry] = []
+        for path, info in listing:
+            entries.append(
+                FileEntry(
+                    path=str(path),
+                    size=_parse_size(info.get("size")),
+                    mtime=_parse_modify(info.get("modify")),
+                    is_dir=info.get("type") == "dir",
+                )
+            )
+        return entries
 
     async def get(self, path: str) -> bytes:
         client = await self._connect_client()

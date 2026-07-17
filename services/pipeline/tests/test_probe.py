@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from pipeline.connections import probe as probe_mod
+from pipeline.connections import build as build_mod
 from pipeline.connections.envelope import load_master_key, seal
 from pipeline.connections.probe import evaluate_test_outcome, run_adapter_test
 from pipeline.connections.repo import ConnectionRow
@@ -90,7 +90,7 @@ async def test_run_adapter_test_decrypts_and_calls_adapter(monkeypatch):
         captured["allow_hosts"] = allow_hosts
         return _StubAdapter({"ok": True, "message": "reachable"})
 
-    monkeypatch.setattr(probe_mod, "adapter_for", _fake_adapter_for)
+    monkeypatch.setattr(build_mod, "adapter_for", _fake_adapter_for)
     conn = _conn(creds={"username": "alice", "password": "s3cr3t"})
     result = await run_adapter_test(conn, KEY, frozenset({"h"}))
 
@@ -126,7 +126,7 @@ async def test_run_adapter_test_never_leaks_credentials_on_adapter_error(monkeyp
 
         return _Boom()
 
-    monkeypatch.setattr(probe_mod, "adapter_for", _boom_adapter_for)
+    monkeypatch.setattr(build_mod, "adapter_for", _boom_adapter_for)
     conn = _conn(creds={"username": "u", "password": "s3cr3t"})
     result = await run_adapter_test(conn, KEY, frozenset())
     assert result["ok"] is False

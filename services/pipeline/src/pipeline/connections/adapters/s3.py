@@ -25,7 +25,7 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-from pipeline.connections.adapters.base import StorageAdapter, TestResult
+from pipeline.connections.adapters.base import FileEntry, StorageAdapter, TestResult
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
 
 
@@ -127,16 +127,31 @@ class S3Adapter(StorageAdapter):
             "latency_ms": latency_ms,
         }
 
-    async def list(self, prefix: str = "") -> list[str]:
+    async def list(self, prefix: str = "") -> list[FileEntry]:
         endpoint_url = self._pinned_endpoint()
 
-        def _list() -> list[str]:
+        def _list() -> list[FileEntry]:
             client = self._make_client(endpoint_url)
             paginator = client.get_paginator("list_objects_v2")
-            keys: list[str] = []
+            entries: list[FileEntry] = []
             for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
-                keys.extend(obj["Key"] for obj in page.get("Contents", []))
-            return keys
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    last_modified = obj.get("LastModified")
+                    # boto3 quotes ETags; a multipart etag has a "-N" suffix but
+                    # still changes with content, so it's a valid change signal.
+                    etag = (obj.get("ETag") or "").strip('"') or None
+                    entries.append(
+                        FileEntry(
+                            path=key,
+                            size=obj.get("Size"),
+                            mtime=last_modified.timestamp() if last_modified else None,
+                            etag=etag,
+                            # zero-byte "folder" placeholder keys end in "/".
+                            is_dir=key.endswith("/"),
+                        )
+                    )
+            return entries
 
         return await asyncio.to_thread(_list)
 

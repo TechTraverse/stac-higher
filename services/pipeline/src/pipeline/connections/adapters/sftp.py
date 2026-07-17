@@ -9,12 +9,13 @@ drain/health-sweep jobs to pin/compare. ``root_path`` scopes every path.
 from __future__ import annotations
 
 import posixpath
+import stat
 import time
 from typing import Any
 
 import asyncssh
 
-from pipeline.connections.adapters.base import StorageAdapter, TestResult
+from pipeline.connections.adapters.base import FileEntry, StorageAdapter, TestResult
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
 
 
@@ -105,10 +106,27 @@ class SftpAdapter(StorageAdapter):
             "latency_ms": latency_ms,
         }
 
-    async def list(self, prefix: str = "") -> list[str]:
+    async def list(self, prefix: str = "") -> list[FileEntry]:
         target = self._resolve(prefix)
         async with await self._connect() as conn, conn.start_sftp_client() as sftp:
-            return list(await sftp.listdir(target))
+            names = await sftp.readdir(target)
+        entries: list[FileEntry] = []
+        for entry in names:
+            name = entry.filename
+            if name in (".", ".."):
+                continue
+            attrs = entry.attrs
+            permissions = getattr(attrs, "permissions", None)
+            mtime = getattr(attrs, "mtime", None)
+            entries.append(
+                FileEntry(
+                    path=name,
+                    size=getattr(attrs, "size", None),
+                    mtime=float(mtime) if mtime is not None else None,
+                    is_dir=permissions is not None and stat.S_ISDIR(permissions),
+                )
+            )
+        return entries
 
     async def get(self, path: str) -> bytes:
         target = self._resolve(path)

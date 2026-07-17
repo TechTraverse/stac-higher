@@ -9,6 +9,7 @@ parent connection's health columns.
 from __future__ import annotations
 
 import abc
+from dataclasses import dataclass
 from typing import TypedDict
 
 
@@ -20,6 +21,29 @@ class TestResult(TypedDict, total=False):
     #: fingerprint on the connection resource.
     host_key: str
     latency_ms: int
+
+
+@dataclass(frozen=True)
+class FileEntry:
+    """A single entry from :meth:`StorageAdapter.list`.
+
+    Carries the metadata the ingest DISCOVER stage needs: ``size`` and a change
+    signal (``mtime`` and/or ``etag``). The settled-check compares these across
+    two polls; a change after itemization means a new product version. Fields
+    are ``None`` when the protocol doesn't expose them (e.g. FTP servers without
+    MLSD facts). ``path`` is the entry name relative to the listed prefix, as
+    each adapter's native listing returns it.
+    """
+
+    path: str
+    #: size in bytes, or None if the server didn't report it
+    size: int | None = None
+    #: last-modified time as epoch seconds (UTC), or None
+    mtime: float | None = None
+    #: content etag (S3), or None — a strong change signal when present
+    etag: str | None = None
+    #: True for directory/collection entries (not ingestible files)
+    is_dir: bool = False
 
 
 class StorageAdapter(abc.ABC):
@@ -35,8 +59,9 @@ class StorageAdapter(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def list(self, prefix: str = "") -> list[str]:
-        """List object/entry names under ``prefix`` (relative to root)."""
+    async def list(self, prefix: str = "") -> list[FileEntry]:
+        """List entries under ``prefix`` (relative to root) with size/mtime/etag
+        metadata where the protocol exposes it."""
 
     @abc.abstractmethod
     async def get(self, path: str) -> bytes:

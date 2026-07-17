@@ -16,14 +16,13 @@ Two layers:
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 
-from pipeline.connections.adapters import TestResult, adapter_for
+from pipeline.connections.adapters import TestResult
 from pipeline.connections.adapters.tofu import TofuVerdict, evaluate_host_key
+from pipeline.connections.build import AdapterBuildError, build_adapter
 from pipeline.connections.egress import EgressBlocked
-from pipeline.connections.envelope import EnvelopeError, decrypt
 from pipeline.connections.repo import ConnectionRow
 
 logger = logging.getLogger(__name__)
@@ -56,24 +55,10 @@ async def run_adapter_test(
     error) — those become ``{ok: False, message}``. Credentials never appear in
     the message or the logs.
     """
-    if connection.credentials is None:
-        return {"ok": False, "message": "connection has no stored credentials"}
-
     try:
-        plaintext = decrypt(connection.credentials, master_key)
-        credentials = json.loads(plaintext)
-    except EnvelopeError as exc:
-        return {"ok": False, "message": f"credential decryption failed: {exc}"}
-    except json.JSONDecodeError:
-        return {"ok": False, "message": "credential payload is not valid JSON"}
-
-    try:
-        adapter = adapter_for(connection.as_adapter_row(), credentials, allow_hosts=allow_hosts)
-    except (ValueError, NotImplementedError) as exc:
+        adapter = build_adapter(connection, master_key, allow_hosts)
+    except AdapterBuildError as exc:
         return {"ok": False, "message": str(exc)}
-    finally:
-        # drop the plaintext reference promptly; never keep it around.
-        credentials = None
 
     try:
         return await adapter.test()

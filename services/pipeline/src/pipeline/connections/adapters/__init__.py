@@ -1,6 +1,6 @@
 """Protocol StorageAdapters + the adapter_for factory and TOFU logic."""
 
-from pipeline.connections.adapters.base import StorageAdapter, TestResult
+from pipeline.connections.adapters.base import FileEntry, StorageAdapter, TestResult
 from pipeline.connections.adapters.factory import adapter_for
 from pipeline.connections.adapters.ftp import FtpAdapter
 from pipeline.connections.adapters.ftps import FtpsAdapter
@@ -13,6 +13,7 @@ from pipeline.connections.adapters.tofu import (
 )
 
 __all__ = [
+    "FileEntry",
     "FtpAdapter",
     "FtpsAdapter",
     "S3Adapter",
