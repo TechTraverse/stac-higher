@@ -34,23 +34,31 @@ from pipeline.storage.keys import asset_href
 
 STAC_VERSION = "1.0.0"
 
-MEDIA_TYPES: dict[str, str] = {
+_RASTER_MEDIA_TYPES: dict[str, str] = {
     ".tif": "image/tiff; application=geotiff",
     ".tiff": "image/tiff; application=geotiff",
     ".jp2": "image/jp2",
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
+}
+RASTER_EXTS = frozenset(_RASTER_MEDIA_TYPES)
+MEDIA_TYPES: dict[str, str] = {
+    **_RASTER_MEDIA_TYPES,
     ".json": "application/json",
     ".geojson": "application/geo+json",
     ".xml": "application/xml",
 }
-RASTER_EXTS = frozenset({".tif", ".tiff", ".jp2", ".png", ".jpg", ".jpeg"})
 #: Best-effort GDAL open (ISSUE I-27) also covers gridded/scientific formats
 #: GDAL can read but that raster_auto/sidecar don't otherwise target.
 GDAL_CANDIDATE_EXTS = RASTER_EXTS | frozenset(
     {".nc", ".nc4", ".grib", ".grib2", ".grb", ".zarr", ".hdf", ".h5", ".vrt", ".img"}
 )
+
+#: Provenance key stac-higher stamps on `item.properties` recording how the
+#: item's geometry was resolved (`"sidecar"`, `"raster"`, `"collection_extent"`,
+#: `"global_fallback"`).
+GEOMETRY_SOURCE_PROP = "stac_higher:geometry_source"
 
 
 class ExtractError(ValueError):
@@ -252,6 +260,15 @@ def bbox_to_polygon(bbox: list[float]) -> dict[str, Any]:
     }
 
 
+def _set_geometry(
+    item: dict[str, Any], geometry: dict[str, Any], bbox: list[float], source: str
+) -> None:
+    """Set geometry/bbox/provenance together (the three always change as a unit)."""
+    item["geometry"] = geometry
+    item["bbox"] = bbox
+    item["properties"][GEOMETRY_SOURCE_PROP] = source
+
+
 def _raster_crs_and_bounds(ds: Any) -> tuple[Any, Any]:
     """CRS + bounds for an opened rasterio dataset, or ``(None, None)`` if it
     isn't georeferenced. Falls through to the first subdataset for container
@@ -314,6 +331,32 @@ def geometry_from_raster(data: bytes) -> tuple[dict[str, Any], list[float]] | No
     return bbox_to_polygon(bbox), bbox
 
 
+def _base_item(
+    collection_id: str,
+    item_id: str,
+    members: list[ExtractMember],
+    primary: ExtractMember,
+    when: dt.datetime,
+    asset_href_base: str,
+) -> dict[str, Any]:
+    """The Feature skeleton shared by `build_defaults_only` and `build_sidecar`
+    (identical keys; geometry/bbox/extra properties are layered on by the
+    caller). `build_raster_auto` goes through rio-stac and doesn't use this."""
+    return {
+        "type": "Feature",
+        "stac_version": STAC_VERSION,
+        "stac_extensions": [],
+        "id": item_id,
+        "collection": collection_id,
+        "geometry": None,
+        "properties": {"datetime": _rfc3339(when)},
+        "assets": build_assets(
+            members, collection_id, item_id, asset_href_base, primary.filename
+        ),
+        "links": [],
+    }
+
+
 def build_sidecar(
     collection_id: str,
     item_id: str,
@@ -327,24 +370,15 @@ def build_sidecar(
     primary = _primary(members)
     parsed = parse_sidecar(sidecar_bytes, cfg.sidecar_parser)
     when = resolve_datetime(parsed["datetime"], cfg, primary)
-    item: dict[str, Any] = {
-        "type": "Feature",
-        "stac_version": STAC_VERSION,
-        "stac_extensions": [],
-        "id": item_id,
-        "collection": collection_id,
-        "geometry": parsed["geometry"],
-        "properties": {**parsed["properties"], "datetime": _rfc3339(when)},
-        "assets": build_assets(
-            members, collection_id, item_id, asset_href_base, primary.filename
-        ),
-        "links": [],
-    }
-    if parsed["geometry"] is None:
-        item.pop("bbox", None)  # keep null geometry without a bbox
-    else:
+    item = _base_item(collection_id, item_id, members, primary, when, asset_href_base)
+    item["geometry"] = parsed["geometry"]
+    # `datetime` (already resolved into item["properties"]) always wins over a
+    # same-named key in the sidecar's own properties — matches the original
+    # `{**parsed["properties"], "datetime": ...}` merge order.
+    item["properties"] = {**parsed["properties"], **item["properties"]}
+    if parsed["geometry"] is not None:
         item["bbox"] = bbox_from_geometry(parsed["geometry"])
-        item["properties"]["stac_higher:geometry_source"] = "sidecar"
+        item["properties"][GEOMETRY_SOURCE_PROP] = "sidecar"
     return item
 
 
@@ -360,19 +394,7 @@ def build_defaults_only(
         raise ExtractError("no members to itemize")
     primary = _primary(members)
     when = resolve_datetime(None, cfg, primary)
-    return {
-        "type": "Feature",
-        "stac_version": STAC_VERSION,
-        "stac_extensions": [],
-        "id": item_id,
-        "collection": collection_id,
-        "geometry": None,
-        "properties": {"datetime": _rfc3339(when)},
-        "assets": build_assets(
-            members, collection_id, item_id, asset_href_base, primary.filename
-        ),
-        "links": [],
-    }
+    return _base_item(collection_id, item_id, members, primary, when, asset_href_base)
 
 
 def build_raster_auto(
@@ -432,7 +454,7 @@ def build_raster_auto(
             ),
         )
     if item.geometry is not None:
-        item.properties["stac_higher:geometry_source"] = "raster"
+        item.properties[GEOMETRY_SOURCE_PROP] = "raster"
     return item.to_dict(include_self_link=False, transform_hrefs=False)
 
 
@@ -469,15 +491,16 @@ async def _resolve_geometry_fallback(
     recovered = await _best_effort_raster_geometry(primary, s3_client, bucket)
     if recovered is not None:
         geometry, bbox = recovered
-        item["geometry"] = geometry
-        item["bbox"] = bbox
-        item["properties"]["stac_higher:geometry_source"] = "raster"
+        _set_geometry(item, geometry, bbox, "raster")
         return
 
     if collection_fallback is not None:
-        item["geometry"] = collection_fallback["geometry"]
-        item["bbox"] = collection_fallback["bbox"]
-        item["properties"]["stac_higher:geometry_source"] = collection_fallback["source"]
+        _set_geometry(
+            item,
+            collection_fallback["geometry"],
+            collection_fallback["bbox"],
+            collection_fallback["source"],
+        )
         return
 
     raise ExtractError(
@@ -496,15 +519,19 @@ async def build_item(
     bucket: str,
     asset_href_base: str,
     collection_fallback: dict[str, Any] | None = None,
+    cfg: MetadataConfig | None = None,
 ) -> dict[str, Any]:
     """Dispatch on metadata.strategy, reading member bytes from canonical storage
     only when the strategy needs them. If the strategy leaves the item with a
     null geometry, falls through the ISSUE I-27 resolution chain (best-effort
     GDAL open → opt-in collection-extent fallback → fail-fast) rather than
-    emitting a null-geometry item, which pgstac rejects."""
+    emitting a null-geometry item, which pgstac rejects.
+
+    ``cfg`` lets a caller that already parsed ``metadata`` (e.g. `run_itemize`)
+    pass it through instead of having it re-parsed here."""
     if not members:
         raise ExtractError("no members to itemize")
-    cfg = parse_metadata(metadata)
+    cfg = cfg if cfg is not None else parse_metadata(metadata)
 
     if cfg.strategy == "defaults_only":
         item = build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)

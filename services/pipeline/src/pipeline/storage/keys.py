@@ -44,5 +44,5 @@ def asset_href(
     """Root-relative `/api/assets/{collection}/{item_id}/{filename}` href, each
     segment URL-encoded. Mirrors the app's `assetHref` so pipeline-created items
     resolve through the same asset route as manually uploaded ones."""
-    seg = lambda s: quote(s, safe="")  # noqa: E731
-    return f"{base.rstrip('/')}/{seg(collection)}/{seg(item_id)}/{seg(filename)}"
+    segs = "/".join(quote(s, safe="") for s in (collection, item_id, filename))
+    return f"{base.rstrip('/')}/{segs}"

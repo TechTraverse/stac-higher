@@ -175,6 +175,7 @@ async def run_itemize(
             bucket=bucket,
             asset_href_base=asset_href_base,
             collection_fallback=collection_fallback,
+            cfg=cfg,
         )
     except ExtractError as exc:
         await _mark(repo, stored, STATUS_FAILED, None)

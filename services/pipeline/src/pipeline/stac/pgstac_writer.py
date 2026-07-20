@@ -1,7 +1,9 @@
-"""pypgstac upsert seam (ROADMAP §6.1 ITEMIZE).
+"""pgstac data-access seam (ROADMAP §6.1 ITEMIZE).
 
 `PgstacWriter` is the ABC ITEMIZE depends on (so it unit-tests against a fake).
-`PgPgstacWriter` wraps pypgstac's synchronous `Loader.load_items(...,
+`PgPgstacWriter` implements both operations ITEMIZE needs from pgstac: the item
+upsert, and the collection-extent read backing the ISSUE I-27 geometry
+fallback. Upsert wraps pypgstac's synchronous `Loader.load_items(...,
 Methods.upsert)` in `asyncio.to_thread`. ADR 0001: upsert writes item DATA only
 (temp `ON COMMIT DROP` staging tables + pgstac's own `upsert_item` functions —
 no DDL, no migrations). A missing collection is a permanent error surfaced as
@@ -22,6 +24,9 @@ class CollectionMissing(Exception):
 
 
 class PgstacWriter(abc.ABC):
+    """The pgstac data-access seam ITEMIZE depends on: item upsert plus the
+    collection-extent read used by the ISSUE I-27 geometry fallback."""
+
     @abc.abstractmethod
     async def upsert_items(self, items: Sequence[Mapping[str, Any]]) -> None:
         """Upsert STAC item dicts into pgstac, replacing by id."""
