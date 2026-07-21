@@ -110,11 +110,48 @@ async def test_fetch_marks_failed_on_adapter_error():
     assert (await repo.get_latest_ledger("assoc1", "scene.tif")).status == "failed"
 
 
-async def test_reference_mode_skips_copy():
+async def test_fetch_reference_mode_records_source_href_no_copy():
+    # Reference mode (Slice C): no byte copy. FETCH just advances settled →
+    # stored and records the stable source URL so EXTRACT/ITEMIZE can run.
+    from pipeline.connections.adapters.s3 import S3Adapter
+
     repo = FakeIngestRepo()
     await _settled(repo, "scene.tif")
-    cfg = parse_ingest_config({"source_path": "products/", "storage_mode": "reference"})
+    cfg = parse_ingest_config({"source_path": "products", "storage_mode": "reference"})
+    conn = ConnectionRow(
+        id="c1",
+        name="src",
+        protocol="s3",
+        config={
+            "bucket": "src-bucket",
+            "endpoint": "http://minio:9000",
+            "force_path_style": True,
+        },
+        credentials=None,
+        host_key=None,
+    )
+    assoc = IngestAssociation(id="assoc1", collection_id="sentinel-2", config={}, connection=conn)
+    # A real S3Adapter provides public_object_url; FETCH must not call get/put on it.
+    adapter = S3Adapter(conn.config, {"access_key_id": "k", "secret_access_key": "s"})
     s3 = FakeS3()
+
+    stored = await fetch_stage(repo, assoc, cfg, adapter, s3, "stac-higher", "scene", ["scene.tif"])
+
+    assert stored == 1
+    assert s3.puts == []  # no canonical copy
+    row = await repo.get_latest_ledger("assoc1", "scene.tif")
+    assert row.status == "stored"
+    assert row.item_id == "scene"
+    assert row.source_href == "http://minio:9000/src-bucket/products/scene.tif"
+
+
+async def test_fetch_reference_mode_skips_non_settled_member_idempotent():
+    repo = FakeIngestRepo()
+    member = await _settled(repo, "scene.tif")
+    await repo.set_ledger_fields(member.id, status="stored")
+    cfg = parse_ingest_config({"source_path": "products", "storage_mode": "reference"})
+    s3 = FakeS3()
+
     stored = await fetch_stage(
         repo, _assoc({}), cfg, FakeAdapter(), s3, "stac-higher", "scene", ["scene.tif"]
     )
