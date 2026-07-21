@@ -81,6 +81,26 @@ identical notifications within a transaction into a single delivery**, so a
   vendored trigger is available today and version-pinned; re-evaluate replacing
   it with pgstac's native feed at Phase 5's delivery hardening or a pgstac bump.
 
+## Update semantics — pgstac updates surface as DELETE + INSERT
+
+Live-verified (2026-07-21): driving `create_item` → `update_item` → `delete_item`
+through pgstac produced outbox ops `insert`, then **`delete` + `insert`**, then
+`delete` — i.e. **pgstac implements an item update as a delete followed by an
+insert** (its partition-upsert mechanism), so the `update` branch of the trigger
+rarely fires via pgstac's normal paths (only a direct SQL `UPDATE` on
+`pgstac.items` would). Consequences for outbox consumers:
+
+- A genuine delete and the delete-half of an update are indistinguishable at the
+  event level — which is fine, because **deletes never propagate** (§6.4): the
+  dispatcher drains every `delete` event without dispatching. The insert-half of
+  an update re-drives delivery, giving correct redelivery behavior.
+- Therefore the outbox `op` field must **not** be used to distinguish a
+  first-delivery from a redelivery. Slice B's `on_update` logic derives that from
+  `delivery_log` (prior delivery of the item), never from `op`. Logged in
+  ISSUES.md so Slice B honors it.
+- The trigger keeps its `update` branch anyway (harmless, and correct for any
+  future direct-UPDATE path).
+
 ## Consequences
 
 - The trigger path is validated against **pgstac `v0.9.11`** (pinned in

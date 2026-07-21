@@ -270,6 +270,79 @@ const MIGRATIONS = [
         ADD COLUMN IF NOT EXISTS source_href text;
     `,
   },
+  {
+    // Phase 5 (ROADMAP §5.4, §6.4): the event outbox that bridges pgstac item
+    // changes to the delivery dispatcher. ONE row per changed item into
+    // stac_higher.item_events (durable — never a pg_notify payload, which caps
+    // at ~8 KB and would abort bulk-upsert txns); a payload-less NOTIFY wakes
+    // the dispatcher (Slice C). ADR 0007 licenses the app to attach this trigger
+    // to pgstac.items (a table the app does not own) — the trigger writes ONLY
+    // into stac_higher. Guarded on pgstac.items existing so a pgstac-less DB
+    // (unit/CI) still migrates cleanly.
+    //
+    // Mechanism (ADR 0007 spike): a ROW-level trigger, not statement-level.
+    // pgstac.items is partitioned by collection; PostgreSQL clones row-level
+    // triggers onto every partition (present and future), so this fires whether
+    // pgstac routes through the parent OR writes directly into a partition
+    // (bulk/partition-targeted upserts) — the every-write-path guarantee §5.4
+    // needs. The empty-payload NOTIFY coalesces per transaction, so a bulk
+    // upsert of N rows yields one dispatcher wake, not N.
+    //
+    // Phase 6 hygiene (do NOT build now, mirrors audit_log/ingest_files): this
+    // is an envelope-scale table — Phase 6 time-partitions it on occurred_at and
+    // adds a partition-drop retention job.
+    name: "007_item_events_outbox",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.item_events (
+        id BIGSERIAL PRIMARY KEY,
+        collection_id text NOT NULL,
+        item_id text NOT NULL,
+        op text NOT NULL CHECK (op IN ('insert','update','delete')),
+        occurred_at timestamptz NOT NULL DEFAULT now(),
+        processed_at timestamptz
+      );
+
+      -- The dispatcher claims pending rows in id order; this partial index keeps
+      -- that scan cheap as processed rows accumulate (until Phase 6 partitions).
+      CREATE INDEX IF NOT EXISTS item_events_pending_idx
+        ON stac_higher.item_events (id)
+        WHERE processed_at IS NULL;
+
+      CREATE OR REPLACE FUNCTION stac_higher.item_events_capture()
+      RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF (TG_OP = 'DELETE') THEN
+          INSERT INTO stac_higher.item_events (collection_id, item_id, op)
+            VALUES (OLD.collection, OLD.id, 'delete');
+        ELSIF (TG_OP = 'UPDATE') THEN
+          INSERT INTO stac_higher.item_events (collection_id, item_id, op)
+            VALUES (NEW.collection, NEW.id, 'update');
+        ELSE
+          INSERT INTO stac_higher.item_events (collection_id, item_id, op)
+            VALUES (NEW.collection, NEW.id, 'insert');
+        END IF;
+        -- Payload-less wake only — the payload is the outbox row, never NOTIFY.
+        PERFORM pg_notify('item_events', '');
+        RETURN NULL;
+      END;
+      $fn$;
+
+      -- Attach only if pgstac.items exists (row-level cascades to partitions).
+      DO $do$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.tables
+          WHERE table_schema = 'pgstac' AND table_name = 'items'
+        ) THEN
+          DROP TRIGGER IF EXISTS item_events_capture_trg ON pgstac.items;
+          CREATE TRIGGER item_events_capture_trg
+            AFTER INSERT OR UPDATE OR DELETE ON pgstac.items
+            FOR EACH ROW EXECUTE FUNCTION stac_higher.item_events_capture();
+        END IF;
+      END;
+      $do$;
+    `,
+  },
 ];
 
 let migrated = false;
