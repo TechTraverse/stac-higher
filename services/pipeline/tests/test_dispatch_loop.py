@@ -27,6 +27,23 @@ async def test_matches_and_drains_outbox():
     assert repo.processed == [1]
 
 
+async def test_associations_queried_once_per_collection_in_batch():
+    # Two events sharing a collection (e.g. a bulk upsert) must trigger exactly
+    # one list_deliver_associations lookup, not one per event.
+    repo = FakeDispatchRepo(
+        events=[
+            ItemEvent(id=1, collection_id="c", item_id="i1", op="insert"),
+            ItemEvent(id=2, collection_id="c", item_id="i2", op="insert"),
+        ],
+        associations={"c": [DeliverAssociation("a1", "c", {"path_template": "{filename}"})]},
+        items={("c", "i1"): _item("i1"), ("c", "i2"): _item("i2")},
+    )
+    matches = await dispatch_once(repo)
+    assert [m.association_id for m in matches] == ["a1", "a1"]
+    assert repo.assoc_calls == 1
+    assert repo.processed == [1, 2]
+
+
 async def test_delete_event_is_drained_without_matching():
     repo = FakeDispatchRepo(
         events=[ItemEvent(id=2, collection_id="c", item_id="gone", op="delete")],

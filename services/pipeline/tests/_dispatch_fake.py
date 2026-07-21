@@ -15,6 +15,8 @@ class FakeDispatchRepo(DispatchRepo):
     associations: dict[str, list[DeliverAssociation]] = field(default_factory=dict)
     items: dict[tuple[str, str], dict] = field(default_factory=dict)
     processed: list[int] = field(default_factory=list)
+    #: number of list_deliver_associations calls (asserts the per-collection memo)
+    assoc_calls: int = 0
 
     async def claim_pending_events(self, limit: int) -> list[ItemEvent]:
         pending = [e for e in self.events if e.id not in self.processed]
@@ -24,6 +26,7 @@ class FakeDispatchRepo(DispatchRepo):
         self.processed.extend(event_ids)
 
     async def list_deliver_associations(self, collection_id: str) -> list[DeliverAssociation]:
+        self.assoc_calls += 1
         return self.associations.get(collection_id, [])
 
     async def get_item(self, collection_id: str, item_id: str) -> dict | None:

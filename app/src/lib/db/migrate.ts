@@ -277,8 +277,13 @@ const MIGRATIONS = [
     // at ~8 KB and would abort bulk-upsert txns); a payload-less NOTIFY wakes
     // the dispatcher (Slice C). ADR 0007 licenses the app to attach this trigger
     // to pgstac.items (a table the app does not own) — the trigger writes ONLY
-    // into stac_higher. Guarded on pgstac.items existing so a pgstac-less DB
-    // (unit/CI) still migrates cleanly.
+    // into stac_higher. This tracked migration creates ONLY the table + function
+    // (no pgstac dependency, so a pgstac-less DB still migrates cleanly);
+    // ATTACHING the trigger to pgstac.items is done by the idempotent
+    // reconcileOutboxTrigger step that runs on EVERY runMigrations() call — a
+    // once-recorded migration would be permanently skipped if it ran before
+    // pgstac.items existed (deploy-ordering race), silently leaving the outbox
+    // unpopulated and delivery a no-op forever.
     //
     // Mechanism (ADR 0007 spike): a ROW-level trigger, not statement-level.
     // pgstac.items is partitioned by collection; PostgreSQL clones row-level
@@ -326,24 +331,35 @@ const MIGRATIONS = [
         RETURN NULL;
       END;
       $fn$;
-
-      -- Attach only if pgstac.items exists (row-level cascades to partitions).
-      DO $do$
-      BEGIN
-        IF EXISTS (
-          SELECT 1 FROM information_schema.tables
-          WHERE table_schema = 'pgstac' AND table_name = 'items'
-        ) THEN
-          DROP TRIGGER IF EXISTS item_events_capture_trg ON pgstac.items;
-          CREATE TRIGGER item_events_capture_trg
-            AFTER INSERT OR UPDATE OR DELETE ON pgstac.items
-            FOR EACH ROW EXECUTE FUNCTION stac_higher.item_events_capture();
-        END IF;
-      END;
-      $do$;
     `,
   },
 ];
+
+// Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that
+// table exists. Runs on EVERY runMigrations() call (NOT a tracked once-only
+// migration) so a pgstac created AFTER the app's first migration — the
+// deploy-ordering race, or an app DB role that could not yet see pgstac.items —
+// still gets the trigger on the next boot instead of being permanently skipped.
+// Depends on stac_higher.item_events_capture() (migration 007), so it runs after
+// the migration loop. A no-op when pgstac.items is absent (unit/CI DBs).
+const RECONCILE_OUTBOX_TRIGGER_SQL = `
+  DO $do$
+  BEGIN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'pgstac' AND table_name = 'items'
+    ) AND EXISTS (
+      SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'stac_higher' AND p.proname = 'item_events_capture'
+    ) THEN
+      DROP TRIGGER IF EXISTS item_events_capture_trg ON pgstac.items;
+      CREATE TRIGGER item_events_capture_trg
+        AFTER INSERT OR UPDATE OR DELETE ON pgstac.items
+        FOR EACH ROW EXECUTE FUNCTION stac_higher.item_events_capture();
+    END IF;
+  END;
+  $do$;
+`;
 
 let migrated = false;
 
@@ -376,6 +392,10 @@ export async function runMigrations(): Promise<void> {
         );
       }
     }
+
+    // Runs every call (not tracked): (re)attaches the outbox trigger once
+    // pgstac.items exists, even if migration 007 was recorded before it did.
+    await client.query(RECONCILE_OUTBOX_TRIGGER_SQL);
 
     await client.query("COMMIT");
   } catch (err) {

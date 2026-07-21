@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from pipeline.delivery.matcher import Match, match_item
+from pipeline.delivery.matcher import DeliverAssociation, Match, match_item
 from pipeline.dispatcher.repo import DispatchRepo
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,12 @@ async def dispatch_once(repo: DispatchRepo, *, batch_size: int = 100) -> list[Ma
     events = await repo.claim_pending_events(batch_size)
     if not events:
         return []
+
+    # Cache deliver associations per collection for this batch: a bulk upsert of N
+    # items into one collection yields N outbox rows sharing collection_id, so
+    # without this the same JOIN query would run once per event instead of once
+    # per distinct collection in the batch.
+    assoc_cache: dict[str, list[DeliverAssociation]] = {}
 
     matches: list[Match] = []
     for event in events:
@@ -40,7 +46,11 @@ async def dispatch_once(repo: DispatchRepo, *, batch_size: int = 100) -> list[Ma
                 extra={"collection_id": event.collection_id, "item_id": event.item_id},
             )
             continue
-        associations = await repo.list_deliver_associations(event.collection_id)
+        if event.collection_id not in assoc_cache:
+            assoc_cache[event.collection_id] = await repo.list_deliver_associations(
+                event.collection_id
+            )
+        associations = assoc_cache[event.collection_id]
         item_matches = match_item(item, associations)
         for m in item_matches:
             logger.info(

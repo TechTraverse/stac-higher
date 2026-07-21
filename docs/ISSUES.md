@@ -249,3 +249,29 @@ the `LISTEN` loop lands.
 - Tracked in: `services/pipeline/.../dispatcher/repo.py` (split claim/mark),
   ROADMAP §10 (scheduler/monitor HA); found in the Slice A whole-branch review.
 
+### I-41 · `item_filter` is not CQL2-validated on write 🟡
+`deliveryConfigSchema` validates `item_filter` only as a non-empty string —
+there is no CQL2 grammar check on the app write path (a CQL2 parser exists only
+in the Python `cql2` package, not in TS/Zod). A malformed filter is therefore
+accepted with a 201, and at dispatch time `_item_filter_passes` catches the
+`cql2` exception and returns `False`, so once Slice B moves bytes the association
+silently matches nothing — an enabled delivery that never delivers, with only a
+pipeline-side warning the operator cannot see. No live impact in Slice A (the
+skeleton only logs). Slice B fix: validate the filter on write (a CQL2 parser
+app-side, or a pipeline-side validation bounce) and/or surface an
+association-`error` state through monitoring (Phase 6) so a bad filter is visible.
+- Tracked in: `app/src/lib/associations/schemas.ts` (`item_filter`),
+  `services/pipeline/.../delivery/matcher.py` (`_item_filter_passes`); found in the
+  Slice A `/code-review`.
+
+### I-42 · Matcher requires ≥1 asset, so metadata-only delivery is skipped ⚪
+`match_item` skips an association when the item↔`asset_keys` intersection is empty
+(`if not keys: continue`), so an item with zero assets — or an association whose
+`asset_keys` don't intersect the item — never matches, even when `payload`
+requests metadata-only delivery (`item_json` / `completion_marker`). This matches
+the ROADMAP §6.4 "delivery is assets only" headline, but whether a metadata-only
+payload should deliver without assets is a real design decision deferred to Slice
+B (when payload writing is implemented). Revisit the asset-gate then.
+- Tracked in: `services/pipeline/.../delivery/matcher.py`; found in the Slice A
+  `/code-review`.
+
