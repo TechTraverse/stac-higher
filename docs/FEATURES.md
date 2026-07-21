@@ -107,6 +107,33 @@ No new client deps in Slice A. Slice B1/B2+B3 added no deps (stdlib only). Slice
 
 ---
 
-## Phases 5–8 — Not started ⬜
+## Phase 5 — Delivery pipeline 🚧
 
-Delivery, retention/GC, observability, push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).
+**Slice A — event outbox + dispatcher skeleton** (done, live-verified). The
+event-driven bridge from catalog changes to delivery, matching only (no byte
+transfer yet). Entry points:
+
+- **Event outbox** — `stac_higher.item_events` + a row-level trigger on
+  `pgstac.items` (`app/src/lib/db/migrate.ts`, migration `007_item_events_outbox`):
+  one durable row per item change + a payload-less `NOTIFY item_events`.
+  Ownership + mechanism rationale in [ADR 0007](decisions/0007-outbox-trigger-ownership.md).
+- **Dispatcher** — `services/pipeline/src/pipeline/dispatcher/`: `repo.py`
+  (`DispatchRepo`/`PgDispatchRepo` — claim/mark outbox rows, read deliver
+  associations, `pgstac.get_item`), `loop.py` (`dispatch_once`: outbox drain →
+  match → log). Registered as the poll-driven `pipeline.dispatch_poll` tick
+  (`jobs/dispatch.py`, wired in `main.py`).
+- **Delivery matching** — `services/pipeline/src/pipeline/delivery/matcher.py`:
+  pure `match_item` applying CQL2 `item_filter` (via the `cql2` bindings,
+  hardened against filters referencing absent properties) + `asset_keys`.
+- **Delivery config contract (§5.1)** — Zod `deliveryConfigSchema`
+  (`app/src/lib/associations/schemas.ts`) mirrored by
+  `services/pipeline/src/pipeline/delivery/config.py`; the association create
+  route (`/api/collections/[id]/connections`) is a direction-discriminated union,
+  so delivery associations are creatable (operator+, group-owned).
+
+Slices B (workers + `delivery_log` + retry/dead-letter), C (NOTIFY-woken
+low-latency + backfill), and D (Data-flow delivery UI) are not started.
+
+## Phases 6–8 — Not started ⬜
+
+Retention/GC, observability, push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).

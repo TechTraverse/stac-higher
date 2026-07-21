@@ -181,3 +181,49 @@ Copy-mode FETCH records a sha256 checksum of the copied bytes; reference-mode FE
 ### I-35 · Pipeline image was missing `libexpat1` — in-container `raster_auto` EXTRACT failed ✅ resolved (Slice C live verification)
 The runtime stage of `services/pipeline/Dockerfile` installed only `libpq5`. rasterio's bundled-GDAL wheels dynamically link `libexpat` at runtime, so `import rasterio` inside the deployed container raised `ImportError: libexpat.so.1: cannot open shared object file` and `raster_auto` EXTRACT could not run in-container — breaking the Phase 4 done-when (dropped file → catalogued item) for any GeoTIFF-bearing ingest. B4's `raster_auto` verification ran host-side (uv venv), which masked the gap; the first **in-container** scheduler-driven itemize (Slice C live verification) surfaced it. Fix: add `libexpat1` to the runtime apt install (one line). Verified by a fresh image rebuild importing `rasterio`/`rio_stac` cleanly and a full scheduler-driven reference itemize producing a queryable `ST_Polygon` item.
 - Tracked in: `services/pipeline/Dockerfile`.
+
+---
+
+## Phase 5 — delivery pipeline (Slice A)
+
+### I-36 · `item_events` / `delivery_log` partitioning deferred to Phase 6 ⚪
+`stac_higher.item_events` (migration 007) is a plain, unpartitioned table, as
+`delivery_log` will be when Slice B adds it. Both are envelope-scale high-volume
+tables; Phase 6 time-partitions them on `occurred_at` and adds partition-drop
+retention jobs (mirrors the audit_log / ingest_files deferrals, I-11). Kept plain
+so the outbox + dispatcher could land first.
+- Tracked in: migration 007 comment; [ADR 0007](decisions/0007-outbox-trigger-ownership.md).
+
+### I-37 · `on_update` must derive redelivery from `delivery_log`, not the outbox `op` ⚪
+Live-verified in Slice A: pgstac implements an item update as **delete + insert**,
+so an update surfaces as a `delete` then an `insert` outbox row (never `op='update'`
+via pgstac's normal paths). Benign for the skeleton (the delete drains, the insert
+redelivers), but Slice B's `on_update: redeliver|ignore` logic must decide
+first-delivery-vs-redelivery from a prior `delivery_log` row, **never** from the
+outbox `op`.
+- Tracked in: [ADR 0007](decisions/0007-outbox-trigger-ownership.md) "Update semantics".
+
+### I-38 · Dispatcher item-visibility race is best-effort skip 🟡
+`dispatch_once` fetches the item via `pgstac.get_item`; if the outbox row is
+claimed before the item is visible (a race under concurrent writes), the event is
+logged and drained without dispatching — no retry. Acceptable for the poll-driven
+skeleton (a later update event re-drives it); Slice C's `LISTEN`-woken loop should
+revisit whether such events need a bounded retry rather than a silent skip.
+- Tracked in: `services/pipeline/.../dispatcher/loop.py` (the `item is None` branch).
+
+### I-39 · `dispatch_once` has no per-event error isolation ⚪
+The dispatch loop has no `try/except` around a single event's `get_item`/`match_item`;
+an exception on one event aborts the batch before `mark_processed`, so the whole
+claimed batch fails to drain and re-runs next tick (busy-loop on the offending
+item, no backoff). Low risk in Slice A — the matcher is already hardened against
+CQL2 filter errors (the one realistic raise) — but Slice B/C should add per-event
+isolation (skip + dead-letter the poison event) when the loop starts moving bytes.
+- Tracked in: `services/pipeline/.../dispatcher/loop.py`; found in the Slice A Task 6 review.
+
+### I-40 · Dispatcher HA / single-instance assumption ⚪
+The poll-driven dispatch (and Slice C's future `LISTEN`-woken loop) assumes a
+single pipeline instance; `FOR UPDATE SKIP LOCKED` makes concurrent drains safe
+against double-dispatch, but leader election / partitioned ownership for the
+scheduler+dispatcher is a Phase 8 concern (§10 scheduler-HA). Slice C documents
+the single-instance assumption where the `LISTEN` loop lands.
+- Tracked in: ROADMAP §10 (scheduler/monitor HA).
