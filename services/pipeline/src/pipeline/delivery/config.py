@@ -42,21 +42,19 @@ class DeliveryConfig:
     max_concurrent_transfers: int = DEFAULT_MAX_CONCURRENT_TRANSFERS
 
 
-def _enum(raw: Any, allowed: Sequence[str], default: str, field_name: str) -> str:
+def _enum(
+    raw: Any, allowed: Sequence[str], field_name: str, default: str | None = None
+) -> str | None:
+    """Validate ``raw`` against ``allowed``. ``None`` yields ``default`` — pass a
+    non-null default for a required field, omit it for a nullable one."""
     if raw is None:
         return default
     value = str(raw)
     if value not in allowed:
-        raise DeliveryConfigError(f"{field_name} must be one of {allowed}, got {value!r}")
-    return value
-
-
-def _enum_or_none(raw: Any, allowed: Sequence[str], field_name: str) -> str | None:
-    if raw is None:
-        return None
-    value = str(raw)
-    if value not in allowed:
-        raise DeliveryConfigError(f"{field_name} must be one of {allowed} or null, got {value!r}")
+        suffix = "" if default is not None else " or null"
+        raise DeliveryConfigError(
+            f"{field_name} must be one of {allowed}{suffix}, got {value!r}"
+        )
     return value
 
 
@@ -81,7 +79,7 @@ def parse_delivery_config(raw: dict[str, Any]) -> DeliveryConfig:
     payload_raw = raw.get("payload") or {}
     payload = {
         "item_json": bool(payload_raw.get("item_json", False)),
-        "checksums": _enum_or_none(payload_raw.get("checksums"), CHECKSUMS, "payload.checksums"),
+        "checksums": _enum(payload_raw.get("checksums"), CHECKSUMS, "payload.checksums"),
         "completion_marker": bool(payload_raw.get("completion_marker", False)),
     }
 
@@ -92,10 +90,10 @@ def parse_delivery_config(raw: dict[str, Any]) -> DeliveryConfig:
         item_filter=str(item_filter) if item_filter else None,
         asset_keys=_opt_str_list(raw.get("asset_keys")),
         payload=payload,
-        on_update=_enum(raw.get("on_update"), ON_UPDATE, "redeliver", "on_update"),
-        overwrite=_enum(raw.get("overwrite"), OVERWRITE, "if_newer", "overwrite"),
+        on_update=_enum(raw.get("on_update"), ON_UPDATE, "on_update", default="redeliver"),
+        overwrite=_enum(raw.get("overwrite"), OVERWRITE, "overwrite", default="if_newer"),
         max_attempts=int(retry_raw.get("max_attempts", DEFAULT_MAX_ATTEMPTS)),
-        backoff=_enum(retry_raw.get("backoff"), BACKOFF, "exponential", "retry.backoff"),
+        backoff=_enum(retry_raw.get("backoff"), BACKOFF, "retry.backoff", default="exponential"),
         max_concurrent_transfers=int(
             raw.get("max_concurrent_transfers", DEFAULT_MAX_CONCURRENT_TRANSFERS)
         ),

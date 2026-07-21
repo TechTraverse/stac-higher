@@ -159,23 +159,26 @@ export type DeliveryConfig = z.infer<typeof deliveryConfigSchema>;
 // create / update payloads (collection_id comes from the route path)
 // ---------------------------------------------------------------------------
 
+// Fields shared by both create variants; `direction` + `config` differ per arm.
+const baseCreateFields = {
+  connection_id: z.string().uuid("connection_id must be a connection UUID"),
+  enabled: z.boolean().default(true),
+  expectation: expectationSchema.nullable().default(null),
+};
+
 const ingestCreateSchema = z
   .object({
-    connection_id: z.string().uuid("connection_id must be a connection UUID"),
+    ...baseCreateFields,
     direction: z.literal("ingest"),
-    enabled: z.boolean().default(true),
     config: ingestConfigSchema,
-    expectation: expectationSchema.nullable().default(null),
   })
   .strict();
 
 const deliveryCreateSchema = z
   .object({
-    connection_id: z.string().uuid("connection_id must be a connection UUID"),
+    ...baseCreateFields,
     direction: z.literal("deliver"),
-    enabled: z.boolean().default(true),
     config: deliveryConfigSchema,
-    expectation: expectationSchema.nullable().default(null),
   })
   .strict();
 
