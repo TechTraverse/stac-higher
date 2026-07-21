@@ -69,6 +69,15 @@ satisfies it, so local flows work unchanged.
 - `reference` mode, retention/GC of canonical assets, and per-collection read
   authz all have a named place to land (this function / ADR 0002) rather than
   reshaping the route later.
+- **Slice C change (DB dependency):** Since reference mode was implemented,
+  `resolveAssetTarget` queries the `ingest_files (item_id)` index on every asset
+  GET — both copy and reference modes now depend on the app database (previously
+  copy-mode was pure offline presign). This is deliberate: on a DB error the route
+  fails fast (500) rather than falling back to canonical presign, because a
+  fallback would mis-serve reference-mode items (bytes not in canonical storage) —
+  a 500 is safer than a confident 404. The per-request cost is negligible
+  (single indexed lookup); a negative cache or item-level mode marker are
+  possible future optimizations if volume warrants it (cross-reference ISSUES I-34).
 
 ## Revisit
 
