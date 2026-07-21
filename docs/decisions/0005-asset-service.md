@@ -76,3 +76,21 @@ When Phase 4 introduces `storage_mode` and Phase 7 introduces the finalize
 worker, revisit whether manual uploads should also route through staging for a
 uniform validation path — the direct-to-canonical shortcut is a Phase-3
 simplification, not a permanent invariant.
+
+**Update — Phase 4 Slice C (`storage_mode: reference`), 2026-07-20:** shipped
+as the third branch of `resolveAssetTarget` predicted above, but narrower than
+"return the source href for referenced assets" implied: it only resolves
+**durably-reachable** sources. The pipeline persists a stable,
+credential-free source URL (`S3Adapter.public_object_url`) in
+`ingest_files.source_href` at FETCH; the route (`lookupReferenceHref` in
+`app/src/lib/storage/reference.ts`) 302s straight to it with **no presigning
+and no decryption** — the app's decryption boundary (`crypto.ts`, ADR-adjacent
+invariant: only the pipeline ever holds decrypted connection credentials) is
+unmodified by this branch. A source that requires credentials to read (a
+private bucket, SFTP/FTP) has **no** reference path yet — it must use `copy`
+mode. Private-source reference is deferred to a pipeline resolver endpoint
+that would mint a fresh presigned URL per read on the app's behalf (tracked as
+ISSUES I-32); a reference-mode checksum (I-33) and the source-endpoint
+browser-reachability split, the same class of gap as I-15 (I-34), are also
+deferred. Live end-to-end verification of this branch (Task 10) is pending as
+of this update.

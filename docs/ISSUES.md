@@ -105,9 +105,9 @@ The list-metadata half is **done (Slice B1)**: `StorageAdapter.list()` now retur
 DISCOVER lists `source_path` once. S3's prefix listing is naturally deep (all keys under the prefix), but SFTP/FTP `list()` returns a single directory level, so nested products under an SFTP/FTP source are not discovered. Adequate for the common flat-drop-directory case; a recursive walk (descend into `is_dir` entries, guarding depth/symlink loops) is the follow-up.
 - Tracked in: here; `services/pipeline/.../ingest/discover.py`. Also underpins the `StorageAdapter.list()` path-convention divergence surfaced by DISCOVER (S3 full-key vs SFTP/FTP relative-name), which `relative_source_path`/`source_fetch_path` normalize (I-4).
 
-### I-21 · Reference-mode ingest stalls at `settled` until Slice C ⚪
-`storage_mode: reference` associations run DISCOVER (files reach `settled`) but GROUP forms no groups and FETCH skips the copy, so nothing advances to `stored`/`itemized`. This is intentional — reference itemization (asset hrefs pointing at the source via `resolveAssetTarget`) is Slice C — but a reference association created now will accumulate `settled` ledger rows that don't progress. Slice C consumes them.
-- Tracked in: here; `services/pipeline/.../ingest/group.py`, `services/pipeline/.../ingest/fetch.py`.
+### I-21 · Reference-mode ingest stalls at `settled` — RESOLVED by Slice C ✅
+`storage_mode: reference` associations used to run DISCOVER (files reach `settled`) but stop there — GROUP formed no groups and FETCH skipped the copy, so nothing advanced to `stored`/`itemized`. **Slice C resolves this**: GROUP now forms groups for reference mode identically to copy mode; FETCH's reference branch records a stable, credential-free `source_href` (`S3Adapter.public_object_url`) in `ingest_files.source_href` and advances the ledger `settled` → `stored` without copying bytes; EXTRACT's byte-source seam (`MemberByteSource`/`CanonicalByteSource`/`SourceAdapterByteSource`) reads the source bytes directly for `build_item`; ITEMIZE is unchanged. The asset route resolves reference-mode items via `resolveAssetTarget` → `lookupReferenceHref`, 302-ing straight to `source_href` with no presigning and no decryption. Live SFTP/FTP + a continuous scheduler-driven run (Task 10) is the remaining verification, tracked separately.
+- Tracked in: `services/pipeline/.../ingest/group.py`, `services/pipeline/.../ingest/fetch.py`, `services/pipeline/.../ingest/extract.py`; `app/src/lib/storage/resolve.ts`, `app/src/lib/storage/reference.ts`.
 
 ---
 
@@ -159,3 +159,21 @@ Non-blocking items the final review surfaced; fix opportunistically.
 ### I-31 · Eager collection-extent DB read on the opted-in geometry path ⚪
 When an association opts into `metadata.defaults.geometry: "collection"`, `run_itemize` reads the collection's extent (`PgstacWriter.get_collection_bbox`, a fresh psycopg connection + query) *before* `build_item`, even when the extraction strategy is about to supply a geometry itself (always the case for `raster_auto`, which never returns null geometry). One wasted DB round-trip per item at envelope scale for that config combo. Fix: make the read lazy — fetch the collection bbox only inside the fallback path, when `item["geometry"]` is still null after strategy + best-effort GDAL (thread an async loader into `build_item`). Deferred as invasive (signature change + test churn) for a marginal, unusual-config benefit. Found in the B4/B4a `/simplify` efficiency review.
 - Tracked in: `services/pipeline/src/pipeline/ingest/itemize.py` (`run_itemize`, `_build_collection_fallback`).
+
+---
+
+## Phase 4 — ingest pipeline (Slice C: `storage_mode: reference`)
+
+Reference mode ships as **durably-reachable sources only**: the pipeline persists a stable, credential-free source URL (`ingest_files.source_href`) and the app 302s to it with no presigning and no decryption — preserving the `crypto.ts` "app never decrypts" invariant. See I-21 (resolved) for what changed in GROUP/FETCH/EXTRACT/ITEMIZE.
+
+### I-32 · Reference mode has no path for private sources 🟡
+Reference mode only works when the source object is reachable **without** credentials at a stable URL (`S3Adapter.public_object_url`). A source that requires credentials to read (a private bucket, SFTP/FTP) has no reference path today — such sources must use `copy` mode instead. The deferred fix is a pipeline resolver endpoint the app calls per-read to mint a fresh presigned URL server-side (the pipeline holds the decrypted connection credentials; the app never would, keeping the decryption boundary intact).
+- Tracked in: here; `app/src/lib/storage/reference.ts`; `services/pipeline/.../connections/adapters/s3.py`.
+
+### I-33 · Reference-mode assets have no checksum recorded 🟡
+Copy-mode FETCH records a sha256 checksum of the copied bytes; reference-mode FETCH does not — there is nothing to hash without copying, and hashing at the source would defeat the point of not copying. Versioning still works (the DISCOVER fingerprint, not the checksum, drives re-ingest), but reference-mode ledger rows carry no independent integrity signal for the asset the item points at.
+- Tracked in: here; `services/pipeline/.../ingest/fetch.py`.
+
+### I-34 · Reference source URL uses the connection's configured endpoint (same class as I-15) 🟡
+`S3Adapter.public_object_url` builds the source href from the connection's configured S3 endpoint. If that endpoint isn't reachable from wherever the asset-route redirect is followed (e.g. an internal-only endpoint distinct from a browser-reachable one), the 302 target won't resolve — the same internal-vs-browser-reachable split I-15 already tracks for the platform bucket's presign endpoint, but here for source connections.
+- Tracked in: here; I-15; `services/pipeline/.../connections/adapters/s3.py`.
