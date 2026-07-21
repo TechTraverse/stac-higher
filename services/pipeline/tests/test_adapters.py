@@ -24,6 +24,7 @@ from pipeline.connections.adapters import ftp as ftp_mod
 from pipeline.connections.adapters import ftps as ftps_mod
 from pipeline.connections.adapters import s3 as s3_mod
 from pipeline.connections.adapters import sftp as sftp_mod
+from pipeline.connections.adapters.base import StorageAdapter
 from pipeline.connections.adapters.ftp import _EgressFtpClient
 from pipeline.connections.egress import EgressBlocked
 
@@ -161,6 +162,52 @@ async def test_s3_egress_blocked_short_circuits(monkeypatch):
     result = await adapter.test()
     assert result["ok"] is False
     assert "blocked" in result["message"]
+
+
+def test_s3_public_object_url_path_style_custom_endpoint():
+    from pipeline.connections.adapters.s3 import S3Adapter
+
+    a = S3Adapter(
+        {"bucket": "src-bucket", "endpoint": "http://minio:9000", "force_path_style": True},
+        {"access_key_id": "k", "secret_access_key": "s"},
+    )
+    assert (
+        a.public_object_url("products/scene.tif")
+        == "http://minio:9000/src-bucket/products/scene.tif"
+    )
+
+
+def test_s3_public_object_url_virtual_hosted_default_aws():
+    from pipeline.connections.adapters.s3 import S3Adapter
+
+    a = S3Adapter(
+        {"bucket": "src-bucket", "region": "us-west-2"},
+        {"access_key_id": "k", "secret_access_key": "s"},
+    )
+    assert (
+        a.public_object_url("products/scene.tif")
+        == "https://src-bucket.s3.us-west-2.amazonaws.com/products/scene.tif"
+    )
+
+
+def test_base_adapter_public_object_url_raises():
+    class Dummy(StorageAdapter):
+        protocol = "dummy"
+
+        async def test(self): ...
+
+        async def list(self, prefix=""):
+            return []
+
+        async def get(self, path):
+            return b""
+
+        async def put(self, path, data): ...
+
+        async def delete(self, path): ...
+
+    with pytest.raises(NotImplementedError):
+        Dummy().public_object_url("x")
 
 
 # --------------------------------------------------------------------------- #

@@ -1,21 +1,24 @@
 /**
- * Asset-redirect resolution (ROADMAP Phase 3, §3 "Asset access").
+ * Asset-redirect resolution (ROADMAP Phase 3 §3 "Asset access"; reference
+ * branch is Phase 4 Slice C).
  *
  * The asset route calls this to turn (collection, item, filename) into the URL
- * it 302-redirects to. Today every asset lives in canonical storage, so this
- * always presigns the canonical object. It exists as a seam: Phase 4's
- * `storage_mode: reference` will branch here — look up the association's mode
- * and, for referenced assets, return the source href instead of a presigned
- * canonical URL. Callers depend only on `{ url }`, so that change stays local.
+ * it 302-redirects to. For `storage_mode: reference` assets, the pipeline
+ * records the stable source URL in `ingest_files.source_href`
+ * (`lookupReferenceHref`) — when found, that href is the redirect target and
+ * nothing is presigned. Otherwise (copy mode / manual upload / no match), this
+ * presigns the canonical object as before. Callers depend only on `{ url }`,
+ * so this branch stays entirely local to this module.
  */
 import { canonicalAssetKey } from "./keys";
 import { presignGetUrl } from "./presign";
+import { lookupReferenceHref } from "./reference";
 
 export interface AssetTarget {
   /** Where the asset route should redirect the caller. */
   url: string;
-  /** How it was resolved — canonical now; `reference` lands in Phase 4. */
-  mode: "canonical";
+  /** How it was resolved — the source href (reference) or a presigned canonical object URL. */
+  mode: "canonical" | "reference";
 }
 
 export async function resolveAssetTarget(
@@ -23,6 +26,10 @@ export async function resolveAssetTarget(
   itemId: string,
   filename: string,
 ): Promise<AssetTarget> {
+  const referenceHref = await lookupReferenceHref(collection, itemId, filename);
+  if (referenceHref) {
+    return { url: referenceHref, mode: "reference" };
+  }
   const key = canonicalAssetKey(collection, itemId, filename);
   const url = await presignGetUrl(key);
   return { url, mode: "canonical" };

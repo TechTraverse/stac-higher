@@ -8,6 +8,7 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_bounds
 
 from pipeline.ingest.extract import (
+    CanonicalByteSource,
     ExtractError,
     ExtractMember,
     bbox_from_geometry,
@@ -320,7 +321,7 @@ async def test_build_item_dispatches_raster_auto_reads_from_storage():
     s3 = _FakeS3({("bucket", "assets/col/scene/scene.tif"): _geotiff_bytes()})
     item = await build_item(
         collection_id="col", item_id="scene", members=members,
-        metadata={"strategy": "raster_auto"}, s3_client=s3, bucket="bucket",
+        metadata={"strategy": "raster_auto"}, byte_source=CanonicalByteSource(s3, "bucket"),
         asset_href_base="/api/assets",
     )
     assert item["geometry"] is not None
@@ -339,7 +340,7 @@ async def test_build_item_defaults_only_non_candidate_reads_nothing_and_raises()
                 "strategy": "defaults_only",
                 "defaults": {"datetime": "2021-01-01T00:00:00Z"},
             },
-            s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+            byte_source=CanonicalByteSource(s3, "bucket"), asset_href_base="/api/assets",
         )
 
 
@@ -351,7 +352,7 @@ async def test_build_item_defaults_only_recovers_geometry_from_gdal_candidate():
     item = await build_item(
         collection_id="col", item_id="scene", members=members,
         metadata={"strategy": "defaults_only", "defaults": {"datetime": "2021-01-01T00:00:00Z"}},
-        s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+        byte_source=CanonicalByteSource(s3, "bucket"), asset_href_base="/api/assets",
     )
     assert item["geometry"] is not None
     assert item["bbox"] is not None
@@ -369,7 +370,7 @@ async def test_build_item_defaults_only_collection_fallback_used():
     item = await build_item(
         collection_id="col", item_id="scene", members=members,
         metadata={"strategy": "defaults_only", "defaults": {"datetime": "2021-01-01T00:00:00Z"}},
-        s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+        byte_source=CanonicalByteSource(s3, "bucket"), asset_href_base="/api/assets",
         collection_fallback=fallback,
     )
     assert item["geometry"] == fallback["geometry"]
@@ -388,7 +389,7 @@ async def test_build_item_global_fallback_used():
     item = await build_item(
         collection_id="col", item_id="scene", members=members,
         metadata={"strategy": "defaults_only", "defaults": {"datetime": "2021-01-01T00:00:00Z"}},
-        s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+        byte_source=CanonicalByteSource(s3, "bucket"), asset_href_base="/api/assets",
         collection_fallback=fallback,
     )
     assert item["properties"]["stac_higher:geometry_source"] == "global_fallback"
@@ -404,8 +405,28 @@ async def test_build_item_no_fallback_raises_extract_error():
                 "strategy": "defaults_only",
                 "defaults": {"datetime": "2021-01-01T00:00:00Z"},
             },
-            s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+            byte_source=CanonicalByteSource(s3, "bucket"), asset_href_base="/api/assets",
         )
+
+
+async def test_build_item_reference_reads_from_adapter():
+    from _ingest_fake import FakeAdapter
+    from pipeline.ingest.extract import SourceAdapterByteSource
+
+    members = [_member("scene.tif")]
+    # canonical_key on the member is "assets/col/scene/scene.tif"; reference
+    # mode must NOT use it — it reads the source via the adapter instead.
+    # _member()'s source_path already carries the "products/" prefix, so the
+    # configured source_path is "" (source_fetch_path is then a no-op passthrough).
+    adapter = FakeAdapter(blobs={"products/scene.tif": _geotiff_bytes()})
+    byte_source = SourceAdapterByteSource(adapter, "")
+    item = await build_item(
+        collection_id="col", item_id="scene", members=members,
+        metadata={"strategy": "raster_auto"}, byte_source=byte_source,
+        asset_href_base="/api/assets",
+    )
+    assert item["geometry"] is not None
+    assert adapter.get_calls == ["products/scene.tif"]
 
 
 async def test_build_item_dispatches_sidecar_reads_sidecar_bytes():
@@ -425,7 +446,7 @@ async def test_build_item_dispatches_sidecar_reads_sidecar_bytes():
     item = await build_item(
         collection_id="col", item_id="scene", members=members,
         metadata={"strategy": "sidecar", "sidecar": {"pattern": "{basename}.xml"}},
-        s3_client=s3, bucket="bucket", asset_href_base="/api/assets",
+        byte_source=CanonicalByteSource(s3, "bucket"), asset_href_base="/api/assets",
     )
     assert item["properties"]["datetime"] == "2023-05-05T10:00:00Z"
     assert item["geometry"] is not None

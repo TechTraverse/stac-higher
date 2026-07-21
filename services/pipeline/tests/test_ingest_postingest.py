@@ -54,3 +54,13 @@ async def test_errors_are_swallowed():
     a = _Boom({"/out/scene.tif": b"x"})
     # must not raise
     await apply_post_ingest(a, _cfg("delete"), source_paths=["scene.tif"])
+
+
+async def test_reference_mode_skips_destructive_post_ingest():
+    a = _FakeAdapter({"/out/scene.tif": b"x"})
+    config = parse_ingest_config({
+        "source_path": "/out", "storage_mode": "reference", "post_ingest": "delete",
+    })
+    await apply_post_ingest(a, config, source_paths=["scene.tif"])
+    # Nothing deleted — the referenced bytes ARE the asset.
+    assert a.files == {"/out/scene.tif": b"x"}

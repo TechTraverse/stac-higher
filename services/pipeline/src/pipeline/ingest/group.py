@@ -14,8 +14,7 @@ STAC item:
 
 GROUP does not mutate emitted members' status; FETCH flips ``settled → fetching``.
 Re-running GROUP before FETCH re-emits the same groups, which FETCH handles
-idempotently. ``storage_mode: reference`` is deferred to Slice C, so groups are
-not formed for reference associations here.
+idempotently.
 """
 
 from __future__ import annotations
@@ -49,7 +48,6 @@ class GroupResult:
     ready: list[ReadyGroup] = field(default_factory=list)
     waiting: int = 0
     discarded: int = 0
-    skipped_reference: bool = False
 
 
 def _stem(relpath: str) -> str:
@@ -71,13 +69,6 @@ async def group_stage(
     now: dt.datetime,
 ) -> GroupResult:
     """Form ready product groups from the association's settled files."""
-    if config.storage_mode == "reference":
-        logger.info(
-            "ingest group: reference mode deferred to Slice C — no groups formed",
-            extra={"association_id": association_id},
-        )
-        return GroupResult(skipped_reference=True)
-
     settled = await repo.list_ledger_by_status(association_id, STATUS_SETTLED)
     if config.grouping.rule == "shared_basename":
         return await _group_shared_basename(repo, association_id, config, settled, now)

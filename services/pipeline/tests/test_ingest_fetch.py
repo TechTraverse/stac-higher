@@ -110,13 +110,74 @@ async def test_fetch_marks_failed_on_adapter_error():
     assert (await repo.get_latest_ledger("assoc1", "scene.tif")).status == "failed"
 
 
-async def test_reference_mode_skips_copy():
+async def test_fetch_reference_mode_records_source_href_no_copy():
+    # Reference mode (Slice C): no byte copy. FETCH just advances settled →
+    # stored and records the stable source URL so EXTRACT/ITEMIZE can run.
+    from pipeline.connections.adapters.s3 import S3Adapter
+
     repo = FakeIngestRepo()
     await _settled(repo, "scene.tif")
-    cfg = parse_ingest_config({"source_path": "products/", "storage_mode": "reference"})
+    cfg = parse_ingest_config({"source_path": "products", "storage_mode": "reference"})
+    conn = ConnectionRow(
+        id="c1",
+        name="src",
+        protocol="s3",
+        config={
+            "bucket": "src-bucket",
+            "endpoint": "http://minio:9000",
+            "force_path_style": True,
+        },
+        credentials=None,
+        host_key=None,
+    )
+    assoc = IngestAssociation(id="assoc1", collection_id="sentinel-2", config={}, connection=conn)
+    # A real S3Adapter provides public_object_url; FETCH must not call get/put on it.
+    adapter = S3Adapter(conn.config, {"access_key_id": "k", "secret_access_key": "s"})
     s3 = FakeS3()
+
+    stored = await fetch_stage(repo, assoc, cfg, adapter, s3, "stac-higher", "scene", ["scene.tif"])
+
+    assert stored == 1
+    assert s3.puts == []  # no canonical copy
+    row = await repo.get_latest_ledger("assoc1", "scene.tif")
+    assert row.status == "stored"
+    assert row.item_id == "scene"
+    assert row.source_href == "http://minio:9000/src-bucket/products/scene.tif"
+
+
+async def test_fetch_reference_mode_skips_non_settled_member_idempotent():
+    repo = FakeIngestRepo()
+    member = await _settled(repo, "scene.tif")
+    await repo.set_ledger_fields(member.id, status="stored")
+    cfg = parse_ingest_config({"source_path": "products", "storage_mode": "reference"})
+    s3 = FakeS3()
+
     stored = await fetch_stage(
         repo, _assoc({}), cfg, FakeAdapter(), s3, "stac-higher", "scene", ["scene.tif"]
     )
     assert stored == 0
     assert s3.puts == []
+
+
+async def test_set_ledger_fields_accepts_source_href_on_fake():
+    # NOTE: this file's test module has no `tests` package (no __init__.py);
+    # pytest's rootdir-insertion import mode puts `tests/` itself on
+    # sys.path, so sibling modules import bare (`_ingest_fake`, matching the
+    # module-level import above), not as `tests._ingest_fake`. The brief's
+    # `from tests._ingest_fake import ...` doesn't resolve here.
+    from pipeline.ingest.repo import LedgerEntry
+
+    repo = FakeIngestRepo()
+    repo.rows["1"] = LedgerEntry(
+        id="1", association_id="a", source_path="products/scene.tif",
+        version=1, size=10, fingerprint="f", checksum=None,
+        status="settled", item_id=None,
+    )
+    # Guards the dataclass field itself, not just setattr: a freshly built
+    # LedgerEntry with no source_href kwarg must default it to None. Before
+    # the field exists, this raises AttributeError (dataclasses without
+    # __slots__ let bare setattr create ad-hoc attributes, which would let
+    # the round-trip below pass even without the field — so assert this too).
+    assert repo.rows["1"].source_href is None
+    await repo.set_ledger_fields("1", source_href="https://src/scene.tif")
+    assert repo.rows["1"].source_href == "https://src/scene.tif"

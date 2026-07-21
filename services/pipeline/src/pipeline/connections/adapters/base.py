@@ -80,3 +80,12 @@ class StorageAdapter(abc.ABC):
     @abc.abstractmethod
     async def delete(self, path: str) -> None:
         """Delete the object/entry at ``path``."""
+
+    def public_object_url(self, path: str) -> str:
+        """Stable, credential-free URL for a source object (reference storage
+        mode, §5.1). Only object-store adapters implement this; the base raises
+        so a non-s3 adapter reaching reference mode fails loudly (the app also
+        restricts reference associations to s3)."""
+        raise NotImplementedError(
+            f"{self.protocol} connections do not support storage_mode 'reference'"
+        )

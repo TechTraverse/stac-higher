@@ -76,10 +76,10 @@ async def test_shared_basename_discard_on_timeout_marks_failed():
     assert repo.rows[eid].status == "failed"
 
 
-async def test_reference_mode_forms_no_groups():
+async def test_reference_mode_forms_groups_like_copy():
     repo = FakeIngestRepo()
     await _settle(repo, "a.tif")
     cfg = parse_ingest_config({"source_path": "in", "storage_mode": "reference"})
     result = await group_stage(repo, "assoc1", cfg, EPOCH)
-    assert result.ready == []
-    assert result.skipped_reference is True
+    assert len(result.ready) == 1
+    assert result.ready[0].item_id == "a"

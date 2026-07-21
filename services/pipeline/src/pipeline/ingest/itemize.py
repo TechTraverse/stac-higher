@@ -19,9 +19,11 @@ from typing import Any
 from pipeline.connections.adapters.base import StorageAdapter
 from pipeline.ingest.config import IngestConfig
 from pipeline.ingest.extract import (
+    CanonicalByteSource,
     ExtractError,
     ExtractMember,
     MetadataConfig,
+    SourceAdapterByteSource,
     bbox_to_polygon,
     build_item,
     parse_metadata,
@@ -165,14 +167,18 @@ async def run_itemize(
     # otherwise never consulted for this).
     cfg = parse_metadata(config.metadata)
     collection_fallback = await _build_collection_fallback(writer, association, cfg)
+    byte_source = (
+        SourceAdapterByteSource(adapter, config.source_path)
+        if config.storage_mode == "reference"
+        else CanonicalByteSource(s3_client, bucket)
+    )
     try:
         item_dict = await build_item(
             collection_id=association.collection_id,
             item_id=item_id,
             members=members,
             metadata=config.metadata,
-            s3_client=s3_client,
-            bucket=bucket,
+            byte_source=byte_source,
             asset_href_base=asset_href_base,
             collection_fallback=collection_fallback,
             cfg=cfg,

@@ -27,6 +27,15 @@ async def apply_post_ingest(
     action = config.post_ingest
     if action == "leave":
         return
+    if config.storage_mode == "reference":
+        # Reference mode never owns the bytes — delete/move would orphan the
+        # item's asset. The app guard rejects this at config time; this is
+        # defense-in-depth for configs written before the guard / directly to DB.
+        logger.info(
+            "post-ingest %r skipped: reference mode keeps source bytes", action,
+            extra={"action": action},
+        )
+        return
     for relpath in source_paths:
         src = source_fetch_path(config.source_path, relpath)
         try:

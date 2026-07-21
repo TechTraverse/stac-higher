@@ -54,6 +54,45 @@ describe("ingestConfigSchema", () => {
       ingestConfigSchema.safeParse({ source_path: "/o", bogus: true }).success,
     ).toBe(false);
   });
+
+  it("rejects reference mode with post_ingest delete", () => {
+    const result = ingestConfigSchema.safeParse({
+      source_path: "/out",
+      storage_mode: "reference",
+      post_ingest: "delete",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].path).toEqual(["post_ingest"]);
+    }
+  });
+
+  it("rejects reference mode with post_ingest move", () => {
+    const result = ingestConfigSchema.safeParse({
+      source_path: "/out",
+      storage_mode: "reference",
+      post_ingest: "move:/archive",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("allows reference mode with post_ingest leave", () => {
+    const result = ingestConfigSchema.safeParse({
+      source_path: "/out",
+      storage_mode: "reference",
+      post_ingest: "leave",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("still allows copy mode with post_ingest delete", () => {
+    const result = ingestConfigSchema.safeParse({
+      source_path: "/out",
+      storage_mode: "copy",
+      post_ingest: "delete",
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("parseAssociationCreate", () => {

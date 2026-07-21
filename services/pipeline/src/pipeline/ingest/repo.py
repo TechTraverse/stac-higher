@@ -63,6 +63,7 @@ class LedgerEntry:
     checksum: str | None
     status: str
     item_id: str | None
+    source_href: str | None = None
     created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
 
@@ -118,8 +119,8 @@ class IngestRepo(abc.ABC):
     @abc.abstractmethod
     async def set_ledger_fields(self, entry_id: str, **fields: Any) -> None:
         """Update a ledger row's mutable columns (``status``, ``size``,
-        ``fingerprint``, ``checksum``, ``item_id``) and bump ``updated_at``.
-        Unknown columns are rejected."""
+        ``fingerprint``, ``checksum``, ``item_id``, ``source_href``) and bump
+        ``updated_at``. Unknown columns are rejected."""
 
     @abc.abstractmethod
     async def set_ledger_status_many(
@@ -140,10 +141,12 @@ _ASSOC_COLUMNS = "cc.id, cc.collection_id, cc.config, cc.enabled"
 _CONNECTION_COLUMNS = "c.id, c.name, c.protocol, c.config, c.credentials, c.host_key, c.enabled"
 _LEDGER_COLUMNS = (
     "id, association_id, source_path, version, size, fingerprint, checksum,"
-    " status, item_id, created_at, updated_at"
+    " status, item_id, source_href, created_at, updated_at"
 )
 #: mutable ledger columns settable through set_ledger_fields (guards SQL building).
-_LEDGER_MUTABLE = frozenset({"status", "size", "fingerprint", "checksum", "item_id"})
+_LEDGER_MUTABLE = frozenset(
+    {"status", "size", "fingerprint", "checksum", "item_id", "source_href"}
+)
 
 
 def _to_ledger_entry(record: Sequence[Any]) -> LedgerEntry:
@@ -157,6 +160,7 @@ def _to_ledger_entry(record: Sequence[Any]) -> LedgerEntry:
         checksum,
         status,
         item_id,
+        source_href,
         created_at,
         updated_at,
     ) = record
@@ -170,6 +174,7 @@ def _to_ledger_entry(record: Sequence[Any]) -> LedgerEntry:
         checksum=checksum,
         status=status,
         item_id=item_id,
+        source_href=source_href,
         created_at=created_at,
         updated_at=updated_at,
     )

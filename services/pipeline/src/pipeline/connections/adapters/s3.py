@@ -65,6 +65,17 @@ class S3Adapter(StorageAdapter):
     def _host(self) -> str:
         return _endpoint_host(self._endpoint, self._region)
 
+    def public_object_url(self, path: str) -> str:
+        """Construct a stable object URL from config (no credentials read).
+        Path-style for a custom endpoint or force_path_style (MinIO); otherwise
+        virtual-hosted against the AWS regional host."""
+        key = path.lstrip("/")
+        if self._endpoint or self._force_path_style:
+            base = (self._endpoint or f"https://s3.{self._region}.amazonaws.com").rstrip("/")
+            return f"{base}/{self._bucket}/{key}"
+        region = self._region or "us-east-1"
+        return f"https://{self._bucket}.s3.{region}.amazonaws.com/{key}"
+
     def _pinned_endpoint(self) -> str | None:
         """Resolve+validate the endpoint host and return the ``endpoint_url`` to
         pass to boto3 (IP-pinned for custom http endpoints, unchanged

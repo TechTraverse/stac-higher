@@ -90,7 +90,20 @@ export const ingestConfigSchema = z
     metadata: metadataSchema.default(() => metadataSchema.parse({})),
     post_ingest: postIngestSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((cfg, ctx) => {
+    // Reference mode's source bytes ARE the catalog's asset — deleting or moving
+    // them would orphan every item that references them. Only `leave` is valid.
+    if (cfg.storage_mode === "reference" && cfg.post_ingest !== "leave") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["post_ingest"],
+        message:
+          "reference mode cannot delete or move the source — its bytes are the " +
+          "catalog's asset; use post_ingest 'leave' (or switch to copy mode)",
+      });
+    }
+  });
 
 export type IngestConfig = z.infer<typeof ingestConfigSchema>;
 

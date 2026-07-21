@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
+from rasterio.io import MemoryFile
+from rasterio.transform import from_bounds
 
 from _ingest_fake import FakeAdapter, FakeIngestRepo, FakeS3
 from pipeline.connections.repo import ConnectionRow
@@ -65,6 +68,18 @@ class _RaisingWriter(PgstacWriter):
 
     async def get_collection_bbox(self, collection_id):
         return None
+
+
+def _geotiff_bytes():
+    arr = np.arange(16, dtype="uint8").reshape(1, 4, 4)
+    transform = from_bounds(-1, -1, 1, 1, 4, 4)
+    with MemoryFile() as mem:
+        with mem.open(
+            driver="GTiff", height=4, width=4, count=1, dtype="uint8",
+            crs="EPSG:4326", transform=transform,
+        ) as ds:
+            ds.write(arr)
+        return mem.read()
 
 
 def _valid_item():
@@ -519,3 +534,50 @@ async def test_run_itemize_defaults_only_not_opted_in_fails_without_geometry():
     assert writer.get_collection_bbox_calls == []
     row = await repo.get_latest_ledger(assoc.id, "scene.bin")
     assert row.status == STATUS_FAILED
+
+
+async def test_run_itemize_reference_reads_source_via_adapter_and_marks_itemized():
+    # Reference mode (Phase 4 Slice C): FETCH never copied bytes to canonical
+    # storage, so EXTRACT must read the source raster in place via the
+    # adapter (`SourceAdapterByteSource`) — the built item is otherwise
+    # identical to the copy-mode round-trip
+    # (test_run_itemize_defaults_only_upserts_and_marks_itemized), just with
+    # `storage_mode: reference` and bytes staged in the adapter instead of
+    # the canonical FakeS3.
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "storage_mode": "reference",
+            "metadata": {"strategy": "raster_auto"},
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.tif", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = _FakeWriter()
+    adapter = FakeAdapter(blobs={"/out/scene.tif": _geotiff_bytes()})
+
+    out = await run_itemize(
+        repo,
+        writer,
+        adapter,
+        FakeS3(),  # canonical storage — must never be read in reference mode
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.tif"],
+        bucket="b",
+        asset_href_base="/api/assets",
+    )
+
+    assert out == ItemizeOutcome("itemized", "scene")
+    assert adapter.get_calls == ["/out/scene.tif"]
+    assert writer.items and writer.items[0]["id"] == "scene"
+    item = writer.items[0]
+    assert item["geometry"] is not None
+    assert item["assets"]["scene"]["href"] == "/api/assets/col/scene/scene.tif"
+    row = await repo.get_latest_ledger(assoc.id, "scene.tif")
+    assert row.status == STATUS_ITEMIZED
+    assert row.item_id == "scene"

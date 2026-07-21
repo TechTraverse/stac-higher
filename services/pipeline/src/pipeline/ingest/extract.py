@@ -2,12 +2,14 @@
 
 Three metadata strategies (§5.1): `raster_auto` (rio-stac over the primary
 raster), `sidecar` (parse an adjacent XML/JSON file), `defaults_only` (no
-extraction — a null-geometry item from collection defaults). The bytes are read
-back from canonical storage (FETCH already put them there), so raster reads go
-through an in-memory `rasterio.MemoryFile` — no GDAL S3 config needed. Output is
-a plain STAC item dict ready for the ITEMIZE validation gate; a field that can't
-be resolved raises `ExtractError` (→ group marked failed) rather than emitting a
-bad item.
+extraction — a null-geometry item from collection defaults). Member bytes are
+read via a `MemberByteSource` seam — `CanonicalByteSource` (copy mode: FETCH
+already wrote them to canonical storage) or `SourceAdapterByteSource`
+(reference mode: read in place from the source adapter) — so `build_item` is
+storage-mode-agnostic; raster reads go through an in-memory `rasterio.MemoryFile`
+either way — no GDAL S3 config needed. Output is a plain STAC item dict ready
+for the ITEMIZE validation gate; a field that can't be resolved raises
+`ExtractError` (→ group marked failed) rather than emitting a bad item.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import json
 import math
 import posixpath
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from xml.etree.ElementTree import Element, ParseError  # types only
 
 import pystac
@@ -29,6 +31,8 @@ import pystac
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _xml_fromstring
 
+from pipeline.connections.adapters.base import StorageAdapter
+from pipeline.ingest.discover import source_fetch_path
 from pipeline.storage import platform
 from pipeline.storage.keys import asset_href
 
@@ -148,6 +152,37 @@ def resolve_datetime(
 
 def _rfc3339(value: dt.datetime) -> str:
     return value.astimezone(dt.UTC).isoformat().replace("+00:00", "Z")
+
+
+class MemberByteSource(Protocol):
+    """Where EXTRACT reads a member's bytes from — canonical storage (copy mode)
+    or the source adapter (reference mode). Lets build_item stay mode-agnostic."""
+
+    async def read(self, member: ExtractMember) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class CanonicalByteSource:
+    """Copy mode: read the object FETCH wrote to canonical platform storage."""
+
+    s3_client: platform.S3Like
+    bucket: str
+
+    async def read(self, member: ExtractMember) -> bytes:
+        return await asyncio.to_thread(
+            platform.get_object, self.s3_client, self.bucket, member.canonical_key
+        )
+
+
+@dataclass(frozen=True)
+class SourceAdapterByteSource:
+    """Reference mode: read the object in place from the source adapter."""
+
+    adapter: StorageAdapter
+    source_path: str
+
+    async def read(self, member: ExtractMember) -> bytes:
+        return await self.adapter.get(source_fetch_path(self.source_path, member.source_path))
 
 
 def build_assets(
@@ -459,7 +494,7 @@ def build_raster_auto(
 
 
 async def _best_effort_raster_geometry(
-    primary: ExtractMember, s3_client: platform.S3Like, bucket: str
+    primary: ExtractMember, byte_source: MemberByteSource
 ) -> tuple[dict[str, Any], list[float]] | None:
     """Best-effort GDAL open of the primary member (ISSUE I-27 layer 2) — only
     attempted for a GDAL-candidate extension, and never raises (an unreadable
@@ -467,9 +502,7 @@ async def _best_effort_raster_geometry(
     if not is_gdal_candidate(primary.filename):
         return None
     try:
-        data = await asyncio.to_thread(
-            platform.get_object, s3_client, bucket, primary.canonical_key
-        )
+        data = await byte_source.read(primary)
     except Exception:
         return None
     return geometry_from_raster(data)
@@ -479,8 +512,7 @@ async def _resolve_geometry_fallback(
     item: dict[str, Any],
     members: list[ExtractMember],
     *,
-    s3_client: platform.S3Like,
-    bucket: str,
+    byte_source: MemberByteSource,
     collection_fallback: dict[str, Any] | None,
 ) -> None:
     """Layers 2-4 of the ISSUE I-27 resolution order: best-effort GDAL open,
@@ -488,7 +520,7 @@ async def _resolve_geometry_fallback(
     ``item`` in place (geometry/bbox/provenance) or raises ``ExtractError``.
     """
     primary = _primary(members)
-    recovered = await _best_effort_raster_geometry(primary, s3_client, bucket)
+    recovered = await _best_effort_raster_geometry(primary, byte_source)
     if recovered is not None:
         geometry, bbox = recovered
         _set_geometry(item, geometry, bbox, "raster")
@@ -515,17 +547,18 @@ async def build_item(
     item_id: str,
     members: list[ExtractMember],
     metadata: dict[str, Any],
-    s3_client: platform.S3Like,
-    bucket: str,
+    byte_source: MemberByteSource,
     asset_href_base: str,
     collection_fallback: dict[str, Any] | None = None,
     cfg: MetadataConfig | None = None,
 ) -> dict[str, Any]:
-    """Dispatch on metadata.strategy, reading member bytes from canonical storage
-    only when the strategy needs them. If the strategy leaves the item with a
-    null geometry, falls through the ISSUE I-27 resolution chain (best-effort
-    GDAL open → opt-in collection-extent fallback → fail-fast) rather than
-    emitting a null-geometry item, which pgstac rejects.
+    """Dispatch on metadata.strategy, reading member bytes via ``byte_source``
+    only when the strategy needs them — storage-mode-agnostic (copy reads
+    canonical storage, reference reads the source adapter; see
+    `CanonicalByteSource`/`SourceAdapterByteSource`). If the strategy leaves the
+    item with a null geometry, falls through the ISSUE I-27 resolution chain
+    (best-effort GDAL open → opt-in collection-extent fallback → fail-fast)
+    rather than emitting a null-geometry item, which pgstac rejects.
 
     ``cfg`` lets a caller that already parsed ``metadata`` (e.g. `run_itemize`)
     pass it through instead of having it re-parsed here."""
@@ -537,9 +570,7 @@ async def build_item(
         item = build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
     elif cfg.strategy == "sidecar":
         sidecar = _match_sidecar(members, cfg)
-        data = await asyncio.to_thread(
-            platform.get_object, s3_client, bucket, sidecar.canonical_key
-        )
+        data = await byte_source.read(sidecar)
         item = build_sidecar(collection_id, item_id, members, cfg, data, asset_href_base)
     else:
         # raster_auto
@@ -549,17 +580,14 @@ async def build_item(
             # null-geometry base as defaults_only, then the resolution chain.
             item = build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
         else:
-            data = await asyncio.to_thread(
-                platform.get_object, s3_client, bucket, primary.canonical_key
-            )
+            data = await byte_source.read(primary)
             item = build_raster_auto(collection_id, item_id, members, cfg, data, asset_href_base)
 
     if item.get("geometry") is None:
         await _resolve_geometry_fallback(
             item,
             members,
-            s3_client=s3_client,
-            bucket=bucket,
+            byte_source=byte_source,
             collection_fallback=collection_fallback,
         )
     return item
