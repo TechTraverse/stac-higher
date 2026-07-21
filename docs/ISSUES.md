@@ -218,12 +218,34 @@ claimed batch fails to drain and re-runs next tick (busy-loop on the offending
 item, no backoff). Low risk in Slice A — the matcher is already hardened against
 CQL2 filter errors (the one realistic raise) — but Slice B/C should add per-event
 isolation (skip + dead-letter the poison event) when the loop starts moving bytes.
-- Tracked in: `services/pipeline/.../dispatcher/loop.py`; found in the Slice A Task 6 review.
+There is a concrete API-reachable trigger for this (whole-branch review): the
+update route `[assocId].ts` validates PUT `config` with the **ingest-only**
+`associationUpdateSchema` (no direction check), so an operator can overwrite a
+`direction='deliver'` row with an ingest-shaped config; `match_item` then calls
+`parse_delivery_config` **outside** the per-association try/except (`matcher.py`,
+also Minor below), which raises `DeliveryConfigError` and — with no per-event
+isolation — permanently stalls the outbox. Slice B fix: make the update schema
+direction-aware **and** wrap the per-association body (including
+`parse_delivery_config`) in the isolation guard, not just the CQL2 eval.
+- Tracked in: `services/pipeline/.../dispatcher/loop.py`, `.../delivery/matcher.py`,
+  `app/src/lib/associations/schemas.ts` (update schema); found in the Slice A Task 6
+  review + whole-branch review.
 
 ### I-40 · Dispatcher HA / single-instance assumption ⚪
 The poll-driven dispatch (and Slice C's future `LISTEN`-woken loop) assumes a
-single pipeline instance; `FOR UPDATE SKIP LOCKED` makes concurrent drains safe
-against double-dispatch, but leader election / partitioned ownership for the
-scheduler+dispatcher is a Phase 8 concern (§10 scheduler-HA). Slice C documents
-the single-instance assumption where the `LISTEN` loop lands.
-- Tracked in: ROADMAP §10 (scheduler/monitor HA).
+single pipeline instance. **The current claim/mark split is NOT
+concurrency-safe** (whole-branch review): `claim_pending_events` and
+`mark_processed` run in **separate** transactions, so the `FOR UPDATE SKIP LOCKED`
+lock is released the moment the claim SELECT's transaction ends — processing then
+holds no lock and the rows are still `processed_at IS NULL`. Two overlapping
+dispatch runs (e.g. a `dispatch_once` outrunning the 60s poll interval) would
+re-claim the same rows and, once Slice B moves bytes, double-dispatch. The crash
+direction IS safe (a crash between claim and mark leaves rows pending →
+redelivered, never lost). Before Slice B moves bytes it must unify
+claim→process→mark under one transaction (or add an atomic `claimed_at`/status
+claim-marking column); leader election / partitioned ownership is a Phase 8
+concern (§10 scheduler-HA). Slice C documents the single-instance assumption where
+the `LISTEN` loop lands.
+- Tracked in: `services/pipeline/.../dispatcher/repo.py` (split claim/mark),
+  ROADMAP §10 (scheduler/monitor HA); found in the Slice A whole-branch review.
+
