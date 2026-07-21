@@ -16,6 +16,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import type { ConnectionProtocol } from "@/lib/connections/schemas";
 import type {
   AssociationDirection,
+  DeliveryConfig,
   Expectation,
   IngestConfig,
 } from "./schemas";
@@ -149,7 +150,7 @@ export interface CreateAssociationInput {
   connectionId: string;
   direction: AssociationDirection;
   enabled: boolean;
-  config: IngestConfig;
+  config: IngestConfig | DeliveryConfig;
   expectation: Expectation | null;
   createdBy: string;
 }

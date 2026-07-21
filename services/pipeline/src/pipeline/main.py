@@ -15,7 +15,14 @@ import uvicorn
 
 from pipeline.config import Settings
 from pipeline.health import create_health_app
-from pipeline.jobs import drain, health_sweep, heartbeat, ingest, staging_cleanup
+from pipeline.jobs import (
+    dispatch,
+    drain,
+    health_sweep,
+    heartbeat,
+    ingest,
+    staging_cleanup,
+)
 from pipeline.log import configure_logging
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
 
@@ -32,6 +39,8 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     staging_cleanup.register(queue, settings)
     # Phase 4: poll-based ingest — scheduler + DISCOVER/GROUP/FETCH chain.
     ingest.register(queue, settings)
+    # Phase 5 Slice A: poll-driven delivery dispatch (outbox → match → log).
+    dispatch.register(queue, settings)
     return queue
 
 

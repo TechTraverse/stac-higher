@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
 import {
-  DELIVERY_RESERVED_MESSAGE,
+  deliveryConfigSchema,
   ingestConfigSchema,
   parseAssociationCreate,
   parseAssociationUpdate,
@@ -109,16 +109,17 @@ describe("parseAssociationCreate", () => {
     }
   });
 
-  it("rejects direction 'deliver' with the reserved message", () => {
+  it("accepts a valid delivery association create payload", () => {
     const parsed = parseAssociationCreate({
       connection_id: CONN_UUID,
       direction: "deliver",
-      config: { source_path: "/out" },
+      config: { path_template: "{collection}/{item_id}/{filename}" },
     });
-    expect(parsed.success).toBe(false);
-    if (!parsed.success) {
-      expect(parsed.error.issues[0].message).toBe(DELIVERY_RESERVED_MESSAGE);
-      expect(parsed.error.issues[0].path).toEqual(["direction"]);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.direction).toBe("deliver");
+      expect(parsed.data.enabled).toBe(true);
+      expect(parsed.data.expectation).toBeNull();
     }
   });
 
@@ -148,5 +149,37 @@ describe("parseAssociationUpdate", () => {
   it("allows clearing the expectation with null", () => {
     const parsed = parseAssociationUpdate({ expectation: null });
     expect(parsed.success).toBe(true);
+  });
+});
+
+describe("deliveryConfigSchema (§5.1)", () => {
+  it("applies defaults for a minimal delivery config", () => {
+    const parsed = deliveryConfigSchema.parse({
+      path_template: "{collection}/{item_id}/{filename}",
+    });
+    expect(parsed.item_filter).toBeNull();
+    expect(parsed.asset_keys).toBeNull();
+    expect(parsed.payload).toEqual({
+      item_json: false,
+      checksums: null,
+      completion_marker: false,
+    });
+    expect(parsed.on_update).toBe("redeliver");
+    expect(parsed.overwrite).toBe("if_newer");
+    expect(parsed.retry).toEqual({ max_attempts: 5, backoff: "exponential" });
+    expect(parsed.max_concurrent_transfers).toBe(4);
+  });
+
+  it("requires a non-empty path_template", () => {
+    expect(() => deliveryConfigSchema.parse({ path_template: "" })).toThrow();
+  });
+
+  it("accepts a delivery association create payload", () => {
+    const result = parseAssociationCreate({
+      connection_id: "11111111-1111-4111-8111-111111111111",
+      direction: "deliver",
+      config: { path_template: "{collection}/{item_id}/{filename}" },
+    });
+    expect(result.success).toBe(true);
   });
 });

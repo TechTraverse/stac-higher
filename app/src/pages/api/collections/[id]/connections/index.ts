@@ -106,8 +106,9 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     if ("response" in connection) return connection.response;
 
     // reference mode catalogs assets in place at the source, so it only makes
-    // sense for an object-store source (§5.1).
+    // sense for an object-store source (§5.1). Ingest-only knob.
     if (
+      data.direction === "ingest" &&
       data.config.storage_mode === "reference" &&
       connection.protocol !== "s3"
     ) {

@@ -576,7 +576,8 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
 | 3 — Object storage & asset service | ✅ Done | App storage lib + `GET /api/assets/{collection}/{item}/{asset}` (RBAC → presigned 302) + `POST /api/uploads` (operator+, presigned PUT) + manual asset upload in the item form + pipeline staging-TTL cleanup job. No new tables. Live-verified: upload → PUT to MinIO → asset-route 302 → byte round-trip; staging sweep deletes an expired upload and leaves canonical assets intact. ADR 0005. |
 | 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. **Slice B (pipeline): B1, B2+B3, B4, and B4a all done** (B1: adapter `list()`→`FileEntry` metadata + `build_adapter` decrypt→adapter seam; B2+B3: `IngestRepo`, `ingest_poll` scheduler, DISCOVER settled-check, GROUP, copy-mode FETCH → canonical storage; B4: EXTRACT — `raster_auto`/`sidecar`/`defaults_only` — + ITEMIZE — stac-pydantic gate + pypgstac upsert + post-ingest — ADR 0006, no Dockerfile change; B4a: best-effort geometry extraction (COG/GeoTIFF/netCDF/GRIB/Zarr via bundled GDAL) + opt-in collection-extent fallback + fail-fast + `stac_higher:geometry_source` provenance — **RESOLVED ISSUE I-27** (pgstac's NOT NULL geometry)). A `/simplify` quality pass was applied across the B4/B4a slice (behavior-identical). Full pipeline suite: **234 passed, 2 skipped**. **B5 (integration + live end-to-end) largely verified (2026-07-17)** — DB integration test (real pypgstac upsert→query→update), a `raster_auto` e2e (GeoTIFF from MinIO → EXTRACT → ITEMIZE → queryable pgstac item with `ST_Polygon` geometry + `/api/assets` href, in-place update on a changed raster), and netCDF/collection-inheritance paths all live-verified. **Slice C (`storage_mode: reference`) code done** — migration 006 (`ingest_files.source_href`); GROUP/FETCH/EXTRACT reference branches (**RESOLVED ISSUE I-21**, reference no longer stalls at `settled`); `resolveAssetTarget` 302s straight to `source_href`, no presigning, no decryption; durably-reachable sources only, private-source reference deferred (I-32). **Slice C done + merged (26edd43).** **Phase 4 LIVE-VERIFIED end-to-end (2026-07-20, Task 10):** a reference association (poll → … → itemized, `GET /api/assets` 302→source, no canonical copy) AND an SFTP copy association (first live SFTP `list`/`get` → canonical copy → itemize, I-4) both ran uninterrupted through the real scheduler — **done-when met**. The in-container run found+fixed I-35 (pipeline image missing `libexpat1` for rasterio's bundled GDAL). |
-| 5–8 | ⬜ Not started | — |
+| 5 — Delivery pipeline | 🚧 In progress | **Slice A done** (event outbox + dispatcher skeleton): app migration 007 + **ADR 0007** add the durable `item_events` outbox — a **row-level** trigger on partitioned `pgstac.items` (A0 spike: row-level cascades to every partition incl. future, catching bulk/partition-direct writes a statement-level-on-parent trigger would miss; empty-payload NOTIFY coalesces per-txn) writing one row per change + a payload-less wake. Pipeline `dispatcher/` (poll-driven `dispatch_once`: claim outbox in id order → `pgstac.get_item` → match `direction='deliver'` associations → cql2 `item_filter` + `asset_keys` → **log matched pairs, no transfer yet**) + delivery `config` cross-runtime contract (Zod `deliveryConfigSchema` + Python `delivery/config.py`) + delivery associations now creatable via the API. **Live-verified (2026-07-21):** real trigger fired on insert/delete; real `dispatch_once`/`PgDispatchRepo` vs live pgstac matched only the passing-filter association (both assets), excluded the non-matching one, logged, and drained the outbox; deletes drain without dispatching; idempotent. Finding: pgstac updates surface as delete+insert (ADR 0007). **Slices B (workers + `delivery_log` + retry/dead-letter), C (NOTIFY-woken low-latency + backfill), D (Data-flow delivery UI) remain.** |
+| 6–8 | ⬜ Not started | — |
 
 Per-phase detail and any carried-forward items are noted inline below.
 
@@ -831,7 +832,48 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
   with assets in object storage within one poll cycle, idempotently across
   restarts and re-polls; a changed source file produces an updated item.
 
-### Phase 5 — Delivery pipeline ⬜ **Not started**
+### Phase 5 — Delivery pipeline 🚧 **In progress**
+
+Delivered in slices (each verify-gated on its own worktree branch off `ai/main`).
+
+- ✅ **Slice A — event outbox + dispatcher skeleton (done, live-verified,
+  merged):** app migration 007 adds the durable `item_events` outbox with a
+  **row-level** trigger on `pgstac.items` (**ADR 0007**; the A0 spike settled the
+  mechanism — `pgstac.items` is partitioned and PostgreSQL clones row-level
+  triggers to every partition incl. future ones, so it catches bulk /
+  partition-direct writes a statement-level-on-parent trigger with transition
+  tables would miss; the payload-less `NOTIFY item_events` coalesces per
+  transaction, so a bulk upsert wakes the dispatcher once). ADR 0007 extends
+  ADR 0001 to license the app owning a trigger attached to a pgstac table it
+  does not own (the trigger writes only into `stac_higher`). Pipeline
+  `dispatcher/` consumes the outbox in `id` order (`FOR UPDATE SKIP LOCKED`),
+  reads the item via `pgstac.get_item`, matches enabled `direction='deliver'`
+  associations, applies the CQL2 `item_filter` (cql2 bindings — hardened to
+  isolate a filter that references a property an item lacks) + `asset_keys`, and
+  **logs the matched (item × association) pairs — no byte transfer yet**
+  (poll-driven `dispatch_poll` tick; Slice C swaps in a `LISTEN`-woken loop).
+  The delivery `config` (§5.1) ships as a cross-runtime contract (Zod
+  `deliveryConfigSchema` + Python `delivery/config.py`), and delivery
+  associations are creatable via the existing `/api/collections/[id]/connections`
+  route. **Live-verified end-to-end (2026-07-21):** a real pgstac item insert
+  fired the trigger (one outbox row); the real `dispatch_once`/`PgDispatchRepo`
+  against live pgstac matched only the passing-`item_filter` association (with
+  both assets), excluded the non-matching one, logged the match, and drained the
+  outbox row; a delete event drained **without** dispatching (deletions never
+  propagate); re-runs were idempotent. **Finding (ADR 0007):** pgstac implements
+  an item update as delete+insert, so an update surfaces as a `delete` then an
+  `insert` outbox row — benign (the delete drains, the insert redelivers), but
+  Slice B's `on_update` must derive first-delivery-vs-redelivery from
+  `delivery_log`, never from the outbox `op`.
+- ⬜ **Slice B — delivery workers + `delivery_log` + retry/dead-letter:** the
+  byte-moving half (path templates, payload options, `on_update`, S3→S3 copy,
+  `.part` rename, per-connection concurrency, retry → dead-letter). Live S3 **and
+  SFTP + FTP** destinations. Not started.
+- ⬜ **Slice C — NOTIFY-woken low-latency + user-initiated backfill.** Not started.
+- ⬜ **Slice D — Data-flow tab: delivery half (UI).** Not started.
+
+Original phase intent (for reference):
+
 - **Outbox event bridge** per §5.4: vendored statement-level trigger →
   `item_events` + payload-less NOTIFY wake-up; dispatcher consumes the outbox
   (survives restarts, safe under bulk loads). Spike pgstac partition/trigger

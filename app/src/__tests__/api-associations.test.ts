@@ -257,6 +257,18 @@ describe("POST /api/collections/[id]/connections", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("creates a delivery association (operator)", async () => {
+    const res = await call(createRoute, authed(["operator"]), {
+      body: {
+        connection_id: CONN_ID,
+        direction: "deliver",
+        config: { path_template: "{collection}/{item_id}/{filename}" },
+      },
+    });
+    expect(res.status).toBe(201);
+    expect(createAssociation).toHaveBeenCalledOnce();
+  });
 });
 
 describe("/api/collections/[id]/connections/[assocId]", () => {

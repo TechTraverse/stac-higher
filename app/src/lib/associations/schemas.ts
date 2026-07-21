@@ -1,26 +1,25 @@
 /**
- * Zod schemas for collection↔connection associations (ROADMAP §5.1, Phase 4).
+ * Zod schemas for collection↔connection associations (ROADMAP §5.1, Phase 4/5).
  *
  * An association wires a connection to a built-in-catalog collection in a
- * direction. This slice handles `ingest` only (delivery config is Phase 5);
- * the DB table admits both directions so Phase 5 reuses it.
+ * direction — `ingest` (Phase 4) or `deliver` (Phase 5). `associationCreateSchema`
+ * is a discriminated union on `direction` so both are creatable; the update
+ * payload's `config` stays ingest-only for now (delivery-config UPDATE is a
+ * later slice).
  *
- * The ingest `config` shape is the cross-runtime contract — the Python pipeline
+ * Both `config` shapes are cross-runtime contracts — the Python pipeline
  * parses the same JSON out of `collection_connections.config`, so the field
  * names/shapes here must not drift from §5.1. Optional knobs carry defaults so
  * a minimal UI form produces a complete, pipeline-ready config.
  */
 import { z } from "zod";
 
-/** Directions the DB admits; only `ingest` is writable in this slice. */
+/** Directions the DB admits. */
 export const ASSOCIATION_DIRECTIONS = ["ingest", "deliver"] as const;
 export type AssociationDirection = (typeof ASSOCIATION_DIRECTIONS)[number];
 
 export const STORAGE_MODES = ["copy", "reference"] as const;
 export type StorageMode = (typeof STORAGE_MODES)[number];
-
-export const DELIVERY_RESERVED_MESSAGE =
-  "Delivery associations arrive in a later phase; only 'ingest' can be created yet";
 
 // ---------------------------------------------------------------------------
 // ingest config (stored as-is in collection_connections.config jsonb, §5.1)
@@ -117,10 +116,50 @@ export const expectationSchema = z
 export type Expectation = z.infer<typeof expectationSchema>;
 
 // ---------------------------------------------------------------------------
+// delivery config (stored as-is in collection_connections.config jsonb, §5.1)
+// ---------------------------------------------------------------------------
+
+const payloadSchema = z
+  .object({
+    item_json: z.boolean().default(false),
+    // per-file checksum sidecars: null = none.
+    checksums: z.enum(["md5", "sha256"]).nullable().default(null),
+    // manifest written LAST — the "product complete" signal for watchers.
+    completion_marker: z.boolean().default(false),
+  })
+  .strict();
+
+const retrySchema = z
+  .object({
+    max_attempts: z.number().int().min(1).default(5),
+    backoff: z.enum(["exponential", "fixed"]).default("exponential"),
+  })
+  .strict();
+
+export const deliveryConfigSchema = z
+  .object({
+    // Rendered per asset — see delivery/path.py (Slice B). Tokens: {collection}
+    // {item_id} {filename} {yyyy} {mm} {dd}.
+    path_template: z.string().min(1, "path_template is required"),
+    // optional CQL2 subset — null delivers every item.
+    item_filter: z.string().min(1).nullable().default(null),
+    // null = all assets; otherwise the asset keys to deliver.
+    asset_keys: z.array(z.string().min(1)).nullable().default(null),
+    payload: payloadSchema.default(() => payloadSchema.parse({})),
+    on_update: z.enum(["redeliver", "ignore"]).default("redeliver"),
+    overwrite: z.enum(["never", "always", "if_newer"]).default("if_newer"),
+    retry: retrySchema.default(() => retrySchema.parse({})),
+    max_concurrent_transfers: z.number().int().min(1).default(4),
+  })
+  .strict();
+
+export type DeliveryConfig = z.infer<typeof deliveryConfigSchema>;
+
+// ---------------------------------------------------------------------------
 // create / update payloads (collection_id comes from the route path)
 // ---------------------------------------------------------------------------
 
-export const associationCreateSchema = z
+const ingestCreateSchema = z
   .object({
     connection_id: z.string().uuid("connection_id must be a connection UUID"),
     direction: z.literal("ingest"),
@@ -129,6 +168,21 @@ export const associationCreateSchema = z
     expectation: expectationSchema.nullable().default(null),
   })
   .strict();
+
+const deliveryCreateSchema = z
+  .object({
+    connection_id: z.string().uuid("connection_id must be a connection UUID"),
+    direction: z.literal("deliver"),
+    enabled: z.boolean().default(true),
+    config: deliveryConfigSchema,
+    expectation: expectationSchema.nullable().default(null),
+  })
+  .strict();
+
+export const associationCreateSchema = z.discriminatedUnion("direction", [
+  ingestCreateSchema,
+  deliveryCreateSchema,
+]);
 
 export type AssociationCreateInput = z.infer<typeof associationCreateSchema>;
 
@@ -150,34 +204,7 @@ export type ParsedUpdate =
   | { success: true; data: AssociationUpdateInput }
   | { success: false; error: z.ZodError };
 
-/** Build a ZodError with one custom issue (guaranteed-failing parse). */
-function customZodError(
-  message: string,
-  path: (string | number)[],
-): z.ZodError {
-  const failing = z.unknown().superRefine((_value, ctx) => {
-    ctx.addIssue({ code: "custom", message, path });
-  });
-  const result = failing.safeParse(null);
-  return (result as { success: false; error: z.ZodError }).error;
-}
-
-/**
- * Parse a create payload, rejecting `direction: 'deliver'` with a dedicated
- * message before the shape check (the `z.literal("ingest")` would otherwise
- * report an opaque "invalid literal" error).
- */
 export function parseAssociationCreate(data: unknown): ParsedCreate {
-  if (
-    typeof data === "object" &&
-    data !== null &&
-    (data as Record<string, unknown>).direction === "deliver"
-  ) {
-    return {
-      success: false,
-      error: customZodError(DELIVERY_RESERVED_MESSAGE, ["direction"]),
-    };
-  }
   return associationCreateSchema.safeParse(data);
 }
 
