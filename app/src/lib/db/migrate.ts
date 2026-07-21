@@ -259,6 +259,17 @@ const MIGRATIONS = [
         WHERE item_id IS NOT NULL;
     `,
   },
+  {
+    // Phase 4 Slice C: reference-mode assets keep their bytes at the source.
+    // The pipeline records the stable source URL here at FETCH; the app's asset
+    // route (resolveAssetTarget) 302s to it. Null ⇒ canonical (copy mode /
+    // manual upload). ADR 0001: app owns this DDL, pipeline only writes rows.
+    name: "006_ingest_files_source_href",
+    sql: `
+      ALTER TABLE stac_higher.ingest_files
+        ADD COLUMN IF NOT EXISTS source_href text;
+    `,
+  },
 ];
 
 let migrated = false;
