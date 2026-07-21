@@ -120,3 +120,27 @@ async def test_reference_mode_skips_copy():
     )
     assert stored == 0
     assert s3.puts == []
+
+
+async def test_set_ledger_fields_accepts_source_href_on_fake():
+    # NOTE: this file's test module has no `tests` package (no __init__.py);
+    # pytest's rootdir-insertion import mode puts `tests/` itself on
+    # sys.path, so sibling modules import bare (`_ingest_fake`, matching the
+    # module-level import above), not as `tests._ingest_fake`. The brief's
+    # `from tests._ingest_fake import ...` doesn't resolve here.
+    from pipeline.ingest.repo import LedgerEntry
+
+    repo = FakeIngestRepo()
+    repo.rows["1"] = LedgerEntry(
+        id="1", association_id="a", source_path="products/scene.tif",
+        version=1, size=10, fingerprint="f", checksum=None,
+        status="settled", item_id=None,
+    )
+    # Guards the dataclass field itself, not just setattr: a freshly built
+    # LedgerEntry with no source_href kwarg must default it to None. Before
+    # the field exists, this raises AttributeError (dataclasses without
+    # __slots__ let bare setattr create ad-hoc attributes, which would let
+    # the round-trip below pass even without the field — so assert this too).
+    assert repo.rows["1"].source_href is None
+    await repo.set_ledger_fields("1", source_href="https://src/scene.tif")
+    assert repo.rows["1"].source_href == "https://src/scene.tif"
