@@ -55,11 +55,19 @@ identical notifications within a transaction into a single delivery**, so a
 
 ## Decision
 
-1. **Ownership — the app owns the outbox trigger.** App migration 007 (in
-   `stac_higher`, applied by the existing middleware mechanism) creates
-   `stac_higher.item_events`, the `stac_higher.item_events_capture()` trigger
-   function, and attaches the trigger to `pgstac.items`. This **extends ADR
-   0001**: *the app may attach a trigger to a pgstac table it does not own,
+1. **Ownership — the app owns the outbox trigger.** The tracked migration 007
+   (in `stac_higher`, applied by the existing middleware mechanism) creates
+   `stac_higher.item_events` and the `stac_higher.item_events_capture()` trigger
+   function — **no pgstac dependency**, so a pgstac-less DB (unit/CI) still
+   migrates cleanly. **Attaching** the trigger to `pgstac.items` is done by a
+   separate **idempotent `reconcileOutboxTrigger` step that runs on *every*
+   `runMigrations()` call** (guarded `IF EXISTS` on `pgstac.items`), not by the
+   once-recorded migration: a migration that ran before pgstac's table existed
+   (deploy-ordering race, or an app DB role that could not yet see it) would be
+   permanently skipped, silently leaving the outbox unpopulated and delivery a
+   no-op forever — so the attach must self-heal on the next boot once pgstac
+   appears (found in the Slice A `/code-review`; live-verified). This **extends
+   ADR 0001**: *the app may attach a trigger to a pgstac table it does not own,
    provided the trigger writes only into `stac_higher` and the attachment is
    `IF EXISTS`-guarded on the pgstac table.* One migration owner is preserved;
    the pipeline stays DDL-free (it only reads/updates `item_events` rows).
