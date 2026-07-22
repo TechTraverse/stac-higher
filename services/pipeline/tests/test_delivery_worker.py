@@ -259,3 +259,79 @@ async def test_no_writes_when_nothing_changed_and_no_item_json():
     assert len(adapter.puts) == n
     (rec,) = repo.rows.values()
     assert rec["status"] == "delivered"
+
+
+class _FakeSourceAdapter:
+    def __init__(self, objects):
+        self.objects = objects
+        self.gets: list[str] = []
+
+    async def get(self, path):
+        self.gets.append(path)
+        return self.objects[path]
+
+
+async def test_reference_asset_reads_source_adapter_not_canonical():
+    from pipeline.connections.repo import ConnectionRow
+    from pipeline.delivery.repo import ReferenceSource
+
+    conn = ConnectionRow(
+        id="c9", name="src", protocol="s3", config={}, credentials=None, host_key=None
+    )
+    src = ReferenceSource(filename="a.tif", fetch_path="incoming/a.tif", connection=conn)
+    repo = FakeDeliveryRepo(reference_sources={"scene": [src]})
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({})  # canonical is EMPTY — a canonical read would raise
+    source = _FakeSourceAdapter({"incoming/a.tif": b"REFBYTES"})
+    built: list = []
+
+    def _factory(connection):
+        built.append(connection)
+        return source
+
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    await deliver_item(
+        repo, adapter, s3, "bucket",
+        target=_target(), config=_config(), item=item,
+        asset_keys=["data"], item_created_at=None,
+        build_source_adapter=_factory,
+    )
+    assert source.gets == ["incoming/a.tif"]
+    assert adapter.puts == [("a.tif", b"REFBYTES")]
+    assert built == [conn]
+    (rec,) = repo.rows.values()
+    assert rec["status"] == "delivered"
+
+
+async def test_source_adapter_built_once_per_connection():
+    from pipeline.connections.repo import ConnectionRow
+    from pipeline.delivery.repo import ReferenceSource
+
+    conn = ConnectionRow(
+        id="c9", name="src", protocol="s3", config={}, credentials=None, host_key=None
+    )
+    sources = [
+        ReferenceSource(filename="a.tif", fetch_path="in/a.tif", connection=conn),
+        ReferenceSource(filename="b.tif", fetch_path="in/b.tif", connection=conn),
+    ]
+    repo = FakeDeliveryRepo(reference_sources={"scene": sources})
+    adapter = _FakeAdapter()
+    source = _FakeSourceAdapter({"in/a.tif": b"A", "in/b.tif": b"B"})
+    built: list = []
+
+    def _factory(connection):
+        built.append(connection)
+        return source
+
+    item = _item({
+        "a": {"href": "/api/assets/col/scene/a.tif"},
+        "b": {"href": "/api/assets/col/scene/b.tif"},
+    })
+    await deliver_item(
+        repo, adapter, _FakeS3({}), "bucket",
+        target=_target(), config=_config(), item=item,
+        asset_keys=["a", "b"], item_created_at=None,
+        build_source_adapter=_factory,
+    )
+    assert len(built) == 1  # cached per connection id
+    assert {p for p, _ in adapter.puts} == {"a.tif", "b.tif"}

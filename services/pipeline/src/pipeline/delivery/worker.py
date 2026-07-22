@@ -32,7 +32,7 @@ from pipeline.delivery.payload import (
     completion_payload,
     item_json_payload,
 )
-from pipeline.delivery.repo import DeliverTarget, DeliveryRepo
+from pipeline.delivery.repo import DeliverTarget, DeliveryRepo, ReferenceSource
 from pipeline.delivery.transfer import sha256_fingerprint
 from pipeline.storage import platform
 from pipeline.storage.keys import canonical_asset_key
@@ -62,6 +62,21 @@ def _should_write(overwrite: str, prev: dict[str, Any] | None, fingerprint: str)
     if overwrite == "never":
         return False
     return prev.get("fingerprint") != fingerprint  # if_newer
+
+
+async def _read_reference(
+    ref: ReferenceSource,
+    cache: dict[str, StorageAdapter],
+    build_source_adapter: SourceAdapterFactory,
+) -> bytes:
+    """Reference-mode asset (spec decision 3): bytes live at the ingest source.
+    Build (and cache per connection) the source adapter and read in place —
+    the ``SourceAdapterByteSource`` pattern from EXTRACT."""
+    src = cache.get(ref.connection.id)
+    if src is None:
+        src = build_source_adapter(ref.connection)
+        cache[ref.connection.id] = src
+    return await src.get(ref.fetch_path)
 
 
 async def _write_sidecar(
@@ -104,6 +119,13 @@ async def deliver_item(
     row_id = await repo.upsert_pending(target.id, item_id, item_created_at)
     await repo.mark_delivering(row_id)
     try:
+        ref_sources: dict[str, ReferenceSource] = {}
+        if build_source_adapter is not None:
+            ref_sources = {
+                ref.filename: ref
+                for ref in await repo.load_reference_sources(item_id)
+            }
+        source_adapters: dict[str, StorageAdapter] = {}
         assets = item.get("assets") or {}
         checksums_algo = config.payload.get("checksums")
         delivered: dict[str, dict[str, Any]] = dict(prior.delivered_assets) if prior else {}
@@ -115,10 +137,14 @@ async def deliver_item(
                 # Asset vanished between match and delivery — skip, deliver the rest.
                 continue
             filename = _asset_filename(asset)
-            canonical_key = canonical_asset_key(target.collection_id, item_id, filename)
-            data = await asyncio.to_thread(
-                platform.get_object, s3_client, bucket, canonical_key
-            )
+            ref = ref_sources.get(filename)
+            if ref is not None:
+                data = await _read_reference(ref, source_adapters, build_source_adapter)
+            else:
+                canonical_key = canonical_asset_key(target.collection_id, item_id, filename)
+                data = await asyncio.to_thread(
+                    platform.get_object, s3_client, bucket, canonical_key
+                )
             fingerprint = sha256_fingerprint(data)
             size = len(data)
             if not _should_write(config.overwrite, delivered.get(key), fingerprint):
