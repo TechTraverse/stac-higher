@@ -5,7 +5,7 @@ which groups matches per association and enqueues a batched ``pipeline.deliver``
 job. The ``deliver`` handler loads the destination connection, builds its adapter,
 and runs each item through ``deliver_item`` (canonical bytes → destination,
 recorded in ``delivery_log``). Slice C swaps the poll for a LISTEN-woken loop;
-retry → dead-letter and payload/on_update policy are B-ii/B-iii.
+payload/on_update policy are enforced (§6.4); retry → dead-letter remains B-iii.
 """
 
 from __future__ import annotations
@@ -15,8 +15,10 @@ from typing import Any
 
 from pipeline.config import Settings
 from pipeline.connections.build import AdapterBuildError, build_adapter
+from pipeline.connections.repo import ConnectionRow
 from pipeline.delivery.config import parse_delivery_config
 from pipeline.delivery.repo import PgDeliveryRepo
+from pipeline.delivery.transfer import can_server_side_copy
 from pipeline.delivery.worker import deliver_item
 from pipeline.dispatcher.loop import dispatch_once
 from pipeline.dispatcher.repo import PgDispatchRepo
@@ -66,6 +68,17 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             return
         config = parse_delivery_config(target.config)
         s3_client = build_platform_client(settings)
+
+        def _source_adapter(connection: ConnectionRow):
+            # Reference-mode assets: decrypt + build the ingest source adapter
+            # on demand (worker caches per connection).
+            return build_adapter(connection, master_key, settings.egress_allow_hosts)
+
+        server_side_copy = can_server_side_copy(
+            target.connection.protocol,
+            (target.connection.config or {}).get("endpoint"),
+            settings.staging_s3_endpoint,
+        )
         for entry in items:
             item = await repo.get_item(target.collection_id, entry["item_id"])
             if item is None:
@@ -80,6 +93,8 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 item=item,
                 asset_keys=entry["asset_keys"],
                 item_created_at=entry.get("item_created_at"),
+                build_source_adapter=_source_adapter,
+                server_side_copy=server_side_copy,
             )
 
     queue.register_periodic(dispatch_poll, name=JOB_DISPATCH_POLL, cron=CRON)
