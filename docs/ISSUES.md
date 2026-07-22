@@ -347,3 +347,28 @@ Phase 6 observability.
 - Tracked in: `services/pipeline/.../delivery/transfer.py` (`can_server_side_copy`,
   `etag_fingerprint`, `sha256_fingerprint`); found in the Slice B-ii review.
 
+### I-48 · md5 checksum sidecars ride the canonical ETag, which is NOT the content MD5 under SSE-KMS/SSE-C 🟡
+The B-ii server-side-copy path writes the `.md5` sidecar from a single-part
+canonical ETag (`worker.py`, `"-" in etag` is the only guard). On an
+SSE-KMS/SSE-C-encrypted canonical bucket, single-part ETags are not the MD5, so
+the sidecar would fail a consumer's `md5sum -c`. Spec-level assumption (the
+B-ii design doc licenses it); safe on local MinIO and SSE-S3. B-iii: document
+the bucket constraint or add a force-streaming flag.
+- Tracked in: `services/pipeline/src/pipeline/delivery/worker.py`; found in the
+  Slice B-ii whole-branch review.
+
+### I-49 · Reference-mode delivery residuals from the B-ii whole-branch review ⚪
+Covering: (1) reference routing is keyed by bare basename (`ref_sources` dict
+keyed on the source path's last segment vs the asset href's last segment) — two
+ledger rows sharing a basename, or a canonical asset coincidentally matching a
+reference row's basename, mis-route silently; log on collision at minimum.
+(2) A mid-batch failure discards the partial `delivered` fingerprint map
+(`mark_failed` drops it), so the B-iii retry rewrites already-delivered assets
+within one cycle. (3) The completion manifest never prunes keys no longer
+present in the item (stale entries listed as current). (4) Missing tests:
+source-read failure → `mark_failed`, a mixed reference+canonical item, md5
+checksums + copy-failure fallback combo. All benign under at-least-once (I-43);
+address alongside the B-iii retry sweep.
+- Tracked in: `services/pipeline/src/pipeline/delivery/{worker,repo}.py`; found
+  in the Slice B-ii whole-branch review.
+

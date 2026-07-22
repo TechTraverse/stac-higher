@@ -73,7 +73,10 @@ class DeliveryRepo(abc.ABC):
     @abc.abstractmethod
     async def load_reference_sources(self, item_id: str) -> list[ReferenceSource]:
         """Latest-version ingest_files rows for this item with a source_href —
-        the item's reference-mode files, with their source connection loaded."""
+        the item's reference-mode files, with their source connection loaded.
+        A reference asset whose source association/connection is disabled is
+        not returned, so its delivery fails with a clear canonical-object-missing
+        error instead of silently reading a disabled source."""
 
     @abc.abstractmethod
     async def upsert_pending(
@@ -179,6 +182,7 @@ class PgDeliveryRepo(DeliveryRepo):
                 " JOIN stac_higher.collection_connections cc ON cc.id = f.association_id"
                 " JOIN stac_higher.connections c ON c.id = cc.connection_id"
                 " WHERE f.item_id = %s AND f.source_href IS NOT NULL"
+                " AND cc.enabled = true AND c.enabled = true"
                 " ORDER BY f.association_id, f.source_path, f.version DESC",
                 (item_id,),
             )

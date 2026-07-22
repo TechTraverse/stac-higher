@@ -107,3 +107,12 @@ class StorageAdapter(abc.ABC):
         raise NotImplementedError(
             f"{self.protocol} connections do not support storage_mode 'reference'"
         )
+
+    async def copy_object_from(self, src_bucket: str, src_key: str, dst_path: str) -> None:
+        """Server-side copy from another bucket on the same endpoint into this
+        adapter's storage (delivery §6.4). Only object-store adapters implement
+        this; callers gate on ``delivery.transfer.can_server_side_copy``, which
+        is s3-only — the base raises so a misrouted call fails loudly."""
+        raise NotImplementedError(
+            f"{self.protocol} connections do not support server-side copy"
+        )
