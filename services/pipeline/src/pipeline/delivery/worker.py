@@ -1,8 +1,9 @@
 """Deliver one item's assets to a destination (ROADMAP §6.4, Slice B-ii).
 
 For each requested asset key: resolve the source bytes (canonical platform
-bucket; Tasks 6-7 add reference-mode sources and S3→S3 server-side copy),
-render the destination path from ``path_template``, apply the association's
+bucket, the ingest source adapter for reference-mode assets, or an S3→S3
+server-side copy when the destination shares the platform endpoint), render
+the destination path from ``path_template``, apply the association's
 ``on_update``/``overwrite`` policy against ``delivery_log.delivered_assets``
 (log-based — never a destination round-trip), and write atomically via the
 adapter. Payload sidecars land beside the assets: a checksum per written file,
@@ -33,7 +34,7 @@ from pipeline.delivery.payload import (
     item_json_payload,
 )
 from pipeline.delivery.repo import DeliverTarget, DeliveryRepo, ReferenceSource
-from pipeline.delivery.transfer import sha256_fingerprint
+from pipeline.delivery.transfer import etag_fingerprint, sha256_fingerprint
 from pipeline.storage import platform
 from pipeline.storage.keys import canonical_asset_key
 
@@ -138,23 +139,52 @@ async def deliver_item(
                 continue
             filename = _asset_filename(asset)
             ref = ref_sources.get(filename)
+            canonical_key: str | None = None
+            data: bytes | None = None
+            etag = ""
             if ref is not None:
                 data = await _read_reference(ref, source_adapters, build_source_adapter)
+                fingerprint, size = sha256_fingerprint(data), len(data)
             else:
                 canonical_key = canonical_asset_key(target.collection_id, item_id, filename)
-                data = await asyncio.to_thread(
-                    platform.get_object, s3_client, bucket, canonical_key
-                )
-            fingerprint = sha256_fingerprint(data)
-            size = len(data)
+                # sha256 sidecars need the bytes; md5 can ride a single-part etag.
+                use_copy = server_side_copy and checksums_algo != "sha256"
+                if use_copy:
+                    etag, size = await asyncio.to_thread(
+                        platform.head_object, s3_client, bucket, canonical_key
+                    )
+                    if checksums_algo == "md5" and "-" in etag:
+                        use_copy = False  # multipart etag is not an md5 — stream
+                    else:
+                        fingerprint = etag_fingerprint(etag, size)
+                if not use_copy:
+                    data = await asyncio.to_thread(
+                        platform.get_object, s3_client, bucket, canonical_key
+                    )
+                    fingerprint, size = sha256_fingerprint(data), len(data)
             if not _should_write(config.overwrite, delivered.get(key), fingerprint):
                 continue  # keep the prior entry — it reflects the destination
             dest = render_path(config.path_template, item, filename)
-            await adapter.put_atomic(dest, data)
+            if data is None:
+                try:
+                    await adapter.copy_object_from(bucket, canonical_key, dest)
+                except Exception:  # copy denied/failed — stream instead (not enabled: BLE001)
+                    logger.warning(
+                        "server-side copy failed; streaming instead",
+                        extra={"association_id": target.id, "item_id": item_id, "dest": dest},
+                        exc_info=True,
+                    )
+                    data = await asyncio.to_thread(
+                        platform.get_object, s3_client, bucket, canonical_key
+                    )
+                    fingerprint, size = sha256_fingerprint(data), len(data)
+                    await adapter.put_atomic(dest, data)
+            else:
+                await adapter.put_atomic(dest, data)
             total += size
             wrote_any = True
             if checksums_algo:
-                digest = hashlib.new(checksums_algo, data).hexdigest()
+                digest = etag if data is None else hashlib.new(checksums_algo, data).hexdigest()
                 total += await _write_sidecar(
                     adapter, config, item, checksum_payload(filename, checksums_algo, digest)
                 )

@@ -9,23 +9,40 @@ pytestmark = pytest.mark.asyncio
 
 
 class _FakeAdapter:
-    def __init__(self):
+    def __init__(self, copy_error=None):
         self.puts: list[tuple[str, bytes]] = []
+        self.copies: list[tuple[str, str, str]] = []
+        self.copy_error = copy_error
 
     async def put_atomic(self, path, data):
         self.puts.append((path, data))
 
+    async def copy_object_from(self, src_bucket, src_key, dst_path):
+        if self.copy_error:
+            raise self.copy_error
+        self.copies.append((src_bucket, src_key, dst_path))
+
 
 class _FakeS3:
-    """Only get_object is used; keyed by (bucket, key)."""
+    """get_object/head_object over a dict keyed by (bucket, key)."""
 
-    def __init__(self, objects):
+    def __init__(self, objects, etags=None):
         self.objects = objects
+        self.etags = etags or {}
+        self.heads: list[tuple[str, str]] = []
 
     def get_object(self, Bucket, Key):  # boto3 kwarg names (not enabled: N803)
         import io
 
         return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
+
+    def head_object(self, Bucket, Key):  # boto3 kwarg names (not enabled: N803)
+        self.heads.append((Bucket, Key))
+        data = self.objects[(Bucket, Key)]
+        import hashlib
+
+        etag = self.etags.get((Bucket, Key), hashlib.md5(data).hexdigest())
+        return {"ETag": f'"{etag}"', "ContentLength": len(data)}
 
 
 def _target():
@@ -335,3 +352,141 @@ async def test_source_adapter_built_once_per_connection():
     )
     assert len(built) == 1  # cached per connection id
     assert {p for p, _ in adapter.puts} == {"a.tif", "b.tif"}
+
+
+async def test_server_side_copy_no_stream():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMGDATA"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+
+    await deliver_item(
+        repo, adapter, s3, "bucket",
+        target=_target(), config=_config(), item=item,
+        asset_keys=["data"], item_created_at=None,
+        server_side_copy=True,
+    )
+    assert adapter.copies == [("bucket", "assets/col/scene/a.tif", "a.tif")]
+    assert adapter.puts == []  # no bytes through the worker
+    (rec,) = repo.rows.values()
+    assert rec["status"] == "delivered"
+    assert rec["delivered_assets"]["data"]["fingerprint"].startswith("etag:")
+    assert rec["bytes"] == len(b"IMGDATA")
+
+
+async def test_copy_skipped_unchanged_on_redelivery():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMGDATA"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+
+    for _ in range(2):
+        await deliver_item(
+            repo, adapter, s3, "bucket",
+            target=_target(), config=_config(), item=item,
+            asset_keys=["data"], item_created_at=None,
+            server_side_copy=True,
+        )
+    assert len(adapter.copies) == 1  # unchanged etag -> if_newer skips
+
+
+async def test_sha256_checksums_force_streaming():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMGDATA"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(
+        payload={"item_json": False, "checksums": "sha256", "completion_marker": False}
+    )
+
+    await deliver_item(
+        repo, adapter, s3, "bucket",
+        target=_target(), config=config, item=item,
+        asset_keys=["data"], item_created_at=None,
+        server_side_copy=True,
+    )
+    assert adapter.copies == []  # honest checksum beats copy efficiency
+    assert [p for p, _ in adapter.puts] == ["a.tif", "a.tif.sha256"]
+
+
+async def test_md5_checksum_uses_single_part_etag_and_keeps_copy():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMGDATA"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(payload={"item_json": False, "checksums": "md5", "completion_marker": False})
+
+    await deliver_item(
+        repo, adapter, s3, "bucket",
+        target=_target(), config=config, item=item,
+        asset_keys=["data"], item_created_at=None,
+        server_side_copy=True,
+    )
+    assert len(adapter.copies) == 1
+    import hashlib
+    body = dict(adapter.puts)["a.tif.md5"]
+    assert body == f"{hashlib.md5(b'IMGDATA').hexdigest()}  a.tif\n".encode()
+
+
+async def test_md5_checksum_multipart_etag_falls_back_to_stream():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3(
+        {("bucket", "assets/col/scene/a.tif"): b"IMGDATA"},
+        etags={("bucket", "assets/col/scene/a.tif"): "abc123-4"},  # multipart
+    )
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(payload={"item_json": False, "checksums": "md5", "completion_marker": False})
+
+    await deliver_item(
+        repo, adapter, s3, "bucket",
+        target=_target(), config=config, item=item,
+        asset_keys=["data"], item_created_at=None,
+        server_side_copy=True,
+    )
+    assert adapter.copies == []  # "abc123-4" is not an md5 — stream instead
+    import hashlib
+    body = dict(adapter.puts)["a.tif.md5"]
+    assert body == f"{hashlib.md5(b'IMGDATA').hexdigest()}  a.tif\n".encode()
+
+
+async def test_copy_failure_falls_back_to_streaming():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter(copy_error=RuntimeError("AccessDenied"))
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMGDATA"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+
+    await deliver_item(
+        repo, adapter, s3, "bucket",
+        target=_target(), config=_config(), item=item,
+        asset_keys=["data"], item_created_at=None,
+        server_side_copy=True,
+    )
+    assert adapter.puts == [("a.tif", b"IMGDATA")]  # fell back, delivery succeeded
+    (rec,) = repo.rows.values()
+    assert rec["status"] == "delivered"
+    assert rec["delivered_assets"]["data"]["fingerprint"].startswith("sha256:")
+
+
+async def test_reference_asset_never_server_side_copies():
+    from pipeline.connections.repo import ConnectionRow
+    from pipeline.delivery.repo import ReferenceSource
+
+    conn = ConnectionRow(
+        id="c9", name="src", protocol="s3", config={}, credentials=None, host_key=None
+    )
+    src = ReferenceSource(filename="a.tif", fetch_path="in/a.tif", connection=conn)
+    repo = FakeDeliveryRepo(reference_sources={"scene": [src]})
+    adapter = _FakeAdapter()
+    source = _FakeSourceAdapter({"in/a.tif": b"REF"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+
+    await deliver_item(
+        repo, adapter, _FakeS3({}), "bucket",
+        target=_target(), config=_config(), item=item,
+        asset_keys=["data"], item_created_at=None,
+        build_source_adapter=lambda c: source,
+        server_side_copy=True,
+    )
+    assert adapter.copies == []
+    assert adapter.puts == [("a.tif", b"REF")]
