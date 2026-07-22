@@ -41,10 +41,15 @@ live SFTP/FTP destination runs (I-45).
    `delivered_assets`, never from a destination round-trip. Consistent with
    the "destination drift is accepted" design stance; a consumer-deleted file
    is not re-sent under `never`/unchanged-`if_newer`.
-3. **Reference source — ledger-first lookup.** Query `ingest_files` by
-   `(item_id, filename)` before fetching: `source_href` present ⇒ HTTP GET the
-   public source URL; else canonical `get_object`. Deterministic, no
-   404-driven control flow.
+3. **Reference source — ledger-first lookup, read via the source adapter.**
+   Query `ingest_files` by `item_id` before fetching: a row with `source_href`
+   ⇒ reference asset, whose bytes are read through the **ingest source
+   connection's adapter** (`build_adapter` → `adapter.get`, the Phase-4
+   `SourceAdapterByteSource` pattern — reuses egress policy + credentials; the
+   pipeline deliberately has no HTTP client). Else canonical `get_object`.
+   Deterministic, no 404-driven control flow. *(Amended from "HTTP GET of
+   source_href" during planning: the established reference-read mechanism is
+   the source adapter; `source_href` serves as the reference-mode flag.)*
 4. **S3→S3 copy — same-endpoint gate with fallback.** Attempt `CopyObject`
    only when the destination is `s3` and its normalized endpoint equals the
    platform `S3_ENDPOINT`; any failure falls back to streaming.
@@ -58,7 +63,9 @@ ALTER TABLE stac_higher.delivery_log
   ADD COLUMN delivered_assets jsonb NOT NULL DEFAULT '{}';
 ```
 
-Shape: `{asset_key: {"fingerprint": "...", "size": n}}`.
+Shape: `{asset_key: {"fingerprint": "...", "size": n, "filename": "..."}}`
+(`filename` recorded so the completion manifest can list current-but-skipped
+assets without re-resolving hrefs).
 
 - `fingerprint` is `sha256:<hex>` when the worker streamed the bytes,
   `etag:<etag>/<size>` when it server-side copied (from `head_object` on the
@@ -83,8 +90,10 @@ unaffected. **Resolves I-44.**
    always proceeds.
 3. **Per asset** (for each matched asset key):
    a. **Resolve source** (ledger-first): `ingest_files` row with `source_href`
-      ⇒ reference source (HTTP GET via the Phase-4 reference source reader +
-      egress policy); else canonical (`assets/{collection}/{item_id}/{filename}`).
+      ⇒ reference source — build the ingest connection's adapter and
+      `adapter.get` the source path (adapters built once per distinct
+      connection per item); else canonical
+      (`assets/{collection}/{item_id}/{filename}`).
    b. **Fingerprint** the current source: sha256 over streamed bytes, or
       canonical `head_object` ETag+size on the server-side-copy path.
    c. **`overwrite` gate**: `always` → write; `never` → skip if the asset key
@@ -137,8 +146,10 @@ matching defaults; this slice makes the pipeline honor them.
   `delivered_assets`.
 - `DeliveryRepo.mark_delivered(row_id, byte_count, delivered_assets)` —
   extended signature.
-- `DeliveryRepo` (or a small ledger seam): `get_source_href(item_id,
-  filename)` over `ingest_files`.
+- `DeliveryRepo.load_reference_sources(item_id)` over `ingest_files` (latest
+  version per source file, `source_href IS NOT NULL`) — returns per-file
+  `{filename, fetch_path, ingest connection}` so the worker can build the
+  source adapter.
 - `delivery/payload.py` — sidecar filename/content builders (pure functions,
   unit-testable without adapters).
 - S3 endpoint comparison helper (normalize scheme/host/port) — placement near
@@ -146,8 +157,8 @@ matching defaults; this slice makes the pipeline honor them.
 
 ## Error handling
 
-- Reference source HTTP GET failures → per-item `mark_failed` (isolation as
-  today); egress policy violations fail loudly.
+- Reference source adapter read failures → per-item `mark_failed` (isolation
+  as today); egress policy violations fail loudly inside the adapter.
 - `CopyObject` failure → warning log + streaming fallback (not a delivery
   failure).
 - A vanished asset key (matched but absent at delivery time) → skip, deliver
