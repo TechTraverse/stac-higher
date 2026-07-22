@@ -1,33 +1,47 @@
-"""Deliver one item's assets to a destination (ROADMAP §6.4, Slice B-i).
+"""Deliver one item's assets to a destination (ROADMAP §6.4, Slice B-ii).
 
-For each requested asset key: read the **canonical** bytes from the platform
-bucket (``assets/{collection}/{item_id}/{filename}``), render the destination
-path from the association's ``path_template``, and write atomically via the
-adapter (``put_atomic``). Records one ``delivery_log`` row per (association,
-item), moving pending → delivering → delivered (or failed).
+For each requested asset key: resolve the source bytes (canonical platform
+bucket; Tasks 6-7 add reference-mode sources and S3→S3 server-side copy),
+render the destination path from ``path_template``, apply the association's
+``on_update``/``overwrite`` policy against ``delivery_log.delivered_assets``
+(log-based — never a destination round-trip), and write atomically via the
+adapter. Payload sidecars land beside the assets: a checksum per written file,
+the item JSON on every processed event, and the completion marker LAST (§6.4).
 
-B-i scope: canonical-bytes stream only. Reference-mode source resolution +
-S3→S3 server-side copy are B-ii; payload sidecars, on_update/overwrite, and
-retry are B-ii/B-iii. A transfer failure marks the row ``failed`` and does NOT
-re-raise, so one item's failure never aborts the rest of the batch job; the
-B-iii retry sweep re-drives ``failed`` rows.
+Records one ``delivery_log`` row per (association, item). A transfer failure
+marks the row ``failed`` and does NOT re-raise, so one item's failure never
+aborts the rest of the batch job; the B-iii retry sweep re-drives ``failed``
+rows.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import unquote
 
 from pipeline.connections.adapters.base import StorageAdapter
+from pipeline.connections.repo import ConnectionRow
 from pipeline.delivery.config import DeliveryConfig
 from pipeline.delivery.path import render_path
+from pipeline.delivery.payload import (
+    checksum_payload,
+    completion_payload,
+    item_json_payload,
+)
 from pipeline.delivery.repo import DeliverTarget, DeliveryRepo
+from pipeline.delivery.transfer import sha256_fingerprint
 from pipeline.storage import platform
 from pipeline.storage.keys import canonical_asset_key
 
 logger = logging.getLogger(__name__)
+
+#: Builds a live adapter for a reference-mode item's ingest source connection
+#: (decrypt → adapter; supplied by the deliver job, faked in unit tests).
+SourceAdapterFactory = Callable[[ConnectionRow], StorageAdapter]
 
 
 def _asset_filename(asset: dict[str, Any]) -> str:
@@ -37,6 +51,30 @@ def _asset_filename(asset: dict[str, Any]) -> str:
     if not href:
         raise ValueError("asset has no href")
     return unquote(str(href).rstrip("/").rsplit("/", 1)[-1])
+
+
+def _should_write(overwrite: str, prev: dict[str, Any] | None, fingerprint: str) -> bool:
+    """Log-based overwrite gate (spec decision 2): decide from our own
+    delivered_assets, never a destination round-trip. A first delivery
+    (no prior entry) always writes."""
+    if prev is None or overwrite == "always":
+        return True
+    if overwrite == "never":
+        return False
+    return prev.get("fingerprint") != fingerprint  # if_newer
+
+
+async def _write_sidecar(
+    adapter: StorageAdapter,
+    config: DeliveryConfig,
+    item: dict[str, Any],
+    payload: tuple[str, bytes],
+) -> int:
+    """Render the sidecar's own filename through the path template and write it
+    atomically. Returns the byte count (counted into delivery_log.bytes)."""
+    filename, body = payload
+    await adapter.put_atomic(render_path(config.path_template, item, filename), body)
+    return len(body)
 
 
 async def deliver_item(
@@ -50,13 +88,27 @@ async def deliver_item(
     item: dict[str, Any],
     asset_keys: list[str],
     item_created_at: str | None,
+    build_source_adapter: SourceAdapterFactory | None = None,
+    server_side_copy: bool = False,
 ) -> None:
     item_id = str(item["id"])
+    prior = await repo.get_row(target.id, item_id)
+    if prior is not None and prior.status == "delivered" and config.on_update == "ignore":
+        # Fire-once-per-item (§6.4): the item already delivered and this
+        # association ignores updates — consume the event, touch nothing.
+        logger.info(
+            "delivery skipped (on_update: ignore)",
+            extra={"association_id": target.id, "item_id": item_id},
+        )
+        return
     row_id = await repo.upsert_pending(target.id, item_id, item_created_at)
     await repo.mark_delivering(row_id)
     try:
         assets = item.get("assets") or {}
+        checksums_algo = config.payload.get("checksums")
+        delivered: dict[str, dict[str, Any]] = dict(prior.delivered_assets) if prior else {}
         total = 0
+        wrote_any = False
         for key in asset_keys:
             asset = assets.get(key)
             if asset is None:
@@ -67,10 +119,31 @@ async def deliver_item(
             data = await asyncio.to_thread(
                 platform.get_object, s3_client, bucket, canonical_key
             )
+            fingerprint = sha256_fingerprint(data)
+            size = len(data)
+            if not _should_write(config.overwrite, delivered.get(key), fingerprint):
+                continue  # keep the prior entry — it reflects the destination
             dest = render_path(config.path_template, item, filename)
             await adapter.put_atomic(dest, data)
-            total += len(data)
-        await repo.mark_delivered(row_id, total)
+            total += size
+            wrote_any = True
+            if checksums_algo:
+                digest = hashlib.new(checksums_algo, data).hexdigest()
+                total += await _write_sidecar(
+                    adapter, config, item, checksum_payload(filename, checksums_algo, digest)
+                )
+            delivered[key] = {"fingerprint": fingerprint, "size": size, "filename": filename}
+        if config.payload.get("item_json"):
+            # Rewritten on every processed event — item metadata can change
+            # with no asset change.
+            total += await _write_sidecar(adapter, config, item, item_json_payload(item))
+            wrote_any = True
+        if config.payload.get("completion_marker") and wrote_any:
+            # LAST (§6.4): a consumer that sees the marker sees every listed file.
+            total += await _write_sidecar(
+                adapter, config, item, completion_payload(item_id, delivered)
+            )
+        await repo.mark_delivered(row_id, total, delivered)
         logger.info(
             "delivery complete",
             extra={"association_id": target.id, "item_id": item_id, "bytes": total},

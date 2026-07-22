@@ -115,3 +115,147 @@ async def test_transfer_failure_marks_failed_without_raising():
     (rec,) = repo.rows.values()
     assert rec["status"] == "failed"
     assert "dest down" in rec["error"]
+
+
+def _config(**overrides):
+    base = {"path_template": "{filename}"}
+    base.update(overrides)
+    return parse_delivery_config(base)
+
+
+async def _run(repo, adapter, s3, item, config, asset_keys=("data",)):
+    await deliver_item(
+        repo, adapter, s3, "bucket",
+        target=_target(), config=config, item=item,
+        asset_keys=list(asset_keys), item_created_at=None,
+    )
+
+
+async def test_on_update_ignore_skips_after_delivered():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"V1"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(on_update="ignore")
+
+    await _run(repo, adapter, s3, item, config)
+    assert len(adapter.puts) == 1
+    # A second event for the already-delivered item is consumed without writes.
+    await _run(repo, adapter, s3, item, config)
+    assert len(adapter.puts) == 1
+    (rec,) = repo.rows.values()
+    assert rec["status"] == "delivered"
+    assert rec["attempts"] == 1  # untouched by the ignored event
+
+
+async def test_on_update_ignore_still_delivers_after_failure():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({})  # canonical object missing -> first attempt fails
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(on_update="ignore")
+
+    await _run(repo, adapter, s3, item, config)
+    (rec,) = repo.rows.values()
+    assert rec["status"] == "failed"
+    # ignore only applies to a *delivered* item — a failed one retries.
+    s3.objects[("bucket", "assets/col/scene/a.tif")] = b"V1"
+    await _run(repo, adapter, s3, item, config)
+    (rec,) = repo.rows.values()
+    assert rec["status"] == "delivered"
+
+
+async def test_if_newer_skips_unchanged_and_redelivers_changed():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"V1"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config()  # defaults: on_update=redeliver, overwrite=if_newer
+
+    await _run(repo, adapter, s3, item, config)
+    await _run(repo, adapter, s3, item, config)  # unchanged -> no second write
+    assert len(adapter.puts) == 1
+    s3.objects[("bucket", "assets/col/scene/a.tif")] = b"V2-different"
+    await _run(repo, adapter, s3, item, config)  # changed -> rewrite
+    assert len(adapter.puts) == 2
+    (rec,) = repo.rows.values()
+    assert rec["delivered_assets"]["data"]["fingerprint"].startswith("sha256:")
+
+
+async def test_overwrite_never_skips_previously_delivered():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"V1"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(overwrite="never")
+
+    await _run(repo, adapter, s3, item, config)
+    s3.objects[("bucket", "assets/col/scene/a.tif")] = b"V2-changed"
+    await _run(repo, adapter, s3, item, config)
+    assert len(adapter.puts) == 1  # changed bytes, but never overwrite
+    (rec,) = repo.rows.values()
+    # The prior fingerprint is kept — it reflects what is at the destination.
+    import hashlib
+    expected = f"sha256:{hashlib.sha256(b'V1').hexdigest()}"
+    assert rec["delivered_assets"]["data"]["fingerprint"] == expected
+
+
+async def test_overwrite_always_rewrites_unchanged():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"V1"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(overwrite="always")
+
+    await _run(repo, adapter, s3, item, config)
+    await _run(repo, adapter, s3, item, config)
+    assert len(adapter.puts) == 2
+
+
+async def test_payload_sidecars_written_in_order_marker_last():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMG"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(payload={"item_json": True, "checksums": "sha256", "completion_marker": True})
+
+    await _run(repo, adapter, s3, item, config)
+    paths = [p for p, _ in adapter.puts]
+    assert paths == ["a.tif", "a.tif.sha256", "scene.json", "scene.done"]
+    import hashlib
+    body = dict(adapter.puts)["a.tif.sha256"]
+    assert body == f"{hashlib.sha256(b'IMG').hexdigest()}  a.tif\n".encode()
+    (rec,) = repo.rows.values()
+    assert rec["bytes"] == sum(len(d) for _, d in adapter.puts)
+
+
+async def test_metadata_only_update_rewrites_item_json_only():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMG"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(payload={"item_json": True, "checksums": None, "completion_marker": True})
+
+    await _run(repo, adapter, s3, item, config)
+    n = len(adapter.puts)
+    item2 = dict(item, properties={"platform": "edited"})
+    await _run(repo, adapter, s3, item2, config)
+    new = [p for p, _ in adapter.puts[n:]]
+    # asset unchanged -> only the item JSON refreshes, then the marker.
+    assert new == ["scene.json", "scene.done"]
+
+
+async def test_no_writes_when_nothing_changed_and_no_item_json():
+    repo = FakeDeliveryRepo()
+    adapter = _FakeAdapter()
+    s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMG"})
+    item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
+    config = _config(payload={"item_json": False, "checksums": None, "completion_marker": True})
+
+    await _run(repo, adapter, s3, item, config)
+    n = len(adapter.puts)
+    await _run(repo, adapter, s3, item, config)
+    # nothing written -> no marker either; row still flips back to delivered.
+    assert len(adapter.puts) == n
+    (rec,) = repo.rows.values()
+    assert rec["status"] == "delivered"
