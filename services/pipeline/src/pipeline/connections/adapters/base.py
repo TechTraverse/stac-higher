@@ -81,6 +81,24 @@ class StorageAdapter(abc.ABC):
     async def delete(self, path: str) -> None:
         """Delete the object/entry at ``path``."""
 
+    @abc.abstractmethod
+    async def move(self, src: str, dst: str) -> None:
+        """Rename ``src`` to ``dst`` on the destination (atomic where the
+        protocol supports it). SFTP/FTP use a server-side rename; S3 has no
+        rename primitive, so ``S3Adapter`` implements copy + delete."""
+
+    async def put_atomic(self, path: str, data: bytes) -> None:
+        """Write ``data`` so ``path`` never appears partially written.
+
+        Default: write to ``path + ".part"`` then ``move`` it into place — the
+        atomic-visibility pattern for streaming protocols (§6.4). ``S3Adapter``
+        overrides this with a direct ``put`` (S3 objects become visible
+        atomically on PUT, so the rename would only cost an extra copy+delete).
+        """
+        tmp = f"{path}.part"
+        await self.put(tmp, data)
+        await self.move(tmp, path)
+
     def public_object_url(self, path: str) -> str:
         """Stable, credential-free URL for a source object (reference storage
         mode, §5.1). Only object-store adapters implement this; the base raises

@@ -150,3 +150,10 @@ class SftpAdapter(StorageAdapter):
         target = self._resolve(path)
         async with await self._connect() as conn, conn.start_sftp_client() as sftp:
             await sftp.remove(target)
+
+    async def move(self, src: str, dst: str) -> None:
+        src_t, dst_t = self._resolve(src), self._resolve(dst)
+        async with await self._connect() as conn, conn.start_sftp_client() as sftp:
+            # posix_rename atomically overwrites an existing dst where the server
+            # supports the openssh extension (our target servers do).
+            await sftp.posix_rename(src_t, dst_t)

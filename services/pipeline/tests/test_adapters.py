@@ -206,6 +206,8 @@ def test_base_adapter_public_object_url_raises():
 
         async def delete(self, path): ...
 
+        async def move(self, src, dst): ...
+
     with pytest.raises(NotImplementedError):
         Dummy().public_object_url("x")
 

@@ -12,6 +12,7 @@ and pgstac items; UPDATEs only item_events.processed_at. Never runs DDL.
 from __future__ import annotations
 
 import abc
+import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,7 @@ class ItemEvent:
     collection_id: str
     item_id: str
     op: str
+    occurred_at: dt.datetime | None = None
 
 
 class DispatchRepo(abc.ABC):
@@ -57,13 +59,19 @@ class PgDispatchRepo(DispatchRepo):
     async def claim_pending_events(self, limit: int) -> list[ItemEvent]:  # pragma: no cover
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "SELECT id, collection_id, item_id, op FROM stac_higher.item_events"
+                "SELECT id, collection_id, item_id, op, occurred_at"
+                " FROM stac_higher.item_events"
                 " WHERE processed_at IS NULL ORDER BY id"
                 " FOR UPDATE SKIP LOCKED LIMIT %s",
                 (limit,),
             )
             rows = await cur.fetchall()
-        return [ItemEvent(id=int(r[0]), collection_id=r[1], item_id=r[2], op=r[3]) for r in rows]
+        return [
+            ItemEvent(
+                id=int(r[0]), collection_id=r[1], item_id=r[2], op=r[3], occurred_at=r[4]
+            )
+            for r in rows
+        ]
 
     async def mark_processed(self, event_ids: Sequence[int]) -> None:  # pragma: no cover
         if not event_ids:

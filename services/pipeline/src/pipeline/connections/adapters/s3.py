@@ -193,3 +193,21 @@ class S3Adapter(StorageAdapter):
             client.delete_object(Bucket=self._bucket, Key=path)
 
         await asyncio.to_thread(_delete)
+
+    async def move(self, src: str, dst: str) -> None:
+        endpoint_url = self._pinned_endpoint()
+
+        def _move() -> None:
+            client = self._make_client(endpoint_url)
+            client.copy_object(
+                Bucket=self._bucket,
+                Key=dst,
+                CopySource={"Bucket": self._bucket, "Key": src},
+            )
+            client.delete_object(Bucket=self._bucket, Key=src)
+
+        await asyncio.to_thread(_move)
+
+    async def put_atomic(self, path: str, data: bytes) -> None:
+        # S3 PUT is atomically visible; skip the base .part+move dance.
+        await self.put(path, data)

@@ -333,6 +333,46 @@ const MIGRATIONS = [
       $fn$;
     `,
   },
+  {
+    // Phase 5 Slice B-i (ROADMAP §5 DELIVERY_LOG, §6.4): the per-item delivery
+    // record the delivery workers maintain. App owns this DDL; the pipeline only
+    // writes rows (ADR 0001). One row per (association, item): a later event for
+    // the same item UPSERTs it, so B-ii derives first-delivery-vs-redelivery from
+    // this row's presence/status, never from the outbox op (an update surfaces as
+    // delete+insert — ADR 0007).
+    //
+    // Phase 6 hygiene (do NOT build now, mirrors audit_log/ingest_files/item_events):
+    // envelope-scale table — Phase 6 time-partitions it on created_at + a
+    // partition-drop retention job. next_attempt_at (retry scheduling) is added
+    // by the B-iii retry sweep, not here.
+    name: "008_delivery_log",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.delivery_log (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        association_id uuid NOT NULL REFERENCES stac_higher.collection_connections(id) ON DELETE CASCADE,
+        item_id text NOT NULL,
+        status text NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending','delivering','delivered','failed','dead')),
+        attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        bytes bigint,
+        error text,
+        item_created_at timestamptz,
+        delivered_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        -- One row per (association, item): the idempotency key. UPSERTed on
+        -- redelivery; attempts/delivered_at update in place.
+        UNIQUE (association_id, item_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS delivery_log_association_idx
+        ON stac_higher.delivery_log (association_id);
+      -- Reserved for the B-iii retry sweep: cheaply find retryable rows.
+      CREATE INDEX IF NOT EXISTS delivery_log_retry_idx
+        ON stac_higher.delivery_log (updated_at)
+        WHERE status = 'failed';
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

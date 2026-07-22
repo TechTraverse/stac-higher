@@ -275,3 +275,57 @@ B (when payload writing is implemented). Revisit the asset-gate then.
 - Tracked in: `services/pipeline/.../delivery/matcher.py`; found in the Slice A
   `/code-review`.
 
+### I-43 · Delivery is at-least-once, not exactly-once — redelivery is idempotent but not deduped 🟡
+The dispatcher claims outbox rows (`FOR UPDATE SKIP LOCKED`) in one connection and
+`mark_processed`es them in another, so the row lock releases before the delivery
+job is enqueued/run (carried from Slice A, see I-40). Now that Slice B-i moves
+bytes, a crash between enqueue and drain — or a second dispatcher instance — can
+re-dispatch the same `(association, item)`. This is **idempotent-harmless in B-i**:
+`delivery_log` `UNIQUE(association_id, item_id)` + `upsert_pending` collapse to one
+row, and delivery is overwrite-always (S3 direct atomic PUT / SFTP-FTP
+`.part`→rename) of byte-identical canonical data, so a redispatch re-PUTs the same
+bytes to the same key and touches the same row — no duplicate object, no partial
+file, no divergent state. Worst case is `attempts` over-counting and a brief
+status flap under truly concurrent redelivery. Genuine dedup/leader-election is
+deferred to Slice C / B-iii; see also I-40.
+- Tracked in: `services/pipeline/.../dispatcher/{loop,repo}.py`,
+  `.../delivery/repo.py`; found in the Slice B-i whole-branch review.
+
+### I-44 · `delivery_log.attempts` is a lifetime counter, not reset on redelivery ⚪
+`upsert_pending`'s `ON CONFLICT DO UPDATE` resets `status='pending'` but leaves
+`attempts` untouched, so a legitimately-redelivered item's `attempts` climbs
+across independent events (each `mark_delivering` increments). Harmless in B-i
+(`attempts` is observability only), but when B-iii adds `max_attempts`
+dead-lettering, a frequently-redelivered row could be dead-lettered without a real
+retry sequence. The redelivery reset point is exactly `upsert_pending` — reset
+`attempts=0` there (or split a per-cycle counter) when B-iii lands.
+- Tracked in: `services/pipeline/.../delivery/repo.py` (`upsert_pending`); found in
+  the Slice B-i whole-branch review.
+
+### I-45 · Concrete adapter `move()` bodies are inspection-only; SFTP/FTP delivery not live-verified 🟡
+Slice B-i added `move()` to every adapter (S3 copy+delete, SFTP `posix_rename`,
+FTP `rename`) and unit-tested only the base `put_atomic` (`.part`→move) and the
+S3 `put_atomic` override (direct PUT) — the three concrete `move` bodies have no
+dedicated unit test, and the B-i live verification exercised the **S3/MinIO**
+destination only (S3 uses the direct-PUT override, so its `move` is not even on
+the delivery path). SFTP/FTP destinations (which reach `move` via the base
+`put_atomic`) are unit-covered by inspection but not run live. B-ii/B-iii should
+add a dedicated `move` test (or a live SFTP/FTP destination run) before relying on
+the `.part`→rename path in production.
+- Tracked in: `services/pipeline/.../connections/adapters/{s3,sftp,ftp}.py`
+  (`move`); found in the Slice B-i task/whole-branch reviews.
+
+### I-46 · Outbox op for an item change depends on the write path (pypgstac upsert → `update`, transaction API → delete+insert) ⚪
+The B-i live verification found that a changed item written via **pypgstac
+`Loader.load_items(Methods.upsert)`** (the ingest ITEMIZE path) fires a single
+`update` outbox row, an **identical** re-upsert is a no-op (no event), a new item
+is `insert`, and a delete is `delete`. This differs from the ADR 0007 Slice-A
+finding that "an update surfaces as delete+insert" — that came from the
+**stac-fastapi transaction API** write path (`update_item` = delete+insert). Both
+are benign for delivery: `dispatch_once` treats `insert`/`update` identically
+(only `delete` is special-cased and never propagates). It matters only for B-ii's
+`on_update`, which must key first-delivery-vs-redelivery off `delivery_log`, never
+the outbox `op` (already tracked as I-37).
+- Tracked in: `app/src/lib/db/migrate.ts` (trigger),
+  `services/pipeline/.../dispatcher/loop.py`; found in the Slice B-i live verification.
+

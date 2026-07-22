@@ -205,6 +205,13 @@ class FtpAdapter(StorageAdapter):
         finally:
             await _safe_quit(client)
 
+    async def move(self, src: str, dst: str) -> None:
+        client = await self._connect_client()
+        try:
+            await client.rename(self._resolve(src), self._resolve(dst))
+        finally:
+            await _safe_quit(client)
+
 
 async def _safe_quit(client: aioftp.Client) -> None:
     """Best-effort graceful close; never raise from cleanup."""
