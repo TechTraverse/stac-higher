@@ -48,3 +48,25 @@ async def test_s3_put_atomic_is_direct_put(monkeypatch):
     await a.put_atomic("k/scene.tif", b"abc")
     # S3 objects appear atomically on PUT — no .part dance.
     assert puts == [("k/scene.tif", b"abc")]
+
+
+async def test_s3_copy_object_from_issues_server_side_copy(monkeypatch):
+    from pipeline.connections.adapters.s3 import S3Adapter
+
+    a = S3Adapter({"bucket": "dest"}, {"access_key_id": "k", "secret_access_key": "s"})
+    calls: list[dict] = []
+
+    class _Client:
+        def copy_object(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(a, "_pinned_endpoint", lambda: None)
+    monkeypatch.setattr(a, "_make_client", lambda endpoint_url: _Client())
+    await a.copy_object_from("platform", "assets/col/scene/a.tif", "col/a.tif")
+    assert calls == [
+        {
+            "Bucket": "dest",
+            "Key": "col/a.tif",
+            "CopySource": {"Bucket": "platform", "Key": "assets/col/scene/a.tif"},
+        }
+    ]

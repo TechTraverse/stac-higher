@@ -208,6 +208,24 @@ class S3Adapter(StorageAdapter):
 
         await asyncio.to_thread(_move)
 
+    async def copy_object_from(self, src_bucket: str, src_key: str, dst_path: str) -> None:
+        """Server-side CopyObject from another bucket on the SAME endpoint into
+        this adapter's bucket (delivery §6.4 — no bytes through the worker).
+        Callers gate on ``delivery.transfer.can_server_side_copy`` and fall
+        back to streaming when the copy fails (e.g. these credentials cannot
+        read ``src_bucket``)."""
+        endpoint_url = self._pinned_endpoint()
+
+        def _copy() -> None:
+            client = self._make_client(endpoint_url)
+            client.copy_object(
+                Bucket=self._bucket,
+                Key=dst_path,
+                CopySource={"Bucket": src_bucket, "Key": src_key},
+            )
+
+        await asyncio.to_thread(_copy)
+
     async def put_atomic(self, path: str, data: bytes) -> None:
         # S3 PUT is atomically visible; skip the base .part+move dance.
         await self.put(path, data)

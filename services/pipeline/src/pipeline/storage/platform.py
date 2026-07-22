@@ -28,6 +28,7 @@ class S3Like(Protocol):
     def delete_objects(self, **kwargs: Any) -> Any: ...
     def put_object(self, **kwargs: Any) -> Any: ...
     def get_object(self, **kwargs: Any) -> Any: ...
+    def head_object(self, **kwargs: Any) -> Any: ...
 
 
 def _pinned_endpoint_url(
@@ -109,6 +110,14 @@ def get_object(client: S3Like, bucket: str, key: str) -> bytes:
     """
     resp = client.get_object(Bucket=bucket, Key=key)
     return resp["Body"].read()
+
+
+def head_object(client: S3Like, bucket: str, key: str) -> tuple[str, int]:
+    """Quote-stripped ETag + size of the object at ``key`` — the server-side
+    copy path's fingerprint source (delivery B-ii; no byte read). Pure over an
+    injected client; synchronous boto3 — wrap in ``asyncio.to_thread``."""
+    resp = client.head_object(Bucket=bucket, Key=key)
+    return (resp.get("ETag") or "").strip('"'), int(resp["ContentLength"])
 
 
 def cleanup_expired(
