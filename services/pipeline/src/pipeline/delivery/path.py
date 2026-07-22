@@ -31,9 +31,12 @@ def _item_datetime(item: dict[str, Any]) -> dt.datetime:
         )
     text = str(raw).replace("Z", "+00:00")
     try:
-        return dt.datetime.fromisoformat(text)
+        parsed = dt.datetime.fromisoformat(text)
     except ValueError as exc:  # malformed datetime string
         raise DeliveryPathError(f"unparseable item datetime: {raw!r}") from exc
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.UTC)
+    return parsed
 
 
 def render_path(template: str, item: dict[str, Any], filename: str) -> str:
