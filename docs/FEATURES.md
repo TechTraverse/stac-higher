@@ -131,8 +131,50 @@ transfer yet). Entry points:
   route (`/api/collections/[id]/connections`) is a direction-discriminated union,
   so delivery associations are creatable (operator+, group-owned).
 
-Slices B (workers + `delivery_log` + retry/dead-letter), C (NOTIFY-woken
-low-latency + backfill), and D (Data-flow delivery UI) are not started.
+**Slice B-i — delivery worker** (done, live-verified 2026-07-21). The byte-moving
+core: an item change now lands its canonical asset bytes on an S3/MinIO
+destination at a templated path, recorded in `delivery_log`. Entry points:
+
+- **`delivery_log`** — `stac_higher.delivery_log` (migration `008_delivery_log`,
+  app-owned DDL): one row per (association, item), `UNIQUE(association_id, item_id)`
+  — the idempotency key a redelivery UPSERTs.
+- **Path templates** — `services/pipeline/src/pipeline/delivery/path.py`
+  (`render_path`): pure renderer over `{collection} {item_id} {filename} {yyyy}
+  {mm} {dd}`; date tokens resolve from the item's `datetime`→`start_datetime`
+  **in UTC**, and a date-token template against a date-less item fails loudly.
+- **Atomic visibility** — `StorageAdapter.move()` + `put_atomic()`
+  (`connections/adapters/`): SFTP/FTP `move` = server-side rename, S3 `move` =
+  copy+delete; `put_atomic` writes `.part` then moves, but `S3Adapter` overrides
+  it to a direct atomic PUT.
+- **Delivery worker** — `services/pipeline/src/pipeline/delivery/worker.py`
+  (`deliver_item`) + `repo.py` (`DeliveryRepo`/`PgDeliveryRepo` — `delivery_log`
+  transitions + destination-target load): reads canonical bytes
+  (`platform.get_object`), renders the dest path, `put_atomic`s to the
+  destination, records `delivered`/`bytes`; a per-item failure marks `failed`
+  and does not abort the batch (retry is B-iii).
+- **Dispatcher fan-out** — `dispatcher/loop.py` `dispatch_once` now groups matches
+  into one batched `pipeline.deliver` job **per association** (ROADMAP §1/§6.4),
+  enqueues **before** draining the outbox (at-least-once), and the `deliver`
+  handler (`jobs/dispatch.py`) loads the destination + runs each item through
+  `deliver_item`.
+
+Live-verified end-to-end (real code vs live pgstac + MinIO, 16/16 checks): a real
+pypgstac upsert fired the outbox trigger → `dispatch_once` matched the deliver
+association → `deliver_item` copied the canonical asset to the MinIO destination
+at the rendered key **byte-identical** with a `delivered` `delivery_log` row
+(`attempts=1`); a changed re-upsert redelivered into the **same** row
+(`attempts=2`, overwrite byte-identical); and a delete drained with **no**
+delivery (deletions never propagate). Live finding: via **pypgstac
+`Loader.load_items(upsert)`** the outbox op is `insert` (new) / `update` (changed,
+a single row — not delete+insert) / no-op (identical) / `delete` — the
+transaction-API delete+insert of [ADR 0007](decisions/0007-outbox-trigger-ownership.md)
+is a different write path; both are benign for delivery (see ISSUES).
+
+Slice B-i deferrals — payload sidecars, `on_update`/`overwrite` enforcement (B-i
+is deliver-every-event, overwrite-always), reference-mode source + S3→S3 copy,
+retry→dead-letter, per-connection concurrency, and live SFTP/FTP destination
+runs — carry to **B-ii/B-iii**. Slices **C** (NOTIFY-woken low-latency + backfill)
+and **D** (Data-flow delivery UI) are not started.
 
 ## Phases 6–8 — Not started ⬜
 
