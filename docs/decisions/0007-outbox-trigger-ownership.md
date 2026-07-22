@@ -94,9 +94,17 @@ identical notifications within a transaction into a single delivery**, so a
 Live-verified (2026-07-21): driving `create_item` → `update_item` → `delete_item`
 through pgstac produced outbox ops `insert`, then **`delete` + `insert`**, then
 `delete` — i.e. **pgstac implements an item update as a delete followed by an
-insert** (its partition-upsert mechanism), so the `update` branch of the trigger
-rarely fires via pgstac's normal paths (only a direct SQL `UPDATE` on
-`pgstac.items` would). Consequences for outbox consumers:
+insert** (its partition-upsert mechanism) — for the **stac-fastapi transaction
+API** write path.
+
+**The write path matters** (refined by the Slice B-i live run, 2026-07-21 —
+[ISSUES.md](../ISSUES.md) I-46): a change written via **pypgstac
+`Loader.load_items(upsert)`** — the ingest ITEMIZE path, i.e. how most items are
+created/updated — fires a **single `update` op** (a new item is `insert`, a
+byte-identical re-upsert is a **no-op** with no event, a delete is `delete`). So
+the trigger's `update` branch fires routinely via the ingest path, and the
+delete-half only accompanies a transaction-API update. Consequences for outbox
+consumers (unchanged either way):
 
 - A genuine delete and the delete-half of an update are indistinguishable at the
   event level — which is fine, because **deletes never propagate** (§6.4): the

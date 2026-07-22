@@ -4,8 +4,9 @@ The data-plane pipeline service for STAC Higher (ROADMAP §3). Phase 0 scope:
 package skeleton, a queue interface with a Procrastinate (PostgreSQL) backend,
 a no-op scheduled heartbeat job, and a `/health` endpoint.
 
-Later phases add the ingest scheduler/workers, delivery workers, retention GC,
-and the flow monitor behind the same queue interface.
+Phases 1–5 add the connection test/health jobs, the ingest scheduler/workers,
+and the delivery dispatcher/workers behind the same queue interface; retention
+GC and the flow monitor land in Phase 6.
 
 ## Layout
 
@@ -163,6 +164,49 @@ poll → DISCOVER → GROUP → FETCH → EXTRACT → ITEMIZE → post-ingest
 
 `jobs/ingest.py` registers each stage as a queue task and chains them,
 idempotent against the `ingest_files` ledger throughout.
+
+## Delivery (Phase 5)
+
+Event-driven push of catalog items to delivery destinations (ROADMAP §6.4). A
+pgstac item change is captured by the app-owned outbox trigger into
+`stac_higher.item_events` (migration 007,
+[ADR 0007](../../docs/decisions/0007-outbox-trigger-ownership.md)); the pipeline
+drains the outbox, matches delivery associations, and copies asset bytes to the
+destination:
+
+```
+pgstac item change → item_events (trigger) → dispatch → deliver
+```
+
+- **dispatch** (`dispatcher/loop.py`, `dispatcher/repo.py`) — the
+  `pipeline.dispatch_poll` periodic job (`* * * * *`) claims pending outbox rows
+  (`FOR UPDATE SKIP LOCKED`, id order), skips `delete` events (deletions never
+  propagate, §6.4), reads each item via `pgstac.get_item`, matches enabled
+  `direction='deliver'` associations (`delivery/matcher.py`: CQL2 `item_filter`
+  + `asset_keys`), and groups the matches into one batched `pipeline.deliver`
+  job **per association**. It enqueues **before** marking the outbox rows
+  processed (at-least-once; a failed enqueue leaves them pending). Slice C swaps
+  the poll for a `LISTEN`-woken loop.
+- **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
+  the `pipeline.deliver` task loads the destination connection, builds its
+  adapter, and runs each item through `deliver_item`: read the canonical asset
+  bytes (`platform.get_object`), render the destination path (`delivery/path.py`
+  — `{collection} {item_id} {filename} {yyyy} {mm} {dd}` tokens, UTC dates),
+  write atomically via `adapter.put_atomic` (S3 direct PUT; SFTP/FTP
+  `.part`→`move`), and record a `stac_higher.delivery_log` row
+  (`pending`→`delivering`→`delivered`, or `failed`). A per-item failure marks
+  that row `failed` without aborting the batch (retry → dead-letter is B-iii).
+
+Ownership (ADR 0001): the pipeline reads `collection_connections`/`connections`
++ pgstac items and writes only `delivery_log`; the app owns the DDL (migrations
+007 + 008).
+
+**Slice B-i scope (current):** canonical bytes → S3/MinIO destination,
+live-verified. Deferred to later slices: payload sidecars (item JSON / checksums
+/ completion marker), `on_update`/`overwrite` policy (B-i delivers on every
+event, overwrite-always), reference-mode source + S3→S3 server-side copy, retry
+→ dead-letter, per-connection concurrency, and live SFTP/FTP destination runs.
+See [`../../docs/ISSUES.md`](../../docs/ISSUES.md) I-43…I-46.
 
 ## Develop
 
