@@ -39,3 +39,11 @@ def test_completion_payload_lists_assets_sorted_by_key():
     assert manifest["assets"][0] == {
         "key": "a", "filename": "a.tif", "fingerprint": "sha256:1", "size": 1,
     }
+
+
+def test_completion_payload_missing_fields_serialize_as_null():
+    _name, body = completion_payload("scene", {"a": {"fingerprint": "sha256:1"}})
+    manifest = json.loads(body)
+    assert manifest["assets"] == [
+        {"key": "a", "filename": None, "fingerprint": "sha256:1", "size": None}
+    ]

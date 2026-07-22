@@ -30,7 +30,10 @@ def completion_payload(
     item_id: str, delivered_assets: dict[str, dict[str, Any]]
 ) -> tuple[str, bytes]:
     """``{item_id}.done`` — JSON manifest of every delivered-or-current asset
-    (skipped-but-current assets keep their prior fingerprint entries)."""
+    (skipped-but-current assets keep their prior fingerprint entries). An entry
+    missing a field serializes as ``null`` — the worker always writes complete
+    entries, so a ``null`` in a manifest flags an upstream contract violation
+    without failing the delivery."""
     entries = [
         {
             "key": key,
