@@ -170,11 +170,48 @@ a single row — not delete+insert) / no-op (identical) / `delete` — the
 transaction-API delete+insert of [ADR 0007](decisions/0007-outbox-trigger-ownership.md)
 is a different write path; both are benign for delivery (see ISSUES).
 
-Slice B-i deferrals — payload sidecars, `on_update`/`overwrite` enforcement (B-i
-is deliver-every-event, overwrite-always), reference-mode source + S3→S3 copy,
-retry→dead-letter, per-connection concurrency, and live SFTP/FTP destination
-runs — carry to **B-ii/B-iii**. Slices **C** (NOTIFY-woken low-latency + backfill)
-and **D** (Data-flow delivery UI) are not started.
+**Slice B-ii — payloads, policies, reference source, S3→S3 copy** (code done;
+live verification pending). Entry points:
+
+- **`delivered_assets`** — migration `009_delivery_log_delivered_assets`
+  (`app/src/lib/db/migrate.ts`) adds `delivery_log.delivered_assets` jsonb: a
+  per-asset `{fingerprint, size, filename}` map. Fingerprints are
+  `sha256:<hex>` for streamed bytes or `etag:<etag>/<size>` for a server-side
+  copy; the two kinds compare unequal, so switching an association's transfer
+  path costs at most one redundant redeliver (see [`ISSUES.md`](ISSUES.md)
+  I-47). `upsert_pending`'s redelivery conflict branch now resets
+  `attempts = 0` — **resolves I-44**.
+- **Policy enforcement** — `services/pipeline/src/pipeline/delivery/worker.py`
+  (`deliver_item`): an item-level `on_update` gate (`ignore` fires once per
+  item, keyed off a prior `delivery_log` row's status, never the outbox
+  `op` — I-37) and a per-asset `overwrite` policy (`never`/`always`/`if_newer`
+  compared against `delivered_assets`, no destination round-trip).
+- **Payload sidecars** — `services/pipeline/src/pipeline/delivery/payload.py`:
+  a coreutils-format checksum per written asset (`{filename}.{algo}`), the
+  item JSON rewritten on every processed event (`{item_id}.json`), and a
+  completion marker (`{item_id}.done`, a JSON manifest) written **last** and
+  only when something was actually written.
+- **Reference-mode source** — the worker reads reference-mode asset bytes
+  through the ingest source connection's adapter: ledger-first lookup
+  (`DeliveryRepo.load_reference_sources` over `ingest_files`), the adapter
+  built lazily per connection (`build_adapter`, decrypting only when invoked)
+  and cached per item — no HTTP client involved.
+- **S3→S3 server-side copy** — `services/pipeline/src/pipeline/delivery/transfer.py`
+  (`can_server_side_copy`): true for an s3 destination whose endpoint
+  normalizes equal to the platform's `STAGING_S3_ENDPOINT` (both `None` means
+  real AWS); a malformed endpoint degrades to streaming. Gated once per job in
+  `jobs/dispatch.py`; `adapter.copy_object_from` performs the `CopyObject`, and
+  a copy failure logs a warning and falls back to streaming. A `sha256`
+  payload checksum forces streaming (there's no hash without the bytes); `md5`
+  can ride a single-part object's ETag (`platform.head_object`), but a
+  multipart ETag isn't an md5 and falls back to streaming too.
+
+Pipeline suite 306 passed/2 skipped, ruff clean. **Code done, live
+verification pending** — do not treat as live-verified until that run lands.
+
+Slice B-iii deferrals — retry→dead-letter, per-connection concurrency caps,
+and live SFTP/FTP destination runs — remain. Slices **C** (NOTIFY-woken
+low-latency + backfill) and **D** (Data-flow delivery UI) are not started.
 
 ## Phases 6–8 — Not started ⬜
 

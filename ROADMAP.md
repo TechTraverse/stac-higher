@@ -576,7 +576,7 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
 | 3 — Object storage & asset service | ✅ Done | App storage lib + `GET /api/assets/{collection}/{item}/{asset}` (RBAC → presigned 302) + `POST /api/uploads` (operator+, presigned PUT) + manual asset upload in the item form + pipeline staging-TTL cleanup job. No new tables. Live-verified: upload → PUT to MinIO → asset-route 302 → byte round-trip; staging sweep deletes an expired upload and leaves canonical assets intact. ADR 0005. |
 | 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. **Slice B (pipeline): B1, B2+B3, B4, and B4a all done** (B1: adapter `list()`→`FileEntry` metadata + `build_adapter` decrypt→adapter seam; B2+B3: `IngestRepo`, `ingest_poll` scheduler, DISCOVER settled-check, GROUP, copy-mode FETCH → canonical storage; B4: EXTRACT — `raster_auto`/`sidecar`/`defaults_only` — + ITEMIZE — stac-pydantic gate + pypgstac upsert + post-ingest — ADR 0006, no Dockerfile change; B4a: best-effort geometry extraction (COG/GeoTIFF/netCDF/GRIB/Zarr via bundled GDAL) + opt-in collection-extent fallback + fail-fast + `stac_higher:geometry_source` provenance — **RESOLVED ISSUE I-27** (pgstac's NOT NULL geometry)). A `/simplify` quality pass was applied across the B4/B4a slice (behavior-identical). Full pipeline suite: **234 passed, 2 skipped**. **B5 (integration + live end-to-end) largely verified (2026-07-17)** — DB integration test (real pypgstac upsert→query→update), a `raster_auto` e2e (GeoTIFF from MinIO → EXTRACT → ITEMIZE → queryable pgstac item with `ST_Polygon` geometry + `/api/assets` href, in-place update on a changed raster), and netCDF/collection-inheritance paths all live-verified. **Slice C (`storage_mode: reference`) code done** — migration 006 (`ingest_files.source_href`); GROUP/FETCH/EXTRACT reference branches (**RESOLVED ISSUE I-21**, reference no longer stalls at `settled`); `resolveAssetTarget` 302s straight to `source_href`, no presigning, no decryption; durably-reachable sources only, private-source reference deferred (I-32). **Slice C done + merged (26edd43).** **Phase 4 LIVE-VERIFIED end-to-end (2026-07-20, Task 10):** a reference association (poll → … → itemized, `GET /api/assets` 302→source, no canonical copy) AND an SFTP copy association (first live SFTP `list`/`get` → canonical copy → itemize, I-4) both ran uninterrupted through the real scheduler — **done-when met**. The in-container run found+fixed I-35 (pipeline image missing `libexpat1` for rasterio's bundled GDAL). |
-| 5 — Delivery pipeline | 🚧 In progress | **Slice A done** (event outbox + dispatcher skeleton): app migration 007 + **ADR 0007** add the durable `item_events` outbox — a **row-level** trigger on partitioned `pgstac.items` (A0 spike: row-level cascades to every partition incl. future, catching bulk/partition-direct writes a statement-level-on-parent trigger would miss; empty-payload NOTIFY coalesces per-txn) writing one row per change + a payload-less wake. Pipeline `dispatcher/` (poll-driven `dispatch_once`: claim outbox in id order → `pgstac.get_item` → match `direction='deliver'` associations → cql2 `item_filter` + `asset_keys` → **log matched pairs, no transfer yet**) + delivery `config` cross-runtime contract (Zod `deliveryConfigSchema` + Python `delivery/config.py`) + delivery associations now creatable via the API. **Live-verified (2026-07-21):** real trigger fired on insert/delete; real `dispatch_once`/`PgDispatchRepo` vs live pgstac matched only the passing-filter association (both assets), excluded the non-matching one, logged, and drained the outbox; deletes drain without dispatching; idempotent. Finding: pgstac updates surface as delete+insert (ADR 0007). **Slice B-i done + live-verified (2026-07-21):** the byte-moving core — migration 008 `delivery_log`, `delivery/path.py` renderer, adapter `move()`/`put_atomic()`, `delivery/worker.py` `deliver_item`, and dispatcher fan-out (one batched `pipeline.deliver` job per association, enqueue-before-drain). Live-verified 16/16 vs real pgstac + MinIO: trigger → `dispatch_once` → `deliver_item` copied the asset byte-identical to a MinIO destination (`delivery_log` `delivered`/`attempts=1`), a changed re-upsert redelivered into the same row (`attempts=2`, overwrite), a delete drained with no delivery. Pipeline 268 pass/2 skip; app verify 472 pass; 7 task + opus whole-branch reviews clean. Finding I-46: pypgstac upsert emits `insert`/`update`(single)/no-op/`delete` (not the transaction-API delete+insert). **Slices B-ii/B-iii (payloads, `on_update`/`overwrite`, reference+S3→S3, retry→dead-letter, per-connection concurrency, live SFTP/FTP — I-43…I-46), C (NOTIFY-woken low-latency + backfill), D (Data-flow delivery UI) remain.** |
+| 5 — Delivery pipeline | 🚧 In progress | **Slice A done** (event outbox + dispatcher skeleton): app migration 007 + **ADR 0007** add the durable `item_events` outbox — a **row-level** trigger on partitioned `pgstac.items` (A0 spike: row-level cascades to every partition incl. future, catching bulk/partition-direct writes a statement-level-on-parent trigger would miss; empty-payload NOTIFY coalesces per-txn) writing one row per change + a payload-less wake. Pipeline `dispatcher/` (poll-driven `dispatch_once`: claim outbox in id order → `pgstac.get_item` → match `direction='deliver'` associations → cql2 `item_filter` + `asset_keys` → **log matched pairs, no transfer yet**) + delivery `config` cross-runtime contract (Zod `deliveryConfigSchema` + Python `delivery/config.py`) + delivery associations now creatable via the API. **Live-verified (2026-07-21):** real trigger fired on insert/delete; real `dispatch_once`/`PgDispatchRepo` vs live pgstac matched only the passing-filter association (both assets), excluded the non-matching one, logged, and drained the outbox; deletes drain without dispatching; idempotent. Finding: pgstac updates surface as delete+insert (ADR 0007). **Slice B-i done + live-verified (2026-07-21):** the byte-moving core — migration 008 `delivery_log`, `delivery/path.py` renderer, adapter `move()`/`put_atomic()`, `delivery/worker.py` `deliver_item`, and dispatcher fan-out (one batched `pipeline.deliver` job per association, enqueue-before-drain). Live-verified 16/16 vs real pgstac + MinIO: trigger → `dispatch_once` → `deliver_item` copied the asset byte-identical to a MinIO destination (`delivery_log` `delivered`/`attempts=1`), a changed re-upsert redelivered into the same row (`attempts=2`, overwrite), a delete drained with no delivery. Pipeline 268 pass/2 skip; app verify 472 pass; 7 task + opus whole-branch reviews clean. Finding I-46: pypgstac upsert emits `insert`/`update`(single)/no-op/`delete` (not the transaction-API delete+insert). **Slice B-ii (payloads, `on_update`/`overwrite`, reference source + S3→S3 copy) code done, live verification pending (Task 11):** migration 009 `delivery_log.delivered_assets` (per-asset fingerprint map); `upsert_pending` resets `attempts=0` on redelivery — **resolves I-44**; item-level `on_update` gate + per-asset log-based `overwrite`; payload sidecars (checksum per asset, item JSON every event, `{item_id}.done` completion marker written last); reference-mode reads via the ingest source adapter (ledger-first, no HTTP client); same-endpoint S3→S3 `CopyObject` with streaming fallback (sha256 checksums force streaming; md5 rides a single-part etag). Pipeline 306 pass/2 skip, ruff clean. **Slice B-iii (retry→dead-letter, `next_attempt_at`, per-connection concurrency caps, live SFTP/FTP — I-43/I-45/I-47), C (NOTIFY-woken low-latency + backfill), D (Data-flow delivery UI) remain.** |
 | 6–8 | ⬜ Not started | — |
 
 Per-phase detail and any carried-forward items are noted inline below.
@@ -886,13 +886,46 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
   review all clean. Live finding I-46: pypgstac upsert emits `insert`/`update`
   (single row)/no-op/`delete` outbox ops (the ADR 0007 delete+insert is the
   transaction-API path) — benign for delivery.
-- ⬜ **Slice B-ii/B-iii — remaining byte-moving scope:** payload options (item
-  JSON / checksums / completion marker), `on_update`/`overwrite` enforcement (B-i
-  is deliver-every-event, overwrite-always), reference-mode source + S3→S3
-  server-side copy, retry → dead-letter (app-managed sweep; `next_attempt_at`
-  column), per-connection concurrency caps, and **live SFTP + FTP** destination
-  runs (`move()` code shipped in B-i, unit-covered by inspection — I-45). Not
-  started. Residuals: I-43 (at-least-once idempotency), I-44 (`attempts` reset).
+- 🟢 **Slice B-ii — payloads, policies, reference source, S3→S3 copy (code
+  done, live verification pending — Task 11):** migration 009 adds
+  `delivery_log.delivered_assets` jsonb, a per-asset `{fingerprint, size,
+  filename}` map keyed by asset key — the change-detection substrate for
+  everything else in this slice. Fingerprints are `sha256:<hex>` (streamed
+  bytes) or `etag:<etag>/<size>` (server-side copy); the two kinds compare
+  unequal, so switching an association's transfer path costs at most one
+  redundant redeliver, never a missed one. `upsert_pending` now resets
+  `attempts = 0` on the redelivery conflict branch — **resolves I-44**. The
+  worker (`delivery/worker.py`) gained an item-level `on_update` gate
+  (`ignore` = fire-once-per-item, keyed off a prior `delivery_log` row's
+  status, never the outbox `op` — I-37) and a per-asset log-based `overwrite`
+  policy (`never`/`always`/`if_newer` compared against `delivered_assets`, no
+  destination round-trip). Payload sidecars land beside the assets: a
+  coreutils-format checksum per written file (`{filename}.{algo}`), the item
+  JSON rewritten on every processed event (`{item_id}.json`), and a completion
+  marker (`{item_id}.done`, a JSON manifest) written **last** and only when
+  something was actually written. Reference-mode delivery reads bytes through
+  the ingest source connection's adapter — ledger-first (`load_reference_sources`
+  over `ingest_files`), the adapter built lazily per connection
+  (`build_adapter`, decrypting only when invoked) and cached per item — no HTTP
+  client. Same-endpoint S3→S3 destinations get a server-side `CopyObject`
+  (`can_server_side_copy`: s3 protocol + normalized connection endpoint equal
+  to the platform's `STAGING_S3_ENDPOINT`, both-`None` meaning real AWS; a
+  malformed endpoint degrades to streaming) via `S3Adapter.copy_object_from`,
+  computed once per job in `jobs/dispatch.py`; a copy failure logs a warning
+  and falls back to streaming. The checksums×copy trade: a `sha256` payload
+  checksum forces streaming (there's no hash without the bytes); `md5` can
+  ride a single-part object's ETag (`platform.head_object`), but a multipart
+  ETag isn't an md5 and falls back to streaming too. New modules:
+  `delivery/transfer.py` (fingerprints + the copy gate), `delivery/payload.py`
+  (sidecar builders). Pipeline suite 306 passed/2 skipped, ruff clean — **code
+  done, live verification pending** (Task 11; do not treat as live-verified
+  until then).
+- ⬜ **Slice B-iii — remaining byte-moving scope:** retry → dead-letter
+  (app-managed sweep; `next_attempt_at` column), per-connection concurrency
+  caps, and **live SFTP + FTP** destination runs (`move()` code shipped in
+  B-i, unit-covered by inspection — I-45). Not started. Residuals: I-43
+  (at-least-once idempotency), I-45 (SFTP/FTP live), I-47 (copy-path etag
+  fingerprints are endpoint-generation-specific).
 - ⬜ **Slice C — NOTIFY-woken low-latency + user-initiated backfill.** Not started.
 - ⬜ **Slice D — Data-flow tab: delivery half (UI).** Not started.
 

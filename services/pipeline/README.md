@@ -189,24 +189,65 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   the poll for a `LISTEN`-woken loop.
 - **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
   the `pipeline.deliver` task loads the destination connection, builds its
-  adapter, and runs each item through `deliver_item`: read the canonical asset
-  bytes (`platform.get_object`), render the destination path (`delivery/path.py`
-  — `{collection} {item_id} {filename} {yyyy} {mm} {dd}` tokens, UTC dates),
-  write atomically via `adapter.put_atomic` (S3 direct PUT; SFTP/FTP
-  `.part`→`move`), and record a `stac_higher.delivery_log` row
-  (`pending`→`delivering`→`delivered`, or `failed`). A per-item failure marks
-  that row `failed` without aborting the batch (retry → dead-letter is B-iii).
+  adapter, and runs each item through `deliver_item`: resolve each asset's
+  source bytes (canonical `platform.get_object`, the ingest source adapter for
+  reference-mode assets, or an S3→S3 server-side copy — see below), render the
+  destination path (`delivery/path.py` — `{collection} {item_id} {filename}
+  {yyyy} {mm} {dd}` tokens, UTC dates), apply the association's
+  `on_update`/`overwrite` policy, write atomically via `adapter.put_atomic`
+  (S3 direct PUT; SFTP/FTP `.part`→`move`) or `adapter.copy_object_from` for a
+  server-side copy, write any payload sidecars, and record a
+  `stac_higher.delivery_log` row (`pending`→`delivering`→`delivered`, or
+  `failed`). A per-item failure marks that row `failed` without aborting the
+  batch (retry → dead-letter is B-iii).
 
 Ownership (ADR 0001): the pipeline reads `collection_connections`/`connections`
 + pgstac items and writes only `delivery_log`; the app owns the DDL (migrations
-007 + 008).
+007, 008 + 009).
 
-**Slice B-i scope (current):** canonical bytes → S3/MinIO destination,
-live-verified. Deferred to later slices: payload sidecars (item JSON / checksums
-/ completion marker), `on_update`/`overwrite` policy (B-i delivers on every
-event, overwrite-always), reference-mode source + S3→S3 server-side copy, retry
-→ dead-letter, per-connection concurrency, and live SFTP/FTP destination runs.
-See [`../../docs/ISSUES.md`](../../docs/ISSUES.md) I-43…I-46.
+**Slice B-i scope:** canonical bytes → S3/MinIO destination, live-verified
+2026-07-21.
+
+**Slice B-ii scope (code done; live verification pending):**
+
+- **`delivered_assets`** (migration `009_delivery_log_delivered_assets`) —
+  `delivery_log.delivered_assets` jsonb, a per-asset `{fingerprint, size,
+  filename}` map. Fingerprints are `sha256:<hex>` (streamed) or
+  `etag:<etag>/<size>` (server-side copy) — the two kinds compare unequal, so
+  a transfer-path switch costs at most one redundant redeliver (I-47).
+  `upsert_pending`'s redelivery conflict branch resets `attempts = 0` —
+  resolves I-44.
+- **`on_update`/`overwrite`** (`delivery/worker.py`) — an item-level
+  `on_update` gate (`ignore` fires once per item, keyed off a prior
+  `delivery_log` row's status, never the outbox `op` — I-37) and a per-asset
+  log-based `overwrite` policy (`never`/`always`/`if_newer` against
+  `delivered_assets`, no destination round-trip).
+- **Payload sidecars** (`delivery/payload.py`) — a coreutils-format checksum
+  per written asset (`{filename}.{algo}`), the item JSON rewritten on every
+  processed event (`{item_id}.json`), and a completion marker
+  (`{item_id}.done`, a JSON manifest) written **last**, only when something
+  was actually written.
+- **Reference-mode source** — bytes read through the ingest source
+  connection's adapter: ledger-first (`DeliveryRepo.load_reference_sources`
+  over `ingest_files`), the adapter built lazily per connection
+  (`build_adapter`, decrypting only when invoked) and cached per item — no
+  HTTP client.
+- **S3→S3 server-side copy** (`delivery/transfer.py`) — `can_server_side_copy`
+  gates on an s3 destination whose endpoint normalizes equal to the
+  platform's `STAGING_S3_ENDPOINT` (both `None` = real AWS; a malformed
+  endpoint degrades to streaming), computed once per job in
+  `jobs/dispatch.py`; `S3Adapter.copy_object_from` performs the `CopyObject`,
+  falling back to streaming on failure. A `sha256` payload checksum forces
+  streaming (no hash without the bytes); `md5` can ride a single-part
+  object's ETag (`platform.head_object`), but a multipart ETag isn't an md5
+  and falls back to streaming too.
+
+Pipeline suite 306 passed/2 skipped, ruff clean. Code done, live verification
+pending (a later lead-only task) — not yet claimed live-verified.
+
+Deferred to **Slice B-iii**: retry → dead-letter, per-connection concurrency
+caps, and live SFTP/FTP destination runs. See
+[`../../docs/ISSUES.md`](../../docs/ISSUES.md) I-43, I-45, I-47.
 
 ## Develop
 
