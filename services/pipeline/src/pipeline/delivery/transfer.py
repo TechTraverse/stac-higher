@@ -23,6 +23,12 @@ def etag_fingerprint(etag: str, size: int) -> str:
     return f"etag:{etag}/{size}"
 
 
+def is_multipart_etag(etag: str) -> bool:
+    """A multipart-upload ETag (``<md5-of-part-md5s>-<parts>``) — NOT a content
+    md5, so it cannot back an md5 checksum sidecar (ISSUES I-48)."""
+    return "-" in etag
+
+
 def _normalized(endpoint: str) -> tuple[str, str, int | None]:
     parsed = urlparse(endpoint)
     scheme = parsed.scheme or "https"

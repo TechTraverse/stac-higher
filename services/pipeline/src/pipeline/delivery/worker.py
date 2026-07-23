@@ -34,7 +34,11 @@ from pipeline.delivery.payload import (
     item_json_payload,
 )
 from pipeline.delivery.repo import DeliverTarget, DeliveryRepo, ReferenceSource
-from pipeline.delivery.transfer import etag_fingerprint, sha256_fingerprint
+from pipeline.delivery.transfer import (
+    etag_fingerprint,
+    is_multipart_etag,
+    sha256_fingerprint,
+)
 from pipeline.storage import platform
 from pipeline.storage.keys import canonical_asset_key
 
@@ -78,6 +82,23 @@ async def _read_reference(
         src = build_source_adapter(ref.connection)
         cache[ref.connection.id] = src
     return await src.get(ref.fetch_path)
+
+
+async def _stream_canonical(
+    s3_client: platform.S3Like, bucket: str, canonical_key: str
+) -> tuple[bytes, str]:
+    """Read the canonical object and sha256-fingerprint it in one worker thread
+    (hashing a large buffer on the event loop would stall other coroutines)."""
+
+    def _read_and_hash() -> tuple[bytes, str]:
+        data = platform.get_object(s3_client, bucket, canonical_key)
+        return data, sha256_fingerprint(data)
+
+    return await asyncio.to_thread(_read_and_hash)
+
+
+def _hexdigest(algo: str, data: bytes) -> str:
+    return hashlib.new(algo, data).hexdigest()
 
 
 async def _write_sidecar(
@@ -137,6 +158,10 @@ async def deliver_item(
             if asset is None:
                 # Asset vanished between match and delivery — skip, deliver the rest.
                 continue
+            if config.overwrite == "never" and key in delivered:
+                # 'never' skips regardless of the fingerprint — decide before
+                # reading any bytes (the read would only be thrown away).
+                continue
             filename = _asset_filename(asset)
             ref = ref_sources.get(filename)
             canonical_key: str | None = None
@@ -144,7 +169,8 @@ async def deliver_item(
             etag = ""
             if ref is not None:
                 data = await _read_reference(ref, source_adapters, build_source_adapter)
-                fingerprint, size = sha256_fingerprint(data), len(data)
+                fingerprint = await asyncio.to_thread(sha256_fingerprint, data)
+                size = len(data)
             else:
                 canonical_key = canonical_asset_key(target.collection_id, item_id, filename)
                 # sha256 sidecars need the bytes; md5 can ride a single-part etag.
@@ -153,15 +179,15 @@ async def deliver_item(
                     etag, size = await asyncio.to_thread(
                         platform.head_object, s3_client, bucket, canonical_key
                     )
-                    if checksums_algo == "md5" and "-" in etag:
+                    if checksums_algo == "md5" and is_multipart_etag(etag):
                         use_copy = False  # multipart etag is not an md5 — stream
                     else:
                         fingerprint = etag_fingerprint(etag, size)
                 if not use_copy:
-                    data = await asyncio.to_thread(
-                        platform.get_object, s3_client, bucket, canonical_key
+                    data, fingerprint = await _stream_canonical(
+                        s3_client, bucket, canonical_key
                     )
-                    fingerprint, size = sha256_fingerprint(data), len(data)
+                    size = len(data)
             if not _should_write(config.overwrite, delivered.get(key), fingerprint):
                 continue  # keep the prior entry — it reflects the destination
             dest = render_path(config.path_template, item, filename)
@@ -174,17 +200,22 @@ async def deliver_item(
                         extra={"association_id": target.id, "item_id": item_id, "dest": dest},
                         exc_info=True,
                     )
-                    data = await asyncio.to_thread(
-                        platform.get_object, s3_client, bucket, canonical_key
+                    data, fingerprint = await _stream_canonical(
+                        s3_client, bucket, canonical_key
                     )
-                    fingerprint, size = sha256_fingerprint(data), len(data)
+                    size = len(data)
                     await adapter.put_atomic(dest, data)
             else:
                 await adapter.put_atomic(dest, data)
             total += size
             wrote_any = True
             if checksums_algo:
-                digest = etag if data is None else hashlib.new(checksums_algo, data).hexdigest()
+                if data is None:
+                    digest = etag  # copy path: a single-part etag IS the md5
+                elif checksums_algo == "sha256":
+                    digest = fingerprint.removeprefix("sha256:")  # already computed
+                else:
+                    digest = await asyncio.to_thread(_hexdigest, checksums_algo, data)
                 total += await _write_sidecar(
                     adapter, config, item, checksum_payload(filename, checksums_algo, digest)
                 )

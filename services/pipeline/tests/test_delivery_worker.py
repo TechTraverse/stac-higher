@@ -1,8 +1,13 @@
+import hashlib
+import io
+
 import pytest
 
 from _delivery_fake import FakeDeliveryRepo
+from _ingest_fake import FakeAdapter
+from pipeline.connections.repo import ConnectionRow
 from pipeline.delivery.config import parse_delivery_config
-from pipeline.delivery.repo import DeliverTarget
+from pipeline.delivery.repo import DeliverTarget, ReferenceSource
 from pipeline.delivery.worker import deliver_item
 
 pytestmark = pytest.mark.asyncio
@@ -32,15 +37,11 @@ class _FakeS3:
         self.heads: list[tuple[str, str]] = []
 
     def get_object(self, Bucket, Key):  # boto3 kwarg names (not enabled: N803)
-        import io
-
         return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
 
     def head_object(self, Bucket, Key):  # boto3 kwarg names (not enabled: N803)
         self.heads.append((Bucket, Key))
         data = self.objects[(Bucket, Key)]
-        import hashlib
-
         etag = self.etags.get((Bucket, Key), hashlib.md5(data).hexdigest())
         return {"ETag": f'"{etag}"', "ContentLength": len(data)}
 
@@ -53,18 +54,35 @@ def _item(assets):
     return {"id": "scene", "collection": "col", "properties": {}, "assets": assets}
 
 
+def _config(**overrides):
+    base = {"path_template": "{filename}"}
+    base.update(overrides)
+    return parse_delivery_config(base)
+
+
+def _source_connection():
+    return ConnectionRow(
+        id="c9", name="src", protocol="s3", config={}, credentials=None, host_key=None
+    )
+
+
+async def _run(repo, adapter, s3, item, config, asset_keys=("data",), **kwargs):
+    await deliver_item(
+        repo, adapter, s3, "bucket",
+        target=_target(), config=config, item=item,
+        asset_keys=list(asset_keys), item_created_at=None,
+        **kwargs,
+    )
+
+
 async def test_delivers_asset_bytes_and_records_row():
     repo = FakeDeliveryRepo()
     adapter = _FakeAdapter()
     s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMGDATA"})
     item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
-    config = parse_delivery_config({"path_template": "{collection}/{item_id}/{filename}"})
+    config = _config(path_template="{collection}/{item_id}/{filename}")
 
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=config, item=item,
-        asset_keys=["data"], item_created_at=None,
-    )
+    await _run(repo, adapter, s3, item, config)
 
     assert adapter.puts == [("col/scene/a.tif", b"IMGDATA")]
     (_rid, rec), = repo.rows.items()
@@ -83,13 +101,8 @@ async def test_multiple_assets_sum_bytes():
         "a": {"href": "/api/assets/col/scene/a.tif"},
         "b": {"href": "/api/assets/col/scene/b.tif"},
     })
-    config = parse_delivery_config({"path_template": "{filename}"})
 
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=config, item=item,
-        asset_keys=["a", "b"], item_created_at=None,
-    )
+    await _run(repo, adapter, s3, item, _config(), asset_keys=("a", "b"))
     (rec,) = repo.rows.values()
     assert rec["bytes"] == 7
     assert {p for p, _ in adapter.puts} == {"a.tif", "b.tif"}
@@ -100,14 +113,9 @@ async def test_missing_asset_key_is_skipped():
     adapter = _FakeAdapter()
     s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"AAA"})
     item = _item({"a": {"href": "/api/assets/col/scene/a.tif"}})
-    config = parse_delivery_config({"path_template": "{filename}"})
 
     # "gone" isn't in the item's assets — skip it, deliver "a".
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=config, item=item,
-        asset_keys=["a", "gone"], item_created_at=None,
-    )
+    await _run(repo, adapter, s3, item, _config(), asset_keys=("a", "gone"))
     assert [p for p, _ in adapter.puts] == ["a.tif"]
     (rec,) = repo.rows.values()
     assert rec["status"] == "delivered"
@@ -122,30 +130,11 @@ async def test_transfer_failure_marks_failed_without_raising():
 
     s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"AAA"})
     item = _item({"a": {"href": "/api/assets/col/scene/a.tif"}})
-    config = parse_delivery_config({"path_template": "{filename}"})
 
-    await deliver_item(
-        repo, _BoomAdapter(), s3, "bucket",
-        target=_target(), config=config, item=item,
-        asset_keys=["a"], item_created_at=None,
-    )
+    await _run(repo, _BoomAdapter(), s3, item, _config(), asset_keys=("a",))
     (rec,) = repo.rows.values()
     assert rec["status"] == "failed"
     assert "dest down" in rec["error"]
-
-
-def _config(**overrides):
-    base = {"path_template": "{filename}"}
-    base.update(overrides)
-    return parse_delivery_config(base)
-
-
-async def _run(repo, adapter, s3, item, config, asset_keys=("data",)):
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=config, item=item,
-        asset_keys=list(asset_keys), item_created_at=None,
-    )
 
 
 async def test_on_update_ignore_skips_after_delivered():
@@ -212,7 +201,6 @@ async def test_overwrite_never_skips_previously_delivered():
     assert len(adapter.puts) == 1  # changed bytes, but never overwrite
     (rec,) = repo.rows.values()
     # The prior fingerprint is kept — it reflects what is at the destination.
-    import hashlib
     expected = f"sha256:{hashlib.sha256(b'V1').hexdigest()}"
     assert rec["delivered_assets"]["data"]["fingerprint"] == expected
 
@@ -239,7 +227,6 @@ async def test_payload_sidecars_written_in_order_marker_last():
     await _run(repo, adapter, s3, item, config)
     paths = [p for p, _ in adapter.puts]
     assert paths == ["a.tif", "a.tif.sha256", "scene.json", "scene.done"]
-    import hashlib
     body = dict(adapter.puts)["a.tif.sha256"]
     assert body == f"{hashlib.sha256(b'IMG').hexdigest()}  a.tif\n".encode()
     (rec,) = repo.rows.values()
@@ -278,28 +265,13 @@ async def test_no_writes_when_nothing_changed_and_no_item_json():
     assert rec["status"] == "delivered"
 
 
-class _FakeSourceAdapter:
-    def __init__(self, objects):
-        self.objects = objects
-        self.gets: list[str] = []
-
-    async def get(self, path):
-        self.gets.append(path)
-        return self.objects[path]
-
-
 async def test_reference_asset_reads_source_adapter_not_canonical():
-    from pipeline.connections.repo import ConnectionRow
-    from pipeline.delivery.repo import ReferenceSource
-
-    conn = ConnectionRow(
-        id="c9", name="src", protocol="s3", config={}, credentials=None, host_key=None
-    )
+    conn = _source_connection()
     src = ReferenceSource(filename="a.tif", fetch_path="incoming/a.tif", connection=conn)
     repo = FakeDeliveryRepo(reference_sources={"scene": [src]})
     adapter = _FakeAdapter()
     s3 = _FakeS3({})  # canonical is EMPTY — a canonical read would raise
-    source = _FakeSourceAdapter({"incoming/a.tif": b"REFBYTES"})
+    source = FakeAdapter(blobs={"incoming/a.tif": b"REFBYTES"})
     built: list = []
 
     def _factory(connection):
@@ -307,13 +279,8 @@ async def test_reference_asset_reads_source_adapter_not_canonical():
         return source
 
     item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=_config(), item=item,
-        asset_keys=["data"], item_created_at=None,
-        build_source_adapter=_factory,
-    )
-    assert source.gets == ["incoming/a.tif"]
+    await _run(repo, adapter, s3, item, _config(), build_source_adapter=_factory)
+    assert source.get_calls == ["incoming/a.tif"]
     assert adapter.puts == [("a.tif", b"REFBYTES")]
     assert built == [conn]
     (rec,) = repo.rows.values()
@@ -321,19 +288,14 @@ async def test_reference_asset_reads_source_adapter_not_canonical():
 
 
 async def test_source_adapter_built_once_per_connection():
-    from pipeline.connections.repo import ConnectionRow
-    from pipeline.delivery.repo import ReferenceSource
-
-    conn = ConnectionRow(
-        id="c9", name="src", protocol="s3", config={}, credentials=None, host_key=None
-    )
+    conn = _source_connection()
     sources = [
         ReferenceSource(filename="a.tif", fetch_path="in/a.tif", connection=conn),
         ReferenceSource(filename="b.tif", fetch_path="in/b.tif", connection=conn),
     ]
     repo = FakeDeliveryRepo(reference_sources={"scene": sources})
     adapter = _FakeAdapter()
-    source = _FakeSourceAdapter({"in/a.tif": b"A", "in/b.tif": b"B"})
+    source = FakeAdapter(blobs={"in/a.tif": b"A", "in/b.tif": b"B"})
     built: list = []
 
     def _factory(connection):
@@ -344,11 +306,9 @@ async def test_source_adapter_built_once_per_connection():
         "a": {"href": "/api/assets/col/scene/a.tif"},
         "b": {"href": "/api/assets/col/scene/b.tif"},
     })
-    await deliver_item(
-        repo, adapter, _FakeS3({}), "bucket",
-        target=_target(), config=_config(), item=item,
-        asset_keys=["a", "b"], item_created_at=None,
-        build_source_adapter=_factory,
+    await _run(
+        repo, adapter, _FakeS3({}), item, _config(),
+        asset_keys=("a", "b"), build_source_adapter=_factory,
     )
     assert len(built) == 1  # cached per connection id
     assert {p for p, _ in adapter.puts} == {"a.tif", "b.tif"}
@@ -360,12 +320,7 @@ async def test_server_side_copy_no_stream():
     s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMGDATA"})
     item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
 
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=_config(), item=item,
-        asset_keys=["data"], item_created_at=None,
-        server_side_copy=True,
-    )
+    await _run(repo, adapter, s3, item, _config(), server_side_copy=True)
     assert adapter.copies == [("bucket", "assets/col/scene/a.tif", "a.tif")]
     assert adapter.puts == []  # no bytes through the worker
     (rec,) = repo.rows.values()
@@ -381,12 +336,7 @@ async def test_copy_skipped_unchanged_on_redelivery():
     item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
 
     for _ in range(2):
-        await deliver_item(
-            repo, adapter, s3, "bucket",
-            target=_target(), config=_config(), item=item,
-            asset_keys=["data"], item_created_at=None,
-            server_side_copy=True,
-        )
+        await _run(repo, adapter, s3, item, _config(), server_side_copy=True)
     assert len(adapter.copies) == 1  # unchanged etag -> if_newer skips
 
 
@@ -399,12 +349,7 @@ async def test_sha256_checksums_force_streaming():
         payload={"item_json": False, "checksums": "sha256", "completion_marker": False}
     )
 
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=config, item=item,
-        asset_keys=["data"], item_created_at=None,
-        server_side_copy=True,
-    )
+    await _run(repo, adapter, s3, item, config, server_side_copy=True)
     assert adapter.copies == []  # honest checksum beats copy efficiency
     assert [p for p, _ in adapter.puts] == ["a.tif", "a.tif.sha256"]
 
@@ -416,14 +361,8 @@ async def test_md5_checksum_uses_single_part_etag_and_keeps_copy():
     item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
     config = _config(payload={"item_json": False, "checksums": "md5", "completion_marker": False})
 
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=config, item=item,
-        asset_keys=["data"], item_created_at=None,
-        server_side_copy=True,
-    )
+    await _run(repo, adapter, s3, item, config, server_side_copy=True)
     assert len(adapter.copies) == 1
-    import hashlib
     body = dict(adapter.puts)["a.tif.md5"]
     assert body == f"{hashlib.md5(b'IMGDATA').hexdigest()}  a.tif\n".encode()
 
@@ -438,14 +377,8 @@ async def test_md5_checksum_multipart_etag_falls_back_to_stream():
     item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
     config = _config(payload={"item_json": False, "checksums": "md5", "completion_marker": False})
 
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=config, item=item,
-        asset_keys=["data"], item_created_at=None,
-        server_side_copy=True,
-    )
+    await _run(repo, adapter, s3, item, config, server_side_copy=True)
     assert adapter.copies == []  # "abc123-4" is not an md5 — stream instead
-    import hashlib
     body = dict(adapter.puts)["a.tif.md5"]
     assert body == f"{hashlib.md5(b'IMGDATA').hexdigest()}  a.tif\n".encode()
 
@@ -456,12 +389,7 @@ async def test_copy_failure_falls_back_to_streaming():
     s3 = _FakeS3({("bucket", "assets/col/scene/a.tif"): b"IMGDATA"})
     item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
 
-    await deliver_item(
-        repo, adapter, s3, "bucket",
-        target=_target(), config=_config(), item=item,
-        asset_keys=["data"], item_created_at=None,
-        server_side_copy=True,
-    )
+    await _run(repo, adapter, s3, item, _config(), server_side_copy=True)
     assert adapter.puts == [("a.tif", b"IMGDATA")]  # fell back, delivery succeeded
     (rec,) = repo.rows.values()
     assert rec["status"] == "delivered"
@@ -469,24 +397,17 @@ async def test_copy_failure_falls_back_to_streaming():
 
 
 async def test_reference_asset_never_server_side_copies():
-    from pipeline.connections.repo import ConnectionRow
-    from pipeline.delivery.repo import ReferenceSource
-
-    conn = ConnectionRow(
-        id="c9", name="src", protocol="s3", config={}, credentials=None, host_key=None
+    src = ReferenceSource(
+        filename="a.tif", fetch_path="in/a.tif", connection=_source_connection()
     )
-    src = ReferenceSource(filename="a.tif", fetch_path="in/a.tif", connection=conn)
     repo = FakeDeliveryRepo(reference_sources={"scene": [src]})
     adapter = _FakeAdapter()
-    source = _FakeSourceAdapter({"in/a.tif": b"REF"})
+    source = FakeAdapter(blobs={"in/a.tif": b"REF"})
     item = _item({"data": {"href": "/api/assets/col/scene/a.tif"}})
 
-    await deliver_item(
-        repo, adapter, _FakeS3({}), "bucket",
-        target=_target(), config=_config(), item=item,
-        asset_keys=["data"], item_created_at=None,
-        build_source_adapter=lambda c: source,
-        server_side_copy=True,
+    await _run(
+        repo, adapter, _FakeS3({}), item, _config(),
+        build_source_adapter=lambda c: source, server_side_copy=True,
     )
     assert adapter.copies == []
     assert adapter.puts == [("a.tif", b"REF")]

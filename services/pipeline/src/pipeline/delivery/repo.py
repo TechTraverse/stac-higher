@@ -13,7 +13,6 @@ items; INSERT/UPDATEs only ``delivery_log``. Never runs DDL.
 from __future__ import annotations
 
 import abc
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -237,14 +236,16 @@ class PgDeliveryRepo(DeliveryRepo):
         byte_count: int,
         delivered_assets: dict[str, Any] | None = None,
     ) -> None:
+        from psycopg.types.json import Json
+
         async with await self._connect() as conn:
             await conn.execute(
                 "UPDATE stac_higher.delivery_log"
                 " SET status = 'delivered', bytes = %s, error = NULL,"
-                "     delivered_assets = %s::jsonb,"
+                "     delivered_assets = %s,"
                 "     delivered_at = now(), updated_at = now()"
                 " WHERE id = %s",
-                (byte_count, json.dumps(delivered_assets or {}), row_id),
+                (byte_count, Json(delivered_assets or {}), row_id),
             )
             await conn.commit()
 
