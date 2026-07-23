@@ -372,3 +372,23 @@ address alongside the B-iii retry sweep.
 - Tracked in: `services/pipeline/src/pipeline/delivery/{worker,repo}.py`; found
   in the Slice B-ii whole-branch review.
 
+---
+
+## Cross-phase — found by the 2026-07-22 architecture review
+
+### I-50 · UI catalog writes have no token path under auth enforcement (BFF not yet implemented) 🔴
+In auth-enforced mode (ADR 0002), every catalog transaction at the proxy requires
+a bearer token — but the browser client (`stacFetch`) attaches no `Authorization`
+header, the access token is sealed in the httpOnly session cookie by design, and
+no server-side path injects it. **The platform's own UI therefore cannot
+create/edit/delete items or collections once enforcement is on** (Phase 1's
+integration tests masked this by minting tokens via the password-grant test
+client). Catalog-plane mutations also bypass the permission guard's audit write,
+so the primary data plane is un-audited. **Decision made: ADR 0008** — the app
+becomes a BFF for built-in-catalog browser writes (server-side session-token
+injection + audit via the existing guard). This entry tracks the implementation,
+which should land before Phase 6 builds more UI on the pass-through assumption.
+- Tracked in: [ADR 0008](decisions/0008-bff-catalog-writes.md);
+  `app/src/lib/stac-api/client.ts`, `app/src/pages/api/proxy.ts`.
+- Blocks: UI CRUD in the production (auth-enforced) posture; catalog-plane audit
+  coverage.
