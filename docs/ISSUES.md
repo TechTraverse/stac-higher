@@ -291,18 +291,19 @@ counts a single delivery cycle, not the item's lifetime.
 - Tracked in: `services/pipeline/.../delivery/repo.py` (`upsert_pending`); found in
   the Slice B-i whole-branch review, resolved in Slice B-ii.
 
-### I-45 · Concrete adapter `move()` bodies are inspection-only; SFTP/FTP delivery not live-verified 🟡
-Slice B-i added `move()` to every adapter (S3 copy+delete, SFTP `posix_rename`,
-FTP `rename`) and unit-tested only the base `put_atomic` (`.part`→move) and the
-S3 `put_atomic` override (direct PUT) — the three concrete `move` bodies have no
-dedicated unit test, and the B-i live verification exercised the **S3/MinIO**
-destination only (S3 uses the direct-PUT override, so its `move` is not even on
-the delivery path). SFTP/FTP destinations (which reach `move` via the base
-`put_atomic`) are unit-covered by inspection but not run live. B-ii/B-iii should
-add a dedicated `move` test (or a live SFTP/FTP destination run) before relying on
-the `.part`→rename path in production.
-- Tracked in: `services/pipeline/.../connections/adapters/{s3,sftp,ftp}.py`
-  (`move`); found in the Slice B-i task/whole-branch reviews.
+### I-45 · Concrete adapter `move()` bodies are inspection-only; SFTP/FTP delivery not live-verified 🟢
+**Resolved (Slice B-iii, 2026-07-25):** live SFTP and FTP destination
+deliveries ran against the `compose.test-servers.yml` servers through the
+production `put_atomic` → `move` path (`.part` → `posix_rename`/`rename`),
+byte-identical payloads verified on both servers; dedicated unit tests for the
+concrete `move` bodies and the put paths now exist
+(`tests/test_adapter_put_dirs.py`). The live run surfaced (and B-iii fixed)
+that neither adapter created missing parent directories — delivery path
+templates are directory-shaped, so the first delivery into a fresh destination
+failed without it. Second finding: the delfer FTP test server does not chroot;
+FTP connections against it need `root_path=/ftp/demo` (compose comment
+corrected).
+- Resolved by: Slice B-iii live verification + `ai/b-iii-dirs`.
 
 ### I-46 · Outbox op for an item change depends on the write path (pypgstac upsert → `update`, transaction API → delete+insert) ⚪
 The B-i live verification found that a changed item written via **pypgstac

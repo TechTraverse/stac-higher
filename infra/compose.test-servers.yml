@@ -33,8 +33,10 @@ services:
     restart: "no"
 
   # Plain FTP (delfer/alpine-ftp-server) with passive mode. No TLS.
-  # Alpine-based and multi-arch (works on arm64 / Apple Silicon). The user is
-  # chrooted to its folder, so root_path="/" lists it.
+  # Alpine-based and multi-arch (works on arm64 / Apple Silicon). NOTE: this
+  # server does NOT chroot — the session lands in /ftp/demo but "/" is the
+  # container filesystem root (read-only for demo), so connections against it
+  # must set root_path=/ftp/demo (found by the B-iii live FTP run).
   ftp-test:
     image: delfer/alpine-ftp-server:latest
     environment:
