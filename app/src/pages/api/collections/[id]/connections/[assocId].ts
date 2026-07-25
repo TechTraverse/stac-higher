@@ -5,7 +5,9 @@
  * GET    — any authenticated caller who can SEE the association.
  * PUT    — operator|admin who can see it; patches enabled/config/expectation.
  *          `storage_mode: reference` stays restricted to s3 connections.
- * DELETE — operator|admin who can see it. ingest_files rows cascade.
+ * DELETE — operator|admin who can see it. Soft-delete (ADR 0009): history
+ *          rows (ingest_files, delivery_log) are retained; responds 200 with
+ *          the counted impact.
  *
  * A non-visible or wrong-collection association is a 404 (existence is
  * group-scoped). Role + audit live in the guard; re-checked here for defense.
@@ -18,6 +20,7 @@ import {
 } from "@/lib/associations/access";
 import { parseAssociationUpdate } from "@/lib/associations/schemas";
 import {
+  associationDeleteImpact,
   deleteAssociation,
   toApiAssociation,
   updateAssociation,
@@ -101,8 +104,10 @@ export const DELETE: APIRoute = async ({ params, locals }) => {
       true,
     );
     if ("response" in loaded) return loaded.response;
-    await deleteAssociation(loaded.association.id);
-    return new Response(null, { status: 204 });
+    const impact = await associationDeleteImpact(loaded.association.id);
+    const deleted = await deleteAssociation(loaded.association.id);
+    if (!deleted) return jsonResponse(404, { error: "Association not found" });
+    return jsonResponse(200, { deleted: true, impact });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return jsonResponse(500, { error: message });

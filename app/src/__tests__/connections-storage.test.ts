@@ -75,14 +75,15 @@ describe("group scoping", () => {
   it("filters by group_id for non-admin callers", async () => {
     await listConnections(["weather", "earth-observation"]);
     const [sql, params] = mockQuery.mock.calls[0];
-    expect(sql).toMatch(/WHERE group_id = ANY/);
+    expect(sql).toMatch(/WHERE deleted_at IS NULL AND group_id = ANY/);
     expect(params).toEqual([["weather", "earth-observation"]]);
   });
 
-  it("applies no filter for admin (null)", async () => {
+  it("applies only the not-deleted filter for admin (null)", async () => {
     await listConnections(null);
     const [sql, params] = mockQuery.mock.calls[0];
-    expect(sql).not.toMatch(/WHERE/);
+    expect(sql).toMatch(/WHERE deleted_at IS NULL/);
+    expect(sql).not.toMatch(/group_id = ANY/);
     expect(params).toEqual([]);
   });
 });

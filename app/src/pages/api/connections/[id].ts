@@ -6,7 +6,10 @@
  *          `credentials`, when present, replaces the envelope WHOLESALE
  *          (no merge — the app cannot decrypt, so there is nothing to merge
  *          into). An SSH-family host/port change clears the TOFU pin.
- * DELETE — operator+ of the owning group, or admin.
+ * DELETE — operator+ of the owning group, or admin. Soft-delete (ADR 0009):
+ *          sets deleted_at, scrubs credentials + host-key pin, soft-deletes
+ *          the connection's associations, and removes its reference-backed
+ *          items from the catalog. Responds 200 with the counted impact.
  *
  * A connection outside the caller's groups is a 404 (existence is
  * group-scoped, §7). Role enforcement + audit live in the middleware guard;
@@ -23,10 +26,13 @@ import {
 import { getEncryptionProvider, CredentialKeyError } from "@/lib/connections/crypto";
 import { parseConnectionUpdate } from "@/lib/connections/schemas";
 import {
-  deleteConnection,
   shouldClearHostKey,
   updateConnection,
 } from "@/lib/connections/storage";
+import {
+  connectionDeleteImpact,
+  softDeleteConnection,
+} from "@/lib/connections/deletion";
 
 export const GET: APIRoute = async ({ params, locals }) => {
   try {
@@ -103,8 +109,12 @@ export const DELETE: APIRoute = async ({ params, locals }) => {
   try {
     const loaded = await loadVisibleConnection(locals.auth, params.id, true);
     if ("response" in loaded) return loaded.response;
-    await deleteConnection(loaded.connection.id);
-    return new Response(null, { status: 204 });
+    // Impact is computed BEFORE the delete so the response reports what was
+    // actually acted on (the counted blast radius the dialog previewed).
+    const impact = await connectionDeleteImpact(loaded.connection.id);
+    const deleted = await softDeleteConnection(loaded.connection.id);
+    if (!deleted) return notFound();
+    return jsonResponse(200, { deleted: true, impact });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return jsonResponse(500, { error: message });

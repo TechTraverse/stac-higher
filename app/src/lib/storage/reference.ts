@@ -24,6 +24,9 @@ export async function lookupReferenceHref(
       WHERE cc.collection_id = $1
         AND f.item_id = $2
         AND f.source_href IS NOT NULL
+        -- Rows whose items were removed with their connection (ADR 0009 §3)
+        -- are provenance only — never a redirect target again.
+        AND f.reference_removed_at IS NULL
         AND regexp_replace(f.source_path, '^.*/', '') = $3
       ORDER BY f.version DESC
       LIMIT 1`,

@@ -390,25 +390,27 @@ which should land before Phase 6 builds more UI on the pass-through assumption.
 - Blocks: UI CRUD in the production (auth-enforced) posture; catalog-plane audit
   coverage.
 
-### I-51 · Deletion is still hard-CASCADE; ADR 0009 semantics not yet implemented 🔴
-Today a connection DELETE hard-deletes the row and **cascades through
-`collection_connections` into `ingest_files` and `delivery_log`** (migrations
-005/008), destroying provenance/delivery history and breaking reference-backed
-items (their assets resolve from the cascaded-away `ingest_files.source_href`).
-The UI confirm dialog carries no blast-radius information, and collection
-deletion silently orphans canonical bytes in object storage (no GC until
-Phase 6). **Decision made: ADR 0009** — soft-delete + credential scrub for
-connections/associations, retained history rows (CASCADE → RESTRICT), counted
-warn-and-proceed impact previews, reference-backed items removed on connection
-delete, collection-delete impact via the §6.5 GC path, and an `archived`
-collection state (Phase 6). This entry tracks the implementation: the
-soft-delete + warning half belongs in the pre-B-iii hardening wave; the
-GC-dependent half (collection-delete asset removal, `archived`) lands with
-Phase 6.
+### I-51 · ADR 0009 deletion semantics — soft-delete half DONE, GC half Phase 6 🟡
+**Soft-delete half implemented (pre-B-iii hardening wave).** Migration 010:
+`deleted_at` on connections/associations, history FKs CASCADE → RESTRICT
+(`connection_checks`, `collection_connections`, `ingest_files`,
+`delivery_log`), the association uniqueness now a partial index on live rows,
+and `ingest_files.reference_removed_at`. Connection DELETE soft-deletes +
+scrubs credentials/host-key, soft-deletes its associations, and **removes its
+reference-backed items from pgstac** (ledger rows stamped
+`reference_removed_at` so the asset route stops resolving them — the rows
+survive as provenance). Association DELETE soft-deletes; history retained.
+Both DELETE routes return the counted impact; pre-flight
+`GET .../impact` endpoints feed the warn-and-proceed dialogs
+(`app/src/lib/connections/deletion.ts`, `associations/storage.ts`). Pipeline
+scheduler, dispatcher matcher, delivery reference-source loader, health sweep,
+and check-drain queries all filter not-deleted.
+**Remaining (Phase 6, GC-dependent):** collection-delete data impact via the
+§6.5 marked-then-collected GC path (until then collection deletion still
+orphans canonical bytes) and the `archived` collection state.
 - Tracked in: [ADR 0009](decisions/0009-deletion-semantics.md);
-  `app/src/lib/db/migrate.ts` (migrations 005/008),
-  `app/src/lib/connections/storage.ts`, `app/src/lib/associations/*`.
-- Blocks: safe routine connection deletion; honest collection-delete warnings.
+  `app/src/lib/db/migrate.ts` (migration 010).
+- Blocks (remaining half): honest collection-delete warnings.
 
 ### I-52 · Ingest has no crash recovery: stuck-`fetching` rows are unrecoverable, `failed` is terminal 🔴
 If the pipeline dies mid-FETCH (most plausibly an OOM from the buffered

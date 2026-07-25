@@ -1,7 +1,8 @@
 # ADR 0009 — Deletion semantics: soft-delete, retained history, warn-and-proceed
 
-- **Status:** accepted (decision); implementation pending — see
-  [ISSUES.md](../ISSUES.md) I-51
+- **Status:** accepted; soft-delete half implemented (pre-B-iii hardening
+  wave, migration 010) — the GC-dependent half (collection-delete asset
+  removal, `archived`) lands with Phase 6. See [ISSUES.md](../ISSUES.md) I-51
 - **Owners:** app control plane (connections/associations routes, migrations,
   UI dialogs) + pipeline (scheduler/dispatcher filters, GC in Phase 6)
 - **Related:** ADR 0003 (pre-existing collections), ADR 0005 (asset service),

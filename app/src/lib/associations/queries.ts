@@ -8,6 +8,7 @@ import { associationKeys } from "@/lib/query/keys";
 import {
   createAssociation,
   deleteAssociation,
+  getAssociationDeleteImpact,
   listAssociations,
   updateAssociation,
 } from "./api";
@@ -21,6 +22,18 @@ export function useAssociations(collectionId: string) {
     queryKey: associationKeys.list(collectionId),
     queryFn: () => listAssociations(collectionId),
     enabled: !!collectionId,
+  });
+}
+
+/** Pre-flight deletion impact for the confirm dialog (ADR 0009). */
+export function useAssociationDeleteImpact(
+  collectionId: string,
+  id: string | null,
+) {
+  return useQuery({
+    queryKey: associationKeys.deleteImpact(collectionId, id ?? "none"),
+    queryFn: () => getAssociationDeleteImpact(collectionId, id as string),
+    enabled: !!id,
   });
 }
 

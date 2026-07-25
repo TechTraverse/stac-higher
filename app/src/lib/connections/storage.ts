@@ -131,7 +131,10 @@ export async function listConnections(
   groups: string[] | null,
 ): Promise<ApiConnection[]> {
   await runMigrations();
-  const where = groups === null ? "" : "WHERE group_id = ANY($1::text[])";
+  const where =
+    groups === null
+      ? "WHERE deleted_at IS NULL"
+      : "WHERE deleted_at IS NULL AND group_id = ANY($1::text[])";
   const params = groups === null ? [] : [groups];
   const result = await query<ConnectionRow>(
     `SELECT ${CONNECTION_COLUMNS}
@@ -150,7 +153,7 @@ export async function getConnection(
   const result = await query<ConnectionRow>(
     `SELECT ${CONNECTION_COLUMNS}
        FROM stac_higher.connections
-       WHERE id = $1`,
+       WHERE id = $1 AND deleted_at IS NULL`,
     [id],
   );
   return result.rows[0] ? toApiConnection(result.rows[0]) : null;
@@ -237,20 +240,11 @@ export async function updateConnection(
   const result = await query<ConnectionRow>(
     `UPDATE stac_higher.connections
         SET ${sets.join(", ")}
-      WHERE id = $${params.length}
+      WHERE id = $${params.length} AND deleted_at IS NULL
       RETURNING ${CONNECTION_COLUMNS}`,
     params,
   );
   return result.rows[0] ? toApiConnection(result.rows[0]) : null;
-}
-
-export async function deleteConnection(id: string): Promise<boolean> {
-  await runMigrations();
-  const result = await query(
-    `DELETE FROM stac_higher.connections WHERE id = $1`,
-    [id],
-  );
-  return (result.rowCount ?? 0) > 0;
 }
 
 /**
@@ -267,7 +261,7 @@ export async function resetHostKey(id: string): Promise<ApiConnection | null> {
             status = 'unverified',
             last_error = NULL,
             updated_at = now()
-      WHERE id = $1
+      WHERE id = $1 AND deleted_at IS NULL
       RETURNING ${CONNECTION_COLUMNS}`,
     [id],
   );

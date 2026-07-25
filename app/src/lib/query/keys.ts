@@ -15,6 +15,8 @@ export const connectionKeys = {
   all: () => ["connections"] as const,
   list: () => [...connectionKeys.all(), "list"] as const,
   detail: (id: string) => [...connectionKeys.all(), id] as const,
+  deleteImpact: (id: string) =>
+    [...connectionKeys.detail(id), "delete-impact"] as const,
 };
 
 /** Ingest/delivery associations, scoped per collection (Phase 4). */
@@ -24,6 +26,8 @@ export const associationKeys = {
     [...associationKeys.all(), collectionId] as const,
   detail: (collectionId: string, id: string) =>
     [...associationKeys.list(collectionId), id] as const,
+  deleteImpact: (collectionId: string, id: string) =>
+    [...associationKeys.detail(collectionId, id), "delete-impact"] as const,
 };
 
 export const stacKeys = {

@@ -198,6 +198,7 @@ class PgIngestRepo(IngestRepo):
                 " FROM stac_higher.collection_connections cc"
                 " JOIN stac_higher.connections c ON c.id = cc.connection_id"
                 " WHERE cc.direction = 'ingest' AND cc.enabled = true AND c.enabled = true"
+                " AND cc.deleted_at IS NULL AND c.deleted_at IS NULL"
                 " ORDER BY cc.created_at"
             )
             rows = await cur.fetchall()
@@ -212,7 +213,8 @@ class PgIngestRepo(IngestRepo):
                 " FROM stac_higher.collection_connections cc"
                 " JOIN stac_higher.connections c ON c.id = cc.connection_id"
                 " WHERE cc.id = %s AND cc.direction = 'ingest'"
-                " AND cc.enabled = true AND c.enabled = true",
+                " AND cc.enabled = true AND c.enabled = true"
+                " AND cc.deleted_at IS NULL AND c.deleted_at IS NULL",
                 (association_id,),
             )
             row = await cur.fetchone()

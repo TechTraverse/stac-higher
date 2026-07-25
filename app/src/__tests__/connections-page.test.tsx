@@ -15,6 +15,11 @@ vi.mock("@/lib/query/auth", () => ({
 vi.mock("@/lib/connections/queries", () => ({
   useConnections: () => useConnectionsMock(),
   useDeleteConnection: () => ({ mutate: vi.fn(), isPending: false }),
+  useConnectionDeleteImpact: () => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  }),
   useResetHostKey: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@/lib/connections/api", () => ({ runConnectionTest: vi.fn() }));

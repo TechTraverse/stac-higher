@@ -3,6 +3,11 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import { randomBytes } from "node:crypto";
 
+vi.mock("@/lib/connections/deletion", () => ({
+  connectionDeleteImpact: vi.fn(),
+  softDeleteConnection: vi.fn(),
+}));
+
 vi.mock("@/lib/connections/storage", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/lib/connections/storage")>();
@@ -12,7 +17,6 @@ vi.mock("@/lib/connections/storage", async (importOriginal) => {
     getConnection: vi.fn(),
     createConnection: vi.fn(),
     updateConnection: vi.fn(),
-    deleteConnection: vi.fn(),
     resetHostKey: vi.fn(),
     insertConnectionCheck: vi.fn(),
     getConnectionCheck: vi.fn(),
@@ -24,11 +28,14 @@ import {
   getConnection,
   createConnection,
   updateConnection,
-  deleteConnection,
   resetHostKey,
   insertConnectionCheck,
   getConnectionCheck,
 } from "@/lib/connections/storage";
+import {
+  connectionDeleteImpact,
+  softDeleteConnection,
+} from "@/lib/connections/deletion";
 import type { ApiConnection } from "@/lib/connections/storage";
 import { GET as listRoute, POST as createRoute } from "@/pages/api/connections/index";
 import {
@@ -36,6 +43,7 @@ import {
   PUT as putRoute,
   DELETE as deleteRoute,
 } from "@/pages/api/connections/[id]";
+import { GET as impactRoute } from "@/pages/api/connections/[id]/impact";
 import { POST as testRoute } from "@/pages/api/connections/[id]/test";
 import { GET as pollRoute } from "@/pages/api/connections/[id]/checks/[checkId]";
 import { POST as resetRoute } from "@/pages/api/connections/[id]/host-key/reset";
@@ -136,7 +144,8 @@ beforeEach(() => {
   vi.mocked(getConnection).mockReset().mockResolvedValue(connection);
   vi.mocked(createConnection).mockReset().mockResolvedValue(connection);
   vi.mocked(updateConnection).mockReset().mockResolvedValue(connection);
-  vi.mocked(deleteConnection).mockReset().mockResolvedValue(true);
+  vi.mocked(connectionDeleteImpact).mockReset().mockResolvedValue(IMPACT);
+  vi.mocked(softDeleteConnection).mockReset().mockResolvedValue(true);
   vi.mocked(resetHostKey).mockReset().mockResolvedValue(connection);
   vi.mocked(insertConnectionCheck).mockReset().mockResolvedValue(pendingCheck);
   vi.mocked(getConnectionCheck).mockReset().mockResolvedValue(pendingCheck);
@@ -331,13 +340,24 @@ describe("PUT /api/connections/[id]", () => {
   });
 });
 
-describe("DELETE /api/connections/[id]", () => {
-  it("deletes for an operator of the owning group", async () => {
+const IMPACT = {
+  associations: { ingest: 1, deliver: 0 },
+  reference_items: [{ collection_id: "goes-west", items: 3 }],
+  history: { ingest_files: 12, delivery_log: 4, connection_checks: 2 },
+};
+
+describe("DELETE /api/connections/[id] (ADR 0009 soft delete)", () => {
+  it("soft-deletes for an operator and returns the counted impact", async () => {
+    vi.mocked(connectionDeleteImpact).mockResolvedValue(IMPACT);
+    vi.mocked(softDeleteConnection).mockResolvedValue(true);
     const res = await call(deleteRoute, authed(["operator"]), {
       params: { id: CONN_ID },
     });
-    expect(res.status).toBe(204);
-    expect(deleteConnection).toHaveBeenCalledWith(CONN_ID);
+    expect(res.status).toBe(200);
+    expect(softDeleteConnection).toHaveBeenCalledWith(CONN_ID);
+    const body = await res.json();
+    expect(body.deleted).toBe(true);
+    expect(body.impact).toEqual(IMPACT);
   });
 
   it("404s outside the owning group; 403 for members", async () => {
@@ -352,7 +372,25 @@ describe("DELETE /api/connections/[id]", () => {
       (await call(deleteRoute, authed(["member"]), { params: { id: CONN_ID } }))
         .status,
     ).toBe(403);
-    expect(deleteConnection).not.toHaveBeenCalled();
+    expect(softDeleteConnection).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/connections/[id]/impact (ADR 0009 pre-flight)", () => {
+  it("returns the counted impact for an operator", async () => {
+    vi.mocked(connectionDeleteImpact).mockResolvedValue(IMPACT);
+    const res = await call(impactRoute, authed(["operator"]), {
+      params: { id: CONN_ID },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).impact).toEqual(IMPACT);
+  });
+
+  it("404s outside the owning group", async () => {
+    const res = await call(impactRoute, authed(["operator"], ["weather"]), {
+      params: { id: CONN_ID },
+    });
+    expect(res.status).toBe(404);
   });
 });
 

@@ -35,6 +35,7 @@ import {
 import { toast } from "sonner";
 import { useAuthMe } from "@/lib/query/auth";
 import {
+  useConnectionDeleteImpact,
   useConnections,
   useDeleteConnection,
   useResetHostKey,
@@ -204,6 +205,7 @@ function ConnectionsInner() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Connection | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null);
+  const deleteImpact = useConnectionDeleteImpact(deleteTarget?.id ?? null);
 
   const groups =
     auth?.authenticated && auth.identity ? auth.identity.groups : [];
@@ -301,10 +303,43 @@ function ConnectionsInner() {
             <DialogHeader>
               <DialogTitle>Delete Connection</DialogTitle>
               <DialogDescription>
-                Are you sure you want to delete "{deleteTarget?.name}"? This
-                cannot be undone.
+                Delete "{deleteTarget?.name}"? Its stored credentials are
+                scrubbed immediately and its data flows stop. This cannot be
+                undone.
               </DialogDescription>
             </DialogHeader>
+            <div className="text-sm space-y-1.5">
+              {deleteImpact.isLoading ? (
+                <p className="text-muted-foreground">Calculating impact…</p>
+              ) : deleteImpact.data ? (
+                <>
+                  {(deleteImpact.data.associations.ingest > 0 ||
+                    deleteImpact.data.associations.deliver > 0) && (
+                    <p>
+                      {deleteImpact.data.associations.ingest} ingest and{" "}
+                      {deleteImpact.data.associations.deliver} delivery{" "}
+                      association(s) will stop.
+                    </p>
+                  )}
+                  {deleteImpact.data.reference_items.map((r) => (
+                    <p key={r.collection_id} className="text-destructive">
+                      {r.items} reference-backed item(s) in "{r.collection_id}"
+                      will be removed from the catalog — their bytes live at
+                      this connection's source.
+                    </p>
+                  ))}
+                  <p className="text-muted-foreground">
+                    Ingest and delivery history is retained (
+                    {deleteImpact.data.history.ingest_files} file records,{" "}
+                    {deleteImpact.data.history.delivery_log} delivery records).
+                  </p>
+                </>
+              ) : deleteImpact.isError ? (
+                <p className="text-muted-foreground">
+                  Could not calculate the deletion impact.
+                </p>
+              ) : null}
+            </div>
             <DialogFooter>
               <Button
                 variant="outline"
