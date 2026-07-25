@@ -206,12 +206,43 @@ live-verified 23/23 on 2026-07-22 vs real pgstac + MinIO). Entry points:
   can ride a single-part object's ETag (`platform.head_object`), but a
   multipart ETag isn't an md5 and falls back to streaming too.
 
-Pipeline suite 306 passed/2 skipped, ruff clean. **Code done, live
-verification pending** — do not treat as live-verified until that run lands.
+**Slice B-iii — retry, dead-letter, crash recovery, concurrency** (done,
+live-verified 2026-07-25). Migration `011_retry_deadletter_and_claims`;
+delivery retry sweep → dead-letter at `retry.max_attempts`
+(`jobs/dispatch.py` `delivery_retry_sweep`); ingest crash-recovery sweeps
+(I-52, `ingest/scheduler.py`); atomic outbox claims (`item_events.claimed_at`,
+I-40); per-event dispatcher isolation (I-39); per-connection concurrency caps
+(S3 bounded-gather; SFTP/FTP serial); SFTP/FTP `put` parent-dir creation.
+Live: SFTP + FTP destination delivery (I-45), attempts 1→5 → `dead`,
+dead-destination recovery, ledger recovery sweeps (evidence in ROADMAP §9).
 
-Slice B-iii deferrals — retry→dead-letter, per-connection concurrency caps,
-and live SFTP/FTP destination runs — remain. Slices **C** (NOTIFY-woken
-low-latency + backfill) and **D** (Data-flow delivery UI) are not started.
+**Slice C — NOTIFY-woken low latency + user-initiated backfill** (code done).
+Entry points:
+
+- **NOTIFY listener** — `services/pipeline/src/pipeline/dispatcher/listener.py`
+  (`run_dispatch_listener`): a dedicated `LISTEN item_events` connection wakes
+  a drain-until-empty dispatch (`loop.py` `dispatch_until_empty`) per
+  notification — the **primary** wake path (single-digit-second latency),
+  run by `main.py` alongside the worker; the minute `dispatch_poll` cron stays
+  as fallback. Reconnects with backoff; a catch-up wake fires on every
+  (re)connect. Single-instance assumption documented in the module (I-40).
+- **I-38 bounded visibility retry** — migration
+  `012_dispatch_retry_and_backfills` adds `item_events.dispatch_attempts` +
+  `next_dispatch_at`; `dispatch_once` releases a claimed event whose item is
+  not yet visible (cool-off keeps it out of the claim window) up to
+  `MAX_VISIBILITY_ATTEMPTS` before draining loudly — **resolves I-38**.
+- **Backfill bridge** — `stac_higher.delivery_backfills` (migration 012;
+  ADR 0004 bridge pattern): `POST
+  /api/collections/[id]/connections/[assocId]/backfill` (operator+,
+  group-owned, audited `backfill`, 409 on duplicates/disabled) inserts a
+  'queued' row; `GET .../backfills/[backfillId]` polls it
+  (`app/src/lib/associations/backfills.ts`).
+- **Backfill sweep** — `services/pipeline/src/pipeline/delivery/backfill.py`
+  (`run_backfill`: page pgstac item ids by cursor → chunked bulk
+  `pipeline.deliver` jobs, progress per chunk, stale-running crash resume) +
+  `jobs/backfill.py` (`pipeline.delivery_backfill_sweep`, minute cron).
+
+Slice **D** (Data-flow delivery UI) is not started.
 
 ## Phases 6–8 — Not started ⬜
 

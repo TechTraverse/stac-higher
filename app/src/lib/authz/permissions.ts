@@ -31,8 +31,9 @@ export function isAdmin(identity: CanonicalIdentity): boolean {
   return identity.roles.includes("admin");
 }
 
-/** `test` = test-connection (ROADMAP §5 audit action enum). */
-export type GatedAction = "create" | "update" | "delete" | "test";
+/** `test` = test-connection, `backfill` = deliver-association backfill
+ * (ROADMAP §5 audit action enum). */
+export type GatedAction = "create" | "update" | "delete" | "test" | "backfill";
 
 export interface GatedRouteMatch {
   action: GatedAction;
@@ -99,6 +100,19 @@ export function matchGatedRoute(
       action: "create",
       resourceType: "collection_connection",
       resourceId: null,
+    };
+  }
+  // Slice C: requesting a backfill of existing items into a deliver
+  // association is a gated, audited action (§6.4 — explicit and user-
+  // initiated). Group ownership is enforced in-route.
+  const collConnBackfill = path.match(
+    /^\/api\/collections\/([^/]+)\/connections\/([^/]+)\/backfill$/,
+  );
+  if (m === "POST" && collConnBackfill) {
+    return {
+      action: "backfill",
+      resourceType: "collection_connection",
+      resourceId: collConnBackfill[2],
     };
   }
   const collConnId = path.match(

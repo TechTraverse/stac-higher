@@ -1,15 +1,19 @@
-"""Delivery dispatch wiring (Slice B-i core; B-iii retry → dead-letter).
+"""Delivery dispatch wiring (Slice B-i core; B-iii retry; Slice C NOTIFY wake).
 
-``dispatch_poll`` drains the item_events outbox each minute via ``dispatch_once``,
-which groups matches per association and enqueues a batched ``pipeline.deliver``
-job. The ``deliver`` handler loads the destination connection, builds its adapter,
+The outbox drains through ``dispatch_until_empty``, which groups matches per
+association and enqueues a batched ``pipeline.deliver`` job. Two wake paths
+share that drain (overlap is safe — the outbox claim is atomic, I-40):
+``build_notify_listener`` returns the LISTEN-woken primary loop (run by
+main.py alongside the worker), and ``dispatch_poll`` keeps the minute cron as
+fallback for dropped notifications / listener downtime.
+
+The ``deliver`` handler loads the destination connection, builds its adapter,
 and runs each item through ``deliver_item`` (canonical bytes → destination,
 recorded in ``delivery_log``), bounded by the association's
 ``max_concurrent_transfers`` for S3 destinations (single-channel SFTP/FTP
 clients are not concurrency-safe — those run serial regardless of the cap).
 ``delivery_retry_sweep`` re-drives ``failed`` rows whose ``next_attempt_at``
-has passed; ``deliver_item`` dead-letters at ``retry.max_attempts``. Slice C
-swaps the poll for a LISTEN-woken loop.
+has passed; ``deliver_item`` dead-letters at ``retry.max_attempts``.
 """
 
 from __future__ import annotations
@@ -25,7 +29,8 @@ from pipeline.delivery.config import parse_delivery_config
 from pipeline.delivery.repo import PgDeliveryRepo
 from pipeline.delivery.transfer import can_server_side_copy
 from pipeline.delivery.worker import deliver_item
-from pipeline.dispatcher.loop import dispatch_once
+from pipeline.dispatcher.listener import run_dispatch_listener
+from pipeline.dispatcher.loop import dispatch_until_empty
 from pipeline.dispatcher.repo import PgDispatchRepo
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.queue.interface import QueueBackend
@@ -59,19 +64,44 @@ def _entry_asset_keys(
     return [k for k in item_assets if k in wanted]
 
 
-def register(queue: QueueBackend, settings: Settings) -> None:
-    async def dispatch_poll(timestamp: int) -> None:
+def build_dispatch_drain(
+    queue: QueueBackend, settings: Settings
+) -> Any:
+    """The shared outbox drain both wake paths call: claim → match → enqueue
+    batched deliver jobs, until the outbox is empty."""
+
+    async def run_dispatch(wake_path: str) -> None:
         repo = PgDispatchRepo(settings.database_url)
 
         async def _enqueue(batches: list[dict[str, Any]]) -> None:
             await queue.enqueue_batch(JOB_DELIVER, batches)
 
-        matches = await dispatch_once(repo, _enqueue)
+        matches = await dispatch_until_empty(repo, _enqueue)
         if matches:
             logger.info(
-                "dispatch poll enqueued delivery batches",
-                extra={"matches": len(matches), "scheduled_timestamp": timestamp},
+                "dispatch enqueued delivery batches",
+                extra={"matches": len(matches), "wake_path": wake_path},
             )
+
+    return run_dispatch
+
+
+def build_notify_listener(queue: QueueBackend, settings: Settings) -> Any:
+    """The LISTEN-woken primary wake loop, for main.py to run alongside the
+    worker. Returns a coroutine; runs until cancelled."""
+    run_dispatch = build_dispatch_drain(queue, settings)
+
+    async def _on_wake() -> None:
+        await run_dispatch("notify")
+
+    return run_dispatch_listener(settings.database_url, _on_wake)
+
+
+def register(queue: QueueBackend, settings: Settings) -> None:
+    run_dispatch = build_dispatch_drain(queue, settings)
+
+    async def dispatch_poll(timestamp: int) -> None:
+        await run_dispatch("poll")
 
     async def deliver(association_id: str, items: list[dict[str, Any]]) -> None:
         master_key = load_key_or_skip(settings, JOB_DELIVER)

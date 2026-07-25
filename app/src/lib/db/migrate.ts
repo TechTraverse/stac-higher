@@ -485,6 +485,56 @@ const MIGRATIONS = [
         ADD COLUMN IF NOT EXISTS retries integer NOT NULL DEFAULT 0;
     `,
   },
+  {
+    // Phase 5 Slice C (ROADMAP §6.4): bounded I-38 visibility retry + the
+    // user-initiated backfill bridge. App owns the DDL; the pipeline writes
+    // the columns/rows (ADR 0001, bridge pattern per ADR 0004).
+    //
+    // item_events.dispatch_attempts / next_dispatch_at — when the dispatcher
+    //   claims an event whose item is not yet visible (the I-38 race), it
+    //   releases the claim and schedules a bounded retry instead of silently
+    //   draining: attempts increments, next_dispatch_at pushes the row out of
+    //   the claim window for a short cool-off. At the attempt cap the event is
+    //   drained with a loud log (the old best-effort behavior).
+    // delivery_backfills — one row per operator-initiated "backfill existing
+    //   items" request on a deliver association (§6.4: late-added associations
+    //   apply to new items only; backfill is explicit). The app INSERTs
+    //   ('queued') and polls; the pipeline claims rows, pages the collection's
+    //   items from pgstac (cursor_item_id), enqueues chunked bulk delivery
+    //   jobs, and stamps progress/terminal status. FK is RESTRICT like the
+    //   other history tables (migration 010): associations soft-delete, so
+    //   backfill provenance survives.
+    name: "012_dispatch_retry_and_backfills",
+    sql: `
+      ALTER TABLE stac_higher.item_events
+        ADD COLUMN IF NOT EXISTS dispatch_attempts integer NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS next_dispatch_at timestamptz;
+
+      CREATE TABLE IF NOT EXISTS stac_higher.delivery_backfills (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        association_id uuid NOT NULL
+          REFERENCES stac_higher.collection_connections(id) ON DELETE RESTRICT,
+        requested_by text NOT NULL,
+        status text NOT NULL DEFAULT 'queued'
+          CHECK (status IN ('queued','running','completed','failed')),
+        items_enqueued integer NOT NULL DEFAULT 0 CHECK (items_enqueued >= 0),
+        cursor_item_id text,
+        error text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        started_at timestamptz,
+        finished_at timestamptz,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+
+      -- The pipeline sweep scans for open work; keep that scan cheap as
+      -- finished rows accumulate.
+      CREATE INDEX IF NOT EXISTS delivery_backfills_open_idx
+        ON stac_higher.delivery_backfills (created_at)
+        WHERE status IN ('queued','running');
+      CREATE INDEX IF NOT EXISTS delivery_backfills_association_idx
+        ON stac_higher.delivery_backfills (association_id);
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

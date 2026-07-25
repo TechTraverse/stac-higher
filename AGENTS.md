@@ -107,6 +107,8 @@ Astro server routes:
 | `/api/assets/[collection]/[item]/[asset]` | GET | Authorize → 302 to a short-lived presigned URL for the canonical asset object (`{asset}` = filename) |
 | `/api/collections/[id]/connections` | GET, POST | List / create ingest associations for a built-in-catalog collection (member+ scoped list; operator+ create, group-owned — Phase 4) |
 | `/api/collections/[id]/connections/[assocId]` | GET, PUT, DELETE | Get / update (enabled, `config`, expectation) / delete an ingest association |
+| `/api/collections/[id]/connections/[assocId]/backfill` | POST | Request a backfill of existing items into a deliver association (operator+, audited; inserts a `delivery_backfills` row the pipeline drains — Slice C) |
+| `/api/collections/[id]/connections/[assocId]/backfills/[backfillId]` | GET | Poll a backfill request |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
 (static identity, default in dev — unit tests/e2e need no IdP). Middleware

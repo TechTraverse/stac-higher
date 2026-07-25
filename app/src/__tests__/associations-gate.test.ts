@@ -35,4 +35,16 @@ describe("matchGatedRoute — /api/collections/[id]/connections (Phase 4)", () =
     expect(matchGatedRoute("GET", base)).toBeNull();
     expect(matchGatedRoute("GET", `${base}/${ASSOC}`)).toBeNull();
   });
+
+  it("gates POST .../backfill as an audited backfill action (Slice C)", () => {
+    expect(matchGatedRoute("POST", `${base}/${ASSOC}/backfill`)).toEqual({
+      action: "backfill",
+      resourceType: "collection_connection",
+      resourceId: ASSOC,
+    });
+    // Polling a backfill stays an open read.
+    expect(
+      matchGatedRoute("GET", `${base}/${ASSOC}/backfills/some-id`),
+    ).toBeNull();
+  });
 });

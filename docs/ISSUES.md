@@ -203,13 +203,16 @@ first-delivery-vs-redelivery from a prior `delivery_log` row, **never** from the
 outbox `op`.
 - Tracked in: [ADR 0007](decisions/0007-outbox-trigger-ownership.md) "Update semantics".
 
-### I-38 · Dispatcher item-visibility race is best-effort skip 🟡
-`dispatch_once` fetches the item via `pgstac.get_item`; if the outbox row is
-claimed before the item is visible (a race under concurrent writes), the event is
-logged and drained without dispatching — no retry. Acceptable for the poll-driven
-skeleton (a later update event re-drives it); Slice C's `LISTEN`-woken loop should
-revisit whether such events need a bounded retry rather than a silent skip.
-- Tracked in: `services/pipeline/.../dispatcher/loop.py` (the `item is None` branch).
+### I-38 · Dispatcher item-visibility race is best-effort skip 🟢
+**Resolved in Slice C.** An event whose item is not yet visible is no longer
+silently drained: `dispatch_once` releases the claim with a cool-off
+(`item_events.dispatch_attempts` + `next_dispatch_at`, migration 012) and a
+later wake (NOTIFY or the poll fallback) retries it, up to
+`MAX_VISIBILITY_ATTEMPTS`; only then does it drain, with a loud log. The
+cool-off keeps deferred events out of the drain-until-empty loop so one wake
+cannot burn the retry budget.
+- Resolved by: `ai/slice-c` (`dispatcher/loop.py`, `dispatcher/repo.py`,
+  migration `012_dispatch_retry_and_backfills`).
 
 ### I-39 · `dispatch_once` has no per-event error isolation 🟢
 **Resolved across the pre-B-iii wave + Slice B-iii.** The API-reachable
@@ -230,8 +233,10 @@ after a 10-minute stale window (`STALE_CLAIM_SECONDS`) — the crash direction
 stays redeliver-never-lose. Accepted trade-off: an enqueue failure now
 redrives after the stale window rather than the next tick (rare — queue
 down). Remaining: leader election / partitioned ownership for genuine
-multi-instance operation is a Phase 8 / M3 concern (§10 scheduler-HA); Slice
-C documents the single-instance assumption where the `LISTEN` loop lands.
+multi-instance operation is a Phase 8 / M3 concern (§10 scheduler-HA); the
+single-instance assumption is documented where the `LISTEN` loop landed
+(`dispatcher/listener.py` module docstring) — overlapping wakes are safe
+(atomic claim), so multi-instance is a throughput topic, not correctness.
 - Tracked in: `services/pipeline/.../dispatcher/repo.py`, ROADMAP §10;
   found in the Slice A whole-branch review.
 
