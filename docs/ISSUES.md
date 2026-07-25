@@ -412,3 +412,44 @@ Phase 6.
   `app/src/lib/db/migrate.ts` (migrations 005/008),
   `app/src/lib/connections/storage.ts`, `app/src/lib/associations/*`.
 - Blocks: safe routine connection deletion; honest collection-delete warnings.
+
+### I-52 · Ingest has no crash recovery: stuck-`fetching` rows are unrecoverable, `failed` is terminal 🔴
+If the pipeline dies mid-FETCH (most plausibly an OOM from the buffered
+multi-GB `get`, I-19/I-26), the ledger row is stranded at `fetching` forever:
+DISCOVER explicitly skips `fetching` rows even on fingerprint change, GROUP
+only forms groups from `settled` rows, and nothing sweeps stalled Procrastinate
+`doing` jobs — the file silently never becomes an item, with no alarm. A
+`failed` row (transient network error) is likewise terminal: no scheduled
+re-attempt and no operator retry action. For an ingestion platform this is the
+primary incident class. The ledger's idempotent stage design makes the fix
+tractable: (1) a periodic sweep resetting `fetching` rows older than a
+threshold back to `settled` (safe — FETCH is idempotent against canonical
+storage); (2) a bounded retry transition for `failed` rows plus the eventual
+operator backfill/redeliver action (ROADMAP §8); (3) Procrastinate retry
+policies or a stalled-`doing` sweep for hard job crashes. **Scoped into Slice
+B-iii** — the delivery-only framing of "retry → dead-letter" left this ingest
+half unlogged (2026-07-22 architecture review, confirmed by adversarial
+verification).
+- Tracked in: `services/pipeline/.../ingest/{discover,fetch,group}.py`,
+  `.../jobs/ingest.py`.
+- Blocks: unattended production ingest; the M1 "surviving a dead
+  destination/source" robustness bar.
+
+### I-53 · Cross-runtime config contracts have no drift test (golden fixtures missing) 🔴
+The §5.1 ingest/delivery config shapes exist as two independent validators —
+Zod (`app/src/lib/associations/schemas.ts`) and Python
+(`services/pipeline/.../ingest/config.py`, `.../delivery/config.py`) — kept in
+sync only by "MUST NOT drift" comments. Nothing asserts they accept/reject the
+same documents, and the surface grows every phase (B-ii added
+`deliveryConfigSchema` ↔ `delivery/config.py`). A config the app 201s and the
+pipeline rejects is the worst failure mode: a silently dead flow, or — via the
+I-39 path (`associationUpdateSchema` validates PUT config with the ingest-only
+schema, so an ingest-shaped config can land on a `deliver` row) — a stalled
+dispatcher. Fix (pre-B-iii hardening wave): golden JSON fixtures (valid +
+invalid documents per direction) checked into one location and consumed by
+both test suites, the direction-aware update schema (the app half of I-39),
+and a standing AGENTS.md rule: new cross-runtime shape ⇒ new shared fixture.
+(2026-07-22 architecture review, confirmed by adversarial verification.)
+- Tracked in: `app/src/lib/associations/schemas.ts`,
+  `services/pipeline/src/pipeline/{ingest,delivery}/config.py`; I-39.
+- Blocks: safe evolution of the §5.1 contract through Phases 6–8.

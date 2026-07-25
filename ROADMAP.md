@@ -963,12 +963,19 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
   the worker's stream+hash path (off the event loop), removed a double-hash and
   `overwrite: never` wasted reads, named `is_multipart_etag`, aligned the jsonb
   write style, and consolidated test fixtures.
-- ⬜ **Slice B-iii — remaining byte-moving scope:** retry → dead-letter
-  (app-managed sweep; `next_attempt_at` column), per-connection concurrency
-  caps, and **live SFTP + FTP** destination runs (`move()` code shipped in
-  B-i, unit-covered by inspection — I-45). Not started. Residuals: I-43
-  (at-least-once idempotency), I-45 (SFTP/FTP live), I-47 (copy-path etag
-  fingerprints are endpoint-generation-specific).
+- ⬜ **Slice B-iii — remaining byte-moving scope (expanded 2026-07-24 per the
+  architecture review):** delivery retry → dead-letter (app-managed sweep;
+  `next_attempt_at` column), **ingest crash recovery** (I-52: stuck-`fetching`
+  sweep, bounded `failed` retry, stalled-job handling), per-event dispatcher
+  error isolation + the direction-aware update schema (I-39), unify the
+  outbox claim→process→mark into one transaction before concurrency lands
+  (I-40), per-connection concurrency caps, and **live SFTP + FTP** destination
+  runs (`move()` code shipped in B-i, unit-covered by inspection — I-45).
+  Preceded by the **pre-B-iii hardening wave** (see M1): I-39 pair, ADR 0009
+  soft-delete half (I-51), contract fixtures (I-53). Residuals riding along:
+  I-43 (at-least-once idempotency), I-47 (copy-path etag fingerprints are
+  endpoint-generation-specific), I-49 items 2–4 (partial-fingerprint retention
+  on failure, manifest pruning, missing tests).
 - ⬜ **Slice C — NOTIFY-woken low-latency + user-initiated backfill.** Not started.
 - ⬜ **Slice D — Data-flow tab: delivery half (UI).** Not started.
 
