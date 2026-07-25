@@ -109,6 +109,7 @@ Astro server routes:
 | `/api/collections/[id]/connections/[assocId]` | GET, PUT, DELETE | Get / update (enabled, `config`, expectation) / delete an ingest association |
 | `/api/collections/[id]/connections/[assocId]/backfill` | POST | Request a backfill of existing items into a deliver association (operator+, audited; inserts a `delivery_backfills` row the pipeline drains — Slice C) |
 | `/api/collections/[id]/connections/[assocId]/backfills/[backfillId]` | GET | Poll a backfill request |
+| `/api/catalog/[...path]` | POST, PUT, PATCH, DELETE | BFF for built-in-catalog browser writes (ADR 0008): transaction endpoints only; injects the session access token server-side; operator+, audited. Reads stay direct |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
 (static identity, default in dev — unit tests/e2e need no IdP). Middleware

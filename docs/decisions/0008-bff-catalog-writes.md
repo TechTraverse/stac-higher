@@ -1,6 +1,8 @@
 # ADR 0008 — Browser catalog writes go through an app BFF route
 
-- **Status:** accepted (decision); implementation pending (pre-Phase 6)
+- **Status:** accepted; **implemented** (2026-07-25 — `/api/catalog/[...path]`,
+  `stacFetch` routing branch, guard registration, and the
+  `tests/integration/bff-catalog-writes.test.mjs` UI-path leg)
 - **Owners:** app control plane (`app/src/lib/stac-api/`, `app/src/pages/api/`,
   `app/src/middleware.ts`)
 - **Related:** ADR 0002 (auth-proxy enforcement scope), ROADMAP §7 (enforcement

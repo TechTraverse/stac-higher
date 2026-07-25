@@ -102,6 +102,48 @@ export function matchGatedRoute(
       resourceId: null,
     };
   }
+  // ADR 0008 BFF: built-in-catalog browser writes route through
+  // /api/catalog/* so the guard can gate them (operator+) and give the
+  // catalog plane — the primary data plane — audit coverage. Create ids are
+  // extracted from the upstream 200/201 body (STAC returns the object).
+  const catalogItem = path.match(
+    /^\/api\/catalog\/collections\/([^/]+)\/items(?:\/([^/]+))?$/,
+  );
+  if (catalogItem) {
+    if (m === "POST" && catalogItem[2] === undefined) {
+      return { action: "create", resourceType: "catalog_item", resourceId: null };
+    }
+    if (catalogItem[2] !== undefined) {
+      const resourceId = `${catalogItem[1]}/${catalogItem[2]}`;
+      if (m === "PUT" || m === "PATCH") {
+        return { action: "update", resourceType: "catalog_item", resourceId };
+      }
+      if (m === "DELETE") {
+        return { action: "delete", resourceType: "catalog_item", resourceId };
+      }
+    }
+  }
+  if (m === "POST" && path === "/api/catalog/collections") {
+    return { action: "create", resourceType: "catalog_collection", resourceId: null };
+  }
+  const catalogCollection = path.match(/^\/api\/catalog\/collections\/([^/]+)$/);
+  if (catalogCollection) {
+    if (m === "PUT" || m === "PATCH") {
+      return {
+        action: "update",
+        resourceType: "catalog_collection",
+        resourceId: catalogCollection[1],
+      };
+    }
+    if (m === "DELETE") {
+      return {
+        action: "delete",
+        resourceType: "catalog_collection",
+        resourceId: catalogCollection[1],
+      };
+    }
+  }
+
   // Slice C: requesting a backfill of existing items into a deliver
   // association is a gated, audited action (§6.4 — explicit and user-
   // initiated). Group ownership is enforced in-route.

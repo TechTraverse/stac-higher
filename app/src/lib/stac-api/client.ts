@@ -21,6 +21,11 @@ function getCatalogForUrl(url: string): StacCatalog | undefined {
   return $catalogs.get().find((c) => normalized.startsWith(c.url.replace(/\/+$/, "")));
 }
 
+function resolveCatalog(endpointUrl?: string): StacCatalog | undefined {
+  if (endpointUrl) return getCatalogForUrl(endpointUrl);
+  return $activeCatalog.get() ?? undefined;
+}
+
 function shouldProxy(endpointUrl?: string): { proxy: boolean; endpointBase: string } {
   if (endpointUrl) {
     const cat = getCatalogForUrl(endpointUrl);
@@ -28,6 +33,23 @@ function shouldProxy(endpointUrl?: string): { proxy: boolean; endpointBase: stri
   }
   const cat = $activeCatalog.get();
   return { proxy: cat?.proxy === true, endpointBase: cat?.url ?? "" };
+}
+
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * ADR 0008: built-in-catalog writes go through the app BFF route
+ * (`/api/catalog/*`), which injects the session access token server-side —
+ * the browser never holds a bearer token, and the write is RBAC-gated and
+ * audited. Unconditional (dev pass-through included) so the dev and
+ * auth-enforced paths exercise the same code. Reads and external catalogs
+ * keep their existing direct//api/proxy paths.
+ */
+function isBuiltInWrite(method: string, endpointUrl?: string): boolean {
+  return (
+    WRITE_METHODS.has(method.toUpperCase()) &&
+    resolveCatalog(endpointUrl)?.builtIn === true
+  );
 }
 
 export async function stacFetch<T>(
@@ -48,7 +70,9 @@ export async function stacFetch<T>(
   }
 
   let fetchUrl: string;
-  if (proxy) {
+  if (isBuiltInWrite(method, endpointUrl)) {
+    fetchUrl = `/api/catalog${path}`;
+  } else if (proxy) {
     fetchUrl = "/api/proxy";
     headers["X-Proxy-Target"] = targetUrl;
     headers["X-Proxy-Endpoint"] = endpointBase;
