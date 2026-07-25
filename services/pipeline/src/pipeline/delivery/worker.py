@@ -198,7 +198,11 @@ async def deliver_item(
                 size = len(data)
             else:
                 canonical_key = canonical_asset_key(target.collection_id, item_id, filename)
-                # sha256 sidecars need the bytes; md5 can ride a single-part etag.
+                # sha256 sidecars need the bytes; md5 can ride a single-part
+                # etag. Constraint (ISSUES I-48): that etag is the content MD5
+                # only on unencrypted/SSE-S3 buckets — SSE-KMS/SSE-C
+                # deployments must use sha256 checksums (which force
+                # streaming).
                 use_copy = server_side_copy and checksums_algo != "sha256"
                 if use_copy:
                     etag, size = await asyncio.to_thread(
