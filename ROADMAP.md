@@ -538,10 +538,15 @@ layer (§5.5) normalizes them. The app maps canonical claims to capabilities;
 Enforcement by plane:
 
 - **Astro API** — connections, associations, uploads, asset access,
-  monitoring, audit.
+  monitoring, audit. Per ADR 0008 it is also the BFF for **built-in-catalog
+  writes from browser sessions** (`/api/catalog/*`): the app injects the
+  session access token server-side and the mutation is RBAC-gated + audited;
+  the proxy remains the token-enforcement point.
 - **stac-auth-proxy** — catalog reads (collection visibility as CQL2 filters
   derived from group claims) and writes (per-collection POST/PUT/DELETE
-  policy). OPA integration available when policies outgrow static mapping.
+  policy) for non-browser clients, plus token validation for the BFF's
+  forwarded writes. OPA integration available when policies outgrow static
+  mapping.
 
 ---
 

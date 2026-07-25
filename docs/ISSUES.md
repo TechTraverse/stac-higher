@@ -369,23 +369,22 @@ fallback combo).
 
 ## Cross-phase — found by the 2026-07-22 architecture review
 
-### I-50 · UI catalog writes have no token path under auth enforcement (BFF not yet implemented) 🔴
-In auth-enforced mode (ADR 0002), every catalog transaction at the proxy requires
-a bearer token — but the browser client (`stacFetch`) attaches no `Authorization`
-header, the access token is sealed in the httpOnly session cookie by design, and
-no server-side path injects it. **The platform's own UI therefore cannot
-create/edit/delete items or collections once enforcement is on** (Phase 1's
-integration tests masked this by minting tokens via the password-grant test
-client). Catalog-plane mutations also bypass the permission guard's audit write,
-so the primary data plane is un-audited. **Decision made: ADR 0008** — the app
-becomes a BFF for built-in-catalog browser writes (server-side session-token
-injection + audit via the existing guard). This entry tracks the implementation,
-which should land before Phase 6 builds more UI on the pass-through assumption.
-- Tracked in: [ADR 0008](decisions/0008-bff-catalog-writes.md);
-  `app/src/lib/stac-api/client.ts`, `app/src/pages/api/proxy.ts`.
-- Blocks: UI CRUD in the production (auth-enforced) posture; catalog-plane audit
-  coverage.
-
+### I-50 · UI catalog writes have no token path under auth enforcement 🟢
+**Resolved — the ADR 0008 BFF is implemented.** Built-in-catalog browser
+writes now route through `/api/catalog/[...path]` (transaction endpoints
+only, writes only): the route injects the caller's session access token
+server-side (the token never reaches page JavaScript; the proxy stays the
+enforcement point), `stacFetch` routes built-in-catalog mutations there
+unconditionally (dev pass-through included, so the seam can't silently
+regress), and the guard gates the paths (operator+) with one `audit_log` row
+per mutation — the catalog plane is audited. The enforcement suite gained the
+UI-path leg (`tests/integration/bff-catalog-writes.test.mjs`): a real
+authorization-code session login → BFF write with only the httpOnly cookie →
+201 through the enforced proxy → audit row, replacing the password-grant
+client for the browser case.
+- Resolved by: `ai/i50-bff` ([ADR 0008](decisions/0008-bff-catalog-writes.md);
+  `app/src/pages/api/catalog/[...path].ts`, `app/src/lib/stac-api/client.ts`,
+  `app/src/lib/authz/permissions.ts`).
 ### I-51 · ADR 0009 deletion semantics — soft-delete half DONE, GC half Phase 6 🟡
 **Soft-delete half implemented (pre-B-iii hardening wave).** Migration 010:
 `deleted_at` on connections/associations, history FKs CASCADE → RESTRICT

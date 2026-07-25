@@ -47,6 +47,19 @@ So it is always safe to run; it only asserts against the enforced stack.
 - master-realm token (wrong issuer/signature) → 401/403
 - same-realm token without the `stac-higher` audience → 401/403
 
+`bff-catalog-writes.test.mjs` — the ADR 0008 BFF (UI-path catalog writes
+under enforcement). Additionally needs the Astro app running in OIDC mode
+(from `app/`: `AUTH_MODE=oidc SESSION_SECRET=<long random> npm run dev`;
+override the test's target with `APP_URL`). Skips when the app is down or in
+dev-bypass mode. Covers:
+
+- anonymous BFF write → 401 at the app guard (never reaches the proxy)
+- real session login (authorization-code flow against the Keycloak login
+  form) → `POST/PUT/DELETE /api/catalog/collections*` with only the httpOnly
+  session cookie → 2xx through the ENFORCED proxy → verified via proxy reads
+- the create lands an `audit_log` row (`catalog_collection`, attributed)
+- non-transaction paths (e.g. `/search`) → 404 — the BFF is not a generic proxy
+
 Test identities live in `infra/keycloak/realm-stac-higher.json`
 (alice/alice-password, bob/bob-password, carol/carol-password; password grant
 via the confidential `stac-higher-test` client). Local dev only.

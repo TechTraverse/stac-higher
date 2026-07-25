@@ -52,6 +52,19 @@ Reference: [`auth.md`](auth.md). Decisions: [ADR 0002 — proxy enforcement scop
 
 ---
 
+**BFF for built-in-catalog writes (ADR 0008, post-Phase-5 hardening —
+resolves I-50).** Under auth enforcement the browser cannot present a bearer
+token (it lives in the httpOnly session cookie), so built-in-catalog
+mutations route through `/api/catalog/[...path]`
+(`app/src/pages/api/catalog/`): transaction endpoints only, writes only; the
+route injects the session access token server-side and forwards to the
+configured built-in catalog (`BUILTIN_CATALOG_URL` /
+`PUBLIC_BUILTIN_CATALOG_URL`). `stacFetch` routes built-in writes there
+unconditionally (dev pass-through included); the guard gates the paths
+(operator+, `catalog_collection`/`catalog_item` resource types) so every UI
+catalog mutation is audited. UI-path enforcement leg:
+`tests/integration/bff-catalog-writes.test.mjs`.
+
 ## Phase 2 — Connections ✅
 
 Group-owned ingest/delivery endpoints the pipeline reads from and writes to. Live-verified end-to-end (SFTP/FTP/S3 test-connections, egress block, TOFU mismatch) on 2026-07-16.

@@ -83,6 +83,21 @@ type AuthContext =
   | { authenticated: false; mode: "oidc" | "bypass"; identity: null };
 ```
 
+## BFF for built-in-catalog writes (ADR 0008)
+
+The access token never reaches page JavaScript, so under auth enforcement the
+browser cannot call the proxy's transaction endpoints itself. Built-in-catalog
+mutations from the UI therefore go through `POST/PUT/PATCH/DELETE
+/api/catalog/[...path]` (transaction endpoints only): the route reads the
+session server-side, injects `Authorization: Bearer <access token>`, and
+forwards to `BUILTIN_CATALOG_URL` (falls back to
+`PUBLIC_BUILTIN_CATALOG_URL`, then `http://localhost:8081`). In dev-bypass
+mode there is no token and none is attached — the pass-through proxy accepts
+the write, so both postures share one code path. These routes are gated
+(operator+) and audited like every other mutation. `stacFetch` routes
+built-in-catalog writes here unconditionally; reads and external catalogs are
+untouched.
+
 ## RBAC & audit (ROADMAP §7, §5.5)
 
 The permission guard (`src/lib/authz/guard.ts`, called from
