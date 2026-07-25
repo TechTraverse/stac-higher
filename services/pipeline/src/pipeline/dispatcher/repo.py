@@ -6,7 +6,7 @@ methods open a short-lived AsyncConnection and are ``# pragma: no cover`` — th
 SQL is exercised by the live dispatch verification (Task 9), not unit tests.
 
 Ownership (ADR 0001/0007): reads stac_higher.item_events + collection_connections
-and pgstac items; UPDATEs only item_events.processed_at. Never runs DDL.
+and pgstac items; UPDATEs only item_events.claimed_at/processed_at. Never runs DDL.
 """
 
 from __future__ import annotations
@@ -29,10 +29,20 @@ class ItemEvent:
     occurred_at: dt.datetime | None = None
 
 
+#: A claimed-but-unprocessed row older than this is presumed crashed and is
+#: reclaimable (I-40): the claim is atomic (claimed_at stamped in the claiming
+#: statement) so overlapping dispatch runs cannot double-claim inside the
+#: window, while the crash direction stays safe — rows are redelivered, never
+#: lost.
+STALE_CLAIM_SECONDS = 600
+
+
 class DispatchRepo(abc.ABC):
     @abc.abstractmethod
     async def claim_pending_events(self, limit: int) -> list[ItemEvent]:
-        """Pending outbox rows in id order (FOR UPDATE SKIP LOCKED in Pg)."""
+        """Atomically claim pending outbox rows in id order: stamp claimed_at
+        on unclaimed (or stale-claimed) unprocessed rows and return them
+        (I-40 — FOR UPDATE SKIP LOCKED + claimed_at in one statement in Pg)."""
 
     @abc.abstractmethod
     async def mark_processed(self, event_ids: Sequence[int]) -> None:
@@ -59,13 +69,23 @@ class PgDispatchRepo(DispatchRepo):
     async def claim_pending_events(self, limit: int) -> list[ItemEvent]:  # pragma: no cover
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "SELECT id, collection_id, item_id, op, occurred_at"
-                " FROM stac_higher.item_events"
-                " WHERE processed_at IS NULL ORDER BY id"
-                " FOR UPDATE SKIP LOCKED LIMIT %s",
-                (limit,),
+                "UPDATE stac_higher.item_events e"
+                " SET claimed_at = now()"
+                " WHERE e.id IN ("
+                "   SELECT id FROM stac_higher.item_events"
+                "    WHERE processed_at IS NULL"
+                "      AND (claimed_at IS NULL"
+                "           OR claimed_at < now() - make_interval(secs => %s))"
+                "    ORDER BY id"
+                "    FOR UPDATE SKIP LOCKED"
+                "    LIMIT %s)"
+                " RETURNING e.id, e.collection_id, e.item_id, e.op, e.occurred_at",
+                (STALE_CLAIM_SECONDS, limit),
             )
             rows = await cur.fetchall()
+            await conn.commit()
+        # RETURNING order is not guaranteed — restore outbox (id) order.
+        rows = sorted(rows, key=lambda r: int(r[0]))
         return [
             ItemEvent(
                 id=int(r[0]), collection_id=r[1], item_id=r[2], op=r[3], occurred_at=r[4]

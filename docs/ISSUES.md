@@ -211,40 +211,29 @@ skeleton (a later update event re-drives it); Slice C's `LISTEN`-woken loop shou
 revisit whether such events need a bounded retry rather than a silent skip.
 - Tracked in: `services/pipeline/.../dispatcher/loop.py` (the `item is None` branch).
 
-### I-39 · `dispatch_once` has no per-event error isolation ⚪
-The dispatch loop has no `try/except` around a single event's `get_item`/`match_item`;
-an exception on one event aborts the batch before `mark_processed`, so the whole
-claimed batch fails to drain and re-runs next tick (busy-loop on the offending
-item, no backoff). Slice B/C should add per-event isolation (skip + dead-letter
-the poison event) now that the loop moves bytes.
-**Pre-B-iii hardening (done)**: the concrete API-reachable trigger is closed —
-`parseAssociationUpdate` now validates PUT `config` against the existing row's
-direction (an ingest-shaped config can no longer land on a `deliver` row), and
-`match_item` wraps the whole per-association body — including
-`parse_delivery_config` — in the isolation guard, so a bad stored config skips
-that association only. Remaining (Slice B-iii): per-**event** isolation in
-`dispatch_once` itself (skip + dead-letter the poison event).
-- Tracked in: `services/pipeline/.../dispatcher/loop.py` (remaining);
-  `.../delivery/matcher.py`, `app/src/lib/associations/schemas.ts` (done);
-  found in the Slice A Task 6 review + whole-branch review.
+### I-39 · `dispatch_once` has no per-event error isolation 🟢
+**Resolved across the pre-B-iii wave + Slice B-iii.** The API-reachable
+trigger is closed (`parseAssociationUpdate` validates PUT `config` against the
+existing row's direction; `match_item` wraps the whole per-association body in
+its isolation guard), and `dispatch_once` now wraps each event's
+`get_item`/`match_item` in a per-event guard: a poison event is logged loudly
+and drained with the batch (dead-lettered into the logs) instead of
+busy-looping the claim.
+- Resolved by: `ai/i39-pair` + Slice B-iii (`dispatcher/loop.py`).
 
-### I-40 · Dispatcher HA / single-instance assumption ⚪
-The poll-driven dispatch (and Slice C's future `LISTEN`-woken loop) assumes a
-single pipeline instance. **The current claim/mark split is NOT
-concurrency-safe** (whole-branch review): `claim_pending_events` and
-`mark_processed` run in **separate** transactions, so the `FOR UPDATE SKIP LOCKED`
-lock is released the moment the claim SELECT's transaction ends — processing then
-holds no lock and the rows are still `processed_at IS NULL`. Two overlapping
-dispatch runs (e.g. a `dispatch_once` outrunning the 60s poll interval) would
-re-claim the same rows and, once Slice B moves bytes, double-dispatch. The crash
-direction IS safe (a crash between claim and mark leaves rows pending →
-redelivered, never lost). Before Slice B moves bytes it must unify
-claim→process→mark under one transaction (or add an atomic `claimed_at`/status
-claim-marking column); leader election / partitioned ownership is a Phase 8
-concern (§10 scheduler-HA). Slice C documents the single-instance assumption where
-the `LISTEN` loop lands.
-- Tracked in: `services/pipeline/.../dispatcher/repo.py` (split claim/mark),
-  ROADMAP §10 (scheduler/monitor HA); found in the Slice A whole-branch review.
+### I-40 · Dispatcher HA / single-instance assumption 🟡
+**Claim half resolved (Slice B-iii):** `claim_pending_events` now stamps
+`item_events.claimed_at` (migration 011) in the same `FOR UPDATE SKIP LOCKED`
+statement that selects the batch, so overlapping dispatch runs cannot
+double-claim; a crash leaves claimed-but-unprocessed rows that are reclaimed
+after a 10-minute stale window (`STALE_CLAIM_SECONDS`) — the crash direction
+stays redeliver-never-lose. Accepted trade-off: an enqueue failure now
+redrives after the stale window rather than the next tick (rare — queue
+down). Remaining: leader election / partitioned ownership for genuine
+multi-instance operation is a Phase 8 / M3 concern (§10 scheduler-HA); Slice
+C documents the single-instance assumption where the `LISTEN` loop lands.
+- Tracked in: `services/pipeline/.../dispatcher/repo.py`, ROADMAP §10;
+  found in the Slice A whole-branch review.
 
 ### I-41 · `item_filter` is not CQL2-validated on write 🟡
 `deliveryConfigSchema` validates `item_filter` only as a non-empty string —
@@ -349,25 +338,26 @@ The B-ii server-side-copy path writes the `.md5` sidecar from a single-part
 canonical ETag (`worker.py`, `"-" in etag` is the only guard). On an
 SSE-KMS/SSE-C-encrypted canonical bucket, single-part ETags are not the MD5, so
 the sidecar would fail a consumer's `md5sum -c`. Spec-level assumption (the
-B-ii design doc licenses it); safe on local MinIO and SSE-S3. B-iii: document
-the bucket constraint or add a force-streaming flag.
+B-ii design doc licenses it); safe on local MinIO and SSE-S3. **B-iii chose to
+document the constraint** (here and at the copy gate in `worker.py`): md5
+checksum sidecars require a canonical bucket whose single-part ETags are
+content MD5s (unencrypted or SSE-S3). Deployments using SSE-KMS/SSE-C must use
+`sha256` checksums (which force streaming) — a force-streaming flag is
+deferred until such a deployment exists.
 - Tracked in: `services/pipeline/src/pipeline/delivery/worker.py`; found in the
   Slice B-ii whole-branch review.
 
-### I-49 · Reference-mode delivery residuals from the B-ii whole-branch review ⚪
-Covering: (1) reference routing is keyed by bare basename (`ref_sources` dict
-keyed on the source path's last segment vs the asset href's last segment) — two
-ledger rows sharing a basename, or a canonical asset coincidentally matching a
-reference row's basename, mis-route silently; log on collision at minimum.
-(2) A mid-batch failure discards the partial `delivered` fingerprint map
-(`mark_failed` drops it), so the B-iii retry rewrites already-delivered assets
-within one cycle. (3) The completion manifest never prunes keys no longer
-present in the item (stale entries listed as current). (4) Missing tests:
-source-read failure → `mark_failed`, a mixed reference+canonical item, md5
-checksums + copy-failure fallback combo. All benign under at-least-once (I-43);
-address alongside the B-iii retry sweep.
-- Tracked in: `services/pipeline/src/pipeline/delivery/{worker,repo}.py`; found
-  in the Slice B-ii whole-branch review.
+### I-49 · Reference-mode delivery residuals from the B-ii whole-branch review 🟢
+**Resolved (Slice B-iii):** (1) a reference basename collision now logs a
+warning and deterministically keeps the first source; (2) `mark_failed`
+persists the partial `delivered_assets` map, so a retry skips assets the
+failed cycle already wrote (unit-proven: only the missing asset re-transfers);
+(3) the completion manifest is pruned to the item's current assets before
+writing; (4) the missing tests exist (`test_delivery_retry.py`: source-read
+failure → failed row, mixed reference+canonical item, md5 + copy-failure
+fallback combo).
+- Resolved by: Slice B-iii (`delivery/{worker,repo}.py`,
+  `tests/test_delivery_retry.py`).
 
 ---
 
@@ -412,27 +402,26 @@ orphans canonical bytes) and the `archived` collection state.
   `app/src/lib/db/migrate.ts` (migration 010).
 - Blocks (remaining half): honest collection-delete warnings.
 
-### I-52 · Ingest has no crash recovery: stuck-`fetching` rows are unrecoverable, `failed` is terminal 🔴
+### I-52 · Ingest has no crash recovery: stuck-`fetching` rows are unrecoverable, `failed` is terminal 🟢
 If the pipeline dies mid-FETCH (most plausibly an OOM from the buffered
 multi-GB `get`, I-19/I-26), the ledger row is stranded at `fetching` forever:
 DISCOVER explicitly skips `fetching` rows even on fingerprint change, GROUP
 only forms groups from `settled` rows, and nothing sweeps stalled Procrastinate
 `doing` jobs — the file silently never becomes an item, with no alarm. A
-`failed` row (transient network error) is likewise terminal: no scheduled
-re-attempt and no operator retry action. For an ingestion platform this is the
-primary incident class. The ledger's idempotent stage design makes the fix
-tractable: (1) a periodic sweep resetting `fetching` rows older than a
-threshold back to `settled` (safe — FETCH is idempotent against canonical
-storage); (2) a bounded retry transition for `failed` rows plus the eventual
-operator backfill/redeliver action (ROADMAP §8); (3) Procrastinate retry
-policies or a stalled-`doing` sweep for hard job crashes. **Scoped into Slice
-B-iii** — the delivery-only framing of "retry → dead-letter" left this ingest
-half unlogged (2026-07-22 architecture review, confirmed by adversarial
-verification).
-- Tracked in: `services/pipeline/.../ingest/{discover,fetch,group}.py`,
-  `.../jobs/ingest.py`.
-- Blocks: unattended production ingest; the M1 "surviving a dead
-  destination/source" robustness bar.
+`failed` row (transient network error) was likewise terminal.
+**Resolved (Slice B-iii):** the periodic `pipeline.ingest_recovery_sweep`
+(1) resets `fetching` rows stalled past `INGEST_FETCH_STALL_SECONDS`
+(default 30 min) back to `settled` — safe, FETCH is idempotent against
+canonical storage; and (2) re-settles `failed` rows after an
+`INGEST_FAILED_RETRY_SECONDS` cool-off (default 5 min), bounded by
+`ingest_files.retries < INGEST_MAX_RETRIES` (default 3, migration 011) — rows
+at the cap stay `failed` (terminal until the ROADMAP §8 operator backfill).
+Both transitions re-enter at `settled`, so the normal GROUP → FETCH chain
+re-drives them on the next poll tick. Hard job crashes need no separate
+Procrastinate sweep: the ledger's idempotent stages plus these sweeps re-drive
+the work regardless of the stranded queue row.
+- Resolved by: Slice B-iii (`ingest/repo.py` sweeps, `jobs/ingest.py`,
+  migration 011).
 
 ### I-53 · Cross-runtime config contracts have no drift test (golden fixtures missing) 🟢
 **Resolved (pre-B-iii hardening wave).** Golden JSON fixtures for both §5.1

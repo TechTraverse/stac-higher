@@ -456,6 +456,35 @@ const MIGRATIONS = [
         WHERE deleted_at IS NULL;
     `,
   },
+  {
+    // Phase 5 Slice B-iii (ROADMAP §6.4): retry/dead-letter + crash-recovery
+    // substrate. App owns the DDL; the pipeline writes the columns (ADR 0001).
+    //
+    // delivery_log.next_attempt_at — when a 'failed' row becomes due for the
+    //   pipeline's retry sweep; NULL for terminal rows ('dead' after
+    //   retry.max_attempts, per-association §5.1 config).
+    // item_events.claimed_at — atomic claim marker (ISSUES I-40): the
+    //   dispatcher claims a batch by stamping claimed_at in the same statement
+    //   that selects it (FOR UPDATE SKIP LOCKED), so overlapping dispatch runs
+    //   cannot double-claim; a crash leaves claimed-but-unprocessed rows that
+    //   are reclaimed after a stale window (crash direction stays safe).
+    // ingest_files.retries — bounded-retry counter for 'failed' ledger rows
+    //   (ISSUES I-52): the recovery sweep re-settles failed rows up to a cap.
+    name: "011_retry_deadletter_and_claims",
+    sql: `
+      ALTER TABLE stac_higher.delivery_log
+        ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz;
+      CREATE INDEX IF NOT EXISTS delivery_log_next_attempt_idx
+        ON stac_higher.delivery_log (next_attempt_at)
+        WHERE status = 'failed';
+
+      ALTER TABLE stac_higher.item_events
+        ADD COLUMN IF NOT EXISTS claimed_at timestamptz;
+
+      ALTER TABLE stac_higher.ingest_files
+        ADD COLUMN IF NOT EXISTS retries integer NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that
