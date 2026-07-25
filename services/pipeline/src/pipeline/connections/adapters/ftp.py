@@ -20,6 +20,7 @@ SSRF hardening (two egress holes an adversarial review found):
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import posixpath
 import time
@@ -201,10 +202,8 @@ class FtpAdapter(StorageAdapter):
             # fresh destination 553'd without this.
             parent = posixpath.dirname(target)
             if parent and parent not in (".", "/"):
-                try:
+                with contextlib.suppress(OSError, aioftp.AIOFTPException):
                     await client.make_directory(parent)
-                except (OSError, aioftp.AIOFTPException):
-                    pass
             async with client.upload_stream(target) as stream:
                 await stream.write(data)
         finally:
