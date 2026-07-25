@@ -27,6 +27,15 @@ export type StorageMode = (typeof STORAGE_MODES)[number];
 
 const globList = z.array(z.string().min(1)).default([]);
 
+/** Non-blank string — the pipeline's parsers `.strip()` required paths, so a
+ * whitespace-only value must not pass the write gate either (contract fixtures
+ * pin this: `tests/contract-fixtures/`). */
+const nonBlank = (message: string) =>
+  z
+    .string()
+    .min(1, message)
+    .refine((s) => s.trim().length > 0, message);
+
 export const groupingSchema = z
   .object({
     // `none` = one file per product (the common raster case); `shared_basename`
@@ -75,7 +84,7 @@ const postIngestSchema = z
 
 export const ingestConfigSchema = z
   .object({
-    source_path: z.string().min(1, "source_path is required"),
+    source_path: nonBlank("source_path is required"),
     include: globList,
     exclude: globList,
     // Procrastinate's periodic scheduler is 1-minute granular; a floor of 60s
@@ -140,7 +149,7 @@ export const deliveryConfigSchema = z
   .object({
     // Rendered per asset — see delivery/path.py (Slice B). Tokens: {collection}
     // {item_id} {filename} {yyyy} {mm} {dd}.
-    path_template: z.string().min(1, "path_template is required"),
+    path_template: nonBlank("path_template is required"),
     // optional CQL2 subset — null delivers every item.
     item_filter: z.string().min(1).nullable().default(null),
     // null = all assets; otherwise the asset keys to deliver.

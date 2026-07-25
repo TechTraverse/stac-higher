@@ -147,7 +147,11 @@ the pipeline maintains. The app owns both tables' DDL and writes associations
 (`app/src/lib/associations/*`, `/api/collections/[id]/connections*`); the
 pipeline (Slice B) reads associations and writes the ledger, never DDL (ADR
 0001). The ingest `config` Zod schema (`associations/schemas.ts`) is the
-cross-runtime contract with the pipeline. Group ownership is enforced in-route
+cross-runtime contract with the pipeline. Golden fixtures for every
+cross-runtime config shape live in `tests/contract-fixtures/` and are consumed
+by **both** the vitest and pytest suites — **a new or changed cross-runtime
+shape ⇒ a new/updated shared fixture** (see that directory's README for the
+format and semantics). Group ownership is enforced in-route
 (operator+ to mutate; `reference` storage mode is s3-only). UI: the **Data flow**
 tab on built-in-catalog collection pages.
 

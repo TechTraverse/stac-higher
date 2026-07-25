@@ -432,21 +432,21 @@ verification).
 - Blocks: unattended production ingest; the M1 "surviving a dead
   destination/source" robustness bar.
 
-### I-53 · Cross-runtime config contracts have no drift test (golden fixtures missing) 🔴
-The §5.1 ingest/delivery config shapes exist as two independent validators —
-Zod (`app/src/lib/associations/schemas.ts`) and Python
-(`services/pipeline/.../ingest/config.py`, `.../delivery/config.py`) — kept in
-sync only by "MUST NOT drift" comments. Nothing asserts they accept/reject the
-same documents, and the surface grows every phase (B-ii added
-`deliveryConfigSchema` ↔ `delivery/config.py`). A config the app 201s and the
-pipeline rejects is the worst failure mode: a silently dead flow, or — via the
-I-39 path (`associationUpdateSchema` validates PUT config with the ingest-only
-schema, so an ingest-shaped config can land on a `deliver` row) — a stalled
-dispatcher. Fix (pre-B-iii hardening wave): golden JSON fixtures (valid +
-invalid documents per direction) checked into one location and consumed by
-both test suites, the direction-aware update schema (the app half of I-39),
-and a standing AGENTS.md rule: new cross-runtime shape ⇒ new shared fixture.
-(2026-07-22 architecture review, confirmed by adversarial verification.)
-- Tracked in: `app/src/lib/associations/schemas.ts`,
-  `services/pipeline/src/pipeline/{ingest,delivery}/config.py`; I-39.
-- Blocks: safe evolution of the §5.1 contract through Phases 6–8.
+### I-53 · Cross-runtime config contracts have no drift test (golden fixtures missing) 🟢
+**Resolved (pre-B-iii hardening wave).** Golden JSON fixtures for both §5.1
+config directions live in `tests/contract-fixtures/` (valid + invalid
+documents with per-side accept/reject expectations — the Zod write gate is
+strict, the Python readers are lenient by design; the README there documents
+the semantics). Both suites consume them:
+`app/src/__tests__/contract-fixtures.test.ts` asserts Zod's accept/reject per
+case and that the minimal document parses to the golden defaults document;
+`services/pipeline/tests/test_contract_fixtures.py` runs the same cases
+through `parse_ingest_config`/`parse_delivery_config` and asserts every
+re-applied default against the same golden values. The standing rule ("new
+cross-runtime shape ⇒ new shared fixture") is in AGENTS.md. Building the
+fixtures surfaced one real drift, fixed with them: whitespace-only
+`source_path`/`path_template` passed Zod's `min(1)` but the Python parsers
+`.strip()`-reject it — the Zod schemas now reject non-blank-violating values
+too. The direction-aware update schema (the app half of I-39) landed in the
+prior iteration.
+- Resolved by: the pre-B-iii hardening wave (`ai/i53-fixtures`), 2026-07-25.

@@ -1,0 +1,145 @@
+{
+  "$comment": "Golden fixtures for the §5.1 delivery config cross-runtime contract (ISSUE I-53). Consumed by app/src/__tests__/contract-fixtures.test.ts (Zod, the strict write gatekeeper) and services/pipeline/tests/test_contract_fixtures.py (lenient reader that re-applies defaults). See README.md for the format and the accept/reject semantics.",
+  "minimal": { "path_template": "{collection}/{item_id}/{filename}" },
+  "defaults": {
+    "path_template": "{collection}/{item_id}/{filename}",
+    "item_filter": null,
+    "asset_keys": null,
+    "payload": {
+      "item_json": false,
+      "checksums": null,
+      "completion_marker": false
+    },
+    "on_update": "redeliver",
+    "overwrite": "if_newer",
+    "retry": {
+      "max_attempts": 5,
+      "backoff": "exponential"
+    },
+    "max_concurrent_transfers": 4
+  },
+  "cases": [
+    {
+      "name": "minimal",
+      "config": { "path_template": "{collection}/{item_id}/{filename}" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "defaults-applied (what the app writes for the minimal doc)",
+      "config": {
+        "path_template": "{collection}/{item_id}/{filename}",
+        "item_filter": null,
+        "asset_keys": null,
+        "payload": {
+          "item_json": false,
+          "checksums": null,
+          "completion_marker": false
+        },
+        "on_update": "redeliver",
+        "overwrite": "if_newer",
+        "retry": { "max_attempts": 5, "backoff": "exponential" },
+        "max_concurrent_transfers": 4
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "full-featured",
+      "config": {
+        "path_template": "{collection}/{yyyy}/{mm}/{dd}/{item_id}/{filename}",
+        "item_filter": "eo:cloud_cover < 10",
+        "asset_keys": ["data", "thumbnail"],
+        "payload": {
+          "item_json": true,
+          "checksums": "sha256",
+          "completion_marker": true
+        },
+        "on_update": "ignore",
+        "overwrite": "always",
+        "retry": { "max_attempts": 3, "backoff": "fixed" },
+        "max_concurrent_transfers": 8
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "empty document (missing path_template)",
+      "config": {},
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "empty path_template",
+      "config": { "path_template": "" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "whitespace-only path_template",
+      "config": { "path_template": "   " },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "ingest-shaped config (the I-39 dispatcher-stall trigger)",
+      "config": { "source_path": "/out" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown on_update",
+      "config": { "path_template": "x", "on_update": "sometimes" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown overwrite",
+      "config": { "path_template": "x", "overwrite": "maybe" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown payload checksums",
+      "config": { "path_template": "x", "payload": { "checksums": "crc32" } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown retry backoff",
+      "config": { "path_template": "x", "retry": { "backoff": "linear" } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "asset_keys is not an array",
+      "config": { "path_template": "x", "asset_keys": "data" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown top-level key (writer strict, reader lenient)",
+      "config": { "path_template": "x", "extra": 1 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "empty item_filter (writer rejects; reader treats as null)",
+      "config": { "path_template": "x", "item_filter": "" },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "zero max_concurrent_transfers (writer-only floor)",
+      "config": { "path_template": "x", "max_concurrent_transfers": 0 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "zero retry max_attempts (writer-only floor)",
+      "config": { "path_template": "x", "retry": { "max_attempts": 0 } },
+      "app": "reject",
+      "pipeline": "accept"
+    }
+  ]
+}
