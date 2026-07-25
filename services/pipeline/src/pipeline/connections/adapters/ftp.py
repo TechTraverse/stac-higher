@@ -191,9 +191,21 @@ class FtpAdapter(StorageAdapter):
             await _safe_quit(client)
 
     async def put(self, path: str, data: bytes) -> None:
+        target = self._resolve(path)
         client = await self._connect_client()
         try:
-            async with client.upload_stream(self._resolve(path)) as stream:
+            # Create missing parent directories (best-effort — an "already
+            # exists" reply is server-specific; a truly failed mkdir surfaces
+            # as the upload's own error). Found by the B-iii live FTP run:
+            # delivery path templates are directory-shaped and uploads into a
+            # fresh destination 553'd without this.
+            parent = posixpath.dirname(target)
+            if parent and parent not in (".", "/"):
+                try:
+                    await client.make_directory(parent)
+                except (OSError, aioftp.AIOFTPException):
+                    pass
+            async with client.upload_stream(target) as stream:
                 await stream.write(data)
         finally:
             await _safe_quit(client)
