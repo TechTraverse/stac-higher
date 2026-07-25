@@ -323,6 +323,37 @@ describe("/api/collections/[id]/connections/[assocId]", () => {
     expect(updateAssociation).not.toHaveBeenCalled();
   });
 
+  it("PUT validates config against the row's direction (I-39)", async () => {
+    // An ingest-shaped config on a deliver row must 400, not stall the pipeline.
+    vi.mocked(getAssociation).mockResolvedValue({
+      ...assoc,
+      direction: "deliver",
+      config: { path_template: "{filename}" },
+    });
+    const res = await call(putRoute, authed(["operator"]), {
+      params,
+      method: "PUT",
+      body: { config: { source_path: "/out" } },
+    });
+    expect(res.status).toBe(400);
+    expect(updateAssociation).not.toHaveBeenCalled();
+  });
+
+  it("PUT accepts a delivery config on a deliver row", async () => {
+    vi.mocked(getAssociation).mockResolvedValue({
+      ...assoc,
+      direction: "deliver",
+      config: { path_template: "{filename}" },
+    });
+    const res = await call(putRoute, authed(["operator"]), {
+      params,
+      method: "PUT",
+      body: { config: { path_template: "{collection}/{item_id}/{filename}" } },
+    });
+    expect(res.status).toBe(200);
+    expect(updateAssociation).toHaveBeenCalledOnce();
+  });
+
   it("PUT rejects reference mode against a non-s3 connection (400)", async () => {
     vi.mocked(getConnection).mockResolvedValue({
       ...s3Connection,

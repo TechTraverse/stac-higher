@@ -72,15 +72,29 @@ def match_item(
     item_assets = list((item.get("assets") or {}).keys())
     matches: list[Match] = []
     for assoc in associations:
-        cfg = parse_delivery_config(assoc.config)
-        if not _item_filter_passes(cfg.item_filter, item):
-            continue
-        if cfg.asset_keys is None:
-            keys = tuple(item_assets)
-        else:
-            wanted = set(cfg.asset_keys)
-            keys = tuple(k for k in item_assets if k in wanted)
-        if not keys:
-            continue
-        matches.append(Match(association_id=assoc.id, item_id=item_id, asset_keys=keys))
+        # Per-association isolation (ISSUE I-39): a bad stored config — e.g. an
+        # ingest-shaped document on a deliver row — must skip THIS association,
+        # never abort the loop (an uncaught raise here would poison the whole
+        # dispatch batch and stall the outbox).
+        try:
+            cfg = parse_delivery_config(assoc.config)
+            if not _item_filter_passes(cfg.item_filter, item):
+                continue
+            if cfg.asset_keys is None:
+                keys = tuple(item_assets)
+            else:
+                wanted = set(cfg.asset_keys)
+                keys = tuple(k for k in item_assets if k in wanted)
+            if not keys:
+                continue
+            matches.append(
+                Match(association_id=assoc.id, item_id=item_id, asset_keys=keys)
+            )
+        except Exception:
+            logger.exception(
+                "association skipped: unusable delivery config "
+                "(association_id=%r, item_id=%r)",
+                assoc.id,
+                item_id,
+            )
     return matches

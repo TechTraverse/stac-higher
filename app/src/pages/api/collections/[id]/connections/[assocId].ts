@@ -51,7 +51,7 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     const existing = loaded.association;
 
     const body = await request.json().catch(() => null);
-    const parsed = parseAssociationUpdate(body);
+    const parsed = parseAssociationUpdate(body, existing.direction);
     if (!parsed.success) {
       return jsonResponse(400, {
         error: "Validation failed",
@@ -61,7 +61,9 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     const data = parsed.data;
 
     if (
-      data.config?.storage_mode === "reference" &&
+      data.config &&
+      "storage_mode" in data.config &&
+      data.config.storage_mode === "reference" &&
       locals.auth?.authenticated
     ) {
       const connection = await resolveUsableConnection(

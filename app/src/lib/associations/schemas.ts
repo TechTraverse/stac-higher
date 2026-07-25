@@ -3,9 +3,9 @@
  *
  * An association wires a connection to a built-in-catalog collection in a
  * direction — `ingest` (Phase 4) or `deliver` (Phase 5). `associationCreateSchema`
- * is a discriminated union on `direction` so both are creatable; the update
- * payload's `config` stays ingest-only for now (delivery-config UPDATE is a
- * later slice).
+ * is a discriminated union on `direction`; updates validate `config` against
+ * the existing row's direction (`parseAssociationUpdate` takes it as an
+ * argument, since the payload itself carries no `direction`).
  *
  * Both `config` shapes are cross-runtime contracts — the Python pipeline
  * parses the same JSON out of `collection_connections.config`, so the field
@@ -189,15 +189,32 @@ export const associationCreateSchema = z.discriminatedUnion("direction", [
 
 export type AssociationCreateInput = z.infer<typeof associationCreateSchema>;
 
-export const associationUpdateSchema = z
+// The update payload carries no `direction` (immutable on the row), so the
+// caller supplies it from the existing association and the config is validated
+// against that direction's schema — an ingest-shaped config can never land on
+// a `deliver` row (ISSUE I-39: that used to stall the dispatcher).
+const baseUpdateFields = {
+  enabled: z.boolean().optional(),
+  expectation: expectationSchema.nullable().optional(),
+};
+
+export const ingestUpdateSchema = z
   .object({
-    enabled: z.boolean().optional(),
+    ...baseUpdateFields,
     config: ingestConfigSchema.optional(),
-    expectation: expectationSchema.nullable().optional(),
   })
   .strict();
 
-export type AssociationUpdateInput = z.infer<typeof associationUpdateSchema>;
+export const deliveryUpdateSchema = z
+  .object({
+    ...baseUpdateFields,
+    config: deliveryConfigSchema.optional(),
+  })
+  .strict();
+
+export type AssociationUpdateInput =
+  | z.infer<typeof ingestUpdateSchema>
+  | z.infer<typeof deliveryUpdateSchema>;
 
 export type ParsedCreate =
   | { success: true; data: AssociationCreateInput }
@@ -211,6 +228,11 @@ export function parseAssociationCreate(data: unknown): ParsedCreate {
   return associationCreateSchema.safeParse(data);
 }
 
-export function parseAssociationUpdate(data: unknown): ParsedUpdate {
-  return associationUpdateSchema.safeParse(data);
+export function parseAssociationUpdate(
+  data: unknown,
+  direction: AssociationDirection,
+): ParsedUpdate {
+  const schema =
+    direction === "deliver" ? deliveryUpdateSchema : ingestUpdateSchema;
+  return schema.safeParse(data);
 }

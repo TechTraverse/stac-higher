@@ -59,3 +59,17 @@ def test_malformed_filter_skipped_without_raising():
     b = _assoc("good", {"path_template": "{filename}"})
     matches = match_item(ITEM, [a, b])
     assert [m.association_id for m in matches] == ["good"]
+
+
+def test_unusable_config_isolated_from_other_associations():
+    # An ingest-shaped config on a deliver row (the I-39 trigger): no
+    # path_template, so parse_delivery_config raises. The association must be
+    # skipped without poisoning the rest of the loop.
+    bad = _assoc("bad", {"source_path": "/out"})
+    good = _assoc("good", {"path_template": "{filename}"})
+    matches = match_item(ITEM, [bad, good])
+    assert [m.association_id for m in matches] == ["good"]
+
+
+def test_unusable_config_only_yields_no_matches():
+    assert match_item(ITEM, [_assoc("bad", {"source_path": "/out"})]) == []
