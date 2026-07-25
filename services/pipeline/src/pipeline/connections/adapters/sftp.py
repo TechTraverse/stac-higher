@@ -139,12 +139,15 @@ class SftpAdapter(StorageAdapter):
 
     async def put(self, path: str, data: bytes) -> None:
         target = self._resolve(path)
-        async with (
-            await self._connect() as conn,
-            conn.start_sftp_client() as sftp,
-            sftp.open(target, "wb") as fh,
-        ):
-            await fh.write(data)
+        parent = posixpath.dirname(target)
+        async with await self._connect() as conn, conn.start_sftp_client() as sftp:
+            # Delivery path templates are directory-shaped ({collection}/{item}/
+            # ...); create missing parents so the first delivery into a fresh
+            # destination works (found by the B-iii live SFTP run).
+            if parent and parent != "/":
+                await sftp.makedirs(parent, exist_ok=True)
+            async with sftp.open(target, "wb") as fh:
+                await fh.write(data)
 
     async def delete(self, path: str) -> None:
         target = self._resolve(path)
