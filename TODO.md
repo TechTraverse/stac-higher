@@ -29,7 +29,7 @@ the referenced ISSUES/ADR entries.
 
 ## Slice B-iii — retry, dead-letter, crash recovery, concurrency
 
-- [ ] **Slice B-iii** per the expanded ROADMAP bullet: delivery retry →
+- [x] **Slice B-iii** per the expanded ROADMAP bullet: delivery retry →
       dead-letter (`next_attempt_at`, app-managed sweep), ingest crash
       recovery (I-52), claim→process→mark in one transaction (I-40),
       per-connection concurrency caps, live SFTP + FTP destination runs
@@ -87,3 +87,12 @@ the referenced ISSUES/ADR entries.
   (`deleted_at IS NULL` in the drain's connection load), which strands such a
   check at `running`. Harmless (the app can no longer poll it — the parent
   404s) but worth a cleanup sweep when B-iii adds the stalled-job sweeps.
+- B-iii live finding (fixed): SFTP/FTP `put` now creates parent directories;
+  the delfer FTP test server does NOT chroot — FTP connections against it need
+  `root_path=/ftp/demo` (compose comment corrected). Slice D's connection form
+  help text should surface the root-path requirement for FTP servers.
+- B-iii live observation: when a NEW item event lands while a row is `failed`
+  awaiting retry, the event's delivery resets the attempt cycle (by design,
+  I-44) and the sweep's requeue can overlap it — final state is correct
+  (delivered), but the Slice D delivery-status UI should explain attempt
+  counts as "attempts this cycle," not lifetime.
