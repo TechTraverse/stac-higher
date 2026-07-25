@@ -37,7 +37,7 @@ the referenced ISSUES/ADR entries.
 
 ## Slice C — low latency + backfill
 
-- [ ] **Slice C** — NOTIFY-woken dispatcher loop (replaces the 60s poll as the
+- [x] **Slice C** — NOTIFY-woken dispatcher loop (replaces the 60s poll as the
       primary wake path; poll stays as fallback), bounded retry for the I-38
       visibility race, and user-initiated backfill as chunked bulk jobs.
 
