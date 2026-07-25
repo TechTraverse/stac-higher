@@ -215,21 +215,18 @@ revisit whether such events need a bounded retry rather than a silent skip.
 The dispatch loop has no `try/except` around a single event's `get_item`/`match_item`;
 an exception on one event aborts the batch before `mark_processed`, so the whole
 claimed batch fails to drain and re-runs next tick (busy-loop on the offending
-item, no backoff). Low risk in Slice A — the matcher is already hardened against
-CQL2 filter errors (the one realistic raise) — but Slice B/C should add per-event
-isolation (skip + dead-letter the poison event) when the loop starts moving bytes.
-There is a concrete API-reachable trigger for this (whole-branch review): the
-update route `[assocId].ts` validates PUT `config` with the **ingest-only**
-`associationUpdateSchema` (no direction check), so an operator can overwrite a
-`direction='deliver'` row with an ingest-shaped config; `match_item` then calls
-`parse_delivery_config` **outside** the per-association try/except (`matcher.py`,
-also Minor below), which raises `DeliveryConfigError` and — with no per-event
-isolation — permanently stalls the outbox. Slice B fix: make the update schema
-direction-aware **and** wrap the per-association body (including
-`parse_delivery_config`) in the isolation guard, not just the CQL2 eval.
-- Tracked in: `services/pipeline/.../dispatcher/loop.py`, `.../delivery/matcher.py`,
-  `app/src/lib/associations/schemas.ts` (update schema); found in the Slice A Task 6
-  review + whole-branch review.
+item, no backoff). Slice B/C should add per-event isolation (skip + dead-letter
+the poison event) now that the loop moves bytes.
+**Pre-B-iii hardening (done)**: the concrete API-reachable trigger is closed —
+`parseAssociationUpdate` now validates PUT `config` against the existing row's
+direction (an ingest-shaped config can no longer land on a `deliver` row), and
+`match_item` wraps the whole per-association body — including
+`parse_delivery_config` — in the isolation guard, so a bad stored config skips
+that association only. Remaining (Slice B-iii): per-**event** isolation in
+`dispatch_once` itself (skip + dead-letter the poison event).
+- Tracked in: `services/pipeline/.../dispatcher/loop.py` (remaining);
+  `.../delivery/matcher.py`, `app/src/lib/associations/schemas.ts` (done);
+  found in the Slice A Task 6 review + whole-branch review.
 
 ### I-40 · Dispatcher HA / single-instance assumption ⚪
 The poll-driven dispatch (and Slice C's future `LISTEN`-woken loop) assumes a

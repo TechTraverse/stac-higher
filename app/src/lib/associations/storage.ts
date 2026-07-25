@@ -204,7 +204,7 @@ export async function createAssociation(
 
 export interface UpdateAssociationInput {
   enabled?: boolean;
-  config?: IngestConfig;
+  config?: IngestConfig | DeliveryConfig;
   expectation?: Expectation | null;
 }
 

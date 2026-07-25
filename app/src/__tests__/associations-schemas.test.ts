@@ -134,20 +134,41 @@ describe("parseAssociationCreate", () => {
 });
 
 describe("parseAssociationUpdate", () => {
-  it("accepts a partial patch (enabled only)", () => {
-    const parsed = parseAssociationUpdate({ enabled: false });
-    expect(parsed.success).toBe(true);
+  it("accepts a partial patch (enabled only) for both directions", () => {
+    expect(parseAssociationUpdate({ enabled: false }, "ingest").success).toBe(
+      true,
+    );
+    expect(parseAssociationUpdate({ enabled: false }, "deliver").success).toBe(
+      true,
+    );
   });
 
   it("re-validates config when present", () => {
-    expect(parseAssociationUpdate({ config: {} }).success).toBe(false);
+    expect(parseAssociationUpdate({ config: {} }, "ingest").success).toBe(false);
     expect(
-      parseAssociationUpdate({ config: { source_path: "/o" } }).success,
+      parseAssociationUpdate({ config: { source_path: "/o" } }, "ingest")
+        .success,
+    ).toBe(true);
+  });
+
+  it("validates config against the row's direction (I-39)", () => {
+    const ingestConfig = { source_path: "/o" };
+    const deliveryConfig = { path_template: "{filename}" };
+    // An ingest-shaped config on a deliver row used to pass validation and
+    // stall the dispatcher — it must be rejected now, and vice versa.
+    expect(
+      parseAssociationUpdate({ config: ingestConfig }, "deliver").success,
+    ).toBe(false);
+    expect(
+      parseAssociationUpdate({ config: deliveryConfig }, "ingest").success,
+    ).toBe(false);
+    expect(
+      parseAssociationUpdate({ config: deliveryConfig }, "deliver").success,
     ).toBe(true);
   });
 
   it("allows clearing the expectation with null", () => {
-    const parsed = parseAssociationUpdate({ expectation: null });
+    const parsed = parseAssociationUpdate({ expectation: null }, "ingest");
     expect(parsed.success).toBe(true);
   });
 });
