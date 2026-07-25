@@ -125,7 +125,8 @@ class PgDeliveryRepo(DeliveryRepo):
                 " FROM stac_higher.collection_connections cc"
                 " JOIN stac_higher.connections c ON c.id = cc.connection_id"
                 " WHERE cc.id = %s AND cc.direction = 'deliver'"
-                " AND cc.enabled = true AND c.enabled = true",
+                " AND cc.enabled = true AND c.enabled = true"
+                " AND cc.deleted_at IS NULL AND c.deleted_at IS NULL",
                 (association_id,),
             )
             row = await cur.fetchone()
@@ -181,7 +182,9 @@ class PgDeliveryRepo(DeliveryRepo):
                 " JOIN stac_higher.collection_connections cc ON cc.id = f.association_id"
                 " JOIN stac_higher.connections c ON c.id = cc.connection_id"
                 " WHERE f.item_id = %s AND f.source_href IS NOT NULL"
+                " AND f.reference_removed_at IS NULL"
                 " AND cc.enabled = true AND c.enabled = true"
+                " AND cc.deleted_at IS NULL AND c.deleted_at IS NULL"
                 " ORDER BY f.association_id, f.source_path, f.version DESC",
                 (item_id,),
             )

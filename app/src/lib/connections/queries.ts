@@ -9,6 +9,7 @@ import {
   createConnection,
   deleteConnection,
   getConnection,
+  getConnectionDeleteImpact,
   listConnections,
   resetHostKey,
   updateConnection,
@@ -29,6 +30,15 @@ export function useConnection(id: string) {
   return useQuery({
     queryKey: connectionKeys.detail(id),
     queryFn: () => getConnection(id),
+    enabled: !!id,
+  });
+}
+
+/** Pre-flight deletion impact for the confirm dialog (ADR 0009). */
+export function useConnectionDeleteImpact(id: string | null) {
+  return useQuery({
+    queryKey: connectionKeys.deleteImpact(id ?? "none"),
+    queryFn: () => getConnectionDeleteImpact(id as string),
     enabled: !!id,
   });
 }

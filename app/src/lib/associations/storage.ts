@@ -124,7 +124,7 @@ export async function listAssociations(
     `SELECT ${ASSOCIATION_COLUMNS}
        FROM stac_higher.collection_connections cc
        LEFT JOIN stac_higher.connections c ON c.id = cc.connection_id
-      WHERE cc.collection_id = $1
+      WHERE cc.collection_id = $1 AND cc.deleted_at IS NULL
       ORDER BY cc.created_at DESC`,
     [collectionId],
   );
@@ -139,7 +139,7 @@ export async function getAssociation(
     `SELECT ${ASSOCIATION_COLUMNS}
        FROM stac_higher.collection_connections cc
        LEFT JOIN stac_higher.connections c ON c.id = cc.connection_id
-      WHERE cc.id = $1`,
+      WHERE cc.id = $1 AND cc.deleted_at IS NULL`,
     [id],
   );
   return result.rows[0] ? toAssociationWithGroup(result.rows[0]) : null;
@@ -235,7 +235,7 @@ export async function updateAssociation(
   const result = await query<{ id: string }>(
     `UPDATE stac_higher.collection_connections
         SET ${sets.join(", ")}
-      WHERE id = $${params.length}
+      WHERE id = $${params.length} AND deleted_at IS NULL
       RETURNING id`,
     params,
   );
@@ -243,11 +243,58 @@ export async function updateAssociation(
   return getAssociation(id);
 }
 
+/**
+ * Soft-delete (ADR 0009): the association leaves every listing/read; its
+ * ingest_files and delivery_log history rows are retained as provenance.
+ * Reference-backed items ingested through it keep serving from their recorded
+ * source_href — item removal happens only on CONNECTION delete (ADR 0009 §3).
+ */
 export async function deleteAssociation(id: string): Promise<boolean> {
   await runMigrations();
   const result = await query(
-    `DELETE FROM stac_higher.collection_connections WHERE id = $1`,
+    `UPDATE stac_higher.collection_connections
+        SET deleted_at = now(), updated_at = now()
+      WHERE id = $1 AND deleted_at IS NULL`,
     [id],
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+/** Counted blast radius for the association delete dialog (ADR 0009). */
+export interface AssociationDeleteImpact {
+  /** Provenance rows RETAINED (never deleted). */
+  history: { ingest_files: number; delivery_log: number };
+  /** Items that stay in the catalog but stop being managed via this flow. */
+  reference_items: number;
+}
+
+export async function associationDeleteImpact(
+  id: string,
+): Promise<AssociationDeleteImpact> {
+  await runMigrations();
+  const result = await query<{
+    ingest_files: string;
+    delivery_log: string;
+    reference_items: string;
+  }>(
+    `SELECT
+       (SELECT count(*) FROM stac_higher.ingest_files
+         WHERE association_id = $1)::text AS ingest_files,
+       (SELECT count(*) FROM stac_higher.delivery_log
+         WHERE association_id = $1)::text AS delivery_log,
+       (SELECT count(DISTINCT item_id) FROM stac_higher.ingest_files
+         WHERE association_id = $1
+           AND item_id IS NOT NULL
+           AND source_href IS NOT NULL
+           AND reference_removed_at IS NULL)::text AS reference_items`,
+    [id],
+  );
+  const row = result.rows[0];
+  return {
+    history: {
+      ingest_files: Number(row?.ingest_files ?? 0),
+      delivery_log: Number(row?.delivery_log ?? 0),
+    },
+    reference_items: Number(row?.reference_items ?? 0),
+  };
 }

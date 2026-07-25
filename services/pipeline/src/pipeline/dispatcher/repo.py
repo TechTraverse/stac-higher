@@ -93,7 +93,8 @@ class PgDispatchRepo(DispatchRepo):
                 " FROM stac_higher.collection_connections cc"
                 " JOIN stac_higher.connections c ON c.id = cc.connection_id"
                 " WHERE cc.collection_id = %s AND cc.direction = 'deliver'"
-                " AND cc.enabled = true AND c.enabled = true",
+                " AND cc.enabled = true AND c.enabled = true"
+                " AND cc.deleted_at IS NULL AND c.deleted_at IS NULL",
                 (collection_id,),
             )
             rows = await cur.fetchall()

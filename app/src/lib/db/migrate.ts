@@ -386,6 +386,76 @@ const MIGRATIONS = [
         ADD COLUMN IF NOT EXISTS delivered_assets jsonb NOT NULL DEFAULT '{}'::jsonb;
     `,
   },
+  {
+    // ADR 0009 (deletion semantics), soft-delete half — ISSUES I-51.
+    //
+    // Connections and associations soft-delete: DELETE sets deleted_at (rows
+    // leave all listings and API reads; credentials/host-key are scrubbed
+    // app-side at delete time). History tables (ingest_files, delivery_log,
+    // connection_checks) are passive records that survive their parents —
+    // the FKs flip CASCADE → RESTRICT as belt-and-braces so a future
+    // hard-delete path cannot silently destroy provenance either.
+    //
+    // ingest_files.reference_removed_at marks ledger rows whose reference-
+    // backed items were removed from the catalog with their connection (ADR
+    // 0009 §3): the asset route's reference resolution excludes marked rows,
+    // while the rows themselves are retained as provenance.
+    //
+    // The hard UNIQUE(collection_id, connection_id, direction) becomes a
+    // partial unique index on live rows so a replacement association can be
+    // created after a soft delete. (Dropped via pg_constraint lookup — the
+    // auto-generated name exceeds Postgres's 63-char identifier limit, so a
+    // literal DROP CONSTRAINT would guess wrong.)
+    name: "010_soft_delete_adr_0009",
+    sql: `
+      ALTER TABLE stac_higher.connections
+        ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+      ALTER TABLE stac_higher.collection_connections
+        ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+      ALTER TABLE stac_higher.ingest_files
+        ADD COLUMN IF NOT EXISTS reference_removed_at timestamptz;
+
+      ALTER TABLE stac_higher.connection_checks
+        DROP CONSTRAINT IF EXISTS connection_checks_connection_id_fkey,
+        ADD CONSTRAINT connection_checks_connection_id_fkey
+          FOREIGN KEY (connection_id) REFERENCES stac_higher.connections(id)
+          ON DELETE RESTRICT;
+      ALTER TABLE stac_higher.collection_connections
+        DROP CONSTRAINT IF EXISTS collection_connections_connection_id_fkey,
+        ADD CONSTRAINT collection_connections_connection_id_fkey
+          FOREIGN KEY (connection_id) REFERENCES stac_higher.connections(id)
+          ON DELETE RESTRICT;
+      ALTER TABLE stac_higher.ingest_files
+        DROP CONSTRAINT IF EXISTS ingest_files_association_id_fkey,
+        ADD CONSTRAINT ingest_files_association_id_fkey
+          FOREIGN KEY (association_id) REFERENCES stac_higher.collection_connections(id)
+          ON DELETE RESTRICT;
+      ALTER TABLE stac_higher.delivery_log
+        DROP CONSTRAINT IF EXISTS delivery_log_association_id_fkey,
+        ADD CONSTRAINT delivery_log_association_id_fkey
+          FOREIGN KEY (association_id) REFERENCES stac_higher.collection_connections(id)
+          ON DELETE RESTRICT;
+
+      DO $mig$
+      DECLARE con text;
+      BEGIN
+        SELECT conname INTO con
+          FROM pg_constraint
+         WHERE conrelid = 'stac_higher.collection_connections'::regclass
+           AND contype = 'u';
+        IF con IS NOT NULL THEN
+          EXECUTE format(
+            'ALTER TABLE stac_higher.collection_connections DROP CONSTRAINT %I',
+            con
+          );
+        END IF;
+      END;
+      $mig$;
+      CREATE UNIQUE INDEX IF NOT EXISTS collection_connections_live_unique_idx
+        ON stac_higher.collection_connections (collection_id, connection_id, direction)
+        WHERE deleted_at IS NULL;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

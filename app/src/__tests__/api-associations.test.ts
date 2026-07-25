@@ -12,6 +12,7 @@ vi.mock("@/lib/associations/storage", async (importOriginal) => {
     createAssociation: vi.fn(),
     updateAssociation: vi.fn(),
     deleteAssociation: vi.fn(),
+    associationDeleteImpact: vi.fn(),
   };
 });
 vi.mock("@/lib/collections/settings", () => ({
@@ -31,6 +32,7 @@ vi.mock("@/lib/connections/storage", async (importOriginal) => {
 });
 
 import {
+  associationDeleteImpact,
   createAssociation,
   deleteAssociation,
   getAssociation,
@@ -51,6 +53,7 @@ import {
   PUT as putRoute,
   DELETE as deleteRoute,
 } from "@/pages/api/collections/[id]/connections/[assocId]";
+import { GET as impactRoute } from "@/pages/api/collections/[id]/connections/[assocId]/impact";
 import type { AuthContext, CanonicalRole } from "@/lib/auth/types";
 
 const COLLECTION = "sentinel-2";
@@ -128,6 +131,11 @@ const unowned = {
   gcGraceDays: 30,
 };
 
+const ASSOC_IMPACT = {
+  history: { ingest_files: 5, delivery_log: 2 },
+  reference_items: 1,
+};
+
 const validCreateBody = {
   connection_id: CONN_ID,
   direction: "ingest",
@@ -140,6 +148,7 @@ beforeEach(() => {
   vi.mocked(createAssociation).mockReset().mockResolvedValue(assoc);
   vi.mocked(updateAssociation).mockReset().mockResolvedValue(assoc);
   vi.mocked(deleteAssociation).mockReset().mockResolvedValue(true);
+  vi.mocked(associationDeleteImpact).mockReset().mockResolvedValue(ASSOC_IMPACT);
   vi.mocked(getCollectionSettings).mockReset().mockResolvedValue(unowned);
   vi.mocked(getConnection).mockReset().mockResolvedValue(s3Connection);
 });
@@ -368,12 +377,32 @@ describe("/api/collections/[id]/connections/[assocId]", () => {
     expect(updateAssociation).not.toHaveBeenCalled();
   });
 
-  it("DELETE removes an association for an operator (204)", async () => {
+  it("DELETE soft-deletes for an operator and returns the impact (ADR 0009)", async () => {
     const res = await call(deleteRoute, authed(["operator"]), {
       params,
       method: "DELETE",
     });
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
     expect(deleteAssociation).toHaveBeenCalledWith(ASSOC_ID);
+    const body = await res.json();
+    expect(body.deleted).toBe(true);
+    expect(body.impact).toEqual(ASSOC_IMPACT);
+  });
+
+  it("GET /impact returns the counted impact for an operator", async () => {
+    const res = await call(impactRoute, authed(["operator"]), { params });
+    expect(res.status).toBe(200);
+    expect((await res.json()).impact).toEqual(ASSOC_IMPACT);
+  });
+
+  it("GET /impact 404s an association the caller cannot see", async () => {
+    vi.mocked(getCollectionSettings).mockResolvedValue({
+      ...unowned,
+      groupId: "weather",
+    });
+    const res = await call(impactRoute, authed(["operator"], ["unrelated"]), {
+      params,
+    });
+    expect(res.status).toBe(404);
   });
 });

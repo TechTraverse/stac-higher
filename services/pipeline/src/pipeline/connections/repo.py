@@ -131,7 +131,8 @@ class PgConnectionsRepo(ConnectionsRepo):
                 )
                 conn_ids = [row[1] for row in claimed]
                 await cur.execute(
-                    f"SELECT {_CONNECTION_COLUMNS} FROM stac_higher.connections WHERE id = ANY(%s)",
+                    f"SELECT {_CONNECTION_COLUMNS} FROM stac_higher.connections"
+                    " WHERE id = ANY(%s) AND deleted_at IS NULL",
                     (conn_ids,),
                 )
                 conn_rows = await cur.fetchall()
@@ -187,7 +188,7 @@ class PgConnectionsRepo(ConnectionsRepo):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 f"SELECT {_CONNECTION_COLUMNS} FROM stac_higher.connections"
-                " WHERE enabled = true ORDER BY created_at"
+                " WHERE enabled = true AND deleted_at IS NULL ORDER BY created_at"
             )
             rows = await cur.fetchall()
         return [_to_connection_row(r) for r in rows]

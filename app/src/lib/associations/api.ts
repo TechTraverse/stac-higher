@@ -80,11 +80,30 @@ export async function updateAssociation(
   );
 }
 
+/** Counted deletion blast radius (ADR 0009) — mirrors the server shape. */
+export interface AssociationDeleteImpact {
+  history: { ingest_files: number; delivery_log: number };
+  reference_items: number;
+}
+
+export async function getAssociationDeleteImpact(
+  collectionId: string,
+  id: string,
+): Promise<AssociationDeleteImpact> {
+  const data = await associationFetch<{ impact: AssociationDeleteImpact }>(
+    collectionId,
+    `/${encodeURIComponent(id)}/impact`,
+  );
+  return data.impact;
+}
+
 export async function deleteAssociation(
   collectionId: string,
   id: string,
 ): Promise<void> {
-  await associationFetch<void>(collectionId, `/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+  await associationFetch<{ deleted: boolean }>(
+    collectionId,
+    `/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
 }

@@ -78,8 +78,28 @@ export async function updateConnection(
   });
 }
 
+/** Counted deletion blast radius (ADR 0009) — mirrors the server shape. */
+export interface ConnectionDeleteImpact {
+  associations: { ingest: number; deliver: number };
+  reference_items: { collection_id: string; items: number }[];
+  history: {
+    ingest_files: number;
+    delivery_log: number;
+    connection_checks: number;
+  };
+}
+
+export async function getConnectionDeleteImpact(
+  id: string,
+): Promise<ConnectionDeleteImpact> {
+  const data = await connectionFetch<{ impact: ConnectionDeleteImpact }>(
+    `/${encodeURIComponent(id)}/impact`,
+  );
+  return data.impact;
+}
+
 export async function deleteConnection(id: string): Promise<void> {
-  await connectionFetch<void>(`/${encodeURIComponent(id)}`, {
+  await connectionFetch<{ deleted: boolean }>(`/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
 }

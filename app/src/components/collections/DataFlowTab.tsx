@@ -38,6 +38,7 @@ import { Plus, Trash2, Pencil, Radio } from "lucide-react";
 import { toast } from "sonner";
 import { useConnections } from "@/lib/connections/queries";
 import {
+  useAssociationDeleteImpact,
   useAssociations,
   useCreateAssociation,
   useDeleteAssociation,
@@ -144,6 +145,10 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
   const [editing, setEditing] = useState<Association | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState<Association | null>(null);
+  const deleteImpact = useAssociationDeleteImpact(
+    collectionId,
+    deleteTarget?.id ?? null,
+  );
 
   // Only ingest associations this phase; delivery lands in Phase 5.
   const ingest = useMemo(
@@ -530,10 +535,34 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
             <DialogTitle>Remove ingest source</DialogTitle>
             <DialogDescription>
               Stop ingesting from "{deleteTarget?.connection.name ?? deleteTarget?.connection_id}"?
-              The connection and already-ingested items are kept; only this
-              association and its file ledger are removed.
+              The connection and already-ingested items are kept, and the
+              ingest history is retained.
             </DialogDescription>
           </DialogHeader>
+          <div className="text-sm space-y-1.5">
+            {deleteImpact.isLoading ? (
+              <p className="text-muted-foreground">Calculating impact…</p>
+            ) : deleteImpact.data ? (
+              <>
+                {deleteImpact.data.reference_items > 0 && (
+                  <p>
+                    {deleteImpact.data.reference_items} reference-backed
+                    item(s) keep serving from the source but stop receiving
+                    updates through this flow.
+                  </p>
+                )}
+                <p className="text-muted-foreground">
+                  History retained: {deleteImpact.data.history.ingest_files}{" "}
+                  file records, {deleteImpact.data.history.delivery_log}{" "}
+                  delivery records.
+                </p>
+              </>
+            ) : deleteImpact.isError ? (
+              <p className="text-muted-foreground">
+                Could not calculate the deletion impact.
+              </p>
+            ) : null}
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>
               Cancel
