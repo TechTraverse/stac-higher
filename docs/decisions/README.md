@@ -14,6 +14,7 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0006](0006-ingest-metadata-and-upsert.md) | Ingest metadata extraction + pgstac upsert library choices | accepted | 4 |
 | [0007](0007-outbox-trigger-ownership.md) | Event-outbox trigger ownership + mechanism | accepted | 5 |
 | [0008](0008-bff-catalog-writes.md) | Browser catalog writes go through an app BFF route | accepted (implementation pending) | 5 |
+| [0009](0009-deletion-semantics.md) | Deletion semantics: soft-delete, retained history, warn-and-proceed | accepted (implementation pending) | 5 |
 
 ## Key invariants these establish
 
@@ -25,10 +26,11 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 - **0006** — EXTRACT/ITEMIZE metadata libraries are pinned (`rio-stac==0.12.0`, `pystac==1.15.1`, `rasterio>=1.5,<2`, `defusedxml>=0.7.1`, `stac-pydantic==3.6.0`, `pypgstac[psycopg]==0.9.11`); rasterio's bundled-GDAL wheels mean **no system GDAL, no Dockerfile change**. The `ghcr.io/stac-utils/pgstac` image is pinned to **v0.9.11** to stay in lockstep with the pinned `pypgstac` client — re-test the upsert path on any pgstac bump. ITEMIZE validates with the *core* `stac_pydantic.Item` (not the API variant) as an offline, core-structural gate only; `pypgstac`'s `Methods.upsert` writes item data only (no DDL), keeping ADR 0001's invariant intact.
 - **0007** — The **app** owns the outbox trigger on `pgstac.items` (extends 0001: a trigger on a pgstac table it does not own is licensed provided it writes only into `stac_higher` and the attachment is `IF EXISTS`-guarded + reconciled on every `runMigrations()`). Row-level trigger form — the only one that catches partition-direct/bulk writes. The outbox `op` must never be used to distinguish first-delivery from redelivery (that's `delivery_log`'s job).
 - **0008** — Browser sessions write to the built-in catalog **only through the app BFF route** (server-side session-token injection; token never reaches page JS). External clients keep direct bearer auth at the proxy. Catalog mutations thereby pass the permission guard and land in `audit_log`. Until implemented: I-50.
+- **0009** — Nothing cascades into history: connections/associations **soft-delete** (`deleted_at`, credentials scrubbed at delete time); `ingest_files`/`delivery_log`/`connection_checks` rows are permanent passive records. Every destructive action is **warn-and-proceed** with a counted impact preview — no require-cleanup gates. Deleting a connection removes its reference-backed items (never leaves dead links); deleting a collection deletes real data files via the §6.5 GC path. Until implemented: I-51.
 
 ## Adding an ADR
 
 1. Copy the format of an existing record: a `# ADR NNNN — Title` heading, then **Status**, **Context**, **Decision**, **Consequences** (and **Revisit** if the choice is expected to be reconsidered).
-2. Number sequentially (next: `0009`).
+2. Number sequentially (next: `0010`).
 3. Add a row to the index above and, if it changes an invariant, note it in "Key invariants."
 4. ADRs are immutable once accepted — supersede with a new ADR rather than editing history; mark the old one `superseded by NNNN`.

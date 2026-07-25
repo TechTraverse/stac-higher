@@ -392,3 +392,23 @@ which should land before Phase 6 builds more UI on the pass-through assumption.
   `app/src/lib/stac-api/client.ts`, `app/src/pages/api/proxy.ts`.
 - Blocks: UI CRUD in the production (auth-enforced) posture; catalog-plane audit
   coverage.
+
+### I-51 · Deletion is still hard-CASCADE; ADR 0009 semantics not yet implemented 🔴
+Today a connection DELETE hard-deletes the row and **cascades through
+`collection_connections` into `ingest_files` and `delivery_log`** (migrations
+005/008), destroying provenance/delivery history and breaking reference-backed
+items (their assets resolve from the cascaded-away `ingest_files.source_href`).
+The UI confirm dialog carries no blast-radius information, and collection
+deletion silently orphans canonical bytes in object storage (no GC until
+Phase 6). **Decision made: ADR 0009** — soft-delete + credential scrub for
+connections/associations, retained history rows (CASCADE → RESTRICT), counted
+warn-and-proceed impact previews, reference-backed items removed on connection
+delete, collection-delete impact via the §6.5 GC path, and an `archived`
+collection state (Phase 6). This entry tracks the implementation: the
+soft-delete + warning half belongs in the pre-B-iii hardening wave; the
+GC-dependent half (collection-delete asset removal, `archived`) lands with
+Phase 6.
+- Tracked in: [ADR 0009](decisions/0009-deletion-semantics.md);
+  `app/src/lib/db/migrate.ts` (migrations 005/008),
+  `app/src/lib/connections/storage.ts`, `app/src/lib/associations/*`.
+- Blocks: safe routine connection deletion; honest collection-delete warnings.
