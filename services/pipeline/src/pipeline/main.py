@@ -16,6 +16,7 @@ import uvicorn
 from pipeline.config import Settings
 from pipeline.health import create_health_app
 from pipeline.jobs import (
+    backfill,
     dispatch,
     drain,
     health_sweep,
@@ -39,8 +40,11 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     staging_cleanup.register(queue, settings)
     # Phase 4: poll-based ingest — scheduler + DISCOVER/GROUP/FETCH chain.
     ingest.register(queue, settings)
-    # Phase 5 Slice A: poll-driven delivery dispatch (outbox → match → log).
+    # Phase 5 Slice A: delivery dispatch (outbox → match → enqueue); the poll
+    # is the fallback wake path — main.py also runs the NOTIFY listener.
     dispatch.register(queue, settings)
+    # Phase 5 Slice C: user-initiated backfill bridge (chunked bulk jobs).
+    backfill.register(queue, settings)
     return queue
 
 
@@ -63,7 +67,13 @@ async def run(settings: Settings) -> None:
         extra={"health_port": settings.health_port, "queue_backend": queue.name},
     )
     try:
-        await asyncio.gather(server.serve(), queue.run_worker())
+        # Slice C: the NOTIFY-woken dispatch loop runs alongside the worker as
+        # the primary wake path; the worker's minute dispatch_poll is fallback.
+        await asyncio.gather(
+            server.serve(),
+            queue.run_worker(),
+            dispatch.build_notify_listener(queue, settings),
+        )
     finally:
         await queue.aclose()
 

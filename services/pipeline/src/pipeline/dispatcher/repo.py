@@ -27,6 +27,9 @@ class ItemEvent:
     item_id: str
     op: str
     occurred_at: dt.datetime | None = None
+    #: prior visibility deferrals (I-38): how many claims found the item not
+    #: yet visible and released this event for retry.
+    dispatch_attempts: int = 0
 
 
 #: A claimed-but-unprocessed row older than this is presumed crashed and is
@@ -47,6 +50,15 @@ class DispatchRepo(abc.ABC):
     @abc.abstractmethod
     async def mark_processed(self, event_ids: Sequence[int]) -> None:
         """Stamp processed_at = now() for the given event ids."""
+
+    @abc.abstractmethod
+    async def release_for_retry(
+        self, event_ids: Sequence[int], retry_delay_seconds: int
+    ) -> None:
+        """Release claimed events whose item was not yet visible (I-38): clear
+        the claim, count the attempt, and push ``next_dispatch_at`` out by the
+        cool-off so a drain-until-empty loop cannot burn the retry budget in
+        one wake."""
 
     @abc.abstractmethod
     async def list_deliver_associations(self, collection_id: str) -> list[DeliverAssociation]:
@@ -76,10 +88,14 @@ class PgDispatchRepo(DispatchRepo):
                 "    WHERE processed_at IS NULL"
                 "      AND (claimed_at IS NULL"
                 "           OR claimed_at < now() - make_interval(secs => %s))"
+                # I-38: a visibility-deferred event is out of the claim window
+                # until its cool-off passes.
+                "      AND (next_dispatch_at IS NULL OR next_dispatch_at <= now())"
                 "    ORDER BY id"
                 "    FOR UPDATE SKIP LOCKED"
                 "    LIMIT %s)"
-                " RETURNING e.id, e.collection_id, e.item_id, e.op, e.occurred_at",
+                " RETURNING e.id, e.collection_id, e.item_id, e.op, e.occurred_at,"
+                "           e.dispatch_attempts",
                 (STALE_CLAIM_SECONDS, limit),
             )
             rows = await cur.fetchall()
@@ -88,7 +104,12 @@ class PgDispatchRepo(DispatchRepo):
         rows = sorted(rows, key=lambda r: int(r[0]))
         return [
             ItemEvent(
-                id=int(r[0]), collection_id=r[1], item_id=r[2], op=r[3], occurred_at=r[4]
+                id=int(r[0]),
+                collection_id=r[1],
+                item_id=r[2],
+                op=r[3],
+                occurred_at=r[4],
+                dispatch_attempts=int(r[5]),
             )
             for r in rows
         ]
@@ -101,6 +122,22 @@ class PgDispatchRepo(DispatchRepo):
                 "UPDATE stac_higher.item_events SET processed_at = now()"
                 " WHERE id = ANY(%s)",
                 (list(event_ids),),
+            )
+            await conn.commit()
+
+    async def release_for_retry(  # pragma: no cover
+        self, event_ids: Sequence[int], retry_delay_seconds: int
+    ) -> None:
+        if not event_ids:
+            return
+        async with await self._connect() as conn:
+            await conn.execute(
+                "UPDATE stac_higher.item_events"
+                " SET claimed_at = NULL,"
+                "     dispatch_attempts = dispatch_attempts + 1,"
+                "     next_dispatch_at = now() + make_interval(secs => %s)"
+                " WHERE id = ANY(%s)",
+                (retry_delay_seconds, list(event_ids)),
             )
             await conn.commit()
 

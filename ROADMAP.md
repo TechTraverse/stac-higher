@@ -996,7 +996,25 @@ Delivered in slices (each verify-gated on its own worktree branch off `ai/main`)
   directory-shaped), and the delfer FTP test server does **not** chroot — an
   FTP connection against it needs `root_path=/ftp/demo`. Pipeline 374 pass /
   ruff clean; app verify 517 pass.
-- ⬜ **Slice C — NOTIFY-woken low-latency + user-initiated backfill.** Not started.
+- 🚧 **Slice C — NOTIFY-woken low-latency + user-initiated backfill.** Code
+  done; live verification pending. The dispatcher's primary wake path is now a
+  `LISTEN item_events` loop (`dispatcher/listener.py`, run by `main.py`
+  alongside the worker): each payload-less trigger NOTIFY (ADR 0007) wakes a
+  drain-until-empty dispatch (`dispatch_until_empty`), with the minute
+  `dispatch_poll` cron kept as fallback — overlap is safe (atomic claims,
+  I-40) and the single-instance assumption is documented in the module.
+  The I-38 visibility race got its bounded retry: migration 012 adds
+  `item_events.dispatch_attempts`/`next_dispatch_at`; a claimed event whose
+  item is not yet visible is released with a 15 s cool-off up to 5 attempts,
+  then drains loudly — **resolves I-38**. User-initiated backfill (§6.4)
+  landed as the ADR 0004 bridge pattern: `POST
+  .../connections/[assocId]/backfill` (operator+, audited `backfill`,
+  409 on open duplicates/disabled) inserts a `stac_higher.delivery_backfills`
+  row; the pipeline's minute sweep (`jobs/backfill.py`) claims it (plus
+  stale-running crash resume via `cursor_item_id`), pages the collection's
+  item ids from pgstac, and enqueues chunked bulk `pipeline.deliver` jobs
+  (200 items/job, `asset_keys=None` → re-derived per item), recording
+  progress per chunk and a terminal completed/failed status the app polls.
 - ⬜ **Slice D — Data-flow tab: delivery half (UI).** Not started.
 
 Original phase intent (for reference):
