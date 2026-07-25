@@ -13,6 +13,7 @@ items; INSERT/UPDATEs only ``delivery_log``. Never runs DDL.
 from __future__ import annotations
 
 import abc
+import datetime as dt
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,6 +55,17 @@ class ReferenceSource:
     connection: ConnectionRow
 
 
+@dataclass
+class RetryRow:
+    """A failed delivery_log row due for retry (B-iii sweep)."""
+
+    id: str
+    association_id: str
+    item_id: str
+    attempts: int
+    item_created_at: str | None = None
+
+
 class DeliveryRepo(abc.ABC):
     @abc.abstractmethod
     async def load_target(self, association_id: str) -> DeliverTarget | None:
@@ -82,11 +94,15 @@ class DeliveryRepo(abc.ABC):
         self, association_id: str, item_id: str, item_created_at: str | None
     ) -> str:
         """Insert (or reset to pending) the (association, item) delivery_log row;
-        return its id. ISO-8601 ``item_created_at`` or ``None``."""
+        return its id. ISO-8601 ``item_created_at`` or ``None``. ``attempts``
+        resets only from terminal states (delivered/failed/dead — a NEW event
+        starts a fresh cycle, I-44); a sweep-requeued ``pending`` row keeps its
+        count so ``max_attempts`` dead-lettering can converge."""
 
     @abc.abstractmethod
-    async def mark_delivering(self, row_id: str) -> None:
-        """Flip to delivering and increment attempts."""
+    async def mark_delivering(self, row_id: str) -> int:
+        """Flip to delivering and increment attempts; returns the incremented
+        attempts count (the retry/dead-letter decision keys off it)."""
 
     @abc.abstractmethod
     async def mark_delivered(
@@ -99,8 +115,29 @@ class DeliveryRepo(abc.ABC):
         fingerprint map; clear error."""
 
     @abc.abstractmethod
-    async def mark_failed(self, row_id: str, error: str) -> None:
-        """Flip to failed; record the error message."""
+    async def mark_failed(
+        self,
+        row_id: str,
+        error: str,
+        *,
+        delivered_assets: dict[str, Any] | None = None,
+        next_attempt_at: dt.datetime | None = None,
+        dead: bool = False,
+    ) -> None:
+        """Flip to failed — or ``dead`` when the retry budget is exhausted.
+        Persists the PARTIAL delivered_assets map (ISSUES I-49: a retry must
+        not rewrite already-delivered assets) and, for failed rows, when the
+        retry sweep should pick the row up (``next_attempt_at``)."""
+
+    @abc.abstractmethod
+    async def list_due_retries(self, limit: int) -> list[RetryRow]:
+        """Failed rows whose ``next_attempt_at`` has passed, oldest first."""
+
+    @abc.abstractmethod
+    async def requeue_for_retry(self, row_ids: list[str]) -> None:
+        """Flip due failed rows back to ``pending`` and clear
+        ``next_attempt_at`` so the next sweep tick cannot re-enqueue them
+        while the retry job is still queued."""
 
 
 _TARGET_COLUMNS = "cc.id, cc.collection_id, cc.config"
@@ -213,8 +250,14 @@ class PgDeliveryRepo(DeliveryRepo):
                 " VALUES (%s, %s, %s, 'pending', 0)"
                 " ON CONFLICT (association_id, item_id) DO UPDATE"
                 " SET status = 'pending',"
-                "     attempts = 0,"
+                # A new event on a settled row is a fresh cycle (I-44); a
+                # retry-requeued 'pending'/'delivering' row keeps its count so
+                # max_attempts can dead-letter.
+                "     attempts = CASE"
+                "       WHEN stac_higher.delivery_log.status IN ('pending', 'delivering')"
+                "       THEN stac_higher.delivery_log.attempts ELSE 0 END,"
                 "     item_created_at = EXCLUDED.item_created_at,"
+                "     next_attempt_at = NULL,"
                 "     updated_at = now()"
                 " RETURNING id",
                 (association_id, item_id, item_created_at),
@@ -223,15 +266,18 @@ class PgDeliveryRepo(DeliveryRepo):
             await conn.commit()
         return str(row[0])
 
-    async def mark_delivering(self, row_id: str) -> None:  # pragma: no cover
+    async def mark_delivering(self, row_id: str) -> int:  # pragma: no cover
         async with await self._connect() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 "UPDATE stac_higher.delivery_log"
                 " SET status = 'delivering', attempts = attempts + 1, updated_at = now()"
-                " WHERE id = %s",
+                " WHERE id = %s"
+                " RETURNING attempts",
                 (row_id,),
             )
+            row = await cur.fetchone()
             await conn.commit()
+        return int(row[0]) if row else 1
 
     async def mark_delivered(  # pragma: no cover
         self,
@@ -252,12 +298,63 @@ class PgDeliveryRepo(DeliveryRepo):
             )
             await conn.commit()
 
-    async def mark_failed(self, row_id: str, error: str) -> None:  # pragma: no cover
+    async def mark_failed(  # pragma: no cover
+        self,
+        row_id: str,
+        error: str,
+        *,
+        delivered_assets: dict[str, Any] | None = None,
+        next_attempt_at: dt.datetime | None = None,
+        dead: bool = False,
+    ) -> None:
+        from psycopg.types.json import Json
+
         async with await self._connect() as conn:
             await conn.execute(
                 "UPDATE stac_higher.delivery_log"
-                " SET status = 'failed', error = %s, updated_at = now()"
+                " SET status = %s, error = %s, delivered_assets = %s,"
+                "     next_attempt_at = %s, updated_at = now()"
                 " WHERE id = %s",
-                (error, row_id),
+                (
+                    "dead" if dead else "failed",
+                    error,
+                    Json(delivered_assets or {}),
+                    next_attempt_at,
+                    row_id,
+                ),
+            )
+            await conn.commit()
+
+    async def list_due_retries(self, limit: int) -> list[RetryRow]:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT id, association_id, item_id, attempts, item_created_at"
+                " FROM stac_higher.delivery_log"
+                " WHERE status = 'failed' AND next_attempt_at IS NOT NULL"
+                " AND next_attempt_at <= now()"
+                " ORDER BY next_attempt_at LIMIT %s",
+                (limit,),
+            )
+            rows = await cur.fetchall()
+        return [
+            RetryRow(
+                id=str(r[0]),
+                association_id=str(r[1]),
+                item_id=r[2],
+                attempts=int(r[3]),
+                item_created_at=r[4].isoformat() if r[4] else None,
+            )
+            for r in rows
+        ]
+
+    async def requeue_for_retry(self, row_ids: list[str]) -> None:  # pragma: no cover
+        if not row_ids:
+            return
+        async with await self._connect() as conn:
+            await conn.execute(
+                "UPDATE stac_higher.delivery_log"
+                " SET status = 'pending', next_attempt_at = NULL, updated_at = now()"
+                " WHERE id = ANY(%s)",
+                (row_ids,),
             )
             await conn.commit()

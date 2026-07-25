@@ -30,6 +30,7 @@ from pipeline.storage.platform import build_platform_client
 logger = logging.getLogger(__name__)
 
 JOB_POLL = "pipeline.ingest_poll"
+JOB_RECOVERY_SWEEP = "pipeline.ingest_recovery_sweep"
 JOB_DISCOVER = "pipeline.ingest_discover"
 JOB_GROUP = "pipeline.ingest_group"
 JOB_FETCH = "pipeline.ingest_fetch"
@@ -157,7 +158,27 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             asset_href_base=settings.asset_href_base,
         )
 
+    async def recovery_sweep(timestamp: int) -> None:
+        # Crash recovery (ISSUES I-52): both transitions re-enter the ledger at
+        # 'settled', so the normal GROUP → FETCH chain re-drives them on the
+        # association's next poll tick — no special-case re-dispatch here.
+        repo = PgIngestRepo(settings.database_url)
+        stuck = await repo.sweep_stuck_fetching(settings.ingest_fetch_stall_seconds)
+        retried = await repo.sweep_failed_for_retry(
+            settings.ingest_max_retries, settings.ingest_failed_retry_seconds
+        )
+        if stuck or retried:
+            logger.info(
+                "ingest recovery sweep",
+                extra={
+                    "stuck_fetching_reset": stuck,
+                    "failed_requeued": retried,
+                    "scheduled_timestamp": timestamp,
+                },
+            )
+
     queue.register_periodic(poll, name=JOB_POLL, cron=CRON)
+    queue.register_periodic(recovery_sweep, name=JOB_RECOVERY_SWEEP, cron=CRON)
     queue.register_task(discover, name=JOB_DISCOVER)
     queue.register_task(group, name=JOB_GROUP)
     queue.register_task(fetch, name=JOB_FETCH)

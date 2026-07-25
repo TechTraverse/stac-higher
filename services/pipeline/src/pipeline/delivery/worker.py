@@ -18,6 +18,7 @@ rows.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import logging
 from collections.abc import Callable
@@ -43,6 +44,19 @@ from pipeline.storage import platform
 from pipeline.storage.keys import canonical_asset_key
 
 logger = logging.getLogger(__name__)
+
+#: Retry backoff (B-iii): exponential doubles from the base per attempt, capped;
+#: fixed retries at the base interval. Tuned for the 60s dispatch granularity.
+RETRY_BASE_SECONDS = 60
+RETRY_CAP_SECONDS = 3600
+
+
+def retry_delay_seconds(backoff: str, attempts: int) -> int:
+    """Seconds until the retry sweep should re-drive a failed delivery."""
+    if backoff == "fixed":
+        return RETRY_BASE_SECONDS
+    return min(RETRY_BASE_SECONDS * 2 ** max(attempts - 1, 0), RETRY_CAP_SECONDS)
+
 
 #: Builds a live adapter for a reference-mode item's ingest source connection
 #: (decrypt → adapter; supplied by the deliver job, faked in unit tests).
@@ -139,18 +153,29 @@ async def deliver_item(
         )
         return
     row_id = await repo.upsert_pending(target.id, item_id, item_created_at)
-    await repo.mark_delivering(row_id)
+    attempts = await repo.mark_delivering(row_id)
+    delivered: dict[str, dict[str, Any]] = dict(prior.delivered_assets) if prior else {}
     try:
         ref_sources: dict[str, ReferenceSource] = {}
         if build_source_adapter is not None:
-            ref_sources = {
-                ref.filename: ref
-                for ref in await repo.load_reference_sources(item_id)
-            }
+            for ref in await repo.load_reference_sources(item_id):
+                if ref.filename in ref_sources:
+                    # Basename collision (ISSUES I-49): reference routing is
+                    # keyed by bare filename — two ledger rows sharing one
+                    # mis-route silently, so at minimum say so.
+                    logger.warning(
+                        "reference basename collision — keeping the first source",
+                        extra={
+                            "item_id": item_id,
+                            "ref_filename": ref.filename,
+                            "shadowed_fetch_path": ref.fetch_path,
+                        },
+                    )
+                    continue
+                ref_sources[ref.filename] = ref
         source_adapters: dict[str, StorageAdapter] = {}
         assets = item.get("assets") or {}
         checksums_algo = config.payload.get("checksums")
-        delivered: dict[str, dict[str, Any]] = dict(prior.delivered_assets) if prior else {}
         total = 0
         wrote_any = False
         for key in asset_keys:
@@ -226,18 +251,43 @@ async def deliver_item(
             total += await _write_sidecar(adapter, config, item, item_json_payload(item))
             wrote_any = True
         if config.payload.get("completion_marker") and wrote_any:
-            # LAST (§6.4): a consumer that sees the marker sees every listed file.
+            # LAST (§6.4): a consumer that sees the marker sees every listed
+            # file. Pruned to the item's CURRENT assets (ISSUES I-49): a key
+            # delivered in an earlier cycle but since removed from the item
+            # must not be listed as part of the product.
+            current = {k: v for k, v in delivered.items() if k in assets}
             total += await _write_sidecar(
-                adapter, config, item, completion_payload(item_id, delivered)
+                adapter, config, item, completion_payload(item_id, current)
             )
         await repo.mark_delivered(row_id, total, delivered)
         logger.info(
             "delivery complete",
             extra={"association_id": target.id, "item_id": item_id, "bytes": total},
         )
-    except Exception as exc:  # record + continue, retry is B-iii (not enabled: BLE001)
-        await repo.mark_failed(row_id, str(exc))
+    except Exception as exc:  # record + schedule retry / dead-letter (not enabled: BLE001)
+        dead = attempts >= config.max_attempts
+        next_attempt_at = (
+            None
+            if dead
+            else dt.datetime.now(dt.UTC)
+            + dt.timedelta(seconds=retry_delay_seconds(config.backoff, attempts))
+        )
+        # The partial delivered map is kept (I-49) so the retry skips assets
+        # this cycle already wrote (the overwrite gate sees their fingerprints).
+        await repo.mark_failed(
+            row_id,
+            str(exc),
+            delivered_assets=delivered,
+            next_attempt_at=next_attempt_at,
+            dead=dead,
+        )
         logger.exception(
-            "delivery failed",
-            extra={"association_id": target.id, "item_id": item_id},
+            "delivery dead-lettered" if dead else "delivery failed; retry scheduled",
+            extra={
+                "association_id": target.id,
+                "item_id": item_id,
+                "attempts": attempts,
+                "max_attempts": config.max_attempts,
+                "next_attempt_at": next_attempt_at.isoformat() if next_attempt_at else None,
+            },
         )

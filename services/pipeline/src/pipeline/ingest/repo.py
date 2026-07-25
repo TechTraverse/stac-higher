@@ -123,6 +123,23 @@ class IngestRepo(abc.ABC):
         ``updated_at``. Unknown columns are rejected."""
 
     @abc.abstractmethod
+    async def sweep_stuck_fetching(self, older_than_seconds: int) -> int:
+        """Crash recovery (ISSUES I-52): reset ``fetching`` rows whose
+        updated_at is older than the threshold back to ``settled`` — a worker
+        that died mid-FETCH left them stranded, and FETCH is idempotent
+        against canonical storage. Returns the number of rows reset."""
+
+    @abc.abstractmethod
+    async def sweep_failed_for_retry(
+        self, max_retries: int, older_than_seconds: int
+    ) -> int:
+        """Bounded retry (ISSUES I-52): reset ``failed`` rows with remaining
+        retry budget (``retries < max_retries``) and a cooled-off updated_at
+        back to ``settled``, incrementing ``retries``. Rows at the cap stay
+        ``failed`` (terminal until the Phase 8 operator backfill). Returns the
+        number of rows reset."""
+
+    @abc.abstractmethod
     async def set_ledger_status_many(
         self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
     ) -> None:
@@ -299,6 +316,34 @@ class PgIngestRepo(IngestRepo):
                 (*values, entry_id),
             )
             await conn.commit()
+
+    async def sweep_stuck_fetching(self, older_than_seconds: int) -> int:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.ingest_files"
+                " SET status = 'settled', updated_at = now()"
+                " WHERE status = 'fetching'"
+                " AND updated_at < now() - make_interval(secs => %s)",
+                (older_than_seconds,),
+            )
+            count = cur.rowcount or 0
+            await conn.commit()
+        return count
+
+    async def sweep_failed_for_retry(  # pragma: no cover
+        self, max_retries: int, older_than_seconds: int
+    ) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.ingest_files"
+                " SET status = 'settled', retries = retries + 1, updated_at = now()"
+                " WHERE status = 'failed' AND retries < %s"
+                " AND updated_at < now() - make_interval(secs => %s)",
+                (max_retries, older_than_seconds),
+            )
+            count = cur.rowcount or 0
+            await conn.commit()
+        return count
 
     async def set_ledger_status_many(  # pragma: no cover
         self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None

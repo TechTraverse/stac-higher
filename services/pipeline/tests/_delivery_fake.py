@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +11,7 @@ from pipeline.delivery.repo import (
     DeliveryRepo,
     DeliveryRow,
     ReferenceSource,
+    RetryRow,
 )
 
 
@@ -46,8 +48,16 @@ class FakeDeliveryRepo(DeliveryRepo):
     ) -> str:
         for rid, rec in self.rows.items():
             if (rec["association_id"], rec["item_id"]) == (association_id, item_id):
-                # I-44: a redelivery event starts a fresh attempt cycle.
-                rec.update(status="pending", attempts=0, item_created_at=item_created_at)
+                # I-44: a NEW event on a settled row starts a fresh attempt
+                # cycle; a sweep-requeued pending/delivering row keeps its
+                # count so max_attempts dead-lettering converges (B-iii).
+                if rec["status"] not in ("pending", "delivering"):
+                    rec["attempts"] = 0
+                rec.update(
+                    status="pending",
+                    item_created_at=item_created_at,
+                    next_attempt_at=None,
+                )
                 return rid
         self._seq += 1
         rid = f"row{self._seq}"
@@ -60,13 +70,15 @@ class FakeDeliveryRepo(DeliveryRepo):
             "bytes": None,
             "error": None,
             "delivered_assets": {},
+            "next_attempt_at": None,
         }
         return rid
 
-    async def mark_delivering(self, row_id: str) -> None:
+    async def mark_delivering(self, row_id: str) -> int:
         rec = self.rows[row_id]
         rec["status"] = "delivering"
         rec["attempts"] += 1
+        return rec["attempts"]
 
     async def mark_delivered(
         self,
@@ -82,6 +94,40 @@ class FakeDeliveryRepo(DeliveryRepo):
             delivered_assets=dict(delivered_assets or {}),
         )
 
-    async def mark_failed(self, row_id: str, error: str) -> None:
+    async def mark_failed(
+        self,
+        row_id: str,
+        error: str,
+        *,
+        delivered_assets: dict[str, Any] | None = None,
+        next_attempt_at: dt.datetime | None = None,
+        dead: bool = False,
+    ) -> None:
         rec = self.rows[row_id]
-        rec.update(status="failed", error=error)
+        rec.update(
+            status="dead" if dead else "failed",
+            error=error,
+            delivered_assets=dict(delivered_assets or {}),
+            next_attempt_at=next_attempt_at,
+        )
+
+    async def list_due_retries(self, limit: int) -> list[RetryRow]:
+        now = dt.datetime.now(dt.UTC)
+        due = [
+            RetryRow(
+                id=rid,
+                association_id=rec["association_id"],
+                item_id=rec["item_id"],
+                attempts=rec["attempts"],
+                item_created_at=rec.get("item_created_at"),
+            )
+            for rid, rec in self.rows.items()
+            if rec["status"] == "failed"
+            and rec.get("next_attempt_at") is not None
+            and rec["next_attempt_at"] <= now
+        ]
+        return due[:limit]
+
+    async def requeue_for_retry(self, row_ids: list[str]) -> None:
+        for rid in row_ids:
+            self.rows[rid].update(status="pending", next_attempt_at=None)

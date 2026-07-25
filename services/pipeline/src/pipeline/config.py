@@ -49,6 +49,13 @@ DEFAULT_STAGING_TTL_SECONDS = 86400  # 24h
 
 DEFAULT_ASSET_HREF_BASE = "/api/assets"
 
+# Ingest crash recovery (ISSUES I-52). A FETCH stalled longer than the stall
+# threshold is presumed crashed (idempotent to re-run); failed rows retry after
+# the cool-off, at most max-retries times.
+DEFAULT_INGEST_FETCH_STALL_SECONDS = 1800  # 30 min
+DEFAULT_INGEST_FAILED_RETRY_SECONDS = 300  # 5 min cool-off
+DEFAULT_INGEST_MAX_RETRIES = 3
+
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
     if raw is None:
@@ -81,6 +88,10 @@ class Settings:
     staging_s3_force_path_style: bool = True
     staging_ttl_seconds: int = DEFAULT_STAGING_TTL_SECONDS
     asset_href_base: str = DEFAULT_ASSET_HREF_BASE
+    #: Ingest crash recovery (I-52) — see the DEFAULT_INGEST_* constants.
+    ingest_fetch_stall_seconds: int = DEFAULT_INGEST_FETCH_STALL_SECONDS
+    ingest_failed_retry_seconds: int = DEFAULT_INGEST_FAILED_RETRY_SECONDS
+    ingest_max_retries: int = DEFAULT_INGEST_MAX_RETRIES
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -109,4 +120,19 @@ class Settings:
                 env.get("STAGING_TTL_SECONDS", str(DEFAULT_STAGING_TTL_SECONDS))
             ),
             asset_href_base=env.get("ASSET_HREF_BASE", DEFAULT_ASSET_HREF_BASE),
+            ingest_fetch_stall_seconds=int(
+                env.get(
+                    "INGEST_FETCH_STALL_SECONDS",
+                    str(DEFAULT_INGEST_FETCH_STALL_SECONDS),
+                )
+            ),
+            ingest_failed_retry_seconds=int(
+                env.get(
+                    "INGEST_FAILED_RETRY_SECONDS",
+                    str(DEFAULT_INGEST_FAILED_RETRY_SECONDS),
+                )
+            ),
+            ingest_max_retries=int(
+                env.get("INGEST_MAX_RETRIES", str(DEFAULT_INGEST_MAX_RETRIES))
+            ),
         )

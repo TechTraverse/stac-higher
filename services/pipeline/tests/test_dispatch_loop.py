@@ -106,3 +106,48 @@ async def test_enqueue_happens_before_mark_processed():
     with pytest.raises(RuntimeError):
         await dispatch_once(repo, _boom)
     assert repo.processed == []  # not drained — a redrive will retry
+
+
+# --------------------------------------------------------------------------- #
+# B-iii: per-event isolation (I-39) + atomic claim (I-40)
+# --------------------------------------------------------------------------- #
+
+
+async def test_poison_event_isolated_and_drained():
+    """One event whose item fetch raises must not abort the batch: the healthy
+    event still dispatches and BOTH events drain (the poison one dead-letters
+    into the logs instead of busy-looping the claim)."""
+
+    class _PoisonRepo(FakeDispatchRepo):
+        async def get_item(self, collection_id, item_id):
+            if item_id == "poison":
+                raise RuntimeError("pgstac exploded")
+            return await super().get_item(collection_id, item_id)
+
+    repo = _PoisonRepo(
+        events=[
+            ItemEvent(id=1, collection_id="c", item_id="poison", op="insert"),
+            ItemEvent(id=2, collection_id="c", item_id="ok", op="insert"),
+        ],
+        associations={"c": [DeliverAssociation("a1", "c", {"path_template": "{filename}"})]},
+        items={("c", "ok"): _item("ok")},
+    )
+    enqueue, captured = _collector()
+    matches = await dispatch_once(repo, enqueue)
+    assert [m.item_id for m in matches] == ["ok"]
+    assert sorted(repo.processed) == [1, 2]
+    assert len(captured) == 1
+
+
+async def test_overlapping_dispatch_runs_cannot_double_claim():
+    """I-40: a second dispatch overlapping the first (claimed, not yet marked)
+    must claim nothing — the claim is atomic, not transaction-scoped."""
+    repo = FakeDispatchRepo(
+        events=[ItemEvent(id=1, collection_id="c", item_id="i1", op="insert")],
+        associations={"c": [DeliverAssociation("a1", "c", {"path_template": "{filename}"})]},
+        items={("c", "i1"): _item("i1")},
+    )
+    first = await repo.claim_pending_events(10)
+    assert [e.id for e in first] == [1]
+    # Overlapping run: the row is claimed-but-unprocessed — must not re-claim.
+    assert await repo.claim_pending_events(10) == []

@@ -49,37 +49,55 @@ async def dispatch_once(
     batches: dict[str, dict[str, Any]] = {}
 
     for event in events:
-        # Deletions never propagate to destinations (ROADMAP §6.4) — drain only.
-        if event.op == "delete":
-            continue
-        item = await repo.get_item(event.collection_id, event.item_id)
-        if item is None:
-            # Race: the outbox row beat the item's visibility. Best-effort skip;
-            # a subsequent event re-drives it.
-            logger.warning(
-                "dispatch: item not found for event",
-                extra={"collection_id": event.collection_id, "item_id": event.item_id},
+        # Per-event isolation (ISSUES I-39): one poison event must never abort
+        # the batch — an uncaught raise here would leave the whole claim
+        # unprocessed and busy-loop on the offending row every tick. The
+        # poison event is logged loudly and drained with the batch (its
+        # delivery is skipped — dead-lettered by drain).
+        try:
+            # Deletions never propagate to destinations (ROADMAP §6.4) — drain only.
+            if event.op == "delete":
+                continue
+            item = await repo.get_item(event.collection_id, event.item_id)
+            if item is None:
+                # Race: the outbox row beat the item's visibility. Best-effort
+                # skip; a subsequent event re-drives it.
+                logger.warning(
+                    "dispatch: item not found for event",
+                    extra={
+                        "collection_id": event.collection_id,
+                        "item_id": event.item_id,
+                    },
+                )
+                continue
+            if event.collection_id not in assoc_cache:
+                assoc_cache[event.collection_id] = await repo.list_deliver_associations(
+                    event.collection_id
+                )
+            occurred = event.occurred_at.isoformat() if event.occurred_at else None
+            item_matches = match_item(item, assoc_cache[event.collection_id])
+            for m in item_matches:
+                batch = batches.setdefault(
+                    m.association_id,
+                    {"association_id": m.association_id, "items": []},
+                )
+                batch["items"].append(
+                    {
+                        "item_id": m.item_id,
+                        "asset_keys": list(m.asset_keys),
+                        "item_created_at": occurred,
+                    }
+                )
+            matches.extend(item_matches)
+        except Exception:
+            logger.exception(
+                "dispatch: event dead-lettered (drained without dispatching)",
+                extra={
+                    "event_id": event.id,
+                    "collection_id": event.collection_id,
+                    "item_id": event.item_id,
+                },
             )
-            continue
-        if event.collection_id not in assoc_cache:
-            assoc_cache[event.collection_id] = await repo.list_deliver_associations(
-                event.collection_id
-            )
-        occurred = event.occurred_at.isoformat() if event.occurred_at else None
-        item_matches = match_item(item, assoc_cache[event.collection_id])
-        for m in item_matches:
-            batch = batches.setdefault(
-                m.association_id,
-                {"association_id": m.association_id, "items": []},
-            )
-            batch["items"].append(
-                {
-                    "item_id": m.item_id,
-                    "asset_keys": list(m.asset_keys),
-                    "item_created_at": occurred,
-                }
-            )
-        matches.extend(item_matches)
 
     if batches:
         await enqueue(list(batches.values()))
