@@ -579,6 +579,32 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 5 — Delivery pipeline | 🚧 In progress | **Slice A done** (event outbox + dispatcher skeleton): app migration 007 + **ADR 0007** add the durable `item_events` outbox — a **row-level** trigger on partitioned `pgstac.items` (A0 spike: row-level cascades to every partition incl. future, catching bulk/partition-direct writes a statement-level-on-parent trigger would miss; empty-payload NOTIFY coalesces per-txn) writing one row per change + a payload-less wake. Pipeline `dispatcher/` (poll-driven `dispatch_once`: claim outbox in id order → `pgstac.get_item` → match `direction='deliver'` associations → cql2 `item_filter` + `asset_keys` → **log matched pairs, no transfer yet**) + delivery `config` cross-runtime contract (Zod `deliveryConfigSchema` + Python `delivery/config.py`) + delivery associations now creatable via the API. **Live-verified (2026-07-21):** real trigger fired on insert/delete; real `dispatch_once`/`PgDispatchRepo` vs live pgstac matched only the passing-filter association (both assets), excluded the non-matching one, logged, and drained the outbox; deletes drain without dispatching; idempotent. Finding: pgstac updates surface as delete+insert (ADR 0007). **Slice B-i done + live-verified (2026-07-21):** the byte-moving core — migration 008 `delivery_log`, `delivery/path.py` renderer, adapter `move()`/`put_atomic()`, `delivery/worker.py` `deliver_item`, and dispatcher fan-out (one batched `pipeline.deliver` job per association, enqueue-before-drain). Live-verified 16/16 vs real pgstac + MinIO: trigger → `dispatch_once` → `deliver_item` copied the asset byte-identical to a MinIO destination (`delivery_log` `delivered`/`attempts=1`), a changed re-upsert redelivered into the same row (`attempts=2`, overwrite), a delete drained with no delivery. Pipeline 268 pass/2 skip; app verify 472 pass; 7 task + opus whole-branch reviews clean. Finding I-46: pypgstac upsert emits `insert`/`update`(single)/no-op/`delete` (not the transaction-API delete+insert). **Slice B-ii done + live-verified (2026-07-22):** migration 009 `delivery_log.delivered_assets` (per-asset fingerprint map); `upsert_pending` resets `attempts=0` on redelivery — **resolves I-44**; item-level `on_update` gate + per-asset log-based `overwrite`; payload sidecars (checksum per asset, item JSON every event, `{item_id}.done` completion marker written last); reference-mode reads via the ingest source adapter (ledger-first, enabled-gated, no HTTP client); same-endpoint S3→S3 `CopyObject` with streaming fallback (sha256 checksums force streaming; md5 rides a single-part etag). Pipeline 306 pass/2 skip, ruff clean; app verify 472. **Live-verified 23/23** through the production wiring vs real pgstac + MinIO: real `CopyObject` (etag fingerprint) + full payload at rendered paths, metadata-only update rewrote only the item JSON, changed bytes redelivered, `shasum -c` passed on the sha256 sidecar, `ignore`/`never` policies held, a reference item delivered from its source bucket with no canonical object, and a disabled source failed cleanly then recovered. New residuals I-48 (md5-via-etag ↔ SSE-KMS) and I-49 (reference-delivery residuals). **Slice B-iii (retry→dead-letter, `next_attempt_at`, per-connection concurrency caps, live SFTP/FTP — I-43/I-45/I-47), C (NOTIFY-woken low-latency + backfill), D (Data-flow delivery UI) remain.** |
 | 6–8 | ⬜ Not started | — |
 
+### Named milestones (2026-07-24)
+
+The phases remain the dependency spine, but the project steers by these gates —
+there are no intermediate demos; the first demo is M1, complete:
+
+- **M1 — Demoable core loop.** Ingest from one S3 bucket → built-in catalog
+  (STAC API) → disseminate to another S3/MinIO destination, **driven entirely
+  through the UI** (create connections, configure a collection's ingest *and*
+  delivery associations in the Data-flow tab, watch the payload land), running
+  **auth-enforced with real login**, surviving a dead destination (retry →
+  dead-letter, not a stuck queue). The underlying byte loop is already
+  live-verified (Slice B-ii, 23/23); M1 is the UI + auth + robustness shell
+  around it. Requires: the pre-B-iii hardening wave (I-39 pair, ADR 0009
+  soft-delete half, cross-runtime contract fixtures), Slice B-iii, Slice C,
+  Slice D, and the ADR 0008 BFF (I-50) so the UI works under enforcement.
+- **M2 — Operable platform** (Phase 6): monitoring/alerts, `/metrics`,
+  partitioning + retention/GC, archived collections (ADR 0009's GC half).
+- **M3 — NOAA-scale readiness:** sustained ~30 items/s (~2.6M items/day,
+  mission-critical subscribers) — dispatcher throughput headroom beyond
+  Slice C, concurrency-safe multi-worker operation (I-40 and the ingest-ledger
+  claims), and a measured load rehearsal against a synthetic 30 items/s feed.
+  This pulls the Phase 8 load-gate *measurement* forward; the AWS/IaC half of
+  Phase 8 stays put.
+- **M4 — Production deployment** (Phases 7–8 as required by the target
+  environment).
+
 Per-phase detail and any carried-forward items are noted inline below.
 
 ### Phase 0 — Foundations ✅ **Done (2026-07-14)**
