@@ -598,7 +598,13 @@ there are no intermediate demos; the first demo is M1, complete:
   live-verified (Slice B-ii, 23/23); M1 is the UI + auth + robustness shell
   around it. Requires: the pre-B-iii hardening wave (I-39 pair, ADR 0009
   soft-delete half, cross-runtime contract fixtures), Slice B-iii, Slice C,
-  Slice D, and the ADR 0008 BFF (I-50) so the UI works under enforcement.
+  Slice D, and the ADR 0008 BFF (I-50) so the UI works under enforcement
+  — **BFF implemented + integration-verified 2026-07-25** (9/9 vs the
+  enforced stack: real session login → `/api/catalog` write with only the
+  httpOnly cookie → 2xx through the proxy → `catalog_collection` audit row;
+  anonymous 401; non-transaction paths 404; needs
+  `SAFE_FETCH_ALLOW_HOSTS=localhost` in local dev, per the existing
+  safeFetch rule).
 - **M2 — Operable platform** (Phase 6): monitoring/alerts, `/metrics`,
   partitioning + retention/GC, archived collections (ADR 0009's GC half).
 - **M3 — NOAA-scale readiness:** sustained ~30 items/s (~2.6M items/day,

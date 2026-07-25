@@ -43,7 +43,7 @@ the referenced ISSUES/ADR entries.
 
 ## BFF (ADR 0008)
 
-- [ ] **I-50 BFF** — built-in-catalog browser writes routed through an app
+- [x] **I-50 BFF** — built-in-catalog browser writes routed through an app
       server route with server-side session-token injection; register the
       route in the permission guard (RBAC + audit); client routing branch in
       `stacFetch`; UI-path leg in `tests/integration/` replacing the
