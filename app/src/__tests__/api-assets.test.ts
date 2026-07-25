@@ -1,8 +1,14 @@
 // @vitest-environment node
 // (asset access route — offline presigning, no MinIO needed)
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { GET as assetRoute } from "@/pages/api/assets/[collection]/[item]/[asset]";
 import type { AuthContext, CanonicalRole } from "@/lib/auth/types";
+
+// The reference-mode seam queries Postgres before the canonical presign path;
+// stub it (no referenced row) so the test stays offline as designed.
+vi.mock("@/lib/storage/reference", () => ({
+  lookupReferenceHref: vi.fn().mockResolvedValue(null),
+}));
 
 function authed(roles: CanonicalRole[] = ["member"]): AuthContext {
   return {
