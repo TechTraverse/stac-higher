@@ -8,7 +8,7 @@ the referenced ISSUES/ADR entries.
 
 ## Pre-B-iii hardening wave
 
-- [ ] **I-39 pair** — make `associationUpdateSchema` direction-aware
+- [x] **I-39 pair** — make `associationUpdateSchema` direction-aware
       (discriminated like the create schema) and wrap the per-association body
       in `match_item` — including `parse_delivery_config` — in the isolation
       guard so a bad config skips that association, never the batch.
@@ -69,3 +69,8 @@ the referenced ISSUES/ADR entries.
 ## Discovered follow-ups
 
 (append here during iterations)
+
+- Fixed in the I-39 iteration: `api-assets.test.ts` 500'd with the Docker
+  stack down (the Phase 4 reference seam added an unmocked Postgres query
+  ahead of the offline presign path) — now stubs `lookupReferenceHref`.
+  Watch for the same pattern if other unit-tested routes grow DB lookups.
