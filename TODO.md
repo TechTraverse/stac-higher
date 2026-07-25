@@ -14,7 +14,7 @@ the referenced ISSUES/ADR entries.
       guard so a bad config skips that association, never the batch.
       (ISSUES I-39; app `associations/schemas.ts` + pipeline
       `delivery/matcher.py`, `dispatcher/loop.py`.)
-- [ ] **I-53 contract fixtures** — golden JSON fixtures (valid + invalid
+- [x] **I-53 contract fixtures** — golden JSON fixtures (valid + invalid
       ingest/delivery config documents) in one shared location, consumed by
       both the vitest and pytest suites; add the "new cross-runtime shape ⇒
       new shared fixture" rule to AGENTS.md.
@@ -74,3 +74,6 @@ the referenced ISSUES/ADR entries.
   stack down (the Phase 4 reference seam added an unmocked Postgres query
   ahead of the offline presign path) — now stubs `lookupReferenceHref`.
   Watch for the same pattern if other unit-tested routes grow DB lookups.
+- Fixed in the I-53 iteration: whitespace-only `source_path`/`path_template`
+  passed Zod's `min(1)` but the Python parsers `.strip()`-reject — the Zod
+  schemas now use a non-blank refine (found by writing the fixtures).
