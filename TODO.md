@@ -18,7 +18,7 @@ the referenced ISSUES/ADR entries.
       ingest/delivery config documents) in one shared location, consumed by
       both the vitest and pytest suites; add the "new cross-runtime shape ⇒
       new shared fixture" rule to AGENTS.md.
-- [ ] **I-51 soft-delete half (ADR 0009)** — `deleted_at` on
+- [x] **I-51 soft-delete half (ADR 0009)** — `deleted_at` on
       connections/associations + credential/host-key scrub on delete; CASCADE →
       RESTRICT FKs; partial unique indexes on `deleted_at IS NULL`; pipeline
       not-deleted filters (scheduler, matcher, reference-source loader);
@@ -77,3 +77,13 @@ the referenced ISSUES/ADR entries.
 - Fixed in the I-53 iteration: whitespace-only `source_path`/`path_template`
   passed Zod's `min(1)` but the Python parsers `.strip()`-reject — the Zod
   schemas now use a non-blank refine (found by writing the fixtures).
+- ADR 0009 leaves ASSOCIATION-delete reference semantics implicit: deleting a
+  reference-mode ingest association (connection kept) leaves its items serving
+  from `source_href` with no update path — the same "unmanaged dead links"
+  argument that justified removal on connection delete. Decide in Phase 6
+  whether association delete should also remove (or the dialog should push
+  toward disable-instead-of-delete).
+- Deleted-connection `connection_checks` claims now skip the scrubbed row
+  (`deleted_at IS NULL` in the drain's connection load), which strands such a
+  check at `running`. Harmless (the app can no longer poll it — the parent
+  404s) but worth a cleanup sweep when B-iii adds the stalled-job sweeps.
