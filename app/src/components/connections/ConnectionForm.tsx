@@ -67,7 +67,19 @@ const hostConfigFields = (placeholder: string): FieldDef[] => [
   { name: "root_path", label: "Root path", type: "text", placeholder: "/" },
 ];
 const sshConfigFields = hostConfigFields("sftp.example.com");
-const ftpConfigFields = hostConfigFields("ftp.example.com");
+// FTP servers that don't chroot logins resolve paths from the server root, so
+// root_path must be the absolute server-side directory (B-iii live finding —
+// e.g. the delfer test server needs /ftp/demo, not /).
+const ftpConfigFields = hostConfigFields("ftp.example.com").map((f) =>
+  f.name === "root_path"
+    ? {
+        ...f,
+        help:
+          "Servers that don't restrict (chroot) logins to their home " +
+          "directory need the absolute server-side path here, e.g. /ftp/demo.",
+      }
+    : f,
+);
 
 const CONFIG_FIELDS: Record<WritableProtocol, FieldDef[]> = {
   s3: [

@@ -36,6 +36,22 @@ describe("matchGatedRoute — /api/collections/[id]/connections (Phase 4)", () =
     expect(matchGatedRoute("GET", `${base}/${ASSOC}`)).toBeNull();
   });
 
+  it("gates POST .../redeliver as an audited redeliver action (Slice D)", () => {
+    const DELIVERY = "3a9f1c2e-0000-4000-8000-0000000000d1";
+    expect(
+      matchGatedRoute(
+        "POST",
+        `${base}/${ASSOC}/deliveries/${DELIVERY}/redeliver`,
+      ),
+    ).toEqual({
+      action: "redeliver",
+      resourceType: "collection_connection",
+      resourceId: ASSOC,
+    });
+    // Reading delivery status stays an open read.
+    expect(matchGatedRoute("GET", `${base}/${ASSOC}/deliveries`)).toBeNull();
+  });
+
   it("gates POST .../backfill as an audited backfill action (Slice C)", () => {
     expect(matchGatedRoute("POST", `${base}/${ASSOC}/backfill`)).toEqual({
       action: "backfill",

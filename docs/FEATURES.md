@@ -257,7 +257,35 @@ Entry points:
   `pipeline.deliver` jobs, progress per chunk, stale-running crash resume) +
   `jobs/backfill.py` (`pipeline.delivery_backfill_sweep`, minute cron).
 
-Slice **D** (Data-flow delivery UI) is not started.
+**Slice D — Data-flow tab delivery half (UI)** (done). Entry points:
+
+- **Delivery section** — `app/src/components/collections/DeliverySection.tsx`
+  (cards per deliver association: §5.1 config summary, enable/disable,
+  backfill request + poll via the Slice C endpoints, delivery status panel
+  with per-status counts and recent `delivery_log` rows, redeliver on dead
+  rows) + `DeliveryFormDialog.tsx` (create/edit: path template, CQL2 item
+  filter, asset keys, payload toggles, `on_update`, `overwrite`, retry,
+  concurrency) + the shared `AssociationDeleteDialog.tsx` (ADR 0009 impact
+  preview, now used by both halves). `DataFlowTab.tsx` renders both halves.
+- **Delivery status API** — `GET
+  /api/collections/[id]/connections/[assocId]/deliveries` (member+ with
+  association visibility): recent rows + zero-filled per-status counts
+  (`app/src/lib/associations/deliveries.ts`). Attempts are surfaced as
+  **per-cycle** counts (I-44 semantics — a new item event or a redeliver
+  starts a fresh cycle), and the UI labels them that way.
+- **Redeliver (dead-letter recovery)** — `POST
+  .../deliveries/[deliveryId]/redeliver` (operator+, audited `redeliver`):
+  flips a `dead` row to `failed` with `attempts = 0` and a due
+  `next_attempt_at`; the pipeline's retry sweep requeues it (ADR 0004 bridge
+  pattern — the app never enqueues jobs). Status-guarded UPDATE, so a
+  concurrent flip cannot double-fire.
+- **Query layer** — `useDeliveries` (15s poll), `useRedeliver`,
+  `useRequestBackfill` + `useBackfill` (3s poll to terminal status) in
+  `app/src/lib/associations/queries.ts`; client functions in `api.ts`.
+- Ride-alongs: FTP `root_path` help text in the connection form (B-iii live
+  finding — non-chrooting servers need the absolute path) and a fix for the
+  required-but-omitted `EmptyState` icon that crashed both empty Data-flow
+  halves.
 
 ## Phases 6–8 — Not started ⬜
 

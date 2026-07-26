@@ -32,9 +32,15 @@ export function isAdmin(identity: CanonicalIdentity): boolean {
   return identity.roles.includes("admin");
 }
 
-/** `test` = test-connection, `backfill` = deliver-association backfill
- * (ROADMAP §5 audit action enum). */
-export type GatedAction = "create" | "update" | "delete" | "test" | "backfill";
+/** `test` = test-connection, `backfill` = deliver-association backfill,
+ * `redeliver` = dead-letter recovery (ROADMAP §5 audit action enum). */
+export type GatedAction =
+  | "create"
+  | "update"
+  | "delete"
+  | "test"
+  | "backfill"
+  | "redeliver";
 
 export interface GatedRouteMatch {
   action: GatedAction;
@@ -126,6 +132,20 @@ export function matchGatedRoute(
       action: "backfill",
       resourceType: "collection_connection",
       resourceId: collConnBackfill[2],
+    };
+  }
+  // Slice D: redelivering a dead-lettered delivery_log row is a gated,
+  // audited action (§6.4 dead-letter recovery — explicit and user-initiated).
+  // Audited against the association (the delivery row id stays in the path
+  // detail); group ownership is enforced in-route.
+  const collConnRedeliver = path.match(
+    /^\/api\/collections\/([^/]+)\/connections\/([^/]+)\/deliveries\/([^/]+)\/redeliver$/,
+  );
+  if (m === "POST" && collConnRedeliver) {
+    return {
+      action: "redeliver",
+      resourceType: "collection_connection",
+      resourceId: collConnRedeliver[2],
     };
   }
   const collConnId = path.match(
