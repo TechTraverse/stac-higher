@@ -605,6 +605,38 @@ there are no intermediate demos; the first demo is M1, complete:
   anonymous 401; non-transaction paths 404; needs
   `SAFE_FETCH_ALLOW_HOSTS=localhost` in local dev, per the existing
   safeFetch rule).
+  **M1 demo rehearsal RUN 2026-07-26 — full loop closed through the UI on
+  the auth-enforced stack** (overlay compose up, anonymous transaction POST →
+  401; app in `AUTH_MODE=oidc`): real Keycloak login as alice (operator) →
+  created `m1 source`/`m1 dest` S3 connections in the wizard (MinIO
+  `m1-source`/`m1-dest` buckets), both Test-verified **OK** through the ADR
+  0004 bridge → created collection `m1-demo` via the BFF with the session
+  token → configured the ingest source (poll 60s, `**/*.tif`) and the
+  delivery destination (Slice D dialog: `{collection}/{yyyy}/{mm}/{dd}/
+  {item_id}/{filename}`, item JSON + sha256 sidecars + completion marker,
+  max_attempts 3) in the Data-flow tab → dropped `m1-scene-001.tif` in the
+  source bucket → **item queryable in the catalog and full payload
+  (asset + .sha256 + item JSON + .done) byte-identical in `m1-dest` 62 s
+  after the drop**; Slice D panel showed `1 delivered / 1 attempt`. Dead
+  destination: broke `m1 dest` credentials via the edit dialog (write-only
+  replace), dropped scene-002 → delivery failed (`SignatureDoesNotMatch`
+  surfaced in the status panel), attempts climbed 1→3 on the exponential
+  sweep → **`dead`, `next_attempt_at` cleared (terminal, not a stuck
+  queue)**; health sweep flagged the connection **Error** on `/connections`.
+  Recovery: fixed credentials in the UI → **Redeliver** button on the dead
+  row (audited `redeliver`, 202) flipped it into a fresh cycle → retry sweep
+  delivered it (`delivered / 1 attempt`, sha256 verified). Audit trail for
+  the whole rehearsal: 2 logins, 2 connection creates + 2 updates + 2 tests,
+  1 BFF collection create, 2 association creates, 1 redeliver. **Two real
+  findings, logged as ISSUES I-54/I-55 and TODO items:** (1) pgstac 0.9.10's
+  `get_tstz_constraint` regex drops fractional seconds, so the second
+  single-item load into a collection dies on a partition CheckViolation —
+  live-hotfixed in the dev DB only (durable fix is its own task,
+  M1-blocking on fresh stacks); (2) ingest jobs carry no queue-level retry
+  and an itemize crash strands the ledger at `stored`, outside the I-52
+  sweeps' reach (recovered by flipping to `failed`, which the sweep then
+  re-drove exactly as designed). **ai/main → main promotion (the PR) remains
+  — human step.**
 - **M2 — Operable platform** (Phase 6): monitoring/alerts, `/metrics`,
   partitioning + retention/GC, archived collections (ADR 0009's GC half).
 - **M3 — NOAA-scale readiness:** sustained ~30 items/s (~2.6M items/day,

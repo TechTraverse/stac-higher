@@ -446,3 +446,46 @@ fixtures surfaced one real drift, fixed with them: whitespace-only
 too. The direction-aware update schema (the app half of I-39) landed in the
 prior iteration.
 - Resolved by: the pre-B-iii hardening wave (`ai/i53-fixtures`), 2026-07-25.
+
+### I-54 · pgstac 0.9.10 partition-constraint parser breaks on fractional-second datetimes — M1-blocking, live DB hotfixed 🔴
+Found in the M1 demo rehearsal (2026-07-26). After the first item loads into a
+collection, pgstac's `update_partition_stats` rewrites the partition's CHECK
+constraint to the tight min/max of the loaded data — including **fractional
+seconds** (our EXTRACT datetimes carry microseconds). pgstac's
+`get_tstz_constraint` then re-parses that constraint with the regex class
+`[0-9 :+\-]`, which omits `.`, so the parse fails and
+`partition_sys_meta.constraint_dtrange` reads unbounded `(,)`. pypgstac's
+loader consults that metadata, concludes no constraint widening is needed, and
+every subsequent single-item load with a different datetime dies with
+`CheckViolation` on `_items_N_dt` (tenacity retries ~3 min, then the job
+fails permanently). Any collection receiving a second item in a later load is
+affected — the exact NRT shape M1 demos. Earlier live runs missed it because
+they loaded batches in one call or re-upserted the same item (same datetime).
+**Live hotfix applied to the local dev DB only** (not durable): `CREATE OR
+REPLACE` of `pgstac.get_tstz_constraint` with `.` added to the character
+class — after which the second load widened the constraint and itemized
+cleanly. Durable fix needed before any fresh stack works: either a pinned
+hotfix migration (extends ADR 0007's boundary — app patching a pgstac
+function), an upstream fix/upgrade (check newer pgstac releases for this
+regex), or second-precision datetimes at EXTRACT (only covers our generated
+datetimes, not real data). Decide + implement as its own task.
+- Found in: M1 rehearsal (ROADMAP §9 M1 evidence).
+- Blocks: M1 on any freshly-provisioned stack (the local dev DB is patched).
+
+### I-55 · Ingest jobs have no queue-level retry; an itemize crash strands the ledger at `stored`, invisible to the I-52 sweeps 🔴
+`itemize.py` deliberately lets unexpected exceptions propagate with the
+comment "the job retries (transient DB errors)" — but `register_task`
+(`queue/procrastinate_backend.py`) registers every task with **no retry
+strategy**, so Procrastinate marks the job failed after one attempt. The
+ledger rows stay `stored` (FETCH's mark), a state neither I-52 recovery sweep
+covers (`fetching`-stalled and `failed` only) — the file silently never
+becomes an item, with no alarm and no retry. Hit live in the M1 rehearsal via
+I-54 (the CheckViolation was the unexpected exception); recovered manually by
+flipping the row to `failed` so the sweep re-drove it (which worked exactly
+as designed from there). Fix options: give ingest tasks a Procrastinate retry
+strategy matching the comment's intent, extend the recovery sweep to re-settle
+`stored` rows older than a stall window (itemize is idempotent — pypgstac
+upsert), or both. Also audit `fetch`/`group`/`discover` and `deliver` for the
+same propagate-without-retry assumption.
+- Found in: M1 rehearsal (ROADMAP §9 M1 evidence).
+- Blocks: honest "no stuck queue" claims for M1; NRT robustness (M3).

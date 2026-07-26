@@ -58,13 +58,33 @@ the referenced ISSUES/ADR entries.
 
 ## M1 gate
 
-- [ ] **M1 demo rehearsal** — full loop driven through the UI on the
+- [x] **M1 demo rehearsal** — full loop driven through the UI on the
       auth-enforced stack (lead only: dev server + Docker + e2e): create both
       S3 connections, configure ingest + delivery on a collection, drop a file
       in the source bucket, watch the item appear in the catalog and the
       payload land in the destination bucket; kill the destination mid-run and
       show retry → dead-letter → redeliver. Record evidence in ROADMAP; then
       promote `ai/main → main` via PR.
+      **Run 2026-07-26, evidence in ROADMAP §9 M1. Two findings (I-54, I-55)
+      queued below. The `ai/main → main` PR is the remaining human step.**
+
+## Post-rehearsal fixes (M1 findings, 2026-07-26)
+
+- [ ] **I-54 durable fix** — pgstac 0.9.10 `get_tstz_constraint` drops
+      fractional seconds when re-parsing partition CHECK constraints, so the
+      second single-item load into a collection dies on a CheckViolation
+      (dev DB carries a manual `CREATE OR REPLACE` hotfix; any fresh stack
+      breaks). Check upstream pgstac for a fix/release first; otherwise ship
+      the patched function as a pinned, documented hotfix migration
+      (extends ADR 0007's boundary — note it there) with a test that loads
+      two items with microsecond datetimes into one collection.
+      (ISSUES I-54.)
+- [ ] **I-55 ingest-job retry + `stored`-stall recovery** — register ingest
+      (and audit deliver) tasks with a Procrastinate retry strategy matching
+      itemize.py's "propagates → retries" comment, and/or extend the I-52
+      recovery sweep to re-settle `stored` rows older than a stall window
+      (itemize is idempotent). Unit-test the itemize-crash path re-driving to
+      `itemized`. (ISSUES I-55.)
 
 ## Discovered follow-ups
 
