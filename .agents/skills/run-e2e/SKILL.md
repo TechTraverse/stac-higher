@@ -13,6 +13,11 @@ description: Run the Playwright e2e suite for the STAC Higher app, or debug a fa
 2. **Dev server**: Playwright reuses an existing server on :4321, otherwise
    auto-starts one. Never run e2e while another agent owns the dev server or
    the suite — the DB is shared and the suite is serial.
+3. **Credentials key**: `data-flow.spec.ts` creates a connection via the API,
+   which needs `CREDENTIALS_MASTER_KEY` in the dev server's env. It lives in
+   the repo-root `.env` (docker-compose's env file), which Astro does NOT load
+   — source it before running: `set -a && source ../.env && set +a` (from
+   `app/`), or export the var before starting a dev server manually.
 
 ## Run
 

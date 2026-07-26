@@ -51,7 +51,7 @@ the referenced ISSUES/ADR entries.
 
 ## Slice D — delivery UI
 
-- [ ] **Slice D** — Data-flow tab delivery half: delivery association
+- [x] **Slice D** — Data-flow tab delivery half: delivery association
       create/edit (path template, filters, payload options, `on_update`,
       overwrite, retry), enable/disable, redeliver action, delivery status
       surfaced from `delivery_log`.
@@ -104,4 +104,18 @@ the referenced ISSUES/ADR entries.
 - Slice D prerequisite discovered in Slice C: `delivery_log` has no API read
   route yet — the "delivery status surfaced from delivery_log" half of
   Slice D needs a member+-visible read endpoint (mirror the backfill-poll
-  access pattern) before the UI can render status.
+  access pattern) before the UI can render status. **Done in Slice D**
+  (`GET .../deliveries` + `POST .../deliveries/[id]/redeliver`), along with
+  the FTP root-path help text and "attempts this cycle" labeling notes above.
+- Fixed in the Slice D iteration: `EmptyState` requires an `icon` prop that
+  `DataFlowTab`'s ingest empty state never passed — any collection with zero
+  ingest sources crashed the tab render. Both halves now pass icons; if a
+  shared component's required prop is this easy to omit, consider making
+  `icon` optional with a default in a future shared-package pass.
+- Slice D deferral: the §5.1 flow `expectation`
+  (`expect_activity_within_seconds`) is not editable in either Data-flow form
+  half — it's the Phase 6 absence-of-data alert knob; surface it when the
+  alerting UI lands (M2).
+- e2e precondition added in Slice D: `data-flow.spec.ts` creates a connection
+  through the API, so the dev server needs `CREDENTIALS_MASTER_KEY` (source
+  the repo-root `.env` first — documented in the `run-e2e` skill).

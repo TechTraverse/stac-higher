@@ -111,8 +111,12 @@ test.describe("Data flow tab — delivery half", () => {
     await expect(page.getByText(/No deliveries yet/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Backfill" })).toBeEnabled();
 
-    // Edit round-trips the stored config.
-    await page.getByRole("button", { name: "Edit" }).click();
+    // Edit round-trips the stored config. (Scoped: the page header has a
+    // collection-level Edit button too.)
+    await page
+      .getByRole("tabpanel")
+      .getByRole("button", { name: "Edit" })
+      .click();
     await expect(page.getByLabel("Path template")).toHaveValue(
       "{collection}/{yyyy}/{mm}/{dd}/{item_id}/{filename}",
     );
@@ -129,7 +133,7 @@ test.describe("Data flow tab — delivery half", () => {
     // Remove via the shared impact dialog.
     await page.getByRole("button", { name: "Remove" }).click();
     await expect(
-      page.getByText("Remove delivery destination", { exact: true }),
+      page.getByRole("heading", { name: "Remove delivery destination" }),
     ).toBeVisible();
     await expect(page.getByText(/History retained/)).toBeVisible();
     await page
