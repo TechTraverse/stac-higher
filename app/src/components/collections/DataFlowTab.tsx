@@ -1,10 +1,11 @@
 /**
- * Collection "Data flow" tab — ingest half (ROADMAP §8, Phase 4).
+ * Collection "Data flow" tab (ROADMAP §8): the ingest half (Phase 4) inline
+ * below, plus the delivery half (Phase 5 Slice D, `DeliverySection`).
  *
  * Associates connections to this (built-in-catalog) collection as ingest
- * sources and edits the §5.1 ingest config. Delivery is Phase 5. Ingest state
- * lives in `stac_higher` (not the catalog), so this reads/writes the same-origin
- * `/api/collections/[id]/connections` surface, never `stacFetch`.
+ * sources / delivery destinations and edits the §5.1 configs. Flow state
+ * lives in `stac_higher` (not the catalog), so this reads/writes the
+ * same-origin `/api/collections/[id]/connections` surface, never `stacFetch`.
  */
 import { useMemo, useState } from "react";
 import {
@@ -38,10 +39,8 @@ import { Plus, Trash2, Pencil, Radio } from "lucide-react";
 import { toast } from "sonner";
 import { useConnections } from "@/lib/connections/queries";
 import {
-  useAssociationDeleteImpact,
   useAssociations,
   useCreateAssociation,
-  useDeleteAssociation,
   useUpdateAssociation,
 } from "@/lib/associations/queries";
 import type { Association } from "@/lib/associations/types";
@@ -49,6 +48,8 @@ import type {
   AssociationCreateInput,
   AssociationUpdateInput,
 } from "@/lib/associations/schemas";
+import { AssociationDeleteDialog } from "./AssociationDeleteDialog";
+import { DeliverySection } from "./DeliverySection";
 
 const STATUS_VARIANT: Record<string, "secondary" | "default" | "destructive"> = {
   ok: "default",
@@ -139,20 +140,18 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
   const connections = useConnections();
   const createMutation = useCreateAssociation(collectionId);
   const updateMutation = useUpdateAssociation(collectionId);
-  const deleteMutation = useDeleteAssociation(collectionId);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Association | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState<Association | null>(null);
-  const deleteImpact = useAssociationDeleteImpact(
-    collectionId,
-    deleteTarget?.id ?? null,
-  );
 
-  // Only ingest associations this phase; delivery lands in Phase 5.
   const ingest = useMemo(
     () => (associations.data ?? []).filter((a) => a.direction === "ingest"),
+    [associations.data],
+  );
+  const deliver = useMemo(
+    () => (associations.data ?? []).filter((a) => a.direction === "deliver"),
     [associations.data],
   );
 
@@ -225,17 +224,6 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
     );
   };
 
-  const confirmDelete = () => {
-    if (!deleteTarget) return;
-    deleteMutation.mutate(deleteTarget.id, {
-      onSuccess: () => {
-        toast.success("Ingest source removed");
-        setDeleteTarget(null);
-      },
-      onError: (err) => toast.error(err.message),
-    });
-  };
-
   if (associations.isLoading) return <LoadingState message="Loading data flow…" />;
   if (associations.error) {
     return (
@@ -251,7 +239,8 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
+      <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Ingest sources</h2>
@@ -267,6 +256,7 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
 
       {ingest.length === 0 ? (
         <EmptyState
+          icon={Radio}
           title="No ingest sources yet"
           description="Associate a connection to start pulling files into this collection."
         />
@@ -344,6 +334,13 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
           })}
         </div>
       )}
+      </div>
+
+      <DeliverySection
+        collectionId={collectionId}
+        associations={deliver}
+        connections={connections.data ?? []}
+      />
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-lg">
@@ -526,57 +523,11 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Remove ingest source</DialogTitle>
-            <DialogDescription>
-              Stop ingesting from "{deleteTarget?.connection.name ?? deleteTarget?.connection_id}"?
-              The connection and already-ingested items are kept, and the
-              ingest history is retained.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="text-sm space-y-1.5">
-            {deleteImpact.isLoading ? (
-              <p className="text-muted-foreground">Calculating impact…</p>
-            ) : deleteImpact.data ? (
-              <>
-                {deleteImpact.data.reference_items > 0 && (
-                  <p>
-                    {deleteImpact.data.reference_items} reference-backed
-                    item(s) keep serving from the source but stop receiving
-                    updates through this flow.
-                  </p>
-                )}
-                <p className="text-muted-foreground">
-                  History retained: {deleteImpact.data.history.ingest_files}{" "}
-                  file records, {deleteImpact.data.history.delivery_log}{" "}
-                  delivery records.
-                </p>
-              </>
-            ) : deleteImpact.isError ? (
-              <p className="text-muted-foreground">
-                Could not calculate the deletion impact.
-              </p>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={confirmDelete}
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending ? "Removing…" : "Remove source"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <AssociationDeleteDialog
+        collectionId={collectionId}
+        target={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

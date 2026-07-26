@@ -3,7 +3,7 @@
  * (Phase 4). All requests are same-origin JSON. Errors surface the guard shape
  * `{error, code}` as an `AssociationApiError` with `.status`/`.code` attached.
  */
-import type { Association } from "./types";
+import type { Association, Backfill, Delivery, DeliveryListing } from "./types";
 import type {
   AssociationCreateInput,
   AssociationUpdateInput,
@@ -106,4 +106,59 @@ export async function deleteAssociation(
     `/${encodeURIComponent(id)}`,
     { method: "DELETE" },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Delivery status + actions (Slice D)
+// ---------------------------------------------------------------------------
+
+/** Recent delivery_log rows + per-status counts for a deliver association. */
+export async function listDeliveries(
+  collectionId: string,
+  id: string,
+): Promise<DeliveryListing> {
+  return associationFetch<DeliveryListing>(
+    collectionId,
+    `/${encodeURIComponent(id)}/deliveries`,
+  );
+}
+
+/** Dead-letter recovery: put a dead delivery back into the retry path. */
+export async function redeliverDelivery(
+  collectionId: string,
+  id: string,
+  deliveryId: string,
+): Promise<Delivery> {
+  const data = await associationFetch<{ delivery: Delivery }>(
+    collectionId,
+    `/${encodeURIComponent(id)}/deliveries/${encodeURIComponent(deliveryId)}/redeliver`,
+    { method: "POST" },
+  );
+  return data.delivery;
+}
+
+/** Request a backfill of existing items into a deliver association (Slice C). */
+export async function requestBackfill(
+  collectionId: string,
+  id: string,
+): Promise<Backfill> {
+  const data = await associationFetch<{ backfill: Backfill }>(
+    collectionId,
+    `/${encodeURIComponent(id)}/backfill`,
+    { method: "POST" },
+  );
+  return data.backfill;
+}
+
+/** Poll a backfill request (queued → running → completed|failed). */
+export async function getBackfill(
+  collectionId: string,
+  id: string,
+  backfillId: string,
+): Promise<Backfill> {
+  const data = await associationFetch<{ backfill: Backfill }>(
+    collectionId,
+    `/${encodeURIComponent(id)}/backfills/${encodeURIComponent(backfillId)}`,
+  );
+  return data.backfill;
 }

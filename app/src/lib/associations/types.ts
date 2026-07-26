@@ -5,3 +5,10 @@
  * access-only `connectionGroupId` (that lives on `AssociationWithGroup`).
  */
 export type { ApiAssociation as Association } from "./storage";
+export type {
+  ApiDelivery as Delivery,
+  DeliveryCounts,
+  DeliveryListing,
+  DeliveryStatus,
+} from "./deliveries";
+export type { ApiBackfill as Backfill } from "./backfills";

@@ -28,6 +28,10 @@ export const associationKeys = {
     [...associationKeys.list(collectionId), id] as const,
   deleteImpact: (collectionId: string, id: string) =>
     [...associationKeys.detail(collectionId, id), "delete-impact"] as const,
+  deliveries: (collectionId: string, id: string) =>
+    [...associationKeys.detail(collectionId, id), "deliveries"] as const,
+  backfill: (collectionId: string, id: string, backfillId: string) =>
+    [...associationKeys.detail(collectionId, id), "backfill", backfillId] as const,
 };
 
 export const stacKeys = {
