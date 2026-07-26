@@ -11,55 +11,31 @@
  * pass-through proxy accepts the write, so dev and enforced posture exercise
  * the same code path (ADR 0008 decision 5).
  *
- * Scope is deliberately narrow (writes only, transaction endpoints only, the
- * built-in catalog only — the target URL is server-configured, never
- * client-supplied), so this cannot be used as a generic authenticated proxy.
- * Reads keep their existing direct path; external catalogs keep /api/proxy.
- *
- * RBAC + audit: the middleware guard gates these paths (operator+) and writes
- * one audit_log row per mutation — closing the catalog-plane audit gap.
+ * Scope is deliberately narrow: `matchCatalogTransaction` (shared with the
+ * permission guard, so forwarded ≡ gated+audited) admits only transaction
+ * endpoints, writes only, and the target URL is server-configured — this
+ * cannot be used as a generic authenticated proxy. Reads keep their existing
+ * direct path; external catalogs keep /api/proxy.
  */
 import type { APIRoute } from "astro";
 import { getAuthConfig } from "@/lib/auth/config";
 import { readSession } from "@/lib/auth/session";
 import {
-  DEFAULT_MAX_BYTES,
-  SafeFetchError,
-  errorToResponse,
-  safeFetch,
-} from "@/lib/http/safe-fetch";
+  builtinCatalogUrl,
+  matchCatalogTransaction,
+} from "@/lib/catalog/transactions";
+import { forwardUpstream } from "@/lib/http/forward";
+import { jsonResponse } from "@/lib/http/response";
+import { DEFAULT_MAX_BYTES } from "@/lib/http/safe-fetch";
 
 const FORWARDED_RESPONSE_HEADERS = ["content-type", "etag", "last-modified"];
 
-/** Transaction-endpoint shapes the BFF forwards, by method (ADR 0008 scope:
- * writes only). Anything else — /search, arbitrary proxy paths — is a 404. */
-const TRANSACTION_PATHS: Record<string, RegExp[]> = {
-  POST: [/^collections$/, /^collections\/[^/]+\/items$/],
-  PUT: [/^collections\/[^/]+$/, /^collections\/[^/]+\/items\/[^/]+$/],
-  PATCH: [/^collections\/[^/]+$/, /^collections\/[^/]+\/items\/[^/]+$/],
-  DELETE: [/^collections\/[^/]+$/, /^collections\/[^/]+\/items\/[^/]+$/],
-};
-
-export function builtinCatalogUrl(env: Record<string, string | undefined> = process.env): string {
-  return (
-    env.BUILTIN_CATALOG_URL?.trim() ||
-    env.PUBLIC_BUILTIN_CATALOG_URL?.trim() ||
-    "http://localhost:8081"
-  ).replace(/\/+$/, "");
-}
-
-function jsonError(message: string, status: number): Response {
-  return new Response(JSON.stringify({ error: message }), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
 const handler: APIRoute = async ({ params, request, cookies }) => {
   const path = (params.path ?? "").replace(/\/+$/, "");
-  const shapes = TRANSACTION_PATHS[request.method.toUpperCase()];
-  if (!shapes || !shapes.some((re) => re.test(path))) {
-    return jsonError("Not a built-in-catalog transaction endpoint", 404);
+  if (!matchCatalogTransaction(request.method, path)) {
+    return jsonResponse(404, {
+      error: "Not a built-in-catalog transaction endpoint",
+    });
   }
 
   // Token injection (ADR 0008): oidc sessions carry the access token in the
@@ -74,7 +50,9 @@ const handler: APIRoute = async ({ params, request, cookies }) => {
       ? await readSession(cookies, cfg.sessionSecret)
       : null;
     if (!session) {
-      return jsonError("Authentication required for catalog writes", 401);
+      return jsonResponse(401, {
+        error: "Authentication required for catalog writes",
+      });
     }
     headers.authorization = `Bearer ${session.accessToken}`;
   }
@@ -86,32 +64,17 @@ const handler: APIRoute = async ({ params, request, cookies }) => {
   if (request.method.toUpperCase() !== "DELETE") {
     body = await request.arrayBuffer();
     if (body.byteLength > DEFAULT_MAX_BYTES) {
-      return jsonError(`Request body exceeds ${DEFAULT_MAX_BYTES} bytes`, 413);
+      return jsonResponse(413, {
+        error: `Request body exceeds ${DEFAULT_MAX_BYTES} bytes`,
+      });
     }
   }
 
-  let result;
-  try {
-    result = await safeFetch(`${builtinCatalogUrl()}/${path}`, {
-      method: request.method,
-      headers,
-      body,
-    });
-  } catch (err) {
-    if (err instanceof SafeFetchError) return errorToResponse(err);
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return jsonError(`Catalog request failed: ${msg}`, 502);
-  }
-
-  const responseHeaders = new Headers();
-  for (const name of FORWARDED_RESPONSE_HEADERS) {
-    const value = result.headers.get(name);
-    if (value) responseHeaders.set(name, value);
-  }
-  return new Response(result.body, {
-    status: result.status,
-    headers: responseHeaders,
-  });
+  return forwardUpstream(
+    `${builtinCatalogUrl()}/${path}`,
+    { method: request.method, headers, body },
+    FORWARDED_RESPONSE_HEADERS,
+  );
 };
 
 export const POST = handler;

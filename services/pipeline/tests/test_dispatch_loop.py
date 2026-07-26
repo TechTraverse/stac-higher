@@ -219,8 +219,8 @@ async def test_dispatch_until_empty_drains_across_batches():
         items={("c", f"i{i}"): _item(f"i{i}") for i in range(1, 4)},
     )
     enqueue, captured = _collector()
-    matches = await dispatch_until_empty(repo, enqueue, batch_size=2)
-    assert [m.item_id for m in matches] == ["i1", "i2", "i3"]
+    total = await dispatch_until_empty(repo, enqueue, batch_size=2)
+    assert total == 3
     assert sorted(repo.processed) == [1, 2, 3]
     assert len(captured) == 2  # 2-row batch + 1-row batch
 
@@ -234,7 +234,7 @@ async def test_dispatch_until_empty_does_not_spin_on_deferred_events():
         items={},
     )
     enqueue, _captured = _collector()
-    matches = await dispatch_until_empty(repo, enqueue)
-    assert matches == []
+    total = await dispatch_until_empty(repo, enqueue)
+    assert total == 0
     assert repo.released == [([1], VISIBILITY_RETRY_SECONDS)]
     assert repo.processed == []

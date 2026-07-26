@@ -9,6 +9,7 @@
  */
 import { query } from "@/lib/db/connection";
 import { runMigrations } from "@/lib/db/migrate";
+import { iso } from "./storage";
 
 interface BackfillRow {
   id: string;
@@ -37,11 +38,6 @@ export interface ApiBackfill {
 const BACKFILL_COLUMNS = `id, association_id, requested_by, status,
   items_enqueued, error, created_at, started_at, finished_at`;
 
-function iso(value: Date | string | null): string | null {
-  if (value === null) return null;
-  return value instanceof Date ? value.toISOString() : String(value);
-}
-
 function toApiBackfill(row: BackfillRow): ApiBackfill {
   return {
     id: row.id,
@@ -50,24 +46,32 @@ function toApiBackfill(row: BackfillRow): ApiBackfill {
     status: row.status,
     items_enqueued: row.items_enqueued,
     error: row.error,
-    created_at: iso(row.created_at) as string,
+    created_at: iso(row.created_at),
     started_at: iso(row.started_at),
     finished_at: iso(row.finished_at),
   };
 }
 
+/**
+ * Insert a 'queued' backfill, or return null when one is already open for
+ * the association. Atomic: the partial unique index (migration 013) is the
+ * arbiter, so concurrent requests cannot stack duplicate bulk work — the
+ * route maps null to its 409.
+ */
 export async function insertBackfill(
   associationId: string,
   requestedBy: string,
-): Promise<ApiBackfill> {
+): Promise<ApiBackfill | null> {
   await runMigrations();
   const result = await query<BackfillRow>(
     `INSERT INTO stac_higher.delivery_backfills (association_id, requested_by)
      VALUES ($1, $2)
+     ON CONFLICT (association_id) WHERE status IN ('queued','running')
+     DO NOTHING
      RETURNING ${BACKFILL_COLUMNS}`,
     [associationId, requestedBy],
   );
-  return toApiBackfill(result.rows[0]);
+  return result.rows[0] ? toApiBackfill(result.rows[0]) : null;
 }
 
 export async function getBackfill(
@@ -84,17 +88,3 @@ export async function getBackfill(
   return result.rows[0] ? toApiBackfill(result.rows[0]) : null;
 }
 
-/**
- * True when the association already has a queued/running backfill — the POST
- * route 409s instead of stacking duplicate bulk work.
- */
-export async function hasOpenBackfill(associationId: string): Promise<boolean> {
-  await runMigrations();
-  const result = await query<{ id: string }>(
-    `SELECT id FROM stac_higher.delivery_backfills
-      WHERE association_id = $1 AND status IN ('queued','running')
-      LIMIT 1`,
-    [associationId],
-  );
-  return result.rows.length > 0;
-}

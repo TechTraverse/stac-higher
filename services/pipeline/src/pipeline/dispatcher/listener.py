@@ -45,8 +45,18 @@ async def _pg_notify_stream(
         logger.info("dispatch listener connected", extra={"channel": channel})
         # Catch-up wake: drain whatever arrived while we were not listening.
         yield "connected"
-        async for notify in conn.notifies():
-            yield notify
+        while True:
+            # Block until at least one notification arrives...
+            async for _notify in conn.notifies(stop_after=1):
+                pass
+            # ...then absorb the rest of the burst without waiting
+            # (timeout=0 delivers only what is already buffered). Identical
+            # notifies coalesce per transaction server-side, but N separate
+            # committed transactions still queue N — this makes a burst cost
+            # one drain, not N-1 empty claim round trips.
+            async for _notify in conn.notifies(timeout=0):
+                pass
+            yield "notify"
     finally:
         await conn.close()
 

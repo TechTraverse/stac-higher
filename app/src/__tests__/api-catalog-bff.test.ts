@@ -18,11 +18,11 @@ vi.mock("@/lib/auth/session", async (importOriginal) => {
 import { safeFetch } from "@/lib/http/safe-fetch";
 import { getAuthConfig } from "@/lib/auth/config";
 import { readSession } from "@/lib/auth/session";
+import { builtinCatalogUrl } from "@/lib/catalog/transactions";
 import {
   POST as postRoute,
   PUT as putRoute,
   DELETE as deleteRoute,
-  builtinCatalogUrl,
 } from "@/pages/api/catalog/[...path]";
 
 function authCfg(mode: "bypass" | "oidc") {

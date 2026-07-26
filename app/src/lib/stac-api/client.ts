@@ -9,57 +9,28 @@ interface FetchOptions {
   endpointUrl?: string;
 }
 
-function getBaseUrl(overrideUrl?: string): string {
-  if (overrideUrl) return overrideUrl.replace(/\/+$/, "");
-  const catalog = $activeCatalog.get();
-  if (!catalog) throw new StacApiError("No active STAC catalog configured", 0);
-  return catalog.url.replace(/\/+$/, "");
-}
-
 function getCatalogForUrl(url: string): StacCatalog | undefined {
   const normalized = url.replace(/\/+$/, "");
   return $catalogs.get().find((c) => normalized.startsWith(c.url.replace(/\/+$/, "")));
 }
 
-function resolveCatalog(endpointUrl?: string): StacCatalog | undefined {
-  if (endpointUrl) return getCatalogForUrl(endpointUrl);
-  return $activeCatalog.get() ?? undefined;
-}
-
-function shouldProxy(endpointUrl?: string): { proxy: boolean; endpointBase: string } {
-  if (endpointUrl) {
-    const cat = getCatalogForUrl(endpointUrl);
-    return { proxy: cat?.proxy === true, endpointBase: cat?.url ?? endpointUrl };
-  }
-  const cat = $activeCatalog.get();
-  return { proxy: cat?.proxy === true, endpointBase: cat?.url ?? "" };
-}
-
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-
-/**
- * ADR 0008: built-in-catalog writes go through the app BFF route
- * (`/api/catalog/*`), which injects the session access token server-side —
- * the browser never holds a bearer token, and the write is RBAC-gated and
- * audited. Unconditional (dev pass-through included) so the dev and
- * auth-enforced paths exercise the same code. Reads and external catalogs
- * keep their existing direct//api/proxy paths.
- */
-function isBuiltInWrite(method: string, endpointUrl?: string): boolean {
-  return (
-    WRITE_METHODS.has(method.toUpperCase()) &&
-    resolveCatalog(endpointUrl)?.builtIn === true
-  );
-}
 
 export async function stacFetch<T>(
   path: string,
   options: FetchOptions = {},
 ): Promise<T> {
   const { method = "GET", body, signal, endpointUrl } = options;
-  const baseUrl = getBaseUrl(endpointUrl);
+  // Resolve the request's catalog ONCE; base URL, proxy routing, and the BFF
+  // branch all derive from it.
+  const catalog = endpointUrl
+    ? getCatalogForUrl(endpointUrl)
+    : ($activeCatalog.get() ?? undefined);
+  if (!endpointUrl && !catalog) {
+    throw new StacApiError("No active STAC catalog configured", 0);
+  }
+  const baseUrl = (endpointUrl ?? catalog!.url).replace(/\/+$/, "");
   const targetUrl = `${baseUrl}${path}`;
-  const { proxy, endpointBase } = shouldProxy(endpointUrl);
 
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -70,12 +41,18 @@ export async function stacFetch<T>(
   }
 
   let fetchUrl: string;
-  if (isBuiltInWrite(method, endpointUrl)) {
+  if (WRITE_METHODS.has(method.toUpperCase()) && catalog?.builtIn === true) {
+    // ADR 0008: built-in-catalog writes go through the app BFF route
+    // (`/api/catalog/*`), which injects the session access token server-side —
+    // the browser never holds a bearer token, and the write is RBAC-gated and
+    // audited. Unconditional (dev pass-through included) so the dev and
+    // auth-enforced paths exercise the same code. Reads and external catalogs
+    // keep their existing direct//api/proxy paths.
     fetchUrl = `/api/catalog${path}`;
-  } else if (proxy) {
+  } else if (catalog?.proxy === true) {
     fetchUrl = "/api/proxy";
     headers["X-Proxy-Target"] = targetUrl;
-    headers["X-Proxy-Endpoint"] = endpointBase;
+    headers["X-Proxy-Endpoint"] = catalog.url;
   } else {
     fetchUrl = targetUrl;
   }

@@ -535,6 +535,19 @@ const MIGRATIONS = [
         ON stac_higher.delivery_backfills (association_id);
     `,
   },
+  {
+    // Slice C follow-up: enforce "at most one open backfill per association"
+    // in the database instead of a route-level check-then-insert — the
+    // partial unique index is the ON CONFLICT arbiter for insertBackfill, so
+    // concurrent requests (or any future writer) cannot stack duplicate bulk
+    // work. The route maps the conflict to its 409.
+    name: "013_backfill_one_open_per_association",
+    sql: `
+      CREATE UNIQUE INDEX IF NOT EXISTS delivery_backfills_one_open_idx
+        ON stac_higher.delivery_backfills (association_id)
+        WHERE status IN ('queued','running');
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that
