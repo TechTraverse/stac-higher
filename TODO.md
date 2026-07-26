@@ -96,3 +96,12 @@ the referenced ISSUES/ADR entries.
   I-44) and the sweep's requeue can overlap it — final state is correct
   (delivered), but the Slice D delivery-status UI should explain attempt
   counts as "attempts this cycle," not lifetime.
+- Slice C live gotcha: `docker compose build` can exit 0 while the build
+  FAILED (BuildKit registry `DeadlineExceeded` resolving base-image
+  metadata) — after rebuilding the pipeline image, confirm the container
+  actually has the new code (or grep build output for `ERROR`); pre-pulling
+  the two base images clears the timeout.
+- Slice D prerequisite discovered in Slice C: `delivery_log` has no API read
+  route yet — the "delivery status surfaced from delivery_log" half of
+  Slice D needs a member+-visible read endpoint (mirror the backfill-poll
+  access pattern) before the UI can render status.

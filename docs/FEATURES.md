@@ -249,7 +249,9 @@ Entry points:
   /api/collections/[id]/connections/[assocId]/backfill` (operator+,
   group-owned, audited `backfill`, 409 on duplicates/disabled) inserts a
   'queued' row; `GET .../backfills/[backfillId]` polls it
-  (`app/src/lib/associations/backfills.ts`).
+  (`app/src/lib/associations/backfills.ts`). The duplicate 409 is
+  database-enforced: migration 013's partial unique index is the
+  `ON CONFLICT` arbiter, so concurrent requests cannot stack bulk work.
 - **Backfill sweep** — `services/pipeline/src/pipeline/delivery/backfill.py`
   (`run_backfill`: page pgstac item ids by cursor → chunked bulk
   `pipeline.deliver` jobs, progress per chunk, stale-running crash resume) +
