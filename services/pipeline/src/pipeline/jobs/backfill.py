@@ -18,6 +18,7 @@ from pipeline.delivery.backfill import (
     STALE_RUNNING_SECONDS,
     BackfillRepo,
     PgBackfillRepo,
+    blocked_reason,
     run_backfill,
 )
 from pipeline.dispatcher.loop import EnqueueDeliveries
@@ -45,11 +46,12 @@ async def backfill_sweep_tick(
     jobs = await repo.claim_open_backfills(batch_size, stale_running_seconds)
     finished = 0
     for job in jobs:
-        if job.blocked_reason is not None:
-            await repo.mark_failed(job.id, job.blocked_reason)
+        reason = blocked_reason(job)
+        if reason is not None:
+            await repo.mark_failed(job.id, reason)
             logger.warning(
                 "backfill blocked",
-                extra={"backfill_id": job.id, "reason": job.blocked_reason},
+                extra={"backfill_id": job.id, "reason": reason},
             )
             finished += 1
             continue

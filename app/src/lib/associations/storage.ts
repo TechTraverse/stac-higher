@@ -84,7 +84,10 @@ export interface AssociationWithGroup extends ApiAssociation {
   connectionGroupId: string | null;
 }
 
-function iso(value: Date | string): string {
+export function iso(value: Date | string): string;
+export function iso(value: Date | string | null): string | null;
+export function iso(value: Date | string | null): string | null {
+  if (value === null) return null;
   return value instanceof Date ? value.toISOString() : String(value);
 }
 

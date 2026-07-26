@@ -80,7 +80,7 @@ def build_dispatch_drain(
         if matches:
             logger.info(
                 "dispatch enqueued delivery batches",
-                extra={"matches": len(matches), "wake_path": wake_path},
+                extra={"matches": matches, "wake_path": wake_path},
             )
 
     return run_dispatch

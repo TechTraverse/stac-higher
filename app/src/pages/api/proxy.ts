@@ -1,11 +1,8 @@
 import type { APIRoute } from "astro";
 import { timingSafeEqual } from "node:crypto";
-import {
-  DEFAULT_MAX_BYTES,
-  SafeFetchError,
-  errorToResponse,
-  safeFetch,
-} from "@/lib/http/safe-fetch";
+import { forwardUpstream } from "@/lib/http/forward";
+import { jsonResponse } from "@/lib/http/response";
+import { DEFAULT_MAX_BYTES } from "@/lib/http/safe-fetch";
 
 const FORWARDED_REQUEST_HEADERS = ["content-type", "accept", "authorization"];
 const FORWARDED_RESPONSE_HEADERS = [
@@ -15,12 +12,8 @@ const FORWARDED_RESPONSE_HEADERS = [
   "last-modified",
 ];
 
-function jsonError(message: string, status: number): Response {
-  return new Response(JSON.stringify({ error: message }), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+const jsonError = (message: string, status: number): Response =>
+  jsonResponse(status, { error: message });
 
 function tokensMatch(a: string, b: string): boolean {
   const aBuf = Buffer.from(a);
@@ -95,27 +88,9 @@ export const ALL: APIRoute = async ({ request }) => {
     }
   }
 
-  let result;
-  try {
-    result = await safeFetch(targetUrl, {
-      method: request.method,
-      headers,
-      body,
-    });
-  } catch (err) {
-    if (err instanceof SafeFetchError) return errorToResponse(err);
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return jsonError(`Upstream request failed: ${msg}`, 502);
-  }
-
-  const responseHeaders = new Headers();
-  for (const name of FORWARDED_RESPONSE_HEADERS) {
-    const value = result.headers.get(name);
-    if (value) responseHeaders.set(name, value);
-  }
-
-  return new Response(result.body, {
-    status: result.status,
-    headers: responseHeaders,
-  });
+  return forwardUpstream(
+    targetUrl,
+    { method: request.method, headers, body },
+    FORWARDED_RESPONSE_HEADERS,
+  );
 };

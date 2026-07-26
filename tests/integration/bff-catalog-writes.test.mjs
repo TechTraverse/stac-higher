@@ -46,9 +46,12 @@ function collectionBody(id, description = "bff integration test") {
   };
 }
 
-async function probe(url) {
+async function probe(url, init = {}) {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    const res = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
     return res;
   } catch {
     return null;
@@ -159,14 +162,10 @@ const kc = await probe(`${KEYCLOAK_URL}/realms/${REALM}/.well-known/openid-confi
 if (kc?.status !== 200) {
   skip = `Keycloak realm "${REALM}" not reachable at ${KEYCLOAK_URL} — start the enforced stack`;
 } else {
-  const enforcement = await probe(`${PROXY_URL}/collections`).then((r) =>
-    r
-      ? fetch(`${PROXY_URL}/collections`, {
-          method: "POST",
-          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-        })
-      : null,
-  );
+  // A body-less anonymous POST: enforcement answers 401/403 at the proxy;
+  // pass-through forwards it upstream (400/422 validation) — nothing is
+  // ever created either way.
+  const enforcement = await probe(`${PROXY_URL}/collections`, { method: "POST" });
   if (!enforcement) {
     skip = `stac-auth-proxy not reachable at ${PROXY_URL} — start the enforced stack`;
   } else if (![401, 403].includes(enforcement.status)) {

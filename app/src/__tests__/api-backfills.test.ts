@@ -13,17 +13,12 @@ vi.mock("@/lib/collections/settings", () => ({
 vi.mock("@/lib/associations/backfills", () => ({
   insertBackfill: vi.fn(),
   getBackfill: vi.fn(),
-  hasOpenBackfill: vi.fn(),
 }));
 
 import { getAssociation } from "@/lib/associations/storage";
 import type { AssociationWithGroup } from "@/lib/associations/storage";
 import { getCollectionSettings } from "@/lib/collections/settings";
-import {
-  getBackfill,
-  hasOpenBackfill,
-  insertBackfill,
-} from "@/lib/associations/backfills";
+import { getBackfill, insertBackfill } from "@/lib/associations/backfills";
 import type { ApiBackfill } from "@/lib/associations/backfills";
 import { POST as backfillRoute } from "@/pages/api/collections/[id]/connections/[assocId]/backfill";
 import { GET as pollRoute } from "@/pages/api/collections/[id]/connections/[assocId]/backfills/[backfillId]";
@@ -106,7 +101,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAssociation).mockResolvedValue(assoc());
   vi.mocked(getCollectionSettings).mockResolvedValue(unowned as never);
-  vi.mocked(hasOpenBackfill).mockResolvedValue(false);
   vi.mocked(insertBackfill).mockResolvedValue(backfill);
   vi.mocked(getBackfill).mockResolvedValue(backfill);
 });
@@ -151,11 +145,10 @@ describe("POST .../backfill", () => {
     expect(insertBackfill).not.toHaveBeenCalled();
   });
 
-  it("409s when a backfill is already queued or running", async () => {
-    vi.mocked(hasOpenBackfill).mockResolvedValue(true);
+  it("409s when a backfill is already queued or running (atomic insert conflict)", async () => {
+    vi.mocked(insertBackfill).mockResolvedValue(null);
     const res = await call(backfillRoute, authed(["operator"]), params);
     expect(res.status).toBe(409);
-    expect(insertBackfill).not.toHaveBeenCalled();
   });
 
   it("404s an association outside the caller's groups (owned collection)", async () => {

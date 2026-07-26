@@ -17,7 +17,7 @@
 import type { APIRoute } from "astro";
 import { jsonResponse } from "@/lib/http/response";
 import { loadVisibleAssociation } from "@/lib/associations/access";
-import { hasOpenBackfill, insertBackfill } from "@/lib/associations/backfills";
+import { insertBackfill } from "@/lib/associations/backfills";
 
 export const POST: APIRoute = async ({ params, locals }) => {
   try {
@@ -39,17 +39,19 @@ export const POST: APIRoute = async ({ params, locals }) => {
         error: "Enable the association before backfilling",
       });
     }
-    if (await hasOpenBackfill(association.id)) {
-      return jsonResponse(409, {
-        error: "A backfill is already queued or running for this association",
-      });
-    }
     // loadVisibleAssociation guarantees an authenticated identity here.
     const identity = locals.auth.authenticated ? locals.auth.identity : null;
+    // Atomic dedup: insertBackfill returns null when a queued/running
+    // backfill already exists (partial unique index, migration 013).
     const backfill = await insertBackfill(
       association.id,
       identity?.sub ?? "unknown",
     );
+    if (!backfill) {
+      return jsonResponse(409, {
+        error: "A backfill is already queued or running for this association",
+      });
+    }
     return jsonResponse(202, { backfill });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

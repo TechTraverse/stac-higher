@@ -5,7 +5,12 @@ from dataclasses import dataclass, field
 import pytest
 
 from pipeline.config import Settings
-from pipeline.delivery.backfill import BackfillJob, BackfillRepo, run_backfill
+from pipeline.delivery.backfill import (
+    BackfillJob,
+    BackfillRepo,
+    blocked_reason,
+    run_backfill,
+)
 from pipeline.jobs import backfill as backfill_jobs
 from pipeline.jobs.backfill import JOB_NAME, backfill_sweep_tick
 from pipeline.main import build_queue
@@ -95,9 +100,20 @@ async def test_run_backfill_empty_collection_completes_with_zero():
     assert repo.completed == ["b1"]
 
 
+def test_blocked_reason_policy():
+    assert blocked_reason(_job()) is None
+    assert blocked_reason(_job(deleted=True)) == "association deleted"
+    assert blocked_reason(_job(direction="ingest")) == "not a deliver association"
+    assert blocked_reason(_job(enabled=False)) == (
+        "association or connection disabled"
+    )
+    # deleted wins over the other states (a deleted row is also disabled).
+    assert blocked_reason(_job(deleted=True, enabled=False)) == "association deleted"
+
+
 async def test_sweep_fails_blocked_backfill_without_enqueueing():
     repo = FakeBackfillRepo(
-        open_jobs=[_job(blocked_reason="association deleted")],
+        open_jobs=[_job(deleted=True)],
         item_ids={"col": ["i1"]},
     )
     enqueue, captured = _collector()

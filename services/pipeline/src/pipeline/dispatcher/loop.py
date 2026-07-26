@@ -151,21 +151,24 @@ async def dispatch_until_empty(
     *,
     batch_size: int = 100,
     max_batches: int = 1000,
-) -> list[Match]:
-    """Run dispatch_once until a claim comes back empty (or the safety cap).
+) -> int:
+    """Run dispatch_once until a claim comes back empty (or the safety cap);
+    returns the total match count. A count, not the accumulated Match lists —
+    the wake paths only log it, and holding up to max_batches * batch_size
+    Match objects across a large drain would be pure ballast.
 
     Deferred I-38 events don't spin this loop: their cool-off keeps them out of
     the claim window, so the terminating empty claim still happens.
     """
-    matches: list[Match] = []
+    total = 0
     for _ in range(max_batches):
         result = await dispatch_once(repo, enqueue, batch_size=batch_size)
         if not result.claimed:
             break
-        matches.extend(result.matches)
+        total += len(result.matches)
     else:
         logger.warning(
             "dispatch hit its per-wake batch cap; more may remain",
             extra={"max_batches": max_batches, "batch_size": batch_size},
         )
-    return matches
+    return total

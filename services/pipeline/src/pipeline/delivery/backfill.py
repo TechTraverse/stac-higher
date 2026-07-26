@@ -37,16 +37,32 @@ STALE_RUNNING_SECONDS = 900
 
 @dataclass(frozen=True)
 class BackfillJob:
-    """One claimed delivery_backfills row plus its association context."""
+    """One claimed delivery_backfills row plus its association's RAW state —
+    the runnability policy over that state lives in ``blocked_reason``, a pure
+    function above the Pg seam (dumb adapter, tested logic on top)."""
 
     id: str
     association_id: str
     collection_id: str
     items_enqueued: int = 0
     cursor_item_id: str | None = None
-    #: why this backfill cannot run (association deleted / disabled / not a
-    #: deliver association); None when runnable.
-    blocked_reason: str | None = None
+    direction: str = "deliver"
+    #: association AND its connection enabled.
+    enabled: bool = True
+    #: association or connection soft-deleted (ADR 0009).
+    deleted: bool = False
+
+
+def blocked_reason(job: BackfillJob) -> str | None:
+    """Why this backfill cannot run, or None when runnable. Persisted into
+    ``delivery_backfills.error`` by the sweep, so keep the strings stable."""
+    if job.deleted:
+        return "association deleted"
+    if job.direction != "deliver":
+        return "not a deliver association"
+    if not job.enabled:
+        return "association or connection disabled"
+    return None
 
 
 class BackfillRepo(abc.ABC):
@@ -109,12 +125,18 @@ async def run_backfill(
     return total
 
 
+# The FK (delivery_backfills.association_id → collection_connections, ON
+# DELETE RESTRICT) guarantees the join always matches, so the UPDATE..FROM
+# cannot drop claimed rows.
 _CLAIM_SQL = """
 UPDATE stac_higher.delivery_backfills b
    SET status = 'running',
        started_at = COALESCE(b.started_at, now()),
        updated_at = now()
- WHERE b.id IN (
+  FROM stac_higher.collection_connections cc
+  JOIN stac_higher.connections c ON c.id = cc.connection_id
+ WHERE cc.id = b.association_id
+   AND b.id IN (
    SELECT id FROM stac_higher.delivery_backfills
     WHERE status = 'queued'
        OR (status = 'running'
@@ -123,19 +145,9 @@ UPDATE stac_higher.delivery_backfills b
     FOR UPDATE SKIP LOCKED
     LIMIT %s)
  RETURNING b.id, b.association_id, b.items_enqueued, b.cursor_item_id,
-   (SELECT cc.collection_id
-      FROM stac_higher.collection_connections cc WHERE cc.id = b.association_id),
-   (SELECT CASE
-        WHEN cc.deleted_at IS NOT NULL OR c.deleted_at IS NOT NULL
-          THEN 'association deleted'
-        WHEN cc.direction <> 'deliver'
-          THEN 'not a deliver association'
-        WHEN NOT cc.enabled OR NOT c.enabled
-          THEN 'association or connection disabled'
-        END
-      FROM stac_higher.collection_connections cc
-      JOIN stac_higher.connections c ON c.id = cc.connection_id
-     WHERE cc.id = b.association_id)
+   cc.collection_id, cc.direction,
+   (cc.enabled AND c.enabled),
+   (cc.deleted_at IS NOT NULL OR c.deleted_at IS NOT NULL)
 """
 
 
@@ -161,8 +173,10 @@ class PgBackfillRepo(BackfillRepo):
                 association_id=str(r[1]),
                 items_enqueued=int(r[2]),
                 cursor_item_id=r[3],
-                collection_id=r[4] or "",
-                blocked_reason=r[5] if r[4] else "association not found",
+                collection_id=r[4],
+                direction=r[5],
+                enabled=bool(r[6]),
+                deleted=bool(r[7]),
             )
             for r in rows
         ]
