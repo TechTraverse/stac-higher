@@ -60,6 +60,45 @@ async def collection():
         await conn.execute("SELECT pgstac.delete_collection(%s)", (COLLECTION,))
 
 
+async def test_pgstac_schema_version_covers_i54_fix():
+    # I-54 drift guard: the pgstac image only installs its schema on a FRESH
+    # volume (initdb), so bumping the image tag never migrates a persisted
+    # volume. The compose `pgstac-migrate` one-shot closes that gap; this
+    # asserts the running schema actually reached the version that fixed
+    # `get_tstz_constraint`'s fractional-second parsing (>= 0.9.11).
+    async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
+        cur = await conn.execute("SELECT pgstac.get_version()")
+        row = await cur.fetchone()
+    assert row is not None
+    version = tuple(int(p) for p in row[0].split(".")[:3])
+    assert version >= (0, 9, 11), (
+        f"pgstac schema {row[0]} predates the I-54 constraint-parser fix; "
+        "run `docker compose up pgstac-migrate`"
+    )
+
+
+async def test_second_microsecond_load_widens_partition_constraint(collection):
+    # I-54 regression: after the first load, pgstac tightens the partition
+    # CHECK constraint to the loaded data's min/max — including fractional
+    # seconds. 0.9.10's `get_tstz_constraint` regex couldn't re-parse a
+    # fractional-second constraint, so the loader skipped widening and the
+    # second single-item load died with CheckViolation. Two sequential
+    # single-item loads with distinct microsecond datetimes reproduce the
+    # exact M1-rehearsal shape.
+    from pipeline.stac.pgstac_writer import PgPgstacWriter
+
+    writer = PgPgstacWriter(DATABASE_URL)
+    await writer.upsert_items([_item("usec-1", "2024-03-01T10:00:00.123456Z")])
+    await writer.upsert_items([_item("usec-2", "2024-03-02T11:30:00.654321Z")])
+
+    async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
+        cur = await conn.execute(
+            "SELECT count(*) FROM pgstac.items"
+            " WHERE collection = %s AND id LIKE 'usec-%%'", (COLLECTION,))
+        row = await cur.fetchone()
+    assert row is not None and row[0] == 2
+
+
 async def test_upsert_then_query_and_update(collection):
     from pipeline.stac.pgstac_writer import PgPgstacWriter
 

@@ -20,6 +20,28 @@ services:
       timeout: 5s
       retries: 5
 
+  # One-shot: bring the pgstac schema of an EXISTING database volume up to the
+  # version the pinned images expect, then exit. The pgstac image installs its
+  # schema only through initdb on a FRESH volume — bumping the image tag never
+  # migrates a persisted volume (that drift is how I-54 bit the M1 rehearsal:
+  # image at v0.9.11, volume schema still 0.9.10). Reuses the pipeline image
+  # because its lockfile pins pypgstac in lockstep with the loader that
+  # actually consumes the schema; `pypgstac migrate` is a no-op at matching
+  # versions. Schema ownership: ADR 0001 (pgstac migrates pgstac).
+  pgstac-migrate:
+    build: ./services/pipeline
+    command: ["pypgstac", "migrate"]
+    environment:
+      - PGHOST=database
+      - PGPORT=5432
+      - PGUSER=username
+      - PGPASSWORD=password
+      - PGDATABASE=postgis
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: "no"
+
   api:
     image: ghcr.io/stac-utils/stac-fastapi-pgstac:latest
     environment:
@@ -38,6 +60,8 @@ services:
     depends_on:
       database:
         condition: service_healthy
+      pgstac-migrate:
+        condition: service_completed_successfully
     command: >
       bash -c "
       uvicorn stac_fastapi.pgstac.app:app --host 0.0.0.0 --port 8082 --proxy-headers --forwarded-allow-ips=*
@@ -183,6 +207,8 @@ services:
     depends_on:
       database:
         condition: service_healthy
+      pgstac-migrate:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
     healthcheck:

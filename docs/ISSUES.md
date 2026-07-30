@@ -447,7 +447,7 @@ too. The direction-aware update schema (the app half of I-39) landed in the
 prior iteration.
 - Resolved by: the pre-B-iii hardening wave (`ai/i53-fixtures`), 2026-07-25.
 
-### I-54 · pgstac 0.9.10 partition-constraint parser breaks on fractional-second datetimes — M1-blocking, live DB hotfixed 🔴
+### I-54 · pgstac 0.9.10 partition-constraint parser breaks on fractional-second datetimes — M1-blocking, live DB hotfixed 🟢
 Found in the M1 demo rehearsal (2026-07-26). After the first item loads into a
 collection, pgstac's `update_partition_stats` rewrites the partition's CHECK
 constraint to the tight min/max of the loaded data — including **fractional
@@ -471,6 +471,21 @@ regex), or second-precision datetimes at EXTRACT (only covers our generated
 datetimes, not real data). Decide + implement as its own task.
 - Found in: M1 rehearsal (ROADMAP §9 M1 evidence).
 - Blocks: M1 on any freshly-provisioned stack (the local dev DB is patched).
+- Resolved by: `ai/i54-pgstac-migrate`, 2026-07-30. Root-cause correction to
+  the analysis above: upstream **already fixed the regex in pgstac v0.9.11**
+  (`pgstac.0.9.10-0.9.11.sql`, class becomes `[0-9 :.+\-]`), and compose has
+  pinned `pgstac:v0.9.11` since 2026-07-17 — but the pgstac image only
+  installs its schema via initdb on a *fresh* volume, so the persisted dev
+  volume silently stayed at schema 0.9.10 (a fresh `down -v` stack was in
+  fact never broken). Durable fix: a `pgstac-migrate` compose one-shot
+  (pipeline image, `pypgstac migrate`, gates `api`/`pipeline` via
+  `service_completed_successfully`) migrates existing volumes on every `up` —
+  ADR 0001's pgstac bullet amended. Run against the live dev DB: 0.9.10 →
+  0.9.11, replacing the manual hotfix with the canonical function. Regression
+  tests in `services/pipeline/tests/test_integration_itemize.py`
+  (DATABASE_URL-gated): a schema-version drift guard (≥ 0.9.11) and the
+  two-sequential-microsecond-loads shape, both verified red (stock 0.9.10
+  function → the exact rehearsal `CheckViolation`) then green post-migration.
 
 ### I-55 · Ingest jobs have no queue-level retry; an itemize crash strands the ledger at `stored`, invisible to the I-52 sweeps 🔴
 `itemize.py` deliberately lets unexpected exceptions propagate with the
