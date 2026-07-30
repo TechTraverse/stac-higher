@@ -33,17 +33,18 @@ export function AssociationDeleteDialog({
 }: AssociationDeleteDialogProps) {
   const deleteMutation = useDeleteAssociation(collectionId);
   const impact = useAssociationDeleteImpact(collectionId, target?.id ?? null);
-  const isDeliver = target?.direction === "deliver";
-  const noun = isDeliver ? "delivery destination" : "ingest source";
+  // All per-direction copy derives from one noun; only the description
+  // genuinely differs in wording.
+  const noun =
+    target?.direction === "deliver" ? "delivery destination" : "ingest source";
+  const title = `Remove ${noun}`;
   const connectionLabel = target?.connection.name ?? target?.connection_id;
 
   const confirm = () => {
     if (!target) return;
     deleteMutation.mutate(target.id, {
       onSuccess: () => {
-        toast.success(
-          isDeliver ? "Delivery destination removed" : "Ingest source removed",
-        );
+        toast.success(`${noun[0].toUpperCase()}${noun.slice(1)} removed`);
         onClose();
       },
       onError: (err) => toast.error(err.message),
@@ -54,11 +55,9 @@ export function AssociationDeleteDialog({
     <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            {isDeliver ? "Remove delivery destination" : "Remove ingest source"}
-          </DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            {isDeliver
+            {target?.direction === "deliver"
               ? `Stop delivering to "${connectionLabel}"? The connection and
                  already-delivered payloads are kept, and the delivery history
                  is retained.`

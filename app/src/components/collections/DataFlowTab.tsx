@@ -50,19 +50,7 @@ import type {
 } from "@/lib/associations/schemas";
 import { AssociationDeleteDialog } from "./AssociationDeleteDialog";
 import { DeliverySection } from "./DeliverySection";
-
-const STATUS_VARIANT: Record<string, "secondary" | "default" | "destructive"> = {
-  ok: "default",
-  unverified: "secondary",
-  error: "destructive",
-};
-
-function splitCsv(value: string): string[] {
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+import { CONNECTION_STATUS_VARIANT, splitCsv } from "./shared";
 
 interface FormState {
   connectionId: string;
@@ -241,99 +229,99 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
   return (
     <div className="space-y-8">
       <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Ingest sources</h2>
-          <p className="text-sm text-muted-foreground">
-            Connections polled for files to ingest into this collection.
-          </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Ingest sources</h2>
+            <p className="text-sm text-muted-foreground">
+              Connections polled for files to ingest into this collection.
+            </p>
+          </div>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="h-4 w-4 mr-1.5" />
+            Add source
+          </Button>
         </div>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="h-4 w-4 mr-1.5" />
-          Add source
-        </Button>
-      </div>
 
-      {ingest.length === 0 ? (
-        <EmptyState
-          icon={Radio}
-          title="No ingest sources yet"
-          description="Associate a connection to start pulling files into this collection."
-        />
-      ) : (
-        <div className="grid gap-3">
-          {ingest.map((a) => {
-            const cfg = a.config as Record<string, unknown>;
-            return (
-              <Card key={a.id}>
-                <CardHeader className="pb-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Radio className="h-4 w-4" />
-                      {a.connection.name ?? a.connection_id}
-                    </CardTitle>
-                    <div className="flex items-center gap-2">
-                      {a.connection.protocol && (
-                        <Badge variant="outline" className="text-xs font-mono">
-                          {a.connection.protocol}
+        {ingest.length === 0 ? (
+          <EmptyState
+            icon={Radio}
+            title="No ingest sources yet"
+            description="Associate a connection to start pulling files into this collection."
+          />
+        ) : (
+          <div className="grid gap-3">
+            {ingest.map((a) => {
+              const cfg = a.config as Record<string, unknown>;
+              return (
+                <Card key={a.id}>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Radio className="h-4 w-4" />
+                        {a.connection.name ?? a.connection_id}
+                      </CardTitle>
+                      <div className="flex items-center gap-2">
+                        {a.connection.protocol && (
+                          <Badge variant="outline" className="text-xs font-mono">
+                            {a.connection.protocol}
+                          </Badge>
+                        )}
+                        {a.connection.status && (
+                          <Badge
+                            variant={CONNECTION_STATUS_VARIANT[a.connection.status]}
+                            className="text-xs"
+                          >
+                            {a.connection.status}
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                      <dt className="text-muted-foreground">Source path</dt>
+                      <dd className="font-mono truncate">
+                        {String(cfg.source_path ?? "—")}
+                      </dd>
+                      <dt className="text-muted-foreground">Poll every</dt>
+                      <dd>{String(cfg.poll_frequency_seconds ?? "—")}s</dd>
+                      <dt className="text-muted-foreground">Storage mode</dt>
+                      <dd>
+                        <Badge variant="secondary" className="text-xs">
+                          {String(cfg.storage_mode ?? "copy")}
                         </Badge>
-                      )}
-                      {a.connection.status && (
-                        <Badge
-                          variant={STATUS_VARIANT[a.connection.status] ?? "secondary"}
-                          className="text-xs"
+                      </dd>
+                    </dl>
+                    <div className="flex items-center justify-between pt-1">
+                      <label className="flex items-center gap-2 text-sm">
+                        <Switch
+                          checked={a.enabled}
+                          onCheckedChange={(v) => toggleEnabled(a, v)}
+                          aria-label="Enabled"
+                        />
+                        {a.enabled ? "Enabled" : "Disabled"}
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(a)}>
+                          <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                          Edit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDeleteTarget(a)}
                         >
-                          {a.connection.status}
-                        </Badge>
-                      )}
+                          <Trash2 className="h-3.5 w-3.5 mr-1.5 text-destructive" />
+                          Remove
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                    <dt className="text-muted-foreground">Source path</dt>
-                    <dd className="font-mono truncate">
-                      {String(cfg.source_path ?? "—")}
-                    </dd>
-                    <dt className="text-muted-foreground">Poll every</dt>
-                    <dd>{String(cfg.poll_frequency_seconds ?? "—")}s</dd>
-                    <dt className="text-muted-foreground">Storage mode</dt>
-                    <dd>
-                      <Badge variant="secondary" className="text-xs">
-                        {String(cfg.storage_mode ?? "copy")}
-                      </Badge>
-                    </dd>
-                  </dl>
-                  <div className="flex items-center justify-between pt-1">
-                    <label className="flex items-center gap-2 text-sm">
-                      <Switch
-                        checked={a.enabled}
-                        onCheckedChange={(v) => toggleEnabled(a, v)}
-                        aria-label="Enabled"
-                      />
-                      {a.enabled ? "Enabled" : "Disabled"}
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                      <Button variant="ghost" size="sm" onClick={() => openEdit(a)}>
-                        <Pencil className="h-3.5 w-3.5 mr-1.5" />
-                        Edit
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDeleteTarget(a)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 mr-1.5 text-destructive" />
-                        Remove
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <DeliverySection

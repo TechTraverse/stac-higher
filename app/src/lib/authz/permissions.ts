@@ -57,6 +57,47 @@ const EXTENSION_UTILITY_PATHS = new Set([
 ]);
 
 /**
+ * POST sub-action routes — the uniform "named action on a parent resource"
+ * shape. Each pattern's SINGLE capture group is the audited resource id, so a
+ * new sub-action is a one-line entry (no per-route capture-group bookkeeping).
+ * Group ownership is enforced in-route for all of them.
+ */
+const SUB_ACTION_ROUTES: {
+  pattern: RegExp;
+  action: GatedAction;
+  resourceType: string;
+}[] = [
+  // Slice C: requesting a backfill of existing items into a deliver
+  // association (§6.4 — explicit and user-initiated).
+  {
+    pattern: /^\/api\/collections\/[^/]+\/connections\/([^/]+)\/backfill$/,
+    action: "backfill",
+    resourceType: "collection_connection",
+  },
+  // Slice D: redelivering a dead-lettered delivery_log row (§6.4 dead-letter
+  // recovery). Audited against the association; the delivery row id stays in
+  // the request path recorded in the audit detail.
+  {
+    pattern:
+      /^\/api\/collections\/[^/]+\/connections\/([^/]+)\/deliveries\/[^/]+\/redeliver$/,
+    action: "redeliver",
+    resourceType: "collection_connection",
+  },
+  {
+    pattern: /^\/api\/connections\/([^/]+)\/test$/,
+    action: "test",
+    resourceType: "connection",
+  },
+  // Modeled as an update of the connection (clears the TOFU pin); the
+  // request path in the audit detail distinguishes it from a config edit.
+  {
+    pattern: /^\/api\/connections\/([^/]+)\/host-key\/reset$/,
+    action: "update",
+    resourceType: "connection",
+  },
+];
+
+/**
  * Match a request against the gated mutation table. Returns null for
  * everything that stays open (all reads, and the read-shaped POST utilities
  * `preview` / `resolve-schema`, which persist no user data beyond a TTL
@@ -121,32 +162,17 @@ export function matchGatedRoute(
     if (txn) return txn;
   }
 
-  // Slice C: requesting a backfill of existing items into a deliver
-  // association is a gated, audited action (§6.4 — explicit and user-
-  // initiated). Group ownership is enforced in-route.
-  const collConnBackfill = path.match(
-    /^\/api\/collections\/([^/]+)\/connections\/([^/]+)\/backfill$/,
-  );
-  if (m === "POST" && collConnBackfill) {
-    return {
-      action: "backfill",
-      resourceType: "collection_connection",
-      resourceId: collConnBackfill[2],
-    };
-  }
-  // Slice D: redelivering a dead-lettered delivery_log row is a gated,
-  // audited action (§6.4 dead-letter recovery — explicit and user-initiated).
-  // Audited against the association (the delivery row id stays in the path
-  // detail); group ownership is enforced in-route.
-  const collConnRedeliver = path.match(
-    /^\/api\/collections\/([^/]+)\/connections\/([^/]+)\/deliveries\/([^/]+)\/redeliver$/,
-  );
-  if (m === "POST" && collConnRedeliver) {
-    return {
-      action: "redeliver",
-      resourceType: "collection_connection",
-      resourceId: collConnRedeliver[2],
-    };
+  if (m === "POST") {
+    for (const route of SUB_ACTION_ROUTES) {
+      const match = path.match(route.pattern);
+      if (match) {
+        return {
+          action: route.action,
+          resourceType: route.resourceType,
+          resourceId: match[1],
+        };
+      }
+    }
   }
   const collConnId = path.match(
     /^\/api\/collections\/([^/]+)\/connections\/([^/]+)$/,
@@ -166,22 +192,6 @@ export function matchGatedRoute(
         resourceId: collConnId[2],
       };
     }
-  }
-  const connTest = path.match(/^\/api\/connections\/([^/]+)\/test$/);
-  if (m === "POST" && connTest) {
-    return { action: "test", resourceType: "connection", resourceId: connTest[1] };
-  }
-  const connHostKeyReset = path.match(
-    /^\/api\/connections\/([^/]+)\/host-key\/reset$/,
-  );
-  if (m === "POST" && connHostKeyReset) {
-    // Modeled as an update of the connection (clears the TOFU pin); the
-    // request path in the audit detail distinguishes it from a config edit.
-    return {
-      action: "update",
-      resourceType: "connection",
-      resourceId: connHostKeyReset[1],
-    };
   }
   const connId = path.match(/^\/api\/connections\/([^/]+)$/);
   if (connId) {

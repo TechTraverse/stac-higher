@@ -32,14 +32,9 @@ import {
   useUpdateAssociation,
 } from "@/lib/associations/queries";
 import type { Association } from "@/lib/associations/types";
+import { deliveryConfigSchema } from "@/lib/associations/schemas";
 import type { DeliveryConfig } from "@/lib/associations/schemas";
-
-function splitCsv(value: string): string[] {
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+import { splitCsv } from "./shared";
 
 interface DeliveryFormState {
   connectionId: string;
@@ -73,29 +68,26 @@ function emptyForm(): DeliveryFormState {
   };
 }
 
+/** Seed the form from a stored config. The server only writes schema-complete
+ * configs, so parse once through the contract instead of re-narrowing each
+ * field by hand (an unparseable config falls back to the empty form). */
 function formFromAssociation(a: Association): DeliveryFormState {
-  const c = a.config as Partial<DeliveryConfig>;
-  const payload = c.payload ?? {};
-  const retry = c.retry ?? {};
+  const parsed = deliveryConfigSchema.safeParse(a.config);
+  if (!parsed.success) return { ...emptyForm(), connectionId: a.connection_id };
+  const c = parsed.data;
   return {
     connectionId: a.connection_id,
-    pathTemplate: typeof c.path_template === "string" ? c.path_template : "",
-    itemFilter: typeof c.item_filter === "string" ? c.item_filter : "",
-    assetKeys: Array.isArray(c.asset_keys) ? c.asset_keys.join(", ") : "",
-    payloadItemJson: payload.item_json === true,
-    payloadChecksums:
-      payload.checksums === "md5" || payload.checksums === "sha256"
-        ? payload.checksums
-        : "none",
-    payloadCompletionMarker: payload.completion_marker === true,
-    onUpdate: c.on_update === "ignore" ? "ignore" : "redeliver",
-    overwrite:
-      c.overwrite === "never" || c.overwrite === "always"
-        ? c.overwrite
-        : "if_newer",
-    retryMaxAttempts: String(retry.max_attempts ?? 5),
-    retryBackoff: retry.backoff === "fixed" ? "fixed" : "exponential",
-    maxConcurrentTransfers: String(c.max_concurrent_transfers ?? 4),
+    pathTemplate: c.path_template,
+    itemFilter: c.item_filter ?? "",
+    assetKeys: c.asset_keys?.join(", ") ?? "",
+    payloadItemJson: c.payload.item_json,
+    payloadChecksums: c.payload.checksums ?? "none",
+    payloadCompletionMarker: c.payload.completion_marker,
+    onUpdate: c.on_update,
+    overwrite: c.overwrite,
+    retryMaxAttempts: String(c.retry.max_attempts),
+    retryBackoff: c.retry.backoff,
+    maxConcurrentTransfers: String(c.max_concurrent_transfers),
   };
 }
 
@@ -139,15 +131,11 @@ export function DeliveryFormDialog({
 }: DeliveryFormDialogProps) {
   const createMutation = useCreateAssociation(collectionId);
   const updateMutation = useUpdateAssociation(collectionId);
-  const [form, setForm] = useState<DeliveryFormState>(emptyForm);
-  // Re-seed the form whenever the dialog opens for a different target.
-  const [seededFor, setSeededFor] = useState<string | null>(null);
-  const seedKey = editing?.id ?? "new";
-  if (open && seededFor !== seedKey) {
-    setForm(editing ? formFromAssociation(editing) : emptyForm());
-    setSeededFor(seedKey);
-  }
-  if (!open && seededFor !== null) setSeededFor(null);
+  // The parent mounts this dialog only while open, so lazy state seeds the
+  // form once per open — no re-seed bookkeeping needed.
+  const [form, setForm] = useState<DeliveryFormState>(() =>
+    editing ? formFromAssociation(editing) : emptyForm(),
+  );
 
   const update = (patch: Partial<DeliveryFormState>) =>
     setForm((prev) => ({ ...prev, ...patch }));
@@ -161,28 +149,29 @@ export function DeliveryFormDialog({
       toast.error("A path template is required");
       return;
     }
-    const maxAttempts = Number(form.retryMaxAttempts);
-    const maxConcurrent = Number(form.maxConcurrentTransfers);
-    if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
-      toast.error("Max attempts must be a whole number of at least 1");
+    // The write contract validates the rest (numeric bounds included), so the
+    // form can't drift from the server's schema.
+    const parsed = deliveryConfigSchema.safeParse(buildConfig(form));
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      toast.error(`${issue.path.join(".")}: ${issue.message}`);
       return;
     }
-    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
-      toast.error("Concurrent transfers must be a whole number of at least 1");
-      return;
-    }
-    const config = buildConfig(form);
+    const config = parsed.data;
 
+    const callbacks = {
+      onSuccess: () => {
+        toast.success(
+          editing ? "Delivery destination updated" : "Delivery destination added",
+        );
+        onOpenChange(false);
+      },
+      onError: (err: Error) => toast.error(err.message),
+    };
     if (editing) {
       updateMutation.mutate(
         { id: editing.id, input: { config, enabled: editing.enabled } },
-        {
-          onSuccess: () => {
-            toast.success("Delivery destination updated");
-            onOpenChange(false);
-          },
-          onError: (err) => toast.error(err.message),
-        },
+        callbacks,
       );
     } else {
       createMutation.mutate(
@@ -193,13 +182,7 @@ export function DeliveryFormDialog({
           config,
           expectation: null,
         },
-        {
-          onSuccess: () => {
-            toast.success("Delivery destination added");
-            onOpenChange(false);
-          },
-          onError: (err) => toast.error(err.message),
-        },
+        callbacks,
       );
     }
   };

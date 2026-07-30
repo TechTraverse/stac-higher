@@ -36,15 +36,7 @@ import type {
 import type { Connection } from "@/lib/connections/types";
 import { AssociationDeleteDialog } from "./AssociationDeleteDialog";
 import { DeliveryFormDialog } from "./DeliveryFormDialog";
-
-const CONNECTION_STATUS_VARIANT: Record<
-  string,
-  "secondary" | "default" | "destructive"
-> = {
-  ok: "default",
-  unverified: "secondary",
-  error: "destructive",
-};
+import { CONNECTION_STATUS_VARIANT } from "./shared";
 
 const DELIVERY_STATUS_VARIANT: Record<
   DeliveryStatus,
@@ -57,18 +49,21 @@ const DELIVERY_STATUS_VARIANT: Record<
   dead: "destructive",
 };
 
+/** Lifecycle order for the per-status count badges. */
+const STATUS_ORDER: DeliveryStatus[] = [
+  "delivered",
+  "pending",
+  "delivering",
+  "failed",
+  "dead",
+];
+
 /** Non-zero per-status counts, in lifecycle order. */
 function countEntries(counts: DeliveryCounts): [DeliveryStatus, number][] {
-  const order: DeliveryStatus[] = [
-    "delivered",
-    "pending",
-    "delivering",
-    "failed",
-    "dead",
-  ];
-  return order.flatMap((status) =>
-    counts[status] > 0 ? [[status, counts[status]] as [DeliveryStatus, number]] : [],
-  );
+  return STATUS_ORDER.filter((status) => counts[status] > 0).map((status) => [
+    status,
+    counts[status],
+  ]);
 }
 
 const RECENT_LIMIT = 8;
@@ -119,7 +114,7 @@ function DeliveryStatusPanel({
   };
 
   return (
-    <div className="space-y-2" data-testid="delivery-status">
+    <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-1.5">
         {entries.map(([status, count]) => (
           <Badge
@@ -393,13 +388,17 @@ export function DeliverySection({
         </div>
       )}
 
-      <DeliveryFormDialog
-        collectionId={collectionId}
-        open={dialogOpen}
-        editing={editing}
-        connections={connections}
-        onOpenChange={setDialogOpen}
-      />
+      {/* Mounted only while open (the ConnectionsPage pattern): a fresh mount
+          per open seeds the form from `editing` with plain lazy state. */}
+      {dialogOpen && (
+        <DeliveryFormDialog
+          collectionId={collectionId}
+          open={dialogOpen}
+          editing={editing}
+          connections={connections}
+          onOpenChange={setDialogOpen}
+        />
+      )}
 
       <AssociationDeleteDialog
         collectionId={collectionId}

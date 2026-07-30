@@ -139,3 +139,16 @@ the referenced ISSUES/ADR entries.
 - e2e precondition added in Slice D: `data-flow.spec.ts` creates a connection
   through the API, so the dev server needs `CREDENTIALS_MASTER_KEY` (source
   the repo-root `.env` first — documented in the `run-e2e` skill).
+- /simplify note (Slice D pass): the Data-flow split is lopsided — delivery
+  got `DeliverySection`/`DeliveryFormDialog` components while the ~500-line
+  ingest half stays inline in `DataFlowTab.tsx` with its own form-seeding
+  pattern. Extract a mirroring `IngestSection` (+ form dialog, seeding via
+  the mount-per-open pattern, schema-parsed `formFromAssociation` like the
+  delivery dialog) in a future pass; migrating both dialogs to the repo's
+  RHF+Zod form pattern would be the full-depth version. Small shared bits
+  already unified in `components/collections/shared.ts`.
+- /simplify note (Slice D pass): `listDeliveries`' per-status counts query
+  aggregates the association's WHOLE delivery_log on a 15s-polled path —
+  negligible today, unbounded growth by M3 scale. When Phase 6 partitions
+  delivery_log (I-36), move the counts to pipeline-maintained rollups (the
+  association's `flow_stats` column already exists for exactly this).
