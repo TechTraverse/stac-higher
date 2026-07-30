@@ -24,6 +24,8 @@ def test_register_wires_poll_periodic_and_stage_tasks():
     assert set(queue.tasks) == {JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE}
     assert JOB_POLL in queue.periodic
     assert queue.periodic[JOB_POLL].cron == CRON
+    # I-55: every chain stage carries a queue-level retry for transient faults
+    assert set(queue.retry_specs) == {JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE}
 
 
 def test_build_queue_includes_ingest_jobs():
@@ -31,6 +33,8 @@ def test_build_queue_includes_ingest_jobs():
     queue = build_queue(Settings.from_env(env={}))
     registered = set(queue.app.tasks)
     assert {JOB_POLL, JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE} <= registered
+    # I-55: the retry spec must survive the real backend mapping
+    assert queue.app.tasks[JOB_ITEMIZE].retry_strategy is not None
 
 
 def test_register_includes_itemize_task():

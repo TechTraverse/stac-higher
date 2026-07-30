@@ -21,6 +21,7 @@ from pipeline.queue.interface import (
     JobPayload,
     QueueBackend,
     QueueConnectionError,
+    RetrySpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,8 +45,19 @@ class ProcrastinateQueue(QueueBackend):
             )
         )
 
-    def register_task(self, func: JobHandler, *, name: str) -> None:
-        self.app.task(func, name=name)
+    def register_task(
+        self, func: JobHandler, *, name: str, retry: RetrySpec | None = None
+    ) -> None:
+        # Procrastinate's default (retry=False) fails a job permanently on the
+        # first handler exception — a RetrySpec maps to its RetryStrategy.
+        strategy: procrastinate.RetryStrategy | bool = (
+            procrastinate.RetryStrategy(
+                max_attempts=retry.max_attempts, wait=retry.wait_seconds
+            )
+            if retry is not None
+            else False
+        )
+        self.app.task(func, name=name, retry=strategy)
 
     def register_periodic(self, func: JobHandler, *, name: str, cron: str) -> None:
         # queueing_lock: if a previous tick is still waiting, skip instead of

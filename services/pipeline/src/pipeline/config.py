@@ -51,10 +51,13 @@ DEFAULT_ASSET_HREF_BASE = "/api/assets"
 
 # Ingest crash recovery (ISSUES I-52). A FETCH stalled longer than the stall
 # threshold is presumed crashed (idempotent to re-run); failed rows retry after
-# the cool-off, at most max-retries times.
+# the cool-off, at most max-retries times. A `stored` row stalled longer than
+# its threshold means ITEMIZE never landed despite queue retries (ISSUES I-55);
+# it re-enters at `settled` against the same max-retries budget.
 DEFAULT_INGEST_FETCH_STALL_SECONDS = 1800  # 30 min
 DEFAULT_INGEST_FAILED_RETRY_SECONDS = 300  # 5 min cool-off
 DEFAULT_INGEST_MAX_RETRIES = 3
+DEFAULT_INGEST_STORED_STALL_SECONDS = 1800  # 30 min
 
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
@@ -92,6 +95,7 @@ class Settings:
     ingest_fetch_stall_seconds: int = DEFAULT_INGEST_FETCH_STALL_SECONDS
     ingest_failed_retry_seconds: int = DEFAULT_INGEST_FAILED_RETRY_SECONDS
     ingest_max_retries: int = DEFAULT_INGEST_MAX_RETRIES
+    ingest_stored_stall_seconds: int = DEFAULT_INGEST_STORED_STALL_SECONDS
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -134,5 +138,11 @@ class Settings:
             ),
             ingest_max_retries=int(
                 env.get("INGEST_MAX_RETRIES", str(DEFAULT_INGEST_MAX_RETRIES))
+            ),
+            ingest_stored_stall_seconds=int(
+                env.get(
+                    "INGEST_STORED_STALL_SECONDS",
+                    str(DEFAULT_INGEST_STORED_STALL_SECONDS),
+                )
             ),
         )

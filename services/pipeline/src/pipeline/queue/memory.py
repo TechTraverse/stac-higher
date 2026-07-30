@@ -17,6 +17,7 @@ from pipeline.queue.interface import (
     QueueBackend,
     QueueConnectionError,
     QueueError,
+    RetrySpec,
 )
 
 
@@ -42,13 +43,20 @@ class InMemoryQueue(QueueBackend):
     is_set_up: bool = False
     tasks: dict[str, JobHandler] = field(default_factory=dict)
     periodic: dict[str, PeriodicSpec] = field(default_factory=dict)
+    #: retry specs by task name (recorded for assertions; run_pending stays
+    #: single-shot — tests drive re-attempts explicitly)
+    retry_specs: dict[str, RetrySpec] = field(default_factory=dict)
     jobs: list[Job] = field(default_factory=list)
     _next_id: int = 1
 
-    def register_task(self, func: JobHandler, *, name: str) -> None:
+    def register_task(
+        self, func: JobHandler, *, name: str, retry: RetrySpec | None = None
+    ) -> None:
         if name in self.tasks or name in self.periodic:
             raise QueueError(f"task already registered: {name}")
         self.tasks[name] = func
+        if retry is not None:
+            self.retry_specs[name] = retry
 
     def register_periodic(self, func: JobHandler, *, name: str, cron: str) -> None:
         if name in self.tasks or name in self.periodic:
