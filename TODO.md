@@ -70,7 +70,7 @@ the referenced ISSUES/ADR entries.
 
 ## Post-rehearsal fixes (M1 findings, 2026-07-26)
 
-- [ ] **I-54 durable fix** — pgstac 0.9.10 `get_tstz_constraint` drops
+- [x] **I-54 durable fix** — pgstac 0.9.10 `get_tstz_constraint` drops
       fractional seconds when re-parsing partition CHECK constraints, so the
       second single-item load into a collection dies on a CheckViolation
       (dev DB carries a manual `CREATE OR REPLACE` hotfix; any fresh stack
@@ -79,6 +79,15 @@ the referenced ISSUES/ADR entries.
       (extends ADR 0007's boundary — note it there) with a test that loads
       two items with microsecond datetimes into one collection.
       (ISSUES I-54.)
+      **Done 2026-07-30: upstream already fixed it in v0.9.11 (which we pin) —
+      the real gap was that the pgstac image never migrates a persisted
+      volume, so the dev DB was stuck at schema 0.9.10. Added a
+      `pgstac-migrate` compose one-shot (pypgstac migrate, gates api +
+      pipeline), migrated the live DB 0.9.10 → 0.9.11 (canonical function now
+      replaces the manual hotfix), and added DATABASE_URL-gated regression
+      tests (version drift guard + two microsecond loads), verified
+      red → green. No patched-function migration needed; ADR 0001 amended
+      instead of 0007.**
 - [ ] **I-55 ingest-job retry + `stored`-stall recovery** — register ingest
       (and audit deliver) tasks with a Procrastinate retry strategy matching
       itemize.py's "propagates → retries" comment, and/or extend the I-52

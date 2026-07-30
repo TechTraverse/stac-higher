@@ -57,7 +57,10 @@ read the `project-conventions` skill before any non-trivial change.
 docker-compose runs the full local platform stack:
 
 - **pgstac** (PostgreSQL + PostGIS, host :5433) and **stac-fastapi-pgstac** with
-  the Transaction extension (full CRUD) at `http://localhost:8082`.
+  the Transaction extension (full CRUD) at `http://localhost:8082`. The
+  `pgstac-migrate` one-shot migrates a persisted volume's pgstac schema to the
+  pinned version on every `up` (the pgstac image only installs its schema on
+  fresh volumes — ADR 0001, I-54).
 - **stac-auth-proxy** at `http://localhost:8081` in front of stac-fastapi —
   pass-through by default (`DEFAULT_PUBLIC=true`, no login needed). Opt-in
   enforcement (authenticated transactions + audience check, reads still

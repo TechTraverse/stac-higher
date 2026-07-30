@@ -30,6 +30,14 @@ Ownership is split **by schema**, with exactly one owner each:
   outbox trigger is installed by the app's middleware (it is a `stac_higher`
   concern that references pgstac tables); revisit in Phase 5 if that proves
   awkward.
+  *Amended 2026-07-30 (I-54):* the pgstac image installs its schema only via
+  initdb on a **fresh** volume — bumping the image tag never migrates a
+  persisted volume, which left a v0.9.11 image running a 0.9.10 schema during
+  the M1 rehearsal. The compose `pgstac-migrate` one-shot (pipeline image,
+  `pypgstac migrate`, gating `api`/`pipeline` startup) is the mechanism that
+  makes this bullet true across upgrades: pgstac's own migrations, applied by
+  pgstac's own tooling, pinned in lockstep with the pipeline's pypgstac
+  loader.
 
 ## Consequences
 
