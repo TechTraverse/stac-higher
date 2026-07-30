@@ -88,12 +88,20 @@ the referenced ISSUES/ADR entries.
       tests (version drift guard + two microsecond loads), verified
       red → green. No patched-function migration needed; ADR 0001 amended
       instead of 0007.**
-- [ ] **I-55 ingest-job retry + `stored`-stall recovery** — register ingest
+- [x] **I-55 ingest-job retry + `stored`-stall recovery** — register ingest
       (and audit deliver) tasks with a Procrastinate retry strategy matching
       itemize.py's "propagates → retries" comment, and/or extend the I-52
       recovery sweep to re-settle `stored` rows older than a stall window
       (itemize is idempotent). Unit-test the itemize-crash path re-driving to
       `itemized`. (ISSUES I-55.)
+      **Done 2026-07-30: both halves. `RetrySpec` on the queue interface →
+      Procrastinate `RetryStrategy`; all four chain stages + deliver register
+      with 4 attempts / 60 s (deliver audit found the same pre-record blind
+      spot; batch re-runs are safe — delivery_log upserts per item). New
+      `sweep_stuck_stored` re-settles stalled `stored` rows against the shared
+      retries budget and dead-ends capped rows to terminal `failed`; wired
+      into the recovery sweep (INGEST_STORED_STALL_SECONDS, default 30 min).
+      Crash → sweep → re-drive → `itemized` unit-tested.**
 
 ## Discovered follow-ups
 

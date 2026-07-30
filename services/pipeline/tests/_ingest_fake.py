@@ -128,6 +128,24 @@ class FakeIngestRepo(IngestRepo):
                 count += 1
         return count
 
+    async def sweep_stuck_stored(
+        self, max_retries: int, older_than_seconds: int
+    ) -> tuple[int, int]:
+        cutoff = self.now - dt.timedelta(seconds=older_than_seconds)
+        resettled = dead_ended = 0
+        for entry_id, row in self.rows.items():
+            if row.status != "stored" or not row.updated_at or row.updated_at >= cutoff:
+                continue
+            if self.retries.get(entry_id, 0) < max_retries:
+                row.status = "settled"
+                self.retries[entry_id] = self.retries.get(entry_id, 0) + 1
+                resettled += 1
+            else:
+                row.status = "failed"
+                dead_ended += 1
+            row.updated_at = self.now
+        return resettled, dead_ended
+
     async def set_ledger_status_many(
         self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
     ) -> None:

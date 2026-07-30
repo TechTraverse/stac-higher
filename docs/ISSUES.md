@@ -487,7 +487,7 @@ datetimes, not real data). Decide + implement as its own task.
   two-sequential-microsecond-loads shape, both verified red (stock 0.9.10
   function → the exact rehearsal `CheckViolation`) then green post-migration.
 
-### I-55 · Ingest jobs have no queue-level retry; an itemize crash strands the ledger at `stored`, invisible to the I-52 sweeps 🔴
+### I-55 · Ingest jobs have no queue-level retry; an itemize crash strands the ledger at `stored`, invisible to the I-52 sweeps 🟢
 `itemize.py` deliberately lets unexpected exceptions propagate with the
 comment "the job retries (transient DB errors)" — but `register_task`
 (`queue/procrastinate_backend.py`) registers every task with **no retry
@@ -504,3 +504,18 @@ upsert), or both. Also audit `fetch`/`group`/`discover` and `deliver` for the
 same propagate-without-retry assumption.
 - Found in: M1 rehearsal (ROADMAP §9 M1 evidence).
 - Blocks: honest "no stuck queue" claims for M1; NRT robustness (M3).
+- Resolved by: `ai/i55-ingest-retry`, 2026-07-30 — both halves. (1) Queue-level
+  retry: `RetrySpec` on the queue interface, mapped to Procrastinate's
+  `RetryStrategy`; all four ingest chain stages and `deliver` register with
+  4 attempts / 60 s wait (`STAGE_RETRY` / `DELIVER_RETRY`). The deliver audit
+  found the same blind spot pre-record: a transient `load_target`/`get_item`
+  failure lost the delivery outright (outbox already claimed, no
+  `delivery_log` row for the sweep) — batch re-runs are safe because
+  `deliver_item` upserts one log row per (association, item) and paths are
+  deterministic overwrites. (2) Stored-stall sweep: `sweep_stuck_stored`
+  (INGEST_STORED_STALL_SECONDS, default 30 min) re-settles stalled `stored`
+  rows against the same `retries` budget as the failed sweep — the idempotent
+  GROUP → FETCH → ITEMIZE chain re-drives them — and dead-ends rows at the cap
+  to terminal `failed` (no infinite hot loop on a persistent itemize failure).
+  Unit tests cover both sweeps and the full crash → sweep → re-drive →
+  `itemized` path (`test_ingest_recovery.py`).

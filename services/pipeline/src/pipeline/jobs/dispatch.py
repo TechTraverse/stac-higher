@@ -33,7 +33,7 @@ from pipeline.dispatcher.listener import run_dispatch_listener
 from pipeline.dispatcher.loop import dispatch_until_empty
 from pipeline.dispatcher.repo import PgDispatchRepo
 from pipeline.jobs._common import load_key_or_skip
-from pipeline.queue.interface import QueueBackend
+from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.storage.platform import build_platform_client
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,11 @@ JOB_RETRY_SWEEP = "pipeline.delivery_retry_sweep"
 CRON = "* * * * *"
 #: rows per sweep tick — bounds one tick's fan-out; the next tick drains more.
 RETRY_SWEEP_BATCH = 500
+#: Queue-level retry (ISSUES I-55): `deliver_item` records its own failures in
+#: delivery_log, but a transient fault BEFORE the first record (load_target /
+#: get_item DB errors) would otherwise lose the delivery — the outbox row is
+#: already claimed and the retry sweep has nothing to re-drive.
+DELIVER_RETRY = RetrySpec(max_attempts=4, wait_seconds=60)
 
 
 def _entry_asset_keys(
@@ -211,4 +216,4 @@ def register(queue: QueueBackend, settings: Settings) -> None:
 
     queue.register_periodic(dispatch_poll, name=JOB_DISPATCH_POLL, cron=CRON)
     queue.register_periodic(retry_sweep, name=JOB_RETRY_SWEEP, cron=CRON)
-    queue.register_task(deliver, name=JOB_DELIVER)
+    queue.register_task(deliver, name=JOB_DELIVER, retry=DELIVER_RETRY)

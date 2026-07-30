@@ -21,10 +21,27 @@ from __future__ import annotations
 
 import abc
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 JobHandler = Callable[..., Awaitable[None] | None]
 JobPayload = Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class RetrySpec:
+    """Queue-level retry for transient handler failures (ISSUES I-55).
+
+    Smooths over faults the handler cannot see coming (DB connection drops,
+    brief network blips) by re-attempting the job. Durable recovery — worker
+    crashes, persistent failures — stays with the ledger sweeps; this only
+    keeps one bad moment from failing a job permanently.
+    """
+
+    #: total attempts, including the first (backend maps as supported)
+    max_attempts: int
+    #: fixed wait between attempts, in seconds
+    wait_seconds: int = 0
 
 
 class QueueError(Exception):
@@ -42,8 +59,14 @@ class QueueBackend(abc.ABC):
     name: str
 
     @abc.abstractmethod
-    def register_task(self, func: JobHandler, *, name: str) -> None:
-        """Register ``func`` as the handler for jobs named ``name``."""
+    def register_task(
+        self, func: JobHandler, *, name: str, retry: RetrySpec | None = None
+    ) -> None:
+        """Register ``func`` as the handler for jobs named ``name``.
+
+        ``retry`` opts the task into queue-level retries on handler
+        exceptions; without it a failure is terminal after one attempt.
+        """
 
     @abc.abstractmethod
     def register_periodic(self, func: JobHandler, *, name: str, cron: str) -> None:

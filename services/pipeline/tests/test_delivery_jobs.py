@@ -36,6 +36,9 @@ def test_register_wires_dispatch_poll_and_deliver_task():
     assert JOB_DISPATCH_POLL in queue.periodic
     assert JOB_RETRY_SWEEP in queue.periodic
     assert JOB_DELIVER in queue.tasks
+    # I-55: a transient failure before deliver_item records anything would
+    # otherwise lose the delivery (no delivery_log row for the sweep to see)
+    assert JOB_DELIVER in queue.retry_specs
 
 
 def test_build_queue_includes_deliver_task():

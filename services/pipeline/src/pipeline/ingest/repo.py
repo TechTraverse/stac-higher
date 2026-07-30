@@ -140,6 +140,18 @@ class IngestRepo(abc.ABC):
         number of rows reset."""
 
     @abc.abstractmethod
+    async def sweep_stuck_stored(
+        self, max_retries: int, older_than_seconds: int
+    ) -> tuple[int, int]:
+        """Stored-stall recovery (ISSUES I-55): a ``stored`` row older than the
+        threshold means ITEMIZE never landed despite its queue-level retries
+        (worker crash, persistent upsert failure). Rows with retry budget go
+        back to ``settled`` (incrementing ``retries``) so the normal
+        GROUP → FETCH → ITEMIZE chain re-drives them (each stage is
+        idempotent); rows at the cap go to ``failed`` terminal, visible to the
+        Phase 8 operator backfill. Returns ``(resettled, dead_ended)``."""
+
+    @abc.abstractmethod
     async def set_ledger_status_many(
         self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
     ) -> None:
@@ -344,6 +356,29 @@ class PgIngestRepo(IngestRepo):
             count = cur.rowcount or 0
             await conn.commit()
         return count
+
+    async def sweep_stuck_stored(  # pragma: no cover
+        self, max_retries: int, older_than_seconds: int
+    ) -> tuple[int, int]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.ingest_files"
+                " SET status = 'settled', retries = retries + 1, updated_at = now()"
+                " WHERE status = 'stored' AND retries < %s"
+                " AND updated_at < now() - make_interval(secs => %s)",
+                (max_retries, older_than_seconds),
+            )
+            resettled = cur.rowcount or 0
+            cur = await conn.execute(
+                "UPDATE stac_higher.ingest_files"
+                " SET status = 'failed', updated_at = now()"
+                " WHERE status = 'stored' AND retries >= %s"
+                " AND updated_at < now() - make_interval(secs => %s)",
+                (max_retries, older_than_seconds),
+            )
+            dead_ended = cur.rowcount or 0
+            await conn.commit()
+        return resettled, dead_ended
 
     async def set_ledger_status_many(  # pragma: no cover
         self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None

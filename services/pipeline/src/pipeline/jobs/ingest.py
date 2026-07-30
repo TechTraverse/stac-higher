@@ -23,7 +23,7 @@ from pipeline.ingest.itemize import run_itemize
 from pipeline.ingest.repo import IngestAssociation, PgIngestRepo
 from pipeline.ingest.scheduler import due_associations
 from pipeline.jobs._common import load_key_or_skip
-from pipeline.queue.interface import QueueBackend
+from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client
 
@@ -36,6 +36,11 @@ JOB_GROUP = "pipeline.ingest_group"
 JOB_FETCH = "pipeline.ingest_fetch"
 JOB_ITEMIZE = "pipeline.ingest_itemize"
 CRON = "* * * * *"
+#: Queue-level retry for the chain stages (ISSUES I-55): smooths transient
+#: faults (DB connection drops, network blips) the stages let propagate by
+#: design. Durable recovery stays with the ledger sweeps — this only keeps one
+#: bad moment from failing a job permanently.
+STAGE_RETRY = RetrySpec(max_attempts=4, wait_seconds=60)
 
 
 async def _load_association(
@@ -159,27 +164,34 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         )
 
     async def recovery_sweep(timestamp: int) -> None:
-        # Crash recovery (ISSUES I-52): both transitions re-enter the ledger at
-        # 'settled', so the normal GROUP → FETCH chain re-drives them on the
-        # association's next poll tick — no special-case re-dispatch here.
+        # Crash recovery (ISSUES I-52 + I-55): every transition re-enters the
+        # ledger at 'settled', so the normal GROUP → FETCH chain re-drives them
+        # on the association's next poll tick — no special-case re-dispatch
+        # here. The stored sweep additionally dead-ends rows whose retry
+        # budget is spent (→ 'failed' terminal).
         repo = PgIngestRepo(settings.database_url)
         stuck = await repo.sweep_stuck_fetching(settings.ingest_fetch_stall_seconds)
         retried = await repo.sweep_failed_for_retry(
             settings.ingest_max_retries, settings.ingest_failed_retry_seconds
         )
-        if stuck or retried:
+        resettled, dead_ended = await repo.sweep_stuck_stored(
+            settings.ingest_max_retries, settings.ingest_stored_stall_seconds
+        )
+        if stuck or retried or resettled or dead_ended:
             logger.info(
                 "ingest recovery sweep",
                 extra={
                     "stuck_fetching_reset": stuck,
                     "failed_requeued": retried,
+                    "stored_resettled": resettled,
+                    "stored_dead_ended": dead_ended,
                     "scheduled_timestamp": timestamp,
                 },
             )
 
     queue.register_periodic(poll, name=JOB_POLL, cron=CRON)
     queue.register_periodic(recovery_sweep, name=JOB_RECOVERY_SWEEP, cron=CRON)
-    queue.register_task(discover, name=JOB_DISCOVER)
-    queue.register_task(group, name=JOB_GROUP)
-    queue.register_task(fetch, name=JOB_FETCH)
-    queue.register_task(itemize, name=JOB_ITEMIZE)
+    queue.register_task(discover, name=JOB_DISCOVER, retry=STAGE_RETRY)
+    queue.register_task(group, name=JOB_GROUP, retry=STAGE_RETRY)
+    queue.register_task(fetch, name=JOB_FETCH, retry=STAGE_RETRY)
+    queue.register_task(itemize, name=JOB_ITEMIZE, retry=STAGE_RETRY)

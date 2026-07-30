@@ -203,7 +203,9 @@ async def run_itemize(
         await _mark(repo, stored, STATUS_FAILED, None)
         logger.error("itemize upsert failed: collection missing", extra={"item_id": item_id})
         return ItemizeOutcome("failed", item_id, f"collection missing: {exc}")
-    # Any other exception propagates → the job retries (transient DB errors).
+    # Any other exception propagates → the queue-level RetrySpec re-attempts
+    # the job (transient DB errors), and the stored-stall sweep re-drives
+    # anything that still never lands (ISSUES I-55).
 
     await _mark(repo, stored, STATUS_ITEMIZED, item_id)
 
