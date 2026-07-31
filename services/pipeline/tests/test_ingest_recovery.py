@@ -9,17 +9,23 @@ import datetime as dt
 
 import pytest
 
-from _ingest_fake import EPOCH, FakeAdapter, FakeIngestRepo, FakeS3
+from _ingest_fake import (
+    EPOCH,
+    FakeAdapter,
+    FakeIngestRepo,
+    FakeS3,
+    FakeWriter,
+    RaisingWriter,
+    make_association,
+)
 from pipeline.config import Settings
-from pipeline.connections.repo import ConnectionRow
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.ingest.fetch import fetch_stage
 from pipeline.ingest.itemize import run_itemize
-from pipeline.ingest.repo import IngestAssociation, LedgerEntry
+from pipeline.ingest.repo import LedgerEntry
 from pipeline.jobs import ingest as ingest_jobs
 from pipeline.jobs.ingest import JOB_POLL, JOB_RECOVERY_SWEEP
 from pipeline.queue.memory import InMemoryQueue
-from pipeline.stac.pgstac_writer import PgstacWriter
 
 pytestmark = pytest.mark.asyncio
 
@@ -107,45 +113,18 @@ async def test_stored_sweep_dead_ends_at_retry_cap():
     assert repo.rows["s"].status == "failed"
 
 
-class _CrashingWriter(PgstacWriter):
-    """Transient failure mode: upsert dies mid-run (e.g. DB connection drop)."""
-
-    async def upsert_items(self, items):
-        raise RuntimeError("connection refused")
-
-    async def get_collection_bbox(self, collection_id):
-        return None
-
-
-class _OkWriter(PgstacWriter):
-    def __init__(self):
-        self.items: list = []
-
-    async def upsert_items(self, items):
-        self.items.extend(items)
-
-    async def get_collection_bbox(self, collection_id):
-        return None
-
-
 async def test_itemize_crash_re_drives_to_itemized():
     # The full I-55 story: itemize crashes → members stranded at `stored` →
     # the stall sweep re-settles them → the normal FETCH → ITEMIZE chain
     # (idempotent) lands the item on the re-drive.
-    conn = ConnectionRow(
-        id="c1", name="src", protocol="s3", config={}, credentials=None, host_key=None
-    )
-    assoc = IngestAssociation(
-        id="assoc1",
-        collection_id="col",
-        config={
+    assoc = make_association(
+        {
             "source_path": "in",
             "metadata": {
                 "strategy": "defaults_only",
                 "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
             },
-        },
-        connection=conn,
+        }
     )
     config = parse_ingest_config(assoc.config)
     repo = FakeIngestRepo(now=EPOCH)
@@ -155,7 +134,7 @@ async def test_itemize_crash_re_drives_to_itemized():
 
     with pytest.raises(RuntimeError):
         await run_itemize(
-            repo, _CrashingWriter(), FakeAdapter(), FakeS3(),
+            repo, RaisingWriter(), FakeAdapter(), FakeS3(),
             association=assoc, config=config, item_id="scene",
             source_paths=["scene.bin"], bucket="b", asset_href_base="/api/assets",
         )
@@ -172,7 +151,7 @@ async def test_itemize_crash_re_drives_to_itemized():
     assert await fetch_stage(
         repo, assoc, config, adapter, s3, "b", "scene", ["scene.bin"]
     ) == 1
-    writer = _OkWriter()
+    writer = FakeWriter()
     out = await run_itemize(
         repo, writer, adapter, s3,
         association=assoc, config=config, item_id="scene",

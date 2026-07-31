@@ -360,25 +360,23 @@ class PgIngestRepo(IngestRepo):
     async def sweep_stuck_stored(  # pragma: no cover
         self, max_retries: int, older_than_seconds: int
     ) -> tuple[int, int]:
+        # One statement for both transitions (single scan of the ledger; the
+        # sweep runs every minute): rows with budget re-settle, capped rows
+        # dead-end to 'failed'.
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "UPDATE stac_higher.ingest_files"
-                " SET status = 'settled', retries = retries + 1, updated_at = now()"
-                " WHERE status = 'stored' AND retries < %s"
-                " AND updated_at < now() - make_interval(secs => %s)",
-                (max_retries, older_than_seconds),
+                " SET status = CASE WHEN retries < %s THEN 'settled' ELSE 'failed' END,"
+                "     retries = retries + (retries < %s)::int,"
+                "     updated_at = now()"
+                " WHERE status = 'stored'"
+                " AND updated_at < now() - make_interval(secs => %s)"
+                " RETURNING status",
+                (max_retries, max_retries, older_than_seconds),
             )
-            resettled = cur.rowcount or 0
-            cur = await conn.execute(
-                "UPDATE stac_higher.ingest_files"
-                " SET status = 'failed', updated_at = now()"
-                " WHERE status = 'stored' AND retries >= %s"
-                " AND updated_at < now() - make_interval(secs => %s)",
-                (max_retries, older_than_seconds),
-            )
-            dead_ended = cur.rowcount or 0
+            statuses = [row[0] for row in await cur.fetchall()]
             await conn.commit()
-        return resettled, dead_ended
+        return statuses.count("settled"), statuses.count("failed")
 
     async def set_ledger_status_many(  # pragma: no cover
         self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None

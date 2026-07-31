@@ -36,10 +36,7 @@ JOB_GROUP = "pipeline.ingest_group"
 JOB_FETCH = "pipeline.ingest_fetch"
 JOB_ITEMIZE = "pipeline.ingest_itemize"
 CRON = "* * * * *"
-#: Queue-level retry for the chain stages (ISSUES I-55): smooths transient
-#: faults (DB connection drops, network blips) the stages let propagate by
-#: design. Durable recovery stays with the ledger sweeps — this only keeps one
-#: bad moment from failing a job permanently.
+#: Queue-level retry for the chain stages (ISSUES I-55; rationale on RetrySpec).
 STAGE_RETRY = RetrySpec(max_attempts=4, wait_seconds=60)
 
 

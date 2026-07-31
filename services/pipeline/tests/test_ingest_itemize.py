@@ -7,8 +7,14 @@ import pytest
 from rasterio.io import MemoryFile
 from rasterio.transform import from_bounds
 
-from _ingest_fake import FakeAdapter, FakeIngestRepo, FakeS3
-from pipeline.connections.repo import ConnectionRow
+from _ingest_fake import (
+    FakeAdapter,
+    FakeIngestRepo,
+    FakeS3,
+    FakeWriter,
+    RaisingWriter,
+    make_association,
+)
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.ingest.itemize import (
     ItemizeOutcome,
@@ -20,54 +26,9 @@ from pipeline.ingest.repo import (
     STATUS_FAILED,
     STATUS_ITEMIZED,
     STATUS_STORED,
-    IngestAssociation,
 )
-from pipeline.stac.pgstac_writer import CollectionMissing, PgstacWriter
 
-
-def _assoc(config: dict) -> IngestAssociation:
-    # Mirrors tests/test_ingest_fetch.py::_assoc — build the association inline;
-    # there is no `make_association` helper in _ingest_fake.py.
-    conn = ConnectionRow(
-        id="c1", name="src", protocol="s3", config={}, credentials=None, host_key=None
-    )
-    return IngestAssociation(
-        id="assoc1",
-        collection_id="col",
-        config=config,
-        connection=conn,
-    )
-
-
-class _FakeWriter(PgstacWriter):
-    def __init__(self, raise_missing: bool = False, collection_bbox: list | None = None):
-        self.items: list = []
-        self.raise_missing = raise_missing
-        self.collection_bbox = collection_bbox
-        self.get_collection_bbox_calls: list[str] = []
-
-    async def upsert_items(self, items):
-        if self.raise_missing:
-            raise CollectionMissing("Collection col is not present in the database")
-        self.items.extend(items)
-
-    async def get_collection_bbox(self, collection_id):
-        self.get_collection_bbox_calls.append(collection_id)
-        return self.collection_bbox
-
-
-class _RaisingWriter(PgstacWriter):
-    """Writer whose upsert_items raises an unexpected (non-CollectionMissing)
-    error, e.g. a transient DB connection failure."""
-
-    def __init__(self):
-        self.items: list = []
-
-    async def upsert_items(self, items):
-        raise RuntimeError("connection refused")
-
-    async def get_collection_bbox(self, collection_id):
-        return None
+_assoc = make_association
 
 
 def _geotiff_bytes():
@@ -110,7 +71,7 @@ def test_validate_item_rejects_missing_datetime():
 async def test_run_itemize_defaults_only_upserts_and_marks_itemized():
     # scene.bin is not a GDAL-candidate, so this opts into the collection-
     # extent fallback (ISSUE I-27) to reach a geometry; the default
-    # `_FakeWriter` returns no collection bbox, so it degrades to
+    # `FakeWriter` returns no collection bbox, so it degrades to
     # `global_fallback` — this test only cares about the itemize/upsert path.
     repo = FakeIngestRepo()
     assoc = _assoc(
@@ -126,7 +87,7 @@ async def test_run_itemize_defaults_only_upserts_and_marks_itemized():
         assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter()
+    writer = FakeWriter()
 
     out = await run_itemize(
         repo,
@@ -165,7 +126,7 @@ async def test_run_itemize_collection_missing_marks_failed():
 
     out = await run_itemize(
         repo,
-        _FakeWriter(raise_missing=True),
+        FakeWriter(raise_missing=True),
         FakeAdapter(),
         FakeS3(),
         association=assoc,
@@ -210,7 +171,7 @@ async def test_run_itemize_marks_all_members_atomically():
         assoc.id, "scene.xml", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter()
+    writer = FakeWriter()
 
     out = await run_itemize(
         repo,
@@ -239,7 +200,7 @@ async def test_run_itemize_marks_all_members_atomically():
 async def test_run_itemize_skips_when_no_stored_members():
     repo = FakeIngestRepo()
     assoc = _assoc({"source_path": "/out"})
-    writer = _FakeWriter()
+    writer = FakeWriter()
 
     out = await run_itemize(
         repo,
@@ -279,7 +240,7 @@ async def test_run_itemize_propagates_unexpected_writer_error():
         assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _RaisingWriter()
+    writer = RaisingWriter()
 
     with pytest.raises(RuntimeError):
         await run_itemize(
@@ -319,7 +280,7 @@ async def test_run_itemize_defaults_only_opted_in_uses_collection_extent():
         assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter(collection_bbox=[10, 20, 30, 40])
+    writer = FakeWriter(collection_bbox=[10, 20, 30, 40])
 
     out = await run_itemize(
         repo,
@@ -359,7 +320,7 @@ async def test_run_itemize_defaults_only_opted_in_no_collection_extent_uses_glob
         assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter(collection_bbox=None)
+    writer = FakeWriter(collection_bbox=None)
 
     out = await run_itemize(
         repo,
@@ -401,7 +362,7 @@ async def test_run_itemize_defaults_only_opted_in_6d_bbox_reduces_to_2d():
         assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter(collection_bbox=[10, 20, 5, 30, 40, 100])
+    writer = FakeWriter(collection_bbox=[10, 20, 5, 30, 40, 100])
 
     out = await run_itemize(
         repo,
@@ -441,7 +402,7 @@ async def test_run_itemize_defaults_only_opted_in_4d_bbox_still_works():
         assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter(collection_bbox=[10, 20, 30, 40])
+    writer = FakeWriter(collection_bbox=[10, 20, 30, 40])
 
     out = await run_itemize(
         repo,
@@ -479,7 +440,7 @@ async def test_run_itemize_defaults_only_opted_in_6d_global_bbox_uses_global():
         assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter(collection_bbox=[-180, -90, 0, 180, 90, 5000])
+    writer = FakeWriter(collection_bbox=[-180, -90, 0, 180, 90, 5000])
 
     out = await run_itemize(
         repo,
@@ -514,7 +475,7 @@ async def test_run_itemize_defaults_only_not_opted_in_fails_without_geometry():
         assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter()
+    writer = FakeWriter()
 
     out = await run_itemize(
         repo,
@@ -556,7 +517,7 @@ async def test_run_itemize_reference_reads_source_via_adapter_and_marks_itemized
         assoc.id, "scene.tif", version=1, status=STATUS_STORED, size=1, fingerprint="f"
     )
     config = parse_ingest_config(assoc.config)
-    writer = _FakeWriter()
+    writer = FakeWriter()
     adapter = FakeAdapter(blobs={"/out/scene.tif": _geotiff_bytes()})
 
     out = await run_itemize(

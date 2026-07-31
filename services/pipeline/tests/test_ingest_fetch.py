@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-from _ingest_fake import FakeAdapter, FakeIngestRepo, FakeS3
+from _ingest_fake import FakeAdapter, FakeIngestRepo, FakeS3, make_association
 from pipeline.connections.repo import ConnectionRow
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.ingest.fetch import fetch_stage
@@ -12,15 +12,7 @@ from pipeline.ingest.repo import IngestAssociation
 
 
 def _assoc(config: dict) -> IngestAssociation:
-    conn = ConnectionRow(
-        id="c1", name="src", protocol="s3", config={}, credentials=None, host_key=None
-    )
-    return IngestAssociation(
-        id="assoc1",
-        collection_id="sentinel-2",
-        config=config,
-        connection=conn,
-    )
+    return make_association(config, collection_id="sentinel-2")
 
 
 async def _settled(repo, source_path, size=3):

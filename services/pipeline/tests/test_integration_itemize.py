@@ -60,20 +60,24 @@ async def collection():
         await conn.execute("SELECT pgstac.delete_collection(%s)", (COLLECTION,))
 
 
-async def test_pgstac_schema_version_covers_i54_fix():
+async def test_pgstac_schema_version_matches_pinned_pypgstac():
     # I-54 drift guard: the pgstac image only installs its schema on a FRESH
     # volume (initdb), so bumping the image tag never migrates a persisted
     # volume. The compose `pgstac-migrate` one-shot closes that gap; this
-    # asserts the running schema actually reached the version that fixed
-    # `get_tstz_constraint`'s fractional-second parsing (>= 0.9.11).
+    # asserts the running schema matches the pinned migrator, so the guard
+    # tracks every future pin bump (0.9.11 was merely the I-54 instance —
+    # the release that fixed `get_tstz_constraint`'s fractional-second regex).
+    from pypgstac.version import __version__ as pinned
+
     async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
         cur = await conn.execute("SELECT pgstac.get_version()")
         row = await cur.fetchone()
     assert row is not None
-    version = tuple(int(p) for p in row[0].split(".")[:3])
-    assert version >= (0, 9, 11), (
-        f"pgstac schema {row[0]} predates the I-54 constraint-parser fix; "
-        "run `docker compose up pgstac-migrate`"
+    schema = tuple(int(p) for p in row[0].split(".")[:3])
+    assert schema == tuple(int(p) for p in pinned.split(".")[:3]), (
+        f"pgstac schema {row[0]} != pinned pypgstac {pinned} — schema drift; "
+        "run `docker compose up pgstac-migrate` (and keep the database image "
+        "pin in lockstep with the pipeline's pypgstac pin)"
     )
 
 

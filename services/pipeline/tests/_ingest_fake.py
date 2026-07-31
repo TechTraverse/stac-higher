@@ -8,13 +8,61 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.connections.adapters.base import FileEntry
+from pipeline.connections.repo import ConnectionRow
 from pipeline.ingest.repo import (
     IngestAssociation,
     IngestRepo,
     LedgerEntry,
 )
+from pipeline.stac.pgstac_writer import CollectionMissing, PgstacWriter
 
 EPOCH = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+
+
+def make_association(config: dict, *, collection_id: str = "col") -> IngestAssociation:
+    """An enabled s3-source association with the standard test ids."""
+    conn = ConnectionRow(
+        id="c1", name="src", protocol="s3", config={}, credentials=None, host_key=None
+    )
+    return IngestAssociation(
+        id="assoc1",
+        collection_id=collection_id,
+        config=config,
+        connection=conn,
+    )
+
+
+class FakeWriter(PgstacWriter):
+    """Recording writer; opt into CollectionMissing or a collection bbox."""
+
+    def __init__(self, raise_missing: bool = False, collection_bbox: list | None = None):
+        self.items: list = []
+        self.raise_missing = raise_missing
+        self.collection_bbox = collection_bbox
+        self.get_collection_bbox_calls: list[str] = []
+
+    async def upsert_items(self, items):
+        if self.raise_missing:
+            raise CollectionMissing("Collection col is not present in the database")
+        self.items.extend(items)
+
+    async def get_collection_bbox(self, collection_id):
+        self.get_collection_bbox_calls.append(collection_id)
+        return self.collection_bbox
+
+
+class RaisingWriter(PgstacWriter):
+    """Writer whose upsert_items raises an unexpected (non-CollectionMissing)
+    error, e.g. a transient DB connection failure."""
+
+    def __init__(self):
+        self.items: list = []
+
+    async def upsert_items(self, items):
+        raise RuntimeError("connection refused")
+
+    async def get_collection_bbox(self, collection_id):
+        return None
 
 
 @dataclass

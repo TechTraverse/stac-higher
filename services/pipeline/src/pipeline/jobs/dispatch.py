@@ -44,10 +44,10 @@ JOB_RETRY_SWEEP = "pipeline.delivery_retry_sweep"
 CRON = "* * * * *"
 #: rows per sweep tick — bounds one tick's fan-out; the next tick drains more.
 RETRY_SWEEP_BATCH = 500
-#: Queue-level retry (ISSUES I-55): `deliver_item` records its own failures in
-#: delivery_log, but a transient fault BEFORE the first record (load_target /
-#: get_item DB errors) would otherwise lose the delivery — the outbox row is
-#: already claimed and the retry sweep has nothing to re-drive.
+#: Queue-level retry (ISSUES I-55): a transient fault BEFORE `deliver_item`'s
+#: first delivery_log record (load_target / get_item DB errors) would
+#: otherwise lose the delivery — the outbox row is already claimed and the
+#: retry sweep has nothing to re-drive.
 DELIVER_RETRY = RetrySpec(max_attempts=4, wait_seconds=60)
 
 

@@ -20,16 +20,13 @@ services:
       timeout: 5s
       retries: 5
 
-  # One-shot: bring the pgstac schema of an EXISTING database volume up to the
-  # version the pinned images expect, then exit. The pgstac image installs its
-  # schema only through initdb on a FRESH volume — bumping the image tag never
-  # migrates a persisted volume (that drift is how I-54 bit the M1 rehearsal:
-  # image at v0.9.11, volume schema still 0.9.10). Reuses the pipeline image
-  # because its lockfile pins pypgstac in lockstep with the loader that
-  # actually consumes the schema; `pypgstac migrate` is a no-op at matching
-  # versions. Schema ownership: ADR 0001 (pgstac migrates pgstac).
+  # One-shot: migrate a persisted volume's pgstac schema to the pinned version
+  # (the pgstac image only installs its schema via initdb on a FRESH volume).
+  # Reuses the pipeline image, whose lockfile pins pypgstac in lockstep with
+  # the loader; a no-op at matching versions. See ADR 0001 / ISSUES I-54.
   pgstac-migrate:
     build: ./services/pipeline
+    image: stac-higher-pipeline
     command: ["pypgstac", "migrate"]
     environment:
       - PGHOST=database
@@ -183,6 +180,7 @@ services:
   # workstream); this entry assumes services/pipeline/Dockerfile.
   pipeline:
     build: ./services/pipeline
+    image: stac-higher-pipeline
     environment:
       - DATABASE_URL=postgresql://username:password@database:5432/postgis
       - HEALTH_PORT=8083

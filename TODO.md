@@ -79,33 +79,31 @@ the referenced ISSUES/ADR entries.
       (extends ADR 0007's boundary — note it there) with a test that loads
       two items with microsecond datetimes into one collection.
       (ISSUES I-54.)
-      **Done 2026-07-30: upstream already fixed it in v0.9.11 (which we pin) —
-      the real gap was that the pgstac image never migrates a persisted
-      volume, so the dev DB was stuck at schema 0.9.10. Added a
-      `pgstac-migrate` compose one-shot (pypgstac migrate, gates api +
-      pipeline), migrated the live DB 0.9.10 → 0.9.11 (canonical function now
-      replaces the manual hotfix), and added DATABASE_URL-gated regression
-      tests (version drift guard + two microsecond loads), verified
-      red → green. No patched-function migration needed; ADR 0001 amended
-      instead of 0007.**
+      **Done 2026-07-30: upstream v0.9.11 (which we pin) already had the fix —
+      the real gap was schema drift on persisted volumes. `pgstac-migrate`
+      compose one-shot + regression tests; ADR 0001 amended. Full story:
+      ISSUES I-54 resolution note.**
 - [x] **I-55 ingest-job retry + `stored`-stall recovery** — register ingest
       (and audit deliver) tasks with a Procrastinate retry strategy matching
       itemize.py's "propagates → retries" comment, and/or extend the I-52
       recovery sweep to re-settle `stored` rows older than a stall window
       (itemize is idempotent). Unit-test the itemize-crash path re-driving to
       `itemized`. (ISSUES I-55.)
-      **Done 2026-07-30: both halves. `RetrySpec` on the queue interface →
-      Procrastinate `RetryStrategy`; all four chain stages + deliver register
-      with 4 attempts / 60 s (deliver audit found the same pre-record blind
-      spot; batch re-runs are safe — delivery_log upserts per item). New
-      `sweep_stuck_stored` re-settles stalled `stored` rows against the shared
-      retries budget and dead-ends capped rows to terminal `failed`; wired
-      into the recovery sweep (INGEST_STORED_STALL_SECONDS, default 30 min).
-      Crash → sweep → re-drive → `itemized` unit-tested.**
+      **Done 2026-07-30: `RetrySpec` queue retry on all chain stages +
+      deliver, and a `sweep_stuck_stored` recovery sweep with a terminal
+      dead-end at the retry cap. Full story: ISSUES I-55 resolution note.**
 
 ## Discovered follow-ups
 
 (append here during iterations)
+
+- I-55 /simplify altitude note: deliver's pre-record blind spot is covered by
+  queue retry only (~4 min window) — if the DB stays down through all 4
+  attempts, the delivery is lost invisibly (outbox claimed, no delivery_log
+  row for the retry sweep). The durable fix is hoisting `upsert_pending`
+  ahead of the fallible `load_target`/`get_item` work (dispatch time or top
+  of the deliver handler) so the delivery_retry_sweep owns recovery, matching
+  the ingest stored-stall sweep. Behavior change — deferred.
 
 - Fixed in the I-39 iteration: `api-assets.test.ts` 500'd with the Docker
   stack down (the Phase 4 reference seam added an unmocked Postgres query
