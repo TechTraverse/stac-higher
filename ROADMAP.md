@@ -635,8 +635,12 @@ there are no intermediate demos; the first demo is M1, complete:
   M1-blocking on fresh stacks); (2) ingest jobs carry no queue-level retry
   and an itemize crash strands the ledger at `stored`, outside the I-52
   sweeps' reach (recovered by flipping to `failed`, which the sweep then
-  re-drove exactly as designed). **ai/main → main promotion (the PR) remains
-  — human step.**
+  re-drove exactly as designed). **Both findings resolved 2026-07-30** —
+  I-54 was really schema drift (the v0.9.11 image never migrates a persisted
+  volume; fixed by the `pgstac-migrate` compose one-shot + drift-guard test),
+  I-55 by queue-level `RetrySpec` on the chain + deliver jobs and a
+  stored-stall recovery sweep; see the ISSUES I-54/I-55 resolution notes.
+  **ai/main → main promotion (the PR) remains — human step.**
 - **M2 — Operable platform** (Phase 6): monitoring/alerts, `/metrics`,
   partitioning + retention/GC, archived collections (ADR 0009's GC half).
 - **M3 — NOAA-scale readiness:** sustained ~30 items/s (~2.6M items/day,
