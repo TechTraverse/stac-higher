@@ -77,7 +77,16 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         adapter = build_adapter(
             association.connection, master_key, settings.egress_allow_hosts
         )
-        await discover_stage(repo, association, config, adapter)
+        result = await discover_stage(repo, association, config, adapter)
+        if result.settled:
+            # Flow telemetry (M2-A): a settle IS ingest activity — the M2-B
+            # flow monitor evaluates expect_activity_within_seconds against
+            # this stamp. One rollup write per tick, not per file.
+            await repo.bump_flow_stats(
+                association_id,
+                files=result.settled,
+                bytes_added=result.settled_bytes,
+            )
         # Chain to GROUP regardless of counts: settled files may be carried over
         # from an earlier tick (a group waiting on a late sibling).
         await queue.enqueue(JOB_GROUP, {"association_id": association_id})
@@ -147,7 +156,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         )
         s3_client = build_platform_client(settings)
         writer = PgPgstacWriter(settings.database_url)
-        await run_itemize(
+        outcome = await run_itemize(
             repo,
             writer,
             adapter,
@@ -159,6 +168,18 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             bucket=settings.staging_bucket,
             asset_href_base=settings.asset_href_base,
         )
+        # Flow telemetry (M2-A): one rollup write per item — itemized counts as
+        # activity, a terminal itemize failure stamps last_error_at. "skipped"
+        # (idempotent re-run) writes nothing.
+        if outcome.status == "itemized":
+            await repo.bump_flow_stats(
+                association_id,
+                items=1,
+                bytes_added=outcome.bytes,
+                latency_seconds=outcome.latency_seconds,
+            )
+        elif outcome.status == "failed":
+            await repo.bump_flow_stats(association_id, failed=1)
 
     async def recovery_sweep(timestamp: int) -> None:
         # Crash recovery (ISSUES I-52 + I-55): every transition re-enters the

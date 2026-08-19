@@ -50,7 +50,12 @@ import type {
 } from "@/lib/associations/schemas";
 import { AssociationDeleteDialog } from "./AssociationDeleteDialog";
 import { DeliverySection } from "./DeliverySection";
-import { CONNECTION_STATUS_VARIANT, splitCsv } from "./shared";
+import {
+  CONNECTION_STATUS_VARIANT,
+  expectationSecondsField,
+  parseExpectationSeconds,
+  splitCsv,
+} from "./shared";
 
 interface FormState {
   connectionId: string;
@@ -63,6 +68,8 @@ interface FormState {
   metadataStrategy: "raster_auto" | "sidecar" | "defaults_only";
   postIngest: "leave" | "delete" | "move";
   movePath: string;
+  /** §5.1 expectation window (M2-A) — "" = no expectation declared. */
+  expectActivity: string;
 }
 
 function emptyForm(): FormState {
@@ -77,6 +84,7 @@ function emptyForm(): FormState {
     metadataStrategy: "raster_auto",
     postIngest: "leave",
     movePath: "",
+    expectActivity: "",
   };
 }
 
@@ -100,6 +108,10 @@ function formFromAssociation(a: Association): FormState {
         : "raster_auto",
     postIngest: isMove ? "move" : postIngestRaw === "delete" ? "delete" : "leave",
     movePath: isMove ? postIngestRaw.slice("move:".length) : "",
+    expectActivity: expectationSecondsField(
+      a.expectation,
+      "expect_activity_within_seconds",
+    ),
   };
 }
 
@@ -171,10 +183,23 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
       toast.error("A destination path is required for the move action");
       return;
     }
+    const expectSeconds = parseExpectationSeconds(form.expectActivity);
+    if (expectSeconds === undefined) {
+      toast.error("The activity window must be a whole number of seconds (≥ 1)");
+      return;
+    }
+    const expectation =
+      expectSeconds === null
+        ? null
+        : { expect_activity_within_seconds: expectSeconds };
     const config = buildConfig(form);
 
     if (editing) {
-      const input: AssociationUpdatePayload = { config, enabled: editing.enabled };
+      const input: AssociationUpdatePayload = {
+        config,
+        enabled: editing.enabled,
+        expectation,
+      };
       updateMutation.mutate(
         { id: editing.id, input },
         {
@@ -191,7 +216,7 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
         direction: "ingest",
         enabled: true,
         config,
-        expectation: null,
+        expectation,
       };
       createMutation.mutate(input, {
         onSuccess: () => {
@@ -494,6 +519,22 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
                   />
                 </div>
               )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="df-expect-activity">Alert if no activity within (s)</Label>
+              <Input
+                id="df-expect-activity"
+                type="number"
+                min={1}
+                value={form.expectActivity}
+                onChange={(e) => update({ expectActivity: e.target.value })}
+                placeholder="no expectation"
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional. When set, the flow monitor raises an alert if this
+                source settles or itemizes nothing for that long.
+              </p>
             </div>
           </div>
 

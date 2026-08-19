@@ -7,7 +7,11 @@ psycopg ``PgDeliveryRepo`` for production. Pg methods open a short-lived
 connection and are ``# pragma: no cover`` — exercised by the live verification.
 
 Ownership (ADR 0001): reads ``collection_connections``/``connections`` and pgstac
-items; INSERT/UPDATEs only ``delivery_log``. Never runs DDL.
+items; INSERT/UPDATEs ``delivery_log`` and (M2-A) row-updates
+``collection_connections.flow_stats`` — in the SAME transaction as the
+``delivery_log`` status change, so the per-status snapshot cannot drift from
+the log. It never touches ``collection_connections.updated_at`` (that column
+means "user edit", ``associations/storage.ts``) and never runs DDL.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.connections.repo import ConnectionRow, _to_connection_row
+from pipeline.flow.stats import apply_count_delta, apply_delivery_event, zero_counts
 from pipeline.ingest.discover import source_fetch_path
 
 
@@ -198,6 +203,63 @@ class PgDeliveryRepo(DeliveryRepo):
 
         return await psycopg.AsyncConnection.connect(self.database_url)
 
+    async def _apply_flow_stats(  # pragma: no cover
+        self,
+        conn,
+        association_id: str,
+        transitions: list[tuple[str | None, str | None]],
+        *,
+        bytes_added: int = 0,
+        latency_seconds: float | None = None,
+        activity: bool = False,
+        error: bool = False,
+    ) -> None:
+        """Fold status ``transitions`` (+ scalar telemetry) into the
+        association's ``flow_stats``, inside the caller's open transaction.
+
+        Locks the association row FOR UPDATE (always AFTER the delivery_log
+        rows — one consistent order, no deadlock) and applies the same pure
+        math the fakes use. A pre-M2-A association has no ``counts`` key yet:
+        the snapshot is seeded from the log itself — this transaction's
+        delivery_log write is already visible here, so the transitions must
+        NOT be re-applied on top of the seed. Never touches ``updated_at``.
+        """
+        from psycopg.types.json import Json
+
+        cur = await conn.execute(
+            "SELECT flow_stats FROM stac_higher.collection_connections"
+            " WHERE id = %s FOR UPDATE",
+            (association_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return
+        stats = dict(row[0]) if row[0] else {}
+        if "counts" not in stats:
+            cur = await conn.execute(
+                "SELECT status, count(*) FROM stac_higher.delivery_log"
+                " WHERE association_id = %s GROUP BY status",
+                (association_id,),
+            )
+            observed = {r[0]: int(r[1]) for r in await cur.fetchall()}
+            stats["counts"] = {**zero_counts(), **observed}
+        else:
+            for prev, new in transitions:
+                if prev != new:
+                    stats = apply_count_delta(stats, prev, new)
+        stats = apply_delivery_event(
+            stats,
+            bytes_added=bytes_added,
+            latency_seconds=latency_seconds,
+            activity=activity,
+            error=error,
+        )
+        await conn.execute(
+            "UPDATE stac_higher.collection_connections SET flow_stats = %s"
+            " WHERE id = %s",
+            (Json(stats), association_id),
+        )
+
     async def load_target(  # pragma: no cover
         self, association_id: str
     ) -> DeliverTarget | None:
@@ -289,6 +351,16 @@ class PgDeliveryRepo(DeliveryRepo):
         self, association_id: str, item_id: str, item_created_at: str | None
     ) -> str:
         async with await self._connect() as conn:
+            # Lock + read the prior status first (delivery_log before the
+            # association row — the invariant lock order), so the flow_stats
+            # delta below moves the row out of the right bucket.
+            cur = await conn.execute(
+                "SELECT status FROM stac_higher.delivery_log"
+                " WHERE association_id = %s AND item_id = %s FOR UPDATE",
+                (association_id, item_id),
+            )
+            prev_row = await cur.fetchone()
+            prev = prev_row[0] if prev_row else None
             cur = await conn.execute(
                 "INSERT INTO stac_higher.delivery_log"
                 " (association_id, item_id, item_created_at, status, attempts)"
@@ -308,19 +380,26 @@ class PgDeliveryRepo(DeliveryRepo):
                 (association_id, item_id, item_created_at),
             )
             row = await cur.fetchone()
+            await self._apply_flow_stats(conn, association_id, [(prev, "pending")])
             await conn.commit()
         return str(row[0])
 
     async def mark_delivering(self, row_id: str) -> int:  # pragma: no cover
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "UPDATE stac_higher.delivery_log"
-                " SET status = 'delivering', attempts = attempts + 1, updated_at = now()"
-                " WHERE id = %s"
-                " RETURNING attempts",
+                "UPDATE stac_higher.delivery_log dl"
+                " SET status = 'delivering', attempts = dl.attempts + 1, updated_at = now()"
+                " FROM (SELECT id, status AS prev FROM stac_higher.delivery_log"
+                "       WHERE id = %s FOR UPDATE) o"
+                " WHERE dl.id = o.id"
+                " RETURNING dl.attempts, dl.association_id, o.prev",
                 (row_id,),
             )
             row = await cur.fetchone()
+            if row:
+                await self._apply_flow_stats(
+                    conn, str(row[1]), [(row[2], "delivering")]
+                )
             await conn.commit()
         return int(row[0]) if row else 1
 
@@ -333,14 +412,30 @@ class PgDeliveryRepo(DeliveryRepo):
         from psycopg.types.json import Json
 
         async with await self._connect() as conn:
-            await conn.execute(
-                "UPDATE stac_higher.delivery_log"
+            cur = await conn.execute(
+                "UPDATE stac_higher.delivery_log dl"
                 " SET status = 'delivered', bytes = %s, error = NULL,"
                 "     delivered_assets = %s,"
                 "     delivered_at = now(), updated_at = now()"
-                " WHERE id = %s",
+                " FROM (SELECT id, status AS prev FROM stac_higher.delivery_log"
+                "       WHERE id = %s FOR UPDATE) o"
+                " WHERE dl.id = o.id"
+                " RETURNING dl.association_id, o.prev,"
+                # event→delivered latency (§6.4 NRT SLO substrate) — NULL when
+                # the row carries no item_created_at.
+                "   EXTRACT(EPOCH FROM (dl.delivered_at - dl.item_created_at))",
                 (byte_count, Json(delivered_assets or {}), row_id),
             )
+            row = await cur.fetchone()
+            if row:
+                await self._apply_flow_stats(
+                    conn,
+                    str(row[0]),
+                    [(row[1], "delivered")],
+                    bytes_added=byte_count,
+                    latency_seconds=float(row[2]) if row[2] is not None else None,
+                    activity=True,
+                )
             await conn.commit()
 
     async def mark_failed(  # pragma: no cover
@@ -354,20 +449,29 @@ class PgDeliveryRepo(DeliveryRepo):
     ) -> None:
         from psycopg.types.json import Json
 
+        new_status = "dead" if dead else "failed"
         async with await self._connect() as conn:
-            await conn.execute(
-                "UPDATE stac_higher.delivery_log"
+            cur = await conn.execute(
+                "UPDATE stac_higher.delivery_log dl"
                 " SET status = %s, error = %s, delivered_assets = %s,"
                 "     next_attempt_at = %s, updated_at = now()"
-                " WHERE id = %s",
+                " FROM (SELECT id, status AS prev FROM stac_higher.delivery_log"
+                "       WHERE id = %s FOR UPDATE) o"
+                " WHERE dl.id = o.id"
+                " RETURNING dl.association_id, o.prev",
                 (
-                    "dead" if dead else "failed",
+                    new_status,
                     error,
                     Json(delivered_assets or {}),
                     next_attempt_at,
                     row_id,
                 ),
             )
+            row = await cur.fetchone()
+            if row:
+                await self._apply_flow_stats(
+                    conn, str(row[0]), [(row[1], new_status)], error=True
+                )
             await conn.commit()
 
     async def list_due_retries(self, limit: int) -> list[RetryRow]:  # pragma: no cover
@@ -420,6 +524,12 @@ class PgDeliveryRepo(DeliveryRepo):
                 (association_id, item_ids),
             )
             rows = await cur.fetchall()
+            if created_ids:
+                await self._apply_flow_stats(
+                    conn,
+                    association_id,
+                    [(None, "pending")] * len(created_ids),
+                )
             await conn.commit()
         return [
             PreRecord(
@@ -438,11 +548,19 @@ class PgDeliveryRepo(DeliveryRepo):
         async with await self._connect() as conn:
             # Guarded: only untouched placeholders. A concurrent job that has
             # since started delivering this row must not lose its record.
-            await conn.execute(
+            cur = await conn.execute(
                 "DELETE FROM stac_higher.delivery_log"
-                " WHERE id = ANY(%s) AND status = 'pending' AND attempts = 0",
+                " WHERE id = ANY(%s) AND status = 'pending' AND attempts = 0"
+                " RETURNING association_id",
                 (row_ids,),
             )
+            deleted = [str(r[0]) for r in await cur.fetchall()]
+            for association_id in sorted(set(deleted)):
+                await self._apply_flow_stats(
+                    conn,
+                    association_id,
+                    [("pending", None)] * deleted.count(association_id),
+                )
             await conn.commit()
 
     async def sweep_stalled_deliveries(  # pragma: no cover
@@ -454,29 +572,50 @@ class PgDeliveryRepo(DeliveryRepo):
             # upsert_pending keeps the count for pending/delivering rows, so
             # max_attempts dead-lettering still converges.
             cur = await conn.execute(
-                "UPDATE stac_higher.delivery_log SET"
+                "UPDATE stac_higher.delivery_log dl SET"
                 "   status = 'failed',"
-                "   error = 'stalled in ' || status"
+                "   error = 'stalled in ' || dl.status"
                 "     || '; recovered by the delivery stall sweep',"
                 "   next_attempt_at = now(), updated_at = now()"
-                " WHERE id IN ("
-                "   SELECT id FROM stac_higher.delivery_log"
+                " FROM ("
+                "   SELECT id, status AS prev, association_id"
+                "   FROM stac_higher.delivery_log"
                 "   WHERE status IN ('pending', 'delivering')"
                 "     AND updated_at < now() - make_interval(secs => %s)"
-                "   ORDER BY updated_at LIMIT %s)",
+                "   ORDER BY updated_at LIMIT %s FOR UPDATE) o"
+                " WHERE dl.id = o.id"
+                " RETURNING dl.association_id, o.prev",
                 (older_than_seconds, limit),
             )
+            swept = [(str(r[0]), r[1]) for r in await cur.fetchall()]
+            for association_id in sorted({a for a, _ in swept}):
+                await self._apply_flow_stats(
+                    conn,
+                    association_id,
+                    [(prev, "failed") for a, prev in swept if a == association_id],
+                    error=True,
+                )
             await conn.commit()
-        return cur.rowcount or 0
+        return len(swept)
 
     async def requeue_for_retry(self, row_ids: list[str]) -> None:  # pragma: no cover
         if not row_ids:
             return
         async with await self._connect() as conn:
-            await conn.execute(
-                "UPDATE stac_higher.delivery_log"
+            cur = await conn.execute(
+                "UPDATE stac_higher.delivery_log dl"
                 " SET status = 'pending', next_attempt_at = NULL, updated_at = now()"
-                " WHERE id = ANY(%s)",
+                " FROM (SELECT id, status AS prev FROM stac_higher.delivery_log"
+                "       WHERE id = ANY(%s) FOR UPDATE) o"
+                " WHERE dl.id = o.id"
+                " RETURNING dl.association_id, o.prev",
                 (row_ids,),
             )
+            requeued = [(str(r[0]), r[1]) for r in await cur.fetchall()]
+            for association_id in sorted({a for a, _ in requeued}):
+                await self._apply_flow_stats(
+                    conn,
+                    association_id,
+                    [(prev, "pending") for a, prev in requeued if a == association_id],
+                )
             await conn.commit()

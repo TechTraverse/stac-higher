@@ -9,6 +9,7 @@ from typing import Any
 
 from pipeline.connections.adapters.base import FileEntry
 from pipeline.connections.repo import ConnectionRow
+from pipeline.flow.stats import apply_ingest_activity
 from pipeline.ingest.repo import (
     IngestAssociation,
     IngestRepo,
@@ -76,6 +77,8 @@ class FakeIngestRepo(IngestRepo):
     set_ledger_status_many_calls: int = 0
     #: per-row bounded-retry counters (mirrors ingest_files.retries, I-52).
     retries: dict[str, int] = field(default_factory=dict)
+    #: per-association flow_stats rollup, same pure math as PgIngestRepo (M2-A).
+    flow_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     async def list_enabled_ingest_associations(self) -> list[IngestAssociation]:
         return [a for a in self.associations if a.enabled]
@@ -206,6 +209,26 @@ class FakeIngestRepo(IngestRepo):
             row.status = status
             row.item_id = item_id
             row.updated_at = self.now
+
+    async def bump_flow_stats(
+        self,
+        association_id: str,
+        *,
+        files: int = 0,
+        bytes_added: int = 0,
+        items: int = 0,
+        failed: int = 0,
+        latency_seconds: float | None = None,
+    ) -> None:
+        self.flow_stats[association_id] = apply_ingest_activity(
+            self.flow_stats.get(association_id, {}),
+            files=files,
+            bytes_added=bytes_added,
+            items=items,
+            failed=failed,
+            latency_seconds=latency_seconds,
+            now=self.now,
+        )
 
 
 @dataclass

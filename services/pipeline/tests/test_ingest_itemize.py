@@ -17,7 +17,6 @@ from _ingest_fake import (
 )
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.ingest.itemize import (
-    ItemizeOutcome,
     ItemValidationError,
     run_itemize,
     validate_item,
@@ -102,7 +101,7 @@ async def test_run_itemize_defaults_only_upserts_and_marks_itemized():
         asset_href_base="/api/assets",
     )
 
-    assert out == ItemizeOutcome("itemized", "scene")
+    assert (out.status, out.item_id) == ("itemized", "scene")
     assert writer.items and writer.items[0]["id"] == "scene"
     row = await repo.get_latest_ledger(assoc.id, "scene.bin")
     assert row.status == STATUS_ITEMIZED
@@ -186,7 +185,7 @@ async def test_run_itemize_marks_all_members_atomically():
         asset_href_base="/api/assets",
     )
 
-    assert out == ItemizeOutcome("itemized", "scene")
+    assert (out.status, out.item_id) == ("itemized", "scene")
     tif_row = await repo.get_latest_ledger(assoc.id, "scene.tif")
     xml_row = await repo.get_latest_ledger(assoc.id, "scene.xml")
     assert tif_row.status == STATUS_ITEMIZED
@@ -295,7 +294,7 @@ async def test_run_itemize_defaults_only_opted_in_uses_collection_extent():
         asset_href_base="/api/assets",
     )
 
-    assert out == ItemizeOutcome("itemized", "scene")
+    assert (out.status, out.item_id) == ("itemized", "scene")
     assert writer.get_collection_bbox_calls == ["col"]
     item = writer.items[0]
     assert item["geometry"] is not None
@@ -335,7 +334,7 @@ async def test_run_itemize_defaults_only_opted_in_no_collection_extent_uses_glob
         asset_href_base="/api/assets",
     )
 
-    assert out == ItemizeOutcome("itemized", "scene")
+    assert (out.status, out.item_id) == ("itemized", "scene")
     item = writer.items[0]
     assert item["properties"]["stac_higher:geometry_source"] == "global_fallback"
     row = await repo.get_latest_ledger(assoc.id, "scene.bin")
@@ -377,7 +376,7 @@ async def test_run_itemize_defaults_only_opted_in_6d_bbox_reduces_to_2d():
         asset_href_base="/api/assets",
     )
 
-    assert out == ItemizeOutcome("itemized", "scene")
+    assert (out.status, out.item_id) == ("itemized", "scene")
     item = writer.items[0]
     assert item["bbox"] == [10, 20, 30, 40]
     assert item["properties"]["stac_higher:geometry_source"] == "collection_extent"
@@ -417,7 +416,7 @@ async def test_run_itemize_defaults_only_opted_in_4d_bbox_still_works():
         asset_href_base="/api/assets",
     )
 
-    assert out == ItemizeOutcome("itemized", "scene")
+    assert (out.status, out.item_id) == ("itemized", "scene")
     item = writer.items[0]
     assert item["bbox"] == [10, 20, 30, 40]
     assert item["properties"]["stac_higher:geometry_source"] == "collection_extent"
@@ -455,7 +454,7 @@ async def test_run_itemize_defaults_only_opted_in_6d_global_bbox_uses_global():
         asset_href_base="/api/assets",
     )
 
-    assert out == ItemizeOutcome("itemized", "scene")
+    assert (out.status, out.item_id) == ("itemized", "scene")
     item = writer.items[0]
     assert item["properties"]["stac_higher:geometry_source"] == "global_fallback"
 
@@ -533,7 +532,7 @@ async def test_run_itemize_reference_reads_source_via_adapter_and_marks_itemized
         asset_href_base="/api/assets",
     )
 
-    assert out == ItemizeOutcome("itemized", "scene")
+    assert (out.status, out.item_id) == ("itemized", "scene")
     assert adapter.get_calls == ["/out/scene.tif"]
     assert writer.items and writer.items[0]["id"] == "scene"
     item = writer.items[0]

@@ -34,7 +34,7 @@ import {
 import type { Association } from "@/lib/associations/types";
 import { deliveryConfigSchema } from "@/lib/associations/schemas";
 import type { DeliveryConfig } from "@/lib/associations/schemas";
-import { splitCsv } from "./shared";
+import { expectationSecondsField, parseExpectationSeconds, splitCsv } from "./shared";
 
 interface DeliveryFormState {
   connectionId: string;
@@ -49,6 +49,8 @@ interface DeliveryFormState {
   retryMaxAttempts: string;
   retryBackoff: "exponential" | "fixed";
   maxConcurrentTransfers: string;
+  /** §5.1 NRT SLO window (M2-A) — "" = no expectation declared. */
+  deliverWithin: string;
 }
 
 function emptyForm(): DeliveryFormState {
@@ -65,6 +67,7 @@ function emptyForm(): DeliveryFormState {
     retryMaxAttempts: "5",
     retryBackoff: "exponential",
     maxConcurrentTransfers: "4",
+    deliverWithin: "",
   };
 }
 
@@ -88,6 +91,7 @@ function formFromAssociation(a: Association): DeliveryFormState {
     retryMaxAttempts: String(c.retry.max_attempts),
     retryBackoff: c.retry.backoff,
     maxConcurrentTransfers: String(c.max_concurrent_transfers),
+    deliverWithin: expectationSecondsField(a.expectation, "deliver_within_seconds"),
   };
 }
 
@@ -158,6 +162,13 @@ export function DeliveryFormDialog({
       return;
     }
     const config = parsed.data;
+    const deliverSeconds = parseExpectationSeconds(form.deliverWithin);
+    if (deliverSeconds === undefined) {
+      toast.error("The delivery SLO must be a whole number of seconds (≥ 1)");
+      return;
+    }
+    const expectation =
+      deliverSeconds === null ? null : { deliver_within_seconds: deliverSeconds };
 
     const callbacks = {
       onSuccess: () => {
@@ -170,7 +181,7 @@ export function DeliveryFormDialog({
     };
     if (editing) {
       updateMutation.mutate(
-        { id: editing.id, input: { config, enabled: editing.enabled } },
+        { id: editing.id, input: { config, enabled: editing.enabled, expectation } },
         callbacks,
       );
     } else {
@@ -180,7 +191,7 @@ export function DeliveryFormDialog({
           direction: "deliver",
           enabled: true,
           config,
-          expectation: null,
+          expectation,
         },
         callbacks,
       );
@@ -399,6 +410,22 @@ export function DeliveryFormDialog({
             <p className="text-xs text-muted-foreground">
               Per-connection cap; SFTP/FTP destinations transfer serially
               regardless.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="dl-deliver-within">Alert if not delivered within (s)</Label>
+            <Input
+              id="dl-deliver-within"
+              type="number"
+              min={1}
+              value={form.deliverWithin}
+              onChange={(e) => update({ deliverWithin: e.target.value })}
+              placeholder="no expectation"
+            />
+            <p className="text-xs text-muted-foreground">
+              Optional NRT SLO. When set, the flow monitor raises an alert if
+              deliveries take longer than this from item event to delivered.
             </p>
           </div>
         </div>

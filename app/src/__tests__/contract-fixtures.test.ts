@@ -12,7 +12,9 @@ import { describe, it, expect } from "vitest";
 import type { ZodType } from "zod";
 import {
   deliveryConfigSchema,
+  deliveryExpectationSchema,
   ingestConfigSchema,
+  ingestExpectationSchema,
 } from "@/lib/associations/schemas";
 
 interface FixtureCase {
@@ -53,4 +55,12 @@ describe("ingest config contract (tests/contract-fixtures/ingest-config.json)", 
 
 describe("delivery config contract (tests/contract-fixtures/delivery-config.json)", () => {
   describeDirection("delivery-config.json", deliveryConfigSchema);
+});
+
+describe("ingest expectation contract (tests/contract-fixtures/ingest-expectation.json)", () => {
+  describeDirection("ingest-expectation.json", ingestExpectationSchema);
+});
+
+describe("delivery expectation contract (tests/contract-fixtures/delivery-expectation.json)", () => {
+  describeDirection("delivery-expectation.json", deliveryExpectationSchema);
 });

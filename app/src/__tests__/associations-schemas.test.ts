@@ -131,6 +131,47 @@ describe("parseAssociationCreate", () => {
     });
     expect(parsed.success).toBe(false);
   });
+
+  it("accepts a declared expectation, per direction (M2-A §5.1)", () => {
+    const ingest = parseAssociationCreate({
+      connection_id: CONN_UUID,
+      direction: "ingest",
+      config: { source_path: "/out" },
+      expectation: { expect_activity_within_seconds: 3600 },
+    });
+    expect(ingest.success).toBe(true);
+    if (ingest.success) {
+      expect(ingest.data.expectation).toEqual({
+        expect_activity_within_seconds: 3600,
+      });
+    }
+    const deliver = parseAssociationCreate({
+      connection_id: CONN_UUID,
+      direction: "deliver",
+      config: { path_template: "{filename}" },
+      expectation: { deliver_within_seconds: 30 },
+    });
+    expect(deliver.success).toBe(true);
+  });
+
+  it("rejects the other direction's expectation key", () => {
+    expect(
+      parseAssociationCreate({
+        connection_id: CONN_UUID,
+        direction: "ingest",
+        config: { source_path: "/out" },
+        expectation: { deliver_within_seconds: 30 },
+      }).success,
+    ).toBe(false);
+    expect(
+      parseAssociationCreate({
+        connection_id: CONN_UUID,
+        direction: "deliver",
+        config: { path_template: "{filename}" },
+        expectation: { expect_activity_within_seconds: 3600 },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("parseAssociationUpdate", () => {
@@ -170,6 +211,27 @@ describe("parseAssociationUpdate", () => {
   it("allows clearing the expectation with null", () => {
     const parsed = parseAssociationUpdate({ expectation: null }, "ingest");
     expect(parsed.success).toBe(true);
+  });
+
+  it("validates the expectation against the row's direction", () => {
+    expect(
+      parseAssociationUpdate(
+        { expectation: { deliver_within_seconds: 30 } },
+        "deliver",
+      ).success,
+    ).toBe(true);
+    expect(
+      parseAssociationUpdate(
+        { expectation: { deliver_within_seconds: 30 } },
+        "ingest",
+      ).success,
+    ).toBe(false);
+    expect(
+      parseAssociationUpdate(
+        { expectation: { expect_activity_within_seconds: 0 } },
+        "ingest",
+      ).success,
+    ).toBe(false);
   });
 });
 
