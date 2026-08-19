@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 
+from pipeline import metrics
 from pipeline.config import Settings
 from pipeline.flow.monitor import monitor_tick
 from pipeline.flow.repo import PgFlowMonitorRepo
@@ -27,6 +28,10 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         raised, resolved = await monitor_tick(
             repo, ingest_max_retries=settings.ingest_max_retries
         )
+        if raised:
+            metrics.ALERTS.labels(event="raised").inc(raised)
+        if resolved:
+            metrics.ALERTS.labels(event="auto_resolved").inc(resolved)
         if raised or resolved:
             logger.info(
                 "flow monitor reconciled alerts",

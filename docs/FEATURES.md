@@ -398,6 +398,17 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   Migration validated end-to-end against a real Postgres (fresh AND with
   live rows via the dev DB e2e run).
 
+- **M2-H · service telemetry** (spec §8) — `GET :8083/metrics` (Prometheus
+  exposition, dedicated registry in `pipeline/metrics.py`; `prometheus-client`
+  is the one new dependency). Every queue task/periodic tick is instrumented
+  centrally at Procrastinate registration (`pipeline_job_runs_total` /
+  `pipeline_job_seconds`); ingest stage counters ride the M2-A flow-stats
+  hooks; delivery terminal transitions count outcomes/bytes/latency; webhook
+  and alert counters land in the notify/monitor jobs. Structured-logging
+  consistency pass: the two remaining %-style call sites (delivery matcher)
+  moved to `extra={}` fields — the codebase now logs data exclusively as
+  structured fields.
+
 ## Phases 7–8 — Not started ⬜
 
 Push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).

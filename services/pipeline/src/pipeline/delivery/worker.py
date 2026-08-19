@@ -21,10 +21,12 @@ import asyncio
 import datetime as dt
 import hashlib
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import unquote
 
+from pipeline import metrics
 from pipeline.connections.adapters.base import StorageAdapter
 from pipeline.connections.repo import ConnectionRow
 from pipeline.delivery.config import DeliveryConfig
@@ -154,6 +156,7 @@ async def deliver_item(
         return
     row_id = await repo.upsert_pending(target.id, item_id, item_created_at)
     attempts = await repo.mark_delivering(row_id)
+    started = time.monotonic()
     delivered: dict[str, dict[str, Any]] = dict(prior.delivered_assets) if prior else {}
     try:
         ref_sources: dict[str, ReferenceSource] = {}
@@ -264,6 +267,9 @@ async def deliver_item(
                 adapter, config, item, completion_payload(item_id, current)
             )
         await repo.mark_delivered(row_id, total, delivered)
+        metrics.DELIVERIES.labels(outcome="delivered").inc()
+        metrics.DELIVERY_BYTES.inc(total)
+        metrics.DELIVERY_SECONDS.observe(time.monotonic() - started)
         logger.info(
             "delivery complete",
             extra={"association_id": target.id, "item_id": item_id, "bytes": total},
@@ -285,6 +291,7 @@ async def deliver_item(
             next_attempt_at=next_attempt_at,
             dead=dead,
         )
+        metrics.DELIVERIES.labels(outcome="dead" if dead else "failed").inc()
         logger.exception(
             "delivery dead-lettered" if dead else "delivery failed; retry scheduled",
             extra={

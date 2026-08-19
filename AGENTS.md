@@ -212,6 +212,13 @@ associations or itemless terminal deliveries; stranded running checks on
 deleted connections flipped to failed). Audit rows die only by partition
 DETACH+DROP.
 
+**Service telemetry (M2-H)**: Prometheus exposition at `GET :8083/metrics`
+(`pipeline/metrics.py`): per-job run/duration/outcome (wrapped centrally at
+Procrastinate registration), ingest stage counters at the flow-stats choke
+points, delivery terminal counters + latency histogram, webhook and alert
+counters. No scraper in compose (spec §8). Pipeline log data goes in
+`extra={...}` structured fields, never interpolated into the message.
+
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in
 `.env.local`; silence logs with `SAFE_FETCH_LOG=0`). `/api/proxy` rejects

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 
+from pipeline import metrics
 from pipeline.config import Settings
 from pipeline.notify.fanout import WEBHOOK_JOB_NAME, handle_webhook_delivery, notify_tick
 from pipeline.notify.repo import PgNotifyRepo
@@ -57,6 +58,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             allow_hosts=settings.egress_allow_hosts,
             timeout=settings.webhook_timeout_seconds,
         )
+        metrics.WEBHOOK_DELIVERIES.labels(outcome=status).inc()
         if status != "delivered":
             logger.info(
                 "webhook delivery not delivered",

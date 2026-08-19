@@ -16,6 +16,7 @@ from collections.abc import Sequence
 import procrastinate
 import psycopg
 
+from pipeline.metrics import instrument_handler
 from pipeline.queue.interface import (
     JobHandler,
     JobPayload,
@@ -57,12 +58,13 @@ class ProcrastinateQueue(QueueBackend):
             if retry is not None
             else False
         )
-        self.app.task(func, name=name, retry=strategy)
+        # M2-H: run/duration/outcome metrics for every task, centrally.
+        self.app.task(instrument_handler(func, name), name=name, retry=strategy)
 
     def register_periodic(self, func: JobHandler, *, name: str, cron: str) -> None:
         # queueing_lock: if a previous tick is still waiting, skip instead of
         # piling up (procrastinate's periodic deferrer handles the skip).
-        task = self.app.task(func, name=name, queueing_lock=name)
+        task = self.app.task(instrument_handler(func, name), name=name, queueing_lock=name)
         self.app.periodic(cron=cron)(task)
 
     async def _ensure_open(self) -> None:
