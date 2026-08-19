@@ -287,6 +287,29 @@ Entry points:
   required-but-omitted `EmptyState` icon that crashed both empty Data-flow
   halves.
 
-## Phases 6–8 — Not started ⬜
+## Phase 6 — Operable platform (M2) 🚧
 
-Retention/GC, observability, push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).
+Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.md`.
+
+- **M2-0 · deliver pre-record durability** — INSERT-only `pre_record` ahead of
+  everything fallible in the deliver job, failure recording for config/adapter
+  errors, and `sweep_stalled_deliveries` stall recovery. Story: ISSUES I-56.
+- **M2-A · flow telemetry substrate** — the pipeline now writes
+  `collection_connections.flow_stats` (§6.6): ingest settle/itemize bump
+  cumulative `files`/`bytes`/`items`/`failed` + `last_activity_at` /
+  `last_error_at` / `last_latency_seconds` (`pipeline/flow/stats.py`, hooks in
+  `jobs/ingest.py`), and every `delivery_log` status transition maintains a
+  live per-status `counts` snapshot **in the same transaction**
+  (`delivery/repo.py`), seeded from the log on first write.
+  `listDeliveries` serves its counts from the snapshot instead of aggregating
+  the whole log (legacy aggregate kept only as the pre-seed fallback), and the
+  app's redeliver flip carries its own dead→failed counter delta in one
+  statement. The §5.1 `expectation` is now direction-aware
+  (`expect_activity_within_seconds` / `deliver_within_seconds`) and editable
+  in **both** Data-flow halves; golden fixtures
+  `tests/contract-fixtures/{ingest,delivery}-expectation.json` pin the
+  cross-runtime shape against `pipeline/flow/expectation.py`.
+
+## Phases 7–8 — Not started ⬜
+
+Push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).

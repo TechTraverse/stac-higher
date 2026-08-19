@@ -9,6 +9,16 @@
  * sweep picks up `status='failed' AND next_attempt_at <= now()`, so no direct
  * enqueue happens here). `attempts` resets to 0 because a redeliver starts a
  * fresh attempt cycle (I-44 semantics: attempts count per cycle, not lifetime).
+ *
+ * Per-status counts (M2-A) come from the pipeline-maintained
+ * `collection_connections.flow_stats.counts` snapshot instead of aggregating
+ * the association's whole log on this 15s-polled path (unbounded by M3). Two
+ * carve-outs keep the snapshot honest: `listDeliveries` falls back to the
+ * legacy aggregate until the pipeline's first write seeds the `counts` key,
+ * and `redeliverDeadRow` applies its own dead→failed delta in the same
+ * statement as the flip — the one flow_stats write the app performs (the
+ * "never writes flow_stats" rule in `storage.ts` is about user edits
+ * clobbering telemetry, not this counter).
  */
 import { query } from "@/lib/db/connection";
 import { runMigrations } from "@/lib/db/migrate";
@@ -78,17 +88,41 @@ export interface DeliveryListing {
   counts: DeliveryCounts;
 }
 
+const ZERO_COUNTS: DeliveryCounts = {
+  pending: 0,
+  delivering: 0,
+  delivered: 0,
+  failed: 0,
+  dead: 0,
+};
+
+/** Zero-filled counts from a flow_stats `counts` bag (extra keys dropped). */
+function toCounts(raw: Record<string, unknown>): DeliveryCounts {
+  const counts = { ...ZERO_COUNTS };
+  for (const status of Object.keys(counts) as DeliveryStatus[]) {
+    const value = raw[status];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      counts[status] = value;
+    }
+  }
+  return counts;
+}
+
 /**
  * Recent delivery rows (most recently touched first) plus per-status counts
- * over the association's WHOLE log, so the summary stays truthful even when
- * the list is truncated.
+ * for the association's WHOLE log, so the summary stays truthful even when
+ * the list is truncated. Counts read the pipeline's flow_stats snapshot; an
+ * association the pipeline has not written since M2-A landed (no `counts` key
+ * yet) falls back to the legacy aggregate — the snapshot is seeded on the
+ * pipeline's next transition, so the fallback's unbounded GROUP BY only ever
+ * runs for that transitional tail.
  */
 export async function listDeliveries(
   associationId: string,
   limit = 20,
 ): Promise<DeliveryListing> {
   await runMigrations();
-  const [rows, totals] = await Promise.all([
+  const [rows, stats] = await Promise.all([
     query<DeliveryRow>(
       `SELECT ${DELIVERY_COLUMNS}
          FROM stac_higher.delivery_log
@@ -97,21 +131,25 @@ export async function listDeliveries(
         LIMIT $2`,
       [associationId, limit],
     ),
-    query<{ status: DeliveryStatus; count: string }>(
-      `SELECT status, count(*)::text AS count
-         FROM stac_higher.delivery_log
-        WHERE association_id = $1
-        GROUP BY status`,
+    query<{ counts: Record<string, unknown> | null }>(
+      `SELECT flow_stats -> 'counts' AS counts
+         FROM stac_higher.collection_connections
+        WHERE id = $1`,
       [associationId],
     ),
   ]);
-  const counts: DeliveryCounts = {
-    pending: 0,
-    delivering: 0,
-    delivered: 0,
-    failed: 0,
-    dead: 0,
-  };
+  const snapshot = stats.rows[0]?.counts;
+  if (snapshot) {
+    return { deliveries: rows.rows.map(toApiDelivery), counts: toCounts(snapshot) };
+  }
+  const totals = await query<{ status: DeliveryStatus; count: string }>(
+    `SELECT status, count(*)::text AS count
+       FROM stac_higher.delivery_log
+      WHERE association_id = $1
+      GROUP BY status`,
+    [associationId],
+  );
+  const counts = { ...ZERO_COUNTS };
   for (const row of totals.rows) counts[row.status] = Number(row.count);
   return { deliveries: rows.rows.map(toApiDelivery), counts };
 }
@@ -141,12 +179,32 @@ export async function redeliverDeadRow(
   deliveryId: string,
 ): Promise<ApiDelivery | null> {
   await runMigrations();
+  // Single statement: the dead→failed counter delta rides the flip's CTE so
+  // the flow_stats snapshot cannot drift from the row (M2-A). The
+  // `? 'counts'` guard skips associations the pipeline hasn't seeded yet —
+  // listDeliveries falls back to the aggregate for those.
   const result = await query<DeliveryRow>(
-    `UPDATE stac_higher.delivery_log
-        SET status = 'failed', attempts = 0,
-            next_attempt_at = now(), updated_at = now()
-      WHERE id = $1 AND association_id = $2 AND status = 'dead'
-      RETURNING ${DELIVERY_COLUMNS}`,
+    `WITH flipped AS (
+       UPDATE stac_higher.delivery_log
+          SET status = 'failed', attempts = 0,
+              next_attempt_at = now(), updated_at = now()
+        WHERE id = $1 AND association_id = $2 AND status = 'dead'
+        RETURNING ${DELIVERY_COLUMNS}
+     ), stats AS (
+       UPDATE stac_higher.collection_connections cc
+          SET flow_stats = jsonb_set(
+                jsonb_set(
+                  cc.flow_stats,
+                  '{counts,failed}',
+                  to_jsonb(coalesce((cc.flow_stats #>> '{counts,failed}')::bigint, 0) + 1)
+                ),
+                '{counts,dead}',
+                to_jsonb(greatest(coalesce((cc.flow_stats #>> '{counts,dead}')::bigint, 0) - 1, 0))
+              )
+         FROM flipped
+        WHERE cc.id = flipped.association_id AND cc.flow_stats ? 'counts'
+     )
+     SELECT * FROM flipped`,
     [deliveryId, associationId],
   );
   return result.rows[0] ? toApiDelivery(result.rows[0]) : null;

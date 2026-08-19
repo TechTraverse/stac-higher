@@ -89,6 +89,8 @@ class DiscoverResult:
     unfingerprinted: int = 0
     new_seen: int = 0
     settled: int = 0
+    #: total size of the files settled this run — the flow_stats bytes feed (M2-A).
+    settled_bytes: int = 0
     changed_while_seen: int = 0
     unsettled: int = 0
     unchanged: int = 0
@@ -164,6 +166,7 @@ async def _reconcile(
             # unchanged across two polls → eligible.
             await repo.set_ledger_fields(latest.id, status=STATUS_SETTLED, size=entry.size)
             result.settled += 1
+            result.settled_bytes += entry.size or 0
         else:
             # still changing (mid-upload) → record the new state, restart window.
             await repo.set_ledger_fields(

@@ -277,5 +277,24 @@ describe("DeliverySection", () => {
       checksums: "sha256",
       completion_marker: true,
     });
+    // No SLO declared → the update clears/keeps expectation as null (M2-A).
+    expect(args.input.expectation).toBeNull();
+  });
+
+  it("round-trips the §5.1 delivery expectation (M2-A)", () => {
+    renderSection([
+      deliverAssociation({ expectation: { deliver_within_seconds: 30 } }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: /Edit/ }));
+
+    const slo = screen.getByLabelText("Alert if not delivered within (s)");
+    expect(slo).toHaveValue(30);
+
+    fireEvent.change(slo, { target: { value: "45" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(updateMutate).toHaveBeenCalledTimes(1);
+    const [args] = updateMutate.mock.calls[0];
+    expect(args.input.expectation).toEqual({ deliver_within_seconds: 45 });
   });
 });

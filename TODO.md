@@ -37,7 +37,7 @@ is in ROADMAP §9 M1.
 
 ## Alerting (spec §3, §4)
 
-- [ ] **M2-A · flow telemetry substrate** (spec §2, §7). Pipeline writes
+- [x] **M2-A · flow telemetry substrate** (spec §2, §7). Pipeline writes
       `collection_connections.flow_stats` on ingest settle/itemize and on every
       delivery terminal transition (files, bytes, `last_activity_at`,
       `last_error_at`, latency, per-status counts). Move `listDeliveries`'
@@ -45,6 +45,17 @@ is in ROADMAP §9 M1.
       WHOLE `delivery_log` on a 15s-polled path (negligible now, unbounded by
       M3). Make the §5.1 `expectation` editable in **both** Data-flow halves
       (the explicit Slice D deferral) with a shared contract fixture.
+      **Done 2026-08-18** — pure rollup math in `pipeline/flow/stats.py`
+      shared by the Pg repos and the test fakes; delivery counts are a live
+      per-status snapshot maintained as deltas **in the same transaction** as
+      each `delivery_log` transition (seeded from a one-time recompute when
+      the `counts` key is missing); ingest hooks in the discover/itemize job
+      handlers; `listDeliveries` reads the snapshot (legacy aggregate only as
+      the pre-seed fallback); the app's redeliver flip carries its dead→failed
+      delta in one CTE statement. Expectation split per direction
+      (`expect_activity_within_seconds` / `deliver_within_seconds`), editable
+      in both dialogs, with `pipeline/flow/expectation.py` lenient readers and
+      two new golden fixtures. Follow-ups below.
 - [ ] **M2-B · alerts core** (spec §3). Migration 013 (`alerts`,
       `notification_channels`); periodic `pipeline.flow_monitor` evaluating
       expectations against `flow_stats`; the three §6.6 sources (`flow`,
@@ -127,6 +138,30 @@ is in ROADMAP §9 M1.
   the three statements are unverified against a real Postgres until the **M2-I**
   rehearsal. Worth an explicit step there: kill a worker mid-transfer and watch
   the stall sweep recover the row.
+
+### From M2-A
+
+- The delivery `counts` snapshot is delta-maintained and can in principle
+  drift under a pathological race (a concurrent first-ever `upsert_pending`
+  for the same (association, item) with no pre-existing row — production paths
+  always `pre_record` first, so the row exists and the FOR UPDATE serializes).
+  The clamp-at-zero in `apply_count_delta` keeps drift from going negative.
+  **M2-I should verify** `flow_stats->counts` equals a `GROUP BY status` over
+  `delivery_log` after the rehearsal's delivery sequence; if M3's multi-worker
+  load ever shows drift, add a periodic reconcile to the retry-sweep tick.
+- Every delivery transition (pending→delivering→terminal) is now also a
+  `collection_connections` row update — ~3 extra row-locked writes per
+  delivered item on one association row. Fine at M2 scale; at M3 (30 items/s
+  per association) consider batching the delta per deliver job instead of per
+  transition.
+- The new flow_stats SQL in `delivery/repo.py` / `ingest/repo.py` is
+  `# pragma: no cover` per repo convention — exercised first at the **M2-I**
+  rehearsal (same boat as the M2-0 statements; one live delivery + one live
+  ingest tick covers both).
+- The ingest half's expectation field went into the existing inline dialog;
+  the `IngestSection` extraction (mirroring `DeliverySection`) noted below
+  remains open — M2-A chose the minimal diff because another agent had
+  in-flight edits to `DataFlowTab.tsx`.
 
 ### Carried forward from M1
 

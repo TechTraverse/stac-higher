@@ -115,14 +115,29 @@ export const ingestConfigSchema = z
 
 export type IngestConfig = z.infer<typeof ingestConfigSchema>;
 
-/** Optional flow expectation (§5.1) — drives Phase 6 absence-of-data alerts. */
-export const expectationSchema = z
+/**
+ * Optional flow expectation (§5.1) — the substrate for M2-B's absence-of-data
+ * alerts, evaluated against the pipeline-written `flow_stats` rollup. The
+ * shape is direction-specific (an ingest association declares an activity
+ * window, a deliver association an NRT SLO) and is a cross-runtime contract
+ * with `services/pipeline/src/pipeline/flow/expectation.py` — golden fixtures
+ * in `tests/contract-fixtures/{ingest,delivery}-expectation.json`.
+ */
+export const ingestExpectationSchema = z
   .object({
     expect_activity_within_seconds: z.number().int().min(1),
   })
   .strict();
 
-export type Expectation = z.infer<typeof expectationSchema>;
+export const deliveryExpectationSchema = z
+  .object({
+    deliver_within_seconds: z.number().int().min(1),
+  })
+  .strict();
+
+export type Expectation =
+  | z.infer<typeof ingestExpectationSchema>
+  | z.infer<typeof deliveryExpectationSchema>;
 
 // ---------------------------------------------------------------------------
 // delivery config (stored as-is in collection_connections.config jsonb, §5.1)
@@ -168,11 +183,11 @@ export type DeliveryConfig = z.infer<typeof deliveryConfigSchema>;
 // create / update payloads (collection_id comes from the route path)
 // ---------------------------------------------------------------------------
 
-// Fields shared by both create variants; `direction` + `config` differ per arm.
+// Fields shared by both create variants; `direction`, `config` and
+// `expectation` differ per arm.
 const baseCreateFields = {
   connection_id: z.string().uuid("connection_id must be a connection UUID"),
   enabled: z.boolean().default(true),
-  expectation: expectationSchema.nullable().default(null),
 };
 
 const ingestCreateSchema = z
@@ -180,6 +195,7 @@ const ingestCreateSchema = z
     ...baseCreateFields,
     direction: z.literal("ingest"),
     config: ingestConfigSchema,
+    expectation: ingestExpectationSchema.nullable().default(null),
   })
   .strict();
 
@@ -188,6 +204,7 @@ const deliveryCreateSchema = z
     ...baseCreateFields,
     direction: z.literal("deliver"),
     config: deliveryConfigSchema,
+    expectation: deliveryExpectationSchema.nullable().default(null),
   })
   .strict();
 
@@ -204,13 +221,13 @@ export type AssociationCreateInput = z.infer<typeof associationCreateSchema>;
 // a `deliver` row (ISSUE I-39: that used to stall the dispatcher).
 const baseUpdateFields = {
   enabled: z.boolean().optional(),
-  expectation: expectationSchema.nullable().optional(),
 };
 
 export const ingestUpdateSchema = z
   .object({
     ...baseUpdateFields,
     config: ingestConfigSchema.optional(),
+    expectation: ingestExpectationSchema.nullable().optional(),
   })
   .strict();
 
@@ -218,6 +235,7 @@ export const deliveryUpdateSchema = z
   .object({
     ...baseUpdateFields,
     config: deliveryConfigSchema.optional(),
+    expectation: deliveryExpectationSchema.nullable().optional(),
   })
   .strict();
 

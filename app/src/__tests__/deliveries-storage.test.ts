@@ -40,15 +40,13 @@ beforeEach(() => {
 });
 
 describe("listDeliveries", () => {
-  it("returns recent rows plus zero-filled per-status counts", async () => {
+  it("serves counts from the flow_stats snapshot (zero-filled) without aggregating the log", async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [dbRow], rowCount: 1 } as never)
+      // flow_stats -> 'counts' snapshot (M2-A) — pipeline-maintained.
       .mockResolvedValueOnce({
-        rows: [
-          { status: "delivered", count: "7" },
-          { status: "dead", count: "2" },
-        ],
-        rowCount: 2,
+        rows: [{ counts: { delivered: 7, dead: 2 } }],
+        rowCount: 1,
       } as never);
 
     const listing = await listDeliveries(ASSOC_ID);
@@ -70,7 +68,36 @@ describe("listDeliveries", () => {
     const [listSql, listParams] = mockQuery.mock.calls[0];
     expect(listSql).toMatch(/ORDER BY updated_at DESC/);
     expect(listParams).toEqual([ASSOC_ID, 20]);
-    const [countSql] = mockQuery.mock.calls[1];
+    const [statsSql, statsParams] = mockQuery.mock.calls[1];
+    expect(statsSql).toMatch(/flow_stats -> 'counts'/);
+    expect(statsParams).toEqual([ASSOC_ID]);
+    // The unbounded aggregate must not run when the snapshot exists.
+    expect(mockQuery.mock.calls).toHaveLength(2);
+  });
+
+  it("falls back to the legacy aggregate until the pipeline seeds the snapshot", async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [dbRow], rowCount: 1 } as never)
+      // association exists but flow_stats has no counts key yet
+      .mockResolvedValueOnce({ rows: [{ counts: null }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({
+        rows: [
+          { status: "delivered", count: "7" },
+          { status: "dead", count: "2" },
+        ],
+        rowCount: 2,
+      } as never);
+
+    const listing = await listDeliveries(ASSOC_ID);
+
+    expect(listing.counts).toEqual({
+      pending: 0,
+      delivering: 0,
+      delivered: 7,
+      failed: 0,
+      dead: 2,
+    });
+    const [countSql] = mockQuery.mock.calls[2];
     expect(countSql).toMatch(/GROUP BY status/);
   });
 });
@@ -87,6 +114,11 @@ describe("redeliverDeadRow", () => {
     expect(sql).toMatch(/next_attempt_at = now\(\)/);
     // The status guard is what makes the flip concurrency-safe.
     expect(sql).toMatch(/AND status = 'dead'/);
+    // The dead→failed counter delta rides the same statement (M2-A), guarded
+    // so un-seeded associations are skipped.
+    expect(sql).toMatch(/\{counts,failed\}/);
+    expect(sql).toMatch(/\{counts,dead\}/);
+    expect(sql).toMatch(/flow_stats \? 'counts'/);
     expect(params).toEqual([DELIVERY_ID, ASSOC_ID]);
   });
 

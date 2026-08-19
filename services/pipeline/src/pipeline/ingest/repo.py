@@ -9,9 +9,10 @@ Pg method opens a short-lived ``psycopg.AsyncConnection`` and is marked
 unit tests.
 
 Ownership (ADR 0001): the pipeline READS ``collection_connections`` and
-READS/WRITES ``ingest_files``; it NEVER runs DDL and never writes
-``collection_connections`` (that is the app's association CRUD). ``flow_stats``
-telemetry writes are deferred to the observability slice.
+READS/WRITES ``ingest_files``; it NEVER runs DDL. Association CRUD stays the
+app's; the pipeline's only ``collection_connections`` write is the
+``flow_stats`` telemetry column (M2-A, ``bump_flow_stats``) — never
+``updated_at``, which means "user edit" (``associations/storage.ts``).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pipeline.connections.repo import ConnectionRow, _to_connection_row
+from pipeline.flow.stats import apply_ingest_activity
 
 # ledger statuses (mirrors the migration-005 CHECK constraint).
 STATUS_SEEN = "seen"
@@ -160,6 +162,24 @@ class IngestRepo(abc.ABC):
         are marked together: a crash mid-mark must never leave the group split
         across statuses, which would let a retry rebuild the item from a
         subset of members."""
+
+    @abc.abstractmethod
+    async def bump_flow_stats(
+        self,
+        association_id: str,
+        *,
+        files: int = 0,
+        bytes_added: int = 0,
+        items: int = 0,
+        failed: int = 0,
+        latency_seconds: float | None = None,
+    ) -> None:
+        """Fold one settle/itemize outcome into the association's
+        ``flow_stats`` rollup (M2-A, §6.6): cumulative ``files``/``bytes``/
+        ``items``/``failed`` counters plus ``last_activity_at`` /
+        ``last_error_at`` / ``last_latency_seconds`` stamps — the substrate the
+        M2-B flow monitor evaluates ``expect_activity_within_seconds``
+        against. Never touches ``updated_at``."""
 
 
 # --------------------------------------------------------------------------- #
@@ -388,5 +408,44 @@ class PgIngestRepo(IngestRepo):
                 "UPDATE stac_higher.ingest_files SET status = %s, item_id = %s, updated_at = now()"
                 " WHERE id = ANY(%s)",
                 (status, item_id, list(entry_ids)),
+            )
+            await conn.commit()
+
+    async def bump_flow_stats(  # pragma: no cover
+        self,
+        association_id: str,
+        *,
+        files: int = 0,
+        bytes_added: int = 0,
+        items: int = 0,
+        failed: int = 0,
+        latency_seconds: float | None = None,
+    ) -> None:
+        from psycopg.types.json import Json
+
+        async with await self._connect() as conn:
+            # FOR UPDATE serializes concurrent rollup writes; the math is the
+            # same pure function the fakes apply. flow_stats only — updated_at
+            # means "user edit" and stays untouched.
+            cur = await conn.execute(
+                "SELECT flow_stats FROM stac_higher.collection_connections"
+                " WHERE id = %s FOR UPDATE",
+                (association_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return
+            stats = apply_ingest_activity(
+                dict(row[0]) if row[0] else {},
+                files=files,
+                bytes_added=bytes_added,
+                items=items,
+                failed=failed,
+                latency_seconds=latency_seconds,
+            )
+            await conn.execute(
+                "UPDATE stac_higher.collection_connections SET flow_stats = %s"
+                " WHERE id = %s",
+                (Json(stats), association_id),
             )
             await conn.commit()

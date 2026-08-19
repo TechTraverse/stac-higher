@@ -1,0 +1,61 @@
+{
+  "$comment": "Golden fixture for the §5.1 delivery expectation shape (M2-A). Consumed by app/src/__tests__/contract-fixtures.test.ts (deliveryExpectationSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_delivery_expectation). Zod is the strict write gatekeeper; the Python parser is a lenient reader that ignores unknown keys.",
+  "minimal": { "deliver_within_seconds": 30 },
+  "defaults": { "deliver_within_seconds": 30 },
+  "cases": [
+    {
+      "name": "one-second floor is valid",
+      "config": { "deliver_within_seconds": 1 },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "zero window",
+      "config": { "deliver_within_seconds": 0 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "negative window",
+      "config": { "deliver_within_seconds": -5 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "non-numeric window",
+      "config": { "deliver_within_seconds": "fast" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "boolean window",
+      "config": { "deliver_within_seconds": true },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "fractional seconds (writer requires an int; reader truncates)",
+      "config": { "deliver_within_seconds": 2.5 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown key alongside the window",
+      "config": { "deliver_within_seconds": 30, "extra": 1 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "ingest key on a deliver association",
+      "config": { "expect_activity_within_seconds": 3600 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "empty object (a declared expectation must declare a window)",
+      "config": {},
+      "app": "reject",
+      "pipeline": "accept"
+    }
+  ]
+}

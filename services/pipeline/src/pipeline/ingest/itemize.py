@@ -11,6 +11,7 @@ the members go `itemized` and post-ingest cleans the source.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -99,6 +100,10 @@ class ItemizeOutcome:
     status: str  # "itemized" | "failed" | "skipped"
     item_id: str
     detail: str = ""
+    #: telemetry for the flow_stats rollup (M2-A): member bytes itemized and
+    #: the first-seen → itemized latency, populated on success only.
+    bytes: int = 0
+    latency_seconds: float | None = None
 
 
 def validate_item(item_dict: Mapping[str, Any]) -> None:
@@ -213,4 +218,15 @@ async def run_itemize(
     await apply_post_ingest(adapter, config, source_paths=[e.source_path for e in stored])
 
     logger.info("itemize done", extra={"item_id": item_id, "members": len(stored)})
-    return ItemizeOutcome("itemized", item_id)
+    first_seen = min((e.created_at for e in stored if e.created_at), default=None)
+    latency = (
+        (dt.datetime.now(dt.UTC) - first_seen).total_seconds()
+        if first_seen is not None
+        else None
+    )
+    return ItemizeOutcome(
+        "itemized",
+        item_id,
+        bytes=sum(e.size or 0 for e in stored),
+        latency_seconds=latency,
+    )

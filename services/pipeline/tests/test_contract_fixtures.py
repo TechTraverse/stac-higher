@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from pipeline.delivery.config import parse_delivery_config
+from pipeline.flow.expectation import parse_delivery_expectation, parse_ingest_expectation
 from pipeline.ingest.config import parse_ingest_config
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "contract-fixtures"
@@ -24,6 +25,8 @@ def _load(name: str) -> dict[str, Any]:
 
 INGEST = _load("ingest-config.json")
 DELIVERY = _load("delivery-config.json")
+INGEST_EXPECTATION = _load("ingest-expectation.json")
+DELIVERY_EXPECTATION = _load("delivery-expectation.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -44,6 +47,30 @@ def test_ingest_cases(case):
 @pytest.mark.parametrize("case", DELIVERY["cases"], ids=lambda c: c["name"])
 def test_delivery_cases(case):
     _check(parse_delivery_config, case)
+
+
+@pytest.mark.parametrize("case", INGEST_EXPECTATION["cases"], ids=lambda c: c["name"])
+def test_ingest_expectation_cases(case):
+    _check(parse_ingest_expectation, case)
+
+
+@pytest.mark.parametrize("case", DELIVERY_EXPECTATION["cases"], ids=lambda c: c["name"])
+def test_delivery_expectation_cases(case):
+    _check(parse_delivery_expectation, case)
+
+
+def test_ingest_expectation_matches_golden():
+    minimal = INGEST_EXPECTATION["minimal"]
+    golden = INGEST_EXPECTATION["defaults"]
+    assert parse_ingest_expectation(minimal) == golden["expect_activity_within_seconds"]
+    assert parse_ingest_expectation(None) is None
+
+
+def test_delivery_expectation_matches_golden():
+    minimal = DELIVERY_EXPECTATION["minimal"]
+    golden = DELIVERY_EXPECTATION["defaults"]
+    assert parse_delivery_expectation(minimal) == golden["deliver_within_seconds"]
+    assert parse_delivery_expectation(None) is None
 
 
 def test_ingest_defaults_match_golden():

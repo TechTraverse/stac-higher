@@ -202,8 +202,10 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   batch (retry → dead-letter is B-iii).
 
 Ownership (ADR 0001): the pipeline reads `collection_connections`/`connections`
-+ pgstac items and writes only `delivery_log`; the app owns the DDL (migrations
-007, 008 + 009).
++ pgstac items and writes `delivery_log` plus (M2-A) the
+`collection_connections.flow_stats` telemetry column — in the same transaction
+as each `delivery_log` status change, never touching `updated_at` (that column
+means "user edit"); the app owns the DDL (migrations 007, 008 + 009).
 
 **Slice B-i scope:** canonical bytes → S3/MinIO destination, live-verified
 2026-07-21.
