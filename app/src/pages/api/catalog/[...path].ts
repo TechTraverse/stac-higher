@@ -24,18 +24,51 @@ import {
   builtinCatalogUrl,
   matchCatalogTransaction,
 } from "@/lib/catalog/transactions";
+import { getCollectionSettings } from "@/lib/collections/settings";
+import { markAssetGcTolerant } from "@/lib/gc/marks";
 import { forwardUpstream } from "@/lib/http/forward";
 import { jsonResponse } from "@/lib/http/response";
 import { DEFAULT_MAX_BYTES } from "@/lib/http/safe-fetch";
 
 const FORWARDED_RESPONSE_HEADERS = ["content-type", "etag", "last-modified"];
 
+/** `collections/{c}` / `collections/{c}/items/{i}` → the ids, for the M2-F
+ * hooks below. Null for shapes without a collection in the path. */
+function pathIds(path: string): { collection: string; item: string | null } | null {
+  const item = path.match(/^collections\/([^/]+)\/items\/([^/]+)$/);
+  if (item) return { collection: item[1], item: item[2] };
+  const items = path.match(/^collections\/([^/]+)\/items$/);
+  if (items) return { collection: items[1], item: null };
+  const collection = path.match(/^collections\/([^/]+)$/);
+  if (collection) return { collection: collection[1], item: null };
+  return null;
+}
+
 const handler: APIRoute = async ({ params, request, cookies }) => {
   const path = (params.path ?? "").replace(/\/+$/, "");
-  if (!matchCatalogTransaction(request.method, path)) {
+  const txn = matchCatalogTransaction(request.method, path);
+  if (!txn) {
     return jsonResponse(404, {
       error: "Not a built-in-catalog transaction endpoint",
     });
+  }
+
+  // Archived = "delete the data, keep the record" (ADR 0009/0011): the data
+  // plane of an archived collection is read-only — item writes are refused
+  // while collection-metadata edits and deletes stay allowed.
+  const ids = pathIds(path);
+  if (txn.resourceType === "catalog_item" && txn.action !== "delete" && ids) {
+    try {
+      const settings = await getCollectionSettings(ids.collection);
+      if (settings.archived) {
+        return jsonResponse(409, {
+          error: `Collection '${ids.collection}' is archived and no longer accepts item writes`,
+        });
+      }
+    } catch {
+      // Settings unreadable (dev DB down) — don't block the write path the
+      // proxy will authorize anyway; archived enforcement is best-effort.
+    }
   }
 
   // Token injection (ADR 0008): oidc sessions carry the access token in the
@@ -70,11 +103,27 @@ const handler: APIRoute = async ({ params, request, cookies }) => {
     }
   }
 
-  return forwardUpstream(
+  const response = await forwardUpstream(
     `${builtinCatalogUrl()}/${path}`,
     { method: request.method, headers, body },
     FORWARDED_RESPONSE_HEADERS,
   );
+
+  // M2-F (ADR 0011): a successful catalog delete schedules the canonical
+  // asset bytes for collection — item delete marks the item prefix,
+  // collection delete the whole-collection prefix (closes I-51's GC half).
+  // Best-effort AFTER upstream success; a failed mark never fails the
+  // request the catalog already applied.
+  if (response.ok && txn.action === "delete" && ids) {
+    await markAssetGcTolerant({
+      collectionId: ids.collection,
+      itemId: txn.resourceType === "catalog_item" ? ids.item : null,
+      reason:
+        txn.resourceType === "catalog_item" ? "item_delete" : "collection_delete",
+    });
+  }
+
+  return response;
 };
 
 export const POST = handler;

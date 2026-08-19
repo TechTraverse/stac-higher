@@ -711,6 +711,43 @@ const MIGRATIONS = [
         ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
     `,
   },
+  {
+    // M2-F (M2 spec §5, ADR 0011): the single marked-then-collected queue for
+    // EVERY path that schedules canonical bytes to die — retention expiry,
+    // manual item delete, collection delete, archive. One place where "these
+    // bytes are scheduled for deletion" is true, one sweep that makes it so.
+    //
+    // object_key is a KEY PREFIX under the platform bucket (§5.3 layout keys
+    // nest per item: assets/{collection}/{item}/ — one row covers all of an
+    // item's assets; a collection-scoped mark uses assets/{collection}/).
+    // Written by BOTH runtimes (app: item/collection delete + archive intent;
+    // pipeline: retention expiry) — rows only, DDL stays here (ADR 0001).
+    // The partial unique index makes re-marking idempotent while letting a
+    // key be marked again after a past collection completed (item re-created
+    // then re-deleted).
+    name: "017_asset_gc",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.asset_gc (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        object_key text NOT NULL,
+        collection_id text NOT NULL,
+        item_id text,
+        reason text NOT NULL
+          CHECK (reason IN ('retention','item_delete','collection_delete','archive')),
+        marked_at timestamptz NOT NULL DEFAULT now(),
+        collect_after timestamptz NOT NULL,
+        collected_at timestamptz,
+        error text
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS asset_gc_open_key_idx
+        ON stac_higher.asset_gc (object_key)
+        WHERE collected_at IS NULL;
+      CREATE INDEX IF NOT EXISTS asset_gc_due_idx
+        ON stac_higher.asset_gc (collect_after)
+        WHERE collected_at IS NULL;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

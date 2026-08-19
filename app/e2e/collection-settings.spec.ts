@@ -61,6 +61,11 @@ test.describe("Collection Settings tab", () => {
     await page.getByTestId("settings-grace").fill("7");
     await page.getByTestId("settings-archived").click();
     await page.getByTestId("settings-save").click();
+
+    // M2-F: archiving/tightening retention first shows the counted dry-run
+    // (warn-and-proceed, ADR 0009 §6 / 0011) — confirm to apply.
+    await expect(page.getByTestId("settings-impact")).toBeVisible();
+    await page.getByTestId("settings-confirm").click();
     await expect(page.getByText("Collection settings saved")).toBeVisible();
 
     // Persisted: reload, reopen the tab, values survive.

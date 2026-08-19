@@ -73,9 +73,10 @@ export function AssociationDeleteDialog({
             <>
               {impact.data.reference_items > 0 && (
                 <p>
-                  {impact.data.reference_items} reference-backed item(s) keep
-                  serving from the source but stop receiving updates through
-                  this flow.
+                  {impact.data.reference_items} reference-backed item(s) will
+                  be removed from the catalog — with the flow gone they would
+                  have no update path (ADR 0009/0011). Disable the flow
+                  instead to keep them.
                 </p>
               )}
               <p className="text-muted-foreground">

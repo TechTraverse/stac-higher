@@ -109,6 +109,7 @@ Astro server routes:
 | `/api/uploads` | POST | Mint presigned PUT URLs for asset uploads (operator+); returns the `/api/assets/...` hrefs to persist (ADR 0005) |
 | `/api/assets/[collection]/[item]/[asset]` | GET | Authorize → 302 to a short-lived presigned URL for the canonical asset object (`{asset}` = filename) |
 | `/api/collections/[id]/settings` | GET, PUT | Collection platform settings (ownership, `externally_writable`, retention/GC knobs, `archived`): GET member+, PUT operator+ audited (`collection_settings`) with the ADR 0003 group rules — M2-E |
+| `/api/collections/[id]/settings/impact` | GET | Counted dry-run for the Settings warn-and-proceed dialog (`?retention_days=N` \| `?archived=true` → total/expired item counts; null counts when pgstac is absent) — M2-F, ADR 0011 |
 | `/api/collections/[id]/connections` | GET, POST | List / create ingest associations for a built-in-catalog collection (member+ scoped list; operator+ create, group-owned — Phase 4) |
 | `/api/collections/[id]/connections/[assocId]` | GET, PUT, DELETE | Get / update (enabled, `config`, expectation) / delete an ingest association |
 | `/api/collections/[id]/connections/[assocId]/backfill` | POST | Request a backfill of existing items into a deliver association (operator+, audited; inserts a `delivery_backfills` row the pipeline drains — Slice C) |
@@ -188,6 +189,18 @@ The webhook `config` is a cross-runtime contract
 (alert list with ack/resolve, per-association flow telemetry via
 `/api/monitoring/flows`, channel management) and the **header alert bell**
 (unread firing count; opening /monitoring advances the read watermark).
+
+**Retention & GC (M2-F, ADR 0011)**: `stac_higher.asset_gc` (migration 017)
+is the single marked-then-collected queue for every byte-deletion path —
+retention expiry, item delete, collection delete, archive. The pipeline's
+five-minute `retention_gc` sweep expires items per `collection_settings`
+(mark the §5.3 item prefix FIRST, then `pgstac.delete_item`; delete events
+never propagate to destinations) and `asset_collect` deletes due prefixes
+from the platform bucket after the grace window. The app marks on BFF
+item/collection deletes (closes I-51's GC half) and enforces `archived`
+(no item writes, no new associations; the sweep expires everything).
+Reference-mode association delete now removes its reference-backed items
+(ADR 0009 question settled). Nothing is deleted on an unconfigured platform.
 
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in

@@ -147,3 +147,22 @@ def cleanup_expired(
             client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
             deleted += len(batch)
     return deleted
+
+
+def delete_prefix(client: S3Like, bucket: str, prefix: str) -> int:
+    """Delete EVERY object under ``prefix`` (asset GC's collector primitive —
+    M2-F, ADR 0011). Pure over an injected client; synchronous boto3 — wrap in
+    ``asyncio.to_thread``. Returns the number of objects deleted; a prefix
+    with nothing under it (reference-mode item, already-collected key) is a
+    normal zero, not an error.
+    """
+    if not prefix or prefix == "/":  # never let a mangled mark empty the bucket
+        raise ValueError(f"refusing to delete unscoped prefix: {prefix!r}")
+    deleted = 0
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        batch = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if batch:
+            client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+            deleted += len(batch)
+    return deleted

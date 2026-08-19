@@ -14,10 +14,19 @@ vi.mock("@/lib/auth/session", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/auth/session")>();
   return { ...actual, readSession: vi.fn() };
 });
+// M2-F hooks: keep the archived check + GC marking away from a real DB.
+vi.mock("@/lib/collections/settings", () => ({
+  getCollectionSettings: vi.fn(),
+}));
+vi.mock("@/lib/gc/marks", () => ({
+  markAssetGcTolerant: vi.fn(async () => {}),
+}));
 
 import { safeFetch } from "@/lib/http/safe-fetch";
 import { getAuthConfig } from "@/lib/auth/config";
 import { readSession } from "@/lib/auth/session";
+import { getCollectionSettings } from "@/lib/collections/settings";
+import { markAssetGcTolerant } from "@/lib/gc/marks";
 import { builtinCatalogUrl } from "@/lib/catalog/transactions";
 import {
   POST as postRoute,
@@ -71,6 +80,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAuthConfig).mockReturnValue(authCfg("bypass") as never);
   vi.mocked(safeFetch).mockResolvedValue(upstream() as never);
+  vi.mocked(getCollectionSettings).mockResolvedValue({
+    collectionId: "c1",
+    groupId: null,
+    externallyWritable: false,
+    retentionDays: null,
+    gcGraceDays: 30,
+    archived: false,
+  });
 });
 
 describe("path scoping", () => {
@@ -162,5 +179,77 @@ describe("forwarding behavior", () => {
     vi.mocked(safeFetch).mockRejectedValue(new Error("connect ECONNREFUSED"));
     const res = await call(postRoute, "collections", { body: { id: "c1" } });
     expect(res.status).toBe(502);
+  });
+});
+
+describe("retention & GC hooks (M2-F, ADR 0011)", () => {
+  it("marks the item prefix after a successful item delete", async () => {
+    const res = await call(deleteRoute, "collections/c1/items/i1", {
+      method: "DELETE",
+    });
+    expect(res.ok).toBe(true); // upstream() helper answers 201
+    expect(markAssetGcTolerant).toHaveBeenCalledWith({
+      collectionId: "c1",
+      itemId: "i1",
+      reason: "item_delete",
+    });
+  });
+
+  it("marks the whole-collection prefix after a collection delete", async () => {
+    await call(deleteRoute, "collections/c1", { method: "DELETE" });
+    expect(markAssetGcTolerant).toHaveBeenCalledWith({
+      collectionId: "c1",
+      itemId: null,
+      reason: "collection_delete",
+    });
+  });
+
+  it("does not mark when the upstream delete failed", async () => {
+    vi.mocked(safeFetch).mockResolvedValue(
+      new Response("{}", { status: 404 }) as never,
+    );
+    await call(deleteRoute, "collections/c1/items/i1", { method: "DELETE" });
+    expect(markAssetGcTolerant).not.toHaveBeenCalled();
+  });
+
+  it("refuses item writes into an archived collection (409, not forwarded)", async () => {
+    vi.mocked(getCollectionSettings).mockResolvedValue({
+      collectionId: "c1",
+      groupId: null,
+      externallyWritable: false,
+      retentionDays: null,
+      gcGraceDays: 30,
+      archived: true,
+    });
+    const res = await call(postRoute, "collections/c1/items", {
+      body: { id: "i1" },
+    });
+    expect(res.status).toBe(409);
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("archived collections still allow item deletes and metadata edits", async () => {
+    vi.mocked(getCollectionSettings).mockResolvedValue({
+      collectionId: "c1",
+      groupId: null,
+      externallyWritable: false,
+      retentionDays: null,
+      gcGraceDays: 30,
+      archived: true,
+    });
+    expect(
+      (await call(deleteRoute, "collections/c1/items/i1", { method: "DELETE" }))
+        .ok,
+    ).toBe(true);
+    // A Response body is single-use — remint the upstream for the second call.
+    vi.mocked(safeFetch).mockResolvedValue(upstream() as never);
+    expect(
+      (
+        await call(putRoute, "collections/c1", {
+          method: "PUT",
+          body: { id: "c1" },
+        })
+      ).ok,
+    ).toBe(true);
   });
 });

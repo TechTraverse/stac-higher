@@ -385,7 +385,7 @@ client for the browser case.
 - Resolved by: `ai/i50-bff` ([ADR 0008](decisions/0008-bff-catalog-writes.md);
   `app/src/pages/api/catalog/[...path].ts`, `app/src/lib/stac-api/client.ts`,
   `app/src/lib/authz/permissions.ts`).
-### I-51 · ADR 0009 deletion semantics — soft-delete half DONE, GC half Phase 6 🟡
+### I-51 · ADR 0009 deletion semantics — soft-delete half DONE, GC half DONE (M2-F) ✅
 **Soft-delete half implemented (pre-B-iii hardening wave).** Migration 010:
 `deleted_at` on connections/associations, history FKs CASCADE → RESTRICT
 (`connection_checks`, `collection_connections`, `ingest_files`,
@@ -400,12 +400,14 @@ Both DELETE routes return the counted impact; pre-flight
 (`app/src/lib/connections/deletion.ts`, `associations/storage.ts`). Pipeline
 scheduler, dispatcher matcher, delivery reference-source loader, health sweep,
 and check-drain queries all filter not-deleted.
-**Remaining (Phase 6, GC-dependent):** collection-delete data impact via the
-§6.5 marked-then-collected GC path (until then collection deletion still
-orphans canonical bytes) and the `archived` collection state.
-- Tracked in: [ADR 0009](decisions/0009-deletion-semantics.md);
-  `app/src/lib/db/migrate.ts` (migration 010).
-- Blocks (remaining half): honest collection-delete warnings.
+**GC half resolved by M2-F (ADR 0011):** BFF item/collection deletes now mark
+`asset_gc` prefixes (collected after the grace window by
+`pipeline.asset_collect`), the `archived` state is enforced (item writes and
+new associations refused; the retention sweep expires everything), and
+reference-mode ASSOCIATION delete now removes its reference-backed items
+(the open question settled — aligned with connection delete).
+- Tracked in: [ADR 0009](decisions/0009-deletion-semantics.md),
+  [ADR 0011](decisions/0011-retention-gc.md); migrations 010/016/017.
 
 ### I-52 · Ingest has no crash recovery: stuck-`fetching` rows are unrecoverable, `failed` is terminal 🟢
 If the pipeline dies mid-FETCH (most plausibly an OOM from the buffered
@@ -611,3 +613,29 @@ Three accepted M2-C simplifications (ADR 0010):
   kill the worker mid-POST and watch the stall revival).
 - Tracked in: `pipeline/notify/*`, `app/src/lib/notifications/*`,
   `docs/decisions/0010-alerting-notifications.md`.
+
+
+## Phase 6 — retention & GC (M2-F)
+
+### I-59 · GC residuals: grace-window item-id reuse; datetime-keyed retention; per-run collect counts
+
+Accepted M2-F simplifications (ADR 0011 "Consequences"):
+
+- **Item-id reuse inside the grace window loses the new bytes**: an open
+  `asset_gc` mark is prefix-scoped, so re-creating an item under the same id
+  before its old mark is collected means the collector later deletes the NEW
+  objects too. Operators should treat an id as unavailable until its mark
+  collects (or clear the mark by hand). A future refinement could snapshot the
+  key list at mark time instead of the prefix.
+- **Retention keys on `pgstac.items.datetime`** (observation time). Items
+  without a usable datetime never age out; ingest-time-based retention would
+  need a per-item ingest timestamp the catalog does not carry today.
+- `asset_collect` logs deleted-object counts but does not persist them per
+  mark; if evidence-grade byte accounting is ever needed, add a count column.
+- The BFF's archived check and GC marks are best-effort against a reachable
+  app DB; in the (unlikely) window where the catalog is up but the app DB is
+  down, an item write to an archived collection would pass through and a
+  delete would go unmarked — both self-heal (the sweep re-expires; re-delete
+  re-marks).
+- Tracked in: `pipeline/gc/*`, `app/src/lib/gc/marks.ts`,
+  [ADR 0011](decisions/0011-retention-gc.md).
