@@ -1,0 +1,88 @@
+name: Security
+
+on:
+  push:
+    branches: [main, "ci/**"]
+  pull_request:
+  schedule:
+    - cron: "41 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: gitleaks (full history)
+        run: >
+          docker run --rm -v "$PWD:/repo"
+          zricethezav/gitleaks:v8.30.1
+          detect --source /repo --no-banner --redact
+          --config /repo/.gitleaks.toml
+
+  npm-deps:
+    name: Dependencies · npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      # Gate on critical in production deps; the full report stays visible
+      # below. Known high findings (Astro 6.x advisories fixed only in 7.x)
+      # are tracked in docs/ISSUES.md.
+      - name: npm audit (prod deps, fail on critical)
+        run: npm audit --omit=dev --audit-level=critical
+      - name: npm audit full report (informational)
+        if: always()
+        run: npm audit || true
+
+  python-deps:
+    name: Dependencies · pip-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/pipeline
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/pipeline/uv.lock
+      - name: pip-audit against uv.lock
+        run: |
+          uv export --format requirements-txt --no-dev --no-emit-project -o /tmp/requirements.txt
+          uvx pip-audit -r /tmp/requirements.txt --disable-pip
+
+  misconfig:
+    name: IaC misconfig (trivy config)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aquasecurity/trivy-action@0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  dependency-review:
+    name: Dependency review (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high

@@ -1,0 +1,23 @@
+# Context trim for the app image (context = repo root, -f app/Dockerfile).
+.git
+.github
+.claude
+.superpowers
+.agents
+node_modules
+**/node_modules
+**/dist
+**/storybook-static
+**/.venv
+**/__pycache__
+**/test-results
+**/playwright-report
+.env
+.env.*
+!.env.example
+docs
+services
+tests
+infra
+*.md
+*.pptx

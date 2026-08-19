@@ -570,3 +570,17 @@ contract); the three new statements want confirmation in the M2-I rehearsal.
 - Resolved by: M2-0, `ai/m2-0-deliver-prerecord`.
 - Tracked in: `delivery/repo.py` (`pre_record`, `discard_pre_records`,
   `sweep_stalled_deliveries`), `jobs/dispatch.py`, `tests/test_delivery_prerecord.py`.
+
+## CI/CD — GitHub Actions (2026-08-18)
+
+### I-57: Astro 6.x high-severity advisories fixed only in Astro 7
+
+`npm audit` reports high-severity advisories against `astro@6.x` (XSS via
+spread attribute names / `transition:*` directives / view-transition animation
+properties — GHSA-f48w-9m4c-m7f5, GHSA-7pw4-f3q4-r2p2, GHSA-4g3v-8h47-v7g6)
+plus `sharp <0.35.0` (bundled-libvips CVEs) and `@astrojs/node <=11.0.1`, all
+fixed only in Astro 7 — a major upgrade. Non-breaking transitives were already
+fixed via `npm audit fix` when CI was introduced. The `security.yml` npm-audit
+gate therefore fails on **critical** only (prod deps); the full report stays
+visible in the job log. Closing this issue = the Astro 6 → 7 upgrade.
+- Tracked in: `.github/workflows/security.yml` (npm-deps job).

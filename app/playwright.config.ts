@@ -27,7 +27,7 @@ export default defineConfig({
     command: `npm run dev -- --host 127.0.0.1 --port ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
+    timeout: 120_000,
     env: {
       SAFE_FETCH_ALLOW_HOSTS: "localhost,127.0.0.1",
       SAFE_FETCH_LOG: "0",
