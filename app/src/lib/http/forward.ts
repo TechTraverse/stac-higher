@@ -5,14 +5,19 @@
  * headers.
  */
 import { jsonResponse } from "./response";
-import { SafeFetchError, errorToResponse, safeFetch } from "./safe-fetch";
+import {
+  SafeFetchError,
+  errorToResponse,
+  safeFetch,
+  type SafeFetchResult,
+} from "./safe-fetch";
 
 export async function forwardUpstream(
   targetUrl: string,
   init: { method: string; headers: Record<string, string>; body?: ArrayBuffer },
   responseHeaderAllowlist: readonly string[],
 ): Promise<Response> {
-  let result: Response;
+  let result: SafeFetchResult;
   try {
     result = await safeFetch(targetUrl, init);
   } catch (err) {
@@ -26,5 +31,6 @@ export async function forwardUpstream(
     const value = result.headers.get(name);
     if (value) headers.set(name, value);
   }
-  return new Response(result.body, { status: result.status, headers });
+  // TS 5.9 types Uint8Array<ArrayBufferLike>, which BodyInit's ArrayBufferView<ArrayBuffer> rejects
+  return new Response(result.body as BodyInit, { status: result.status, headers });
 }

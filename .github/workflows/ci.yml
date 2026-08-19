@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "ai/**", "ci/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  app:
+    name: App · typecheck, build, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck (astro check, app-scoped)
+        working-directory: app
+        run: npx astro check --minimumSeverity error
+      - name: Build + unit tests
+        run: npm run verify
+      - name: Upload SSR build
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-dist
+          path: app/dist
+          retention-days: 7
+
+  storybook:
+    name: Shared · Storybook build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build-storybook --workspace @stac-higher/shared
+      - name: Upload Storybook
+        uses: actions/upload-artifact@v7
+        with:
+          name: storybook-static
+          path: packages/shared/storybook-static
+          retention-days: 7
+
+  pipeline:
+    name: Pipeline · ruff, pytest (with pgstac)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/pipeline
+    services:
+      pgstac:
+        image: ghcr.io/stac-utils/pgstac:v0.9.11
+        env:
+          POSTGRES_USER: username
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: postgis
+          PGUSER: username
+          PGPASSWORD: password
+          PGDATABASE: postgis
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U username -d postgis"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/pipeline/uv.lock
+      - run: uv sync --frozen --extra dev
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+      - name: Tests (DB integration included)
+        env:
+          DATABASE_URL: postgresql://username:password@localhost:5433/postgis
+        run: uv run pytest -q
+
+  e2e:
+    name: E2E · Playwright vs compose stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Generate dev credentials key
+        run: |
+          KEY="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("base64"))')"
+          echo "::add-mask::$KEY"
+          echo "CREDENTIALS_MASTER_KEY=$KEY" >> "$GITHUB_ENV"
+          echo "CREDENTIALS_MASTER_KEY=$KEY" > .env
+      - name: Start backend stack
+        run: docker compose up -d --quiet-pull --build
+      - name: Install Playwright browser
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+      - name: Wait for backend readiness
+        run: |
+          wait_for() {
+            name="$1"; url="$2"; tries="${3:-60}"
+            for _ in $(seq 1 "$tries"); do
+              if curl -sfo /dev/null "$url"; then echo "$name ready"; return 0; fi
+              sleep 5
+            done
+            echo "::error::$name never became ready at $url"
+            docker compose ps
+            docker compose logs --tail 50
+            return 1
+          }
+          wait_for stac-fastapi "http://localhost:8082/" 60
+          wait_for auth-proxy "http://localhost:8081/" 60
+          wait_for minio "http://localhost:9000/minio/health/live" 30
+          wait_for pipeline "http://localhost:8083/health" 60
+      - name: Run e2e suite
+        working-directory: app
+        run: npm run test:e2e:ci
+      - name: Upload traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-results
+          path: app/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs --tail 100
+
+  actionlint:
+    name: Workflows · actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color

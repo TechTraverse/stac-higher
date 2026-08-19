@@ -45,8 +45,8 @@ import {
 } from "@/lib/associations/queries";
 import type { Association } from "@/lib/associations/types";
 import type {
-  AssociationCreateInput,
-  AssociationUpdateInput,
+  AssociationCreatePayload,
+  AssociationUpdatePayload,
 } from "@/lib/associations/schemas";
 import { AssociationDeleteDialog } from "./AssociationDeleteDialog";
 import { DeliverySection } from "./DeliverySection";
@@ -174,7 +174,7 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
     const config = buildConfig(form);
 
     if (editing) {
-      const input: AssociationUpdateInput = { config, enabled: editing.enabled };
+      const input: AssociationUpdatePayload = { config, enabled: editing.enabled };
       updateMutation.mutate(
         { id: editing.id, input },
         {
@@ -186,7 +186,7 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
         },
       );
     } else {
-      const input: AssociationCreateInput = {
+      const input: AssociationCreatePayload = {
         connection_id: form.connectionId,
         direction: "ingest",
         enabled: true,

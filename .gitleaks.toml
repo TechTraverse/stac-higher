@@ -1,0 +1,16 @@
+# Gitleaks configuration — secret scanning, run by .github/workflows/security.yml
+# (full-history scan). Extends the default ruleset; the allowlist covers only
+# committed dummy values, never real credentials.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and UI placeholder text — not real secrets"
+paths = [
+  # Pipeline + app test suites use obviously-fake keys (0123..., base64 thereof)
+  '''services/pipeline/tests/.*''',
+  '''app/src/__tests__/.*''',
+  # SSH credential form: the textarea placeholder contains a PEM-style header
+  '''app/src/components/connections/ConnectionForm\.tsx''',
+]
