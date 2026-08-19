@@ -1,7 +1,8 @@
 import { CatalogSelector } from "@/components/catalogs/CatalogSelector";
+import { AlertBell } from "@/components/layout/AlertBell";
 import { UserMenu } from "@/components/layout/UserMenu";
 import { ThemeToggle } from "@stac-higher/shared";
-import { Layers, Search, Puzzle, Database, Plug } from "lucide-react";
+import { Layers, Search, Puzzle, Database, Plug, Activity } from "lucide-react";
 import { Button } from "@stac-higher/shared";
 
 const navLinks = [
@@ -11,6 +12,7 @@ const navLinks = [
   { href: "/search", label: "Search", icon: Search },
   { href: "/extensions", label: "Extensions", icon: Puzzle },
   { href: "/connections", label: "Connections", icon: Plug },
+  { href: "/monitoring", label: "Monitoring", icon: Activity },
 ];
 
 export function Header() {
@@ -49,6 +51,7 @@ export function Header() {
 
         <div className="ml-auto flex items-center gap-3">
           <CatalogSelector />
+          <AlertBell />
           <UserMenu />
           <ThemeToggle />
         </div>

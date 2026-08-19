@@ -121,6 +121,7 @@ Astro server routes:
 | `/api/alerts/read` | POST | Advance the caller's own read watermark (member+; deliberately NOT operator-gated/audited — personal UI state) — M2-C |
 | `/api/channels` | GET, POST | List (member+: own groups; admin: all) / create (operator+) per-group notification channels (`in_app` \| `webhook`); webhook signing secret is write-only (`has_secret`) — M2-C, ADR 0010 |
 | `/api/channels/[id]` | GET, PUT, DELETE | Get / replace-config / delete a channel (group-owned; PUT replaces `config` wholesale, kind+group immutable) |
+| `/api/monitoring/flows` | GET | Cross-collection association list with `flow_stats` + expectation (member+: own groups; admin: all) — feeds `/monitoring` (M2-D) |
 | `/api/catalog/[...path]` | POST, PUT, PATCH, DELETE | BFF for built-in-catalog browser writes (ADR 0008): transaction endpoints only; injects the session access token server-side; operator+, audited. Reads stay direct |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
@@ -182,7 +183,10 @@ policy — never widen the app's `safeFetch` for it — durable via the
 `notification_deliveries` ledger (sweep retry → dead-letter → channel-anchored
 `webhook_failed` alert; HMAC-signed when the channel config has a `secret`).
 The webhook `config` is a cross-runtime contract
-(`webhook-channel-config.json` fixture).
+(`webhook-channel-config.json` fixture). UI (M2-D): the **`/monitoring`** page
+(alert list with ack/resolve, per-association flow telemetry via
+`/api/monitoring/flows`, channel management) and the **header alert bell**
+(unread firing count; opening /monitoring advances the read watermark).
 
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in
