@@ -7,10 +7,11 @@ is reachable; 503 otherwise. Suitable as a compose/K8s healthcheck target.
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from pipeline import __version__
 from pipeline.jobs.heartbeat import STATE, HeartbeatState
+from pipeline.metrics import METRICS_CONTENT_TYPE, render_metrics
 from pipeline.queue.interface import QueueBackend, QueueConnectionError
 
 
@@ -40,5 +41,11 @@ def create_health_app(queue: QueueBackend, heartbeat_state: HeartbeatState = STA
                 "heartbeat": heartbeat_state.as_dict(),
             },
         )
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        # M2-H (spec §8): Prometheus exposition. No scraper in compose —
+        # curl-verifiable; see pipeline/metrics.py for the instrument map.
+        return Response(content=render_metrics(), media_type=METRICS_CONTENT_TYPE)
 
     return app

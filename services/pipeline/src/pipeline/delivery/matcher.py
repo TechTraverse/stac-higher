@@ -51,10 +51,8 @@ def _item_filter_passes(item_filter: str | None, item: dict[str, Any]) -> bool:
         return bool(Expr(item_filter).matches(item))
     except Exception:
         logger.warning(
-            "item_filter evaluation failed, treating as no-match "
-            "(item_filter=%r, item_id=%r)",
-            item_filter,
-            item.get("id"),
+            "item_filter evaluation failed, treating as no-match",
+            extra={"item_filter": item_filter, "item_id": item.get("id")},
         )
         return False
 
@@ -92,9 +90,7 @@ def match_item(
             )
         except Exception:
             logger.exception(
-                "association skipped: unusable delivery config "
-                "(association_id=%r, item_id=%r)",
-                assoc.id,
-                item_id,
+                "association skipped: unusable delivery config",
+                extra={"association_id": assoc.id, "item_id": item_id},
             )
     return matches

@@ -297,3 +297,26 @@ The `Dockerfile` builds a multi-stage image whose entrypoint applies the
 Procrastinate schema idempotently, then runs the worker (with the periodic
 heartbeat) and the health server in one process. The compose service is owned
 by the docker-compose workstream; this package only ships the image.
+
+
+## Telemetry (M2-H)
+
+`GET :8083/metrics` serves Prometheus exposition (no scraper ships in
+docker-compose — curl-verifiable; ROADMAP §8). Instrument map
+(`src/pipeline/metrics.py`):
+
+- `pipeline_job_runs_total{job,outcome}` / `pipeline_job_seconds{job}` — every
+  queue task and periodic tick, wrapped centrally at Procrastinate
+  registration (new jobs are covered automatically; the in-memory test
+  backend stays bare).
+- `pipeline_ingest_events_total{stage}` (`settled_file` / `itemized_item` /
+  `failed`) + `pipeline_ingest_bytes_total` — incremented at the M2-A
+  flow-stats choke points.
+- `pipeline_deliveries_total{outcome}` (`delivered`/`failed`/`dead`),
+  `pipeline_delivery_bytes_total`, `pipeline_delivery_seconds` — the delivery
+  worker's terminal transitions.
+- `pipeline_webhook_deliveries_total{outcome}` and
+  `pipeline_alerts_total{event}` (`raised`/`auto_resolved`).
+
+Logging is structured JSON via `log.py` (`configure_logging`); log data
+belongs in `extra={...}` fields, not the message string.

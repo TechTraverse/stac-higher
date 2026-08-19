@@ -167,10 +167,20 @@ is in ROADMAP §9 M1.
       three UNIQUE-keyed tables conservatively; stranded-running checks on
       deleted connections flip to failed (M1 carry-forward folded in).
       I-36/I-11 amended, I-12 closed. Follow-ups below.
-- [ ] **M2-H · service telemetry** (spec §8). Prometheus exposition on the
+- [x] **M2-H · service telemetry** (spec §8). Prometheus exposition on the
       pipeline (`:8083/metrics`) with counters/histograms across the ingest and
       delivery stages, plus a structured-JSON logging consistency pass
       (`log.py` exists; usage is uneven). No scraper in docker-compose.
+      **Done 2026-08-19** — `pipeline/metrics.py` (dedicated registry;
+      `prometheus-client` added — the one new dep, clear need). Jobs are
+      instrumented CENTRALLY at Procrastinate registration so every current
+      and future task gets runs/duration/outcome for free; ingest counters
+      ride the M2-A flow-stats hooks, delivery counters the worker's terminal
+      transitions, webhook/alert counters the notify/monitor jobs.
+      `GET :8083/metrics` served from the health app. The logging "pass"
+      turned out tiny: an audit found only TWO call sites (delivery matcher)
+      still using %-interpolation — moved to `extra={}`; everything else was
+      already structured. Follow-ups below.
 
 ## M2 gate
 
@@ -341,6 +351,18 @@ is in ROADMAP §9 M1.
   revisit path.
 - Deleted-connection checks now flip to `failed`, which the flow monitor's
   health source ignores (deleted connections filtered) — no alert noise.
+
+### From M2-H
+
+- Metrics are process-local and reset on restart (standard Prometheus
+  semantics; rate() handles it). The in-memory queue backend is deliberately
+  NOT instrumented so unit tests observe handlers unwrapped — if a test ever
+  wants job metrics, wrap explicitly with `instrument_handler`.
+- No scraper/dashboard ships (spec §8 says so). M3 likely wants a
+  compose-profile Prometheus+Grafana for the NOAA load test — note for then.
+- `pipeline_ingest_bytes_total` double-counts a byte that is both settled
+  and itemized (it increments at both stages by design — they measure stage
+  throughput, not unique bytes). Label docs say so; don't sum stages.
 
 ### Carried forward from M1
 

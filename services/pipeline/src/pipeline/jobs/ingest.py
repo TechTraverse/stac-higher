@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 
+from pipeline import metrics
 from pipeline.config import Settings
 from pipeline.connections.build import build_adapter
 from pipeline.ingest.config import IngestConfig, parse_ingest_config
@@ -87,6 +88,8 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 files=result.settled,
                 bytes_added=result.settled_bytes,
             )
+            metrics.INGEST_EVENTS.labels(stage="settled_file").inc(result.settled)
+            metrics.INGEST_BYTES.inc(result.settled_bytes)
         # Chain to GROUP regardless of counts: settled files may be carried over
         # from an earlier tick (a group waiting on a late sibling).
         await queue.enqueue(JOB_GROUP, {"association_id": association_id})
@@ -178,8 +181,11 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 bytes_added=outcome.bytes,
                 latency_seconds=outcome.latency_seconds,
             )
+            metrics.INGEST_EVENTS.labels(stage="itemized_item").inc()
+            metrics.INGEST_BYTES.inc(outcome.bytes or 0)
         elif outcome.status == "failed":
             await repo.bump_flow_stats(association_id, failed=1)
+            metrics.INGEST_EVENTS.labels(stage="failed").inc()
 
     async def recovery_sweep(timestamp: int) -> None:
         # Crash recovery (ISSUES I-52 + I-55): every transition re-enters the
