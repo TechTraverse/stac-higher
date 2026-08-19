@@ -352,6 +352,16 @@ is in ROADMAP §9 M1.
 - Deleted-connection checks now flip to `failed`, which the flow monitor's
   health source ignores (deleted connections filtered) — no alert noise.
 
+### From the M2 promotion (CI post-mortem)
+
+- The promotion push exposed a verify/CI gap: CI runs an app-scoped
+  `npx astro check --minimumSeverity error` that `npm run verify` does NOT
+  (the full-project check OOMs — the long-standing gotcha — but the
+  app-scoped variant is fast and green). Six type errors in test fixtures
+  (M2-E's `archived` field) slipped through every local gate and failed CI
+  on main; fixed in `ai/fix-ci-typecheck`. **Consider adding the app-scoped
+  check to the root `verify` script** so local and CI gates match.
+
 ### From M2-H
 
 - Metrics are process-local and reset on restart (standard Prometheus
