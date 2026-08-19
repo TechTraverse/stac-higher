@@ -22,6 +22,7 @@ from pipeline.jobs import (
     gc,
     health_sweep,
     heartbeat,
+    history,
     ingest,
     monitor,
     notify,
@@ -57,6 +58,9 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # M2-F: §6.5 retention & GC — expire items per collection settings, then
     # collect marked asset prefixes after the grace window (ADR 0011).
     gc.register(queue, settings)
+    # M2-G: §6 hygiene — hourly retention sweeps for the UNIQUE-keyed history
+    # tables (partitioning covers item_events/audit_log — ADR 0012).
+    history.register(queue, settings)
     return queue
 
 

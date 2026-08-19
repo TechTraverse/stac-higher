@@ -59,11 +59,11 @@ Credentials use a local `CREDENTIALS_MASTER_KEY` behind an `EncryptionProvider` 
 ### I-10 · `stac-api` connection protocol ⚪
 Reserved in the enum; create/update reject it and the adapter factory raises `NotImplementedError("reserved for a future release")`.
 
-### I-11 · Audit-log partitioning & retention ⚪
-`stac_higher.audit_log` is append-only and unpartitioned. Phase 6 adds time-partitioning + a compliance-driven retention job (partition maintenance must drop/re-create the append-only triggers per partition). — migration 003 comment.
+### I-11 · Audit-log partitioning & retention — partitioning DONE (M2-G) ✅/🟡
+Migration 018 time-partitions `audit_log` monthly (attach-don't-copy; append-only row triggers live on the partitioned parent, and retention drops whole partitions via DETACH+DROP — the escape hatch the migration-003 comment demanded, [ADR 0012](decisions/0012-table-hygiene.md)). REMAINING (amber): no automated partition-drop retention job yet — compliance windows are an operator decision; dropping a detached monthly partition is a one-line manual op until a policy exists.
 
-### I-12 · `connection_checks` accumulation ⚪
-Test-result rows are never pruned; a partial index keeps the drain's pending scan cheap, but the table grows. Retention/GC is Phase 6 hygiene.
+### I-12 · `connection_checks` accumulation — resolved (M2-G) ✅
+`pipeline.history_retention` (hourly) deletes checks older than `CONNECTION_CHECKS_RETENTION_DAYS` (default 30) and flips checks stranded `pending`/`running` on soft-deleted connections to `failed` (the M1 carry-forward). [ADR 0012](decisions/0012-table-hygiene.md).
 
 ---
 
@@ -186,13 +186,18 @@ The runtime stage of `services/pipeline/Dockerfile` installed only `libpq5`. ras
 
 ## Phase 5 — delivery pipeline (Slice A)
 
-### I-36 · `item_events` / `delivery_log` partitioning deferred to Phase 6 ⚪
-`stac_higher.item_events` (migration 007) is a plain, unpartitioned table, as
-`delivery_log` will be when Slice B adds it. Both are envelope-scale high-volume
-tables; Phase 6 time-partitions them on `occurred_at` and adds partition-drop
-retention jobs (mirrors the audit_log / ingest_files deferrals, I-11). Kept plain
-so the outbox + dispatcher could land first.
-- Tracked in: migration 007 comment; [ADR 0007](decisions/0007-outbox-trigger-ownership.md).
+### I-36 · `item_events` / `delivery_log` partitioning — AMENDED by M2-G ✅ (as amended)
+The blanket partitioning promise was wrong for `delivery_log`: its
+`UNIQUE (association_id, item_id)` is the redelivery idempotency key, and a
+time-partitioned unique index would have to include the partition key —
+breaking the upsert model. As amended ([ADR 0012](decisions/0012-table-hygiene.md)):
+`item_events` IS partitioned (migration 018, attach-don't-copy, monthly
+partitions reconciled two months ahead on every runMigrations());
+`delivery_log` and `ingest_files` get conservative retention SWEEPS instead
+(`pipeline.history_retention`: soft-deleted-association rows past
+`HISTORY_RETENTION_DAYS`, plus itemless terminal deliveries). Revisit a
+current-state/history split at M3 if sweeps prove insufficient under load.
+- Tracked in: migration 018; [ADR 0012](decisions/0012-table-hygiene.md).
 
 ### I-37 · `on_update` must derive redelivery from `delivery_log`, not the outbox `op` ⚪
 Live-verified in Slice A: pgstac implements an item update as **delete + insert**,

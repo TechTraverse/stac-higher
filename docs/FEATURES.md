@@ -386,6 +386,18 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   Reference-mode association delete now removes its items (dialog counts them
   and suggests disable-instead-of-delete).
 
+- **M2-G · high-volume table hygiene** ([ADR 0012](decisions/0012-table-hygiene.md),
+  amends I-36/I-11, closes I-12) — migration **018** partitions `item_events`
+  + `audit_log` monthly via attach-don't-copy (legacy partition bounded at
+  the migration month; PKs grow the partition key; audit append-only row
+  triggers on the parent, TRUNCATE guard parent-level — partition DETACH+DROP
+  is the sanctioned retention op). `RECONCILE_PARTITIONS_SQL` provisions two
+  months ahead on every `runMigrations()`. Pipeline `pipeline/history/`:
+  hourly `history_retention` sweep (checks age-out + stranded-running flip;
+  soft-deleted-association ledger rows; itemless terminal deliveries).
+  Migration validated end-to-end against a real Postgres (fresh AND with
+  live rows via the dev DB e2e run).
+
 ## Phases 7–8 — Not started ⬜
 
 Push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).

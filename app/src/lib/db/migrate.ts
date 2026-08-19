@@ -748,6 +748,140 @@ const MIGRATIONS = [
         WHERE collected_at IS NULL;
     `,
   },
+  {
+    // M2-G (M2 spec §6, ADR 0012): time-partition the two pure append-only
+    // high-volume tables — item_events (outbox) and audit_log — via
+    // ATTACH-DON'T-COPY: rename the existing table, create a partitioned
+    // parent under the original name, attach the old table as a bounded
+    // legacy partition covering (MINVALUE, start of next month). No data
+    // copy, no long lock; correct whether the table holds 0 rows or 10M.
+    // Monthly partitions from next month onward are created by
+    // RECONCILE_PARTITIONS_SQL on every runMigrations() (two-month cushion),
+    // so their ranges can never overlap the legacy bound.
+    //
+    // Notes the shape depends on:
+    // - A partitioned PK must include the partition key → PK becomes
+    //   (id, occurred_at) / (id, at). Nothing FKs these tables and both ids
+    //   come from a sequence, so per-table id uniqueness is preserved in
+    //   practice; the dispatcher's id-based claim/UPDATE works unchanged.
+    // - The bigserial sequences were OWNED BY the old tables' columns; they
+    //   are re-owned by the parents so a future legacy-partition DROP cannot
+    //   take the sequence with it.
+    // - Legacy indexes are renamed first so the parent's partitioned indexes
+    //   can take the canonical names (ATTACH then adopts/creates per-child
+    //   indexes automatically).
+    // - audit_log's append-only row triggers are recreated ON THE PARENT
+    //   (row triggers propagate to partitions); the TRUNCATE guard fires for
+    //   parent-level TRUNCATE. Retention drops whole partitions via
+    //   DETACH+DROP, which row triggers cannot veto — that is the deliberate
+    //   escape hatch the migration-003 comment demanded (ADR 0012).
+    //
+    // delivery_log / ingest_files / connection_checks are deliberately NOT
+    // partitioned: their natural UNIQUE keys ((association_id, item_id) /
+    // (association_id, source_path, version)) cannot include a time
+    // partition key without breaking the upsert model. They get pipeline
+    // retention sweeps instead (ADR 0012; amends I-36/I-11, closes I-12).
+    name: "018_partition_item_events_and_audit_log",
+    sql: `
+      DO $mig$
+      DECLARE
+        next_month timestamptz := date_trunc('month', now()) + interval '1 month';
+      BEGIN
+        -- ------------------------------------------------------------------
+        -- item_events (outbox; migration 007)
+        -- ------------------------------------------------------------------
+        ALTER TABLE stac_higher.item_events RENAME TO item_events_legacy;
+        ALTER INDEX stac_higher.item_events_pending_idx
+          RENAME TO item_events_legacy_pending_idx;
+        -- The parent's PK (id, occurred_at) propagates to partitions on
+        -- ATTACH; the legacy PK(id) would collide — drop it (id uniqueness
+        -- is sequence-guaranteed; the parent PK index replaces it).
+        ALTER TABLE stac_higher.item_events_legacy
+          DROP CONSTRAINT item_events_pkey;
+
+        -- Full current shape: 007 base + the 011 claim marker + the 012
+        -- visibility-retry columns. A column added to item_events later MUST
+        -- be added here too if that migration can ever run before this one
+        -- on a fresh DB (it cannot — order is fixed — but keep in sync).
+        CREATE TABLE stac_higher.item_events (
+          id bigint NOT NULL DEFAULT nextval('stac_higher.item_events_id_seq'),
+          collection_id text NOT NULL,
+          item_id text NOT NULL,
+          -- Named to MATCH the legacy table's auto-named 007 constraint —
+          -- ATTACH requires the child to carry the parent's checks by name.
+          op text NOT NULL
+            CONSTRAINT item_events_op_check
+            CHECK (op IN ('insert','update','delete')),
+          occurred_at timestamptz NOT NULL DEFAULT now(),
+          processed_at timestamptz,
+          claimed_at timestamptz,
+          dispatch_attempts integer NOT NULL DEFAULT 0,
+          next_dispatch_at timestamptz,
+          PRIMARY KEY (id, occurred_at)
+        ) PARTITION BY RANGE (occurred_at);
+        ALTER SEQUENCE stac_higher.item_events_id_seq
+          OWNED BY stac_higher.item_events.id;
+        CREATE INDEX item_events_pending_idx
+          ON stac_higher.item_events (id) WHERE processed_at IS NULL;
+
+        EXECUTE format(
+          'ALTER TABLE stac_higher.item_events'
+          || ' ATTACH PARTITION stac_higher.item_events_legacy'
+          || ' FOR VALUES FROM (MINVALUE) TO (%L)',
+          next_month
+        );
+
+        -- ------------------------------------------------------------------
+        -- audit_log (append-only; migration 003)
+        -- ------------------------------------------------------------------
+        ALTER TABLE stac_higher.audit_log RENAME TO audit_log_legacy;
+        ALTER TABLE stac_higher.audit_log_legacy
+          DROP CONSTRAINT audit_log_pkey;
+        -- The parent's row trigger clones onto every partition at ATTACH;
+        -- the legacy table's own 003 triggers would collide by name. The
+        -- TRUNCATE guard is parent-level only (statement triggers don't
+        -- propagate) — truncating/dropping a DETACHED partition is the
+        -- deliberate retention escape hatch (ADR 0012).
+        DROP TRIGGER audit_log_append_only ON stac_higher.audit_log_legacy;
+        DROP TRIGGER audit_log_no_truncate ON stac_higher.audit_log_legacy;
+        ALTER INDEX stac_higher.audit_log_at_idx RENAME TO audit_log_legacy_at_idx;
+        ALTER INDEX stac_higher.audit_log_actor_groups_idx
+          RENAME TO audit_log_legacy_actor_groups_idx;
+
+        CREATE TABLE stac_higher.audit_log (
+          id bigint NOT NULL DEFAULT nextval('stac_higher.audit_log_id_seq'),
+          actor TEXT NOT NULL,
+          actor_groups TEXT[] NOT NULL DEFAULT '{}',
+          action TEXT NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT,
+          detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+          at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (id, at)
+        ) PARTITION BY RANGE (at);
+        ALTER SEQUENCE stac_higher.audit_log_id_seq
+          OWNED BY stac_higher.audit_log.id;
+        CREATE INDEX audit_log_at_idx ON stac_higher.audit_log (at DESC);
+        CREATE INDEX audit_log_actor_groups_idx
+          ON stac_higher.audit_log USING gin (actor_groups);
+
+        CREATE TRIGGER audit_log_append_only
+          BEFORE UPDATE OR DELETE ON stac_higher.audit_log
+          FOR EACH ROW EXECUTE FUNCTION stac_higher.audit_log_block_mutation();
+        CREATE TRIGGER audit_log_no_truncate
+          BEFORE TRUNCATE ON stac_higher.audit_log
+          FOR EACH STATEMENT EXECUTE FUNCTION stac_higher.audit_log_block_mutation();
+
+        EXECUTE format(
+          'ALTER TABLE stac_higher.audit_log'
+          || ' ATTACH PARTITION stac_higher.audit_log_legacy'
+          || ' FOR VALUES FROM (MINVALUE) TO (%L)',
+          next_month
+        );
+      END
+      $mig$;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that
@@ -772,6 +906,44 @@ const RECONCILE_OUTBOX_TRIGGER_SQL = `
         AFTER INSERT OR UPDATE OR DELETE ON pgstac.items
         FOR EACH ROW EXECUTE FUNCTION stac_higher.item_events_capture();
     END IF;
+  END;
+  $do$;
+`;
+
+// Idempotent reconcile (M2-G, ADR 0012): keep monthly partitions provisioned
+// for item_events and audit_log — next month and the one after, on EVERY
+// runMigrations() call. The migration-018 legacy partition covers everything
+// through the END of its migration month, so the earliest month this can ever
+// create is migration-month + 1: reconciled ranges can never overlap the
+// legacy bound. Two months of cushion means inserts keep routing even if the
+// app goes a full month between calls; a >2-month total outage would surface
+// as insert errors on the outbox trigger — recovered by any app request.
+const RECONCILE_PARTITIONS_SQL = `
+  DO $do$
+  DECLARE
+    tbl text;
+    m int;
+    month_start timestamptz;
+    part_name text;
+  BEGIN
+    FOREACH tbl IN ARRAY ARRAY['item_events', 'audit_log'] LOOP
+      IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'stac_higher' AND c.relname = tbl AND c.relkind = 'p'
+      ) THEN
+        FOR m IN 1..2 LOOP
+          month_start := date_trunc('month', now()) + make_interval(months => m);
+          part_name := format('%s_y%sm%s', tbl,
+            to_char(month_start, 'YYYY'), to_char(month_start, 'MM'));
+          EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS stac_higher.%I'
+            || ' PARTITION OF stac_higher.%I FOR VALUES FROM (%L) TO (%L)',
+            part_name, tbl, month_start, month_start + interval '1 month'
+          );
+        END LOOP;
+      END IF;
+    END LOOP;
   END;
   $do$;
 `;
@@ -811,6 +983,9 @@ export async function runMigrations(): Promise<void> {
     // Runs every call (not tracked): (re)attaches the outbox trigger once
     // pgstac.items exists, even if migration 007 was recorded before it did.
     await client.query(RECONCILE_OUTBOX_TRIGGER_SQL);
+    // Runs every call (not tracked): provision upcoming monthly partitions
+    // for the migration-018 partitioned tables (M2-G, ADR 0012).
+    await client.query(RECONCILE_PARTITIONS_SQL);
 
     await client.query("COMMIT");
   } catch (err) {
