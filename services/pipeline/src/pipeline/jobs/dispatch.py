@@ -7,28 +7,32 @@ share that drain (overlap is safe — the outbox claim is atomic, I-40):
 main.py alongside the worker), and ``dispatch_poll`` keeps the minute cron as
 fallback for dropped notifications / listener downtime.
 
-The ``deliver`` handler loads the destination connection, builds its adapter,
-and runs each item through ``deliver_item`` (canonical bytes → destination,
-recorded in ``delivery_log``), bounded by the association's
+The ``deliver`` handler pre-records a ``delivery_log`` row per item (M2-0,
+ISSUES I-56) before anything fallible, then loads the destination connection,
+builds its adapter, and runs each item through ``deliver_item`` (canonical
+bytes → destination), bounded by the association's
 ``max_concurrent_transfers`` for S3 destinations (single-channel SFTP/FTP
 clients are not concurrency-safe — those run serial regardless of the cap).
-``delivery_retry_sweep`` re-drives ``failed`` rows whose ``next_attempt_at``
-has passed; ``deliver_item`` dead-letters at ``retry.max_attempts``.
+``delivery_retry_sweep`` first recovers rows stranded in
+``pending``/``delivering`` past the stall window, then re-drives ``failed``
+rows whose ``next_attempt_at`` has passed; ``deliver_item`` dead-letters at
+``retry.max_attempts``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 from typing import Any
 
 from pipeline.config import Settings
 from pipeline.connections.build import AdapterBuildError, build_adapter
 from pipeline.connections.repo import ConnectionRow
-from pipeline.delivery.config import parse_delivery_config
+from pipeline.delivery.config import DeliveryConfig, parse_delivery_config
 from pipeline.delivery.repo import PgDeliveryRepo
 from pipeline.delivery.transfer import can_server_side_copy
-from pipeline.delivery.worker import deliver_item
+from pipeline.delivery.worker import deliver_item, retry_delay_seconds
 from pipeline.dispatcher.listener import run_dispatch_listener
 from pipeline.dispatcher.loop import dispatch_until_empty
 from pipeline.dispatcher.repo import PgDispatchRepo
@@ -113,21 +117,66 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         if master_key is None:
             return
         repo = PgDeliveryRepo(settings.database_url)
+        # M2-0: record the intent BEFORE anything that can fail. Everything
+        # below — load_target, config parsing, adapter build, get_item — used
+        # to run with NO delivery_log row in existence, so a fault that
+        # outlived the queue retries lost the delivery silently: the outbox row
+        # was already claimed and the retry sweep had nothing to re-drive.
+        # INSERT-only, so an existing row's state (which deliver_item's
+        # on_update/overwrite gates read) is untouched.
+        pre = await repo.pre_record(
+            association_id,
+            [(entry["item_id"], entry.get("item_created_at")) for entry in items],
+        )
+
+        async def _fail_batch(error: str, config: DeliveryConfig) -> None:
+            """Settle every pre-recorded row on the same terms deliver_item
+            uses — the attempt was made, it just failed before any byte moved."""
+            for record in pre:
+                attempts = await repo.mark_delivering(record.id)
+                dead = attempts >= config.max_attempts
+                await repo.mark_failed(
+                    record.id,
+                    error,
+                    # Preserve the fingerprint map: this path never delivered
+                    # anything, so wiping it would force a needless rewrite.
+                    delivered_assets=record.delivered_assets,
+                    next_attempt_at=None
+                    if dead
+                    else dt.datetime.now(dt.UTC)
+                    + dt.timedelta(
+                        seconds=retry_delay_seconds(config.backoff, attempts)
+                    ),
+                    dead=dead,
+                )
+
         target = await repo.load_target(association_id)
         if target is None:
-            # Association disabled/deleted between dispatch and delivery — no-op.
+            # Association disabled/deleted between dispatch and delivery — a
+            # legitimate no-op, so drop the placeholders we just created rather
+            # than leave phantom pending rows for the stall sweep.
+            await repo.discard_pre_records([r.id for r in pre if r.created])
+            return
+        try:
+            config = parse_delivery_config(target.config)
+        except Exception as exc:  # surfaced on the rows, not swallowed (BLE001 off)
+            logger.exception(
+                "deliver: invalid delivery config",
+                extra={"association_id": association_id},
+            )
+            await _fail_batch(f"invalid delivery config: {exc}", DeliveryConfig())
             return
         try:
             adapter = build_adapter(
                 target.connection, master_key, settings.egress_allow_hosts
             )
-        except AdapterBuildError:
+        except AdapterBuildError as exc:
             logger.exception(
                 "deliver: adapter build failed",
                 extra={"association_id": association_id},
             )
+            await _fail_batch(f"destination adapter unavailable: {exc}", config)
             return
-        config = parse_delivery_config(target.config)
         s3_client = build_platform_client(settings)
 
         def _source_adapter(connection: ConnectionRow):
@@ -187,6 +236,18 @@ def register(queue: QueueBackend, settings: Settings) -> None:
 
     async def retry_sweep(timestamp: int) -> None:
         repo = PgDeliveryRepo(settings.database_url)
+        # M2-0 stall recovery first: rows stranded in pending/delivering (the
+        # job died between pre-record and delivery, or a worker died
+        # mid-transfer) become failed-and-due, so this same tick re-enqueues
+        # them. Mirrors the ingest stored-stall sweep (I-52/I-55).
+        recovered = await repo.sweep_stalled_deliveries(
+            settings.delivery_stall_seconds, RETRY_SWEEP_BATCH
+        )
+        if recovered:
+            logger.info(
+                "delivery stall sweep recovered stranded rows",
+                extra={"rows": recovered, "scheduled_timestamp": timestamp},
+            )
         due = await repo.list_due_retries(RETRY_SWEEP_BATCH)
         if not due:
             return

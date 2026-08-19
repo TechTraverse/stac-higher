@@ -59,6 +59,13 @@ DEFAULT_INGEST_FAILED_RETRY_SECONDS = 300  # 5 min cool-off
 DEFAULT_INGEST_MAX_RETRIES = 3
 DEFAULT_INGEST_STORED_STALL_SECONDS = 1800  # 30 min
 
+# Delivery crash recovery (M2-0). A delivery_log row still `pending`/`delivering`
+# this long after its last update is presumed crashed — the deliver job died
+# between the pre-record and `deliver_item`, or a worker died mid-transfer. The
+# stall sweep re-enters it into the retry path. Widen this for deployments whose
+# single transfers legitimately run longer than the window.
+DEFAULT_DELIVERY_STALL_SECONDS = 1800  # 30 min
+
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
     if raw is None:
@@ -96,6 +103,8 @@ class Settings:
     ingest_failed_retry_seconds: int = DEFAULT_INGEST_FAILED_RETRY_SECONDS
     ingest_max_retries: int = DEFAULT_INGEST_MAX_RETRIES
     ingest_stored_stall_seconds: int = DEFAULT_INGEST_STORED_STALL_SECONDS
+    #: Delivery crash recovery (M2-0) — see DEFAULT_DELIVERY_STALL_SECONDS.
+    delivery_stall_seconds: int = DEFAULT_DELIVERY_STALL_SECONDS
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -138,6 +147,12 @@ class Settings:
             ),
             ingest_max_retries=int(
                 env.get("INGEST_MAX_RETRIES", str(DEFAULT_INGEST_MAX_RETRIES))
+            ),
+            delivery_stall_seconds=int(
+                env.get(
+                    "DELIVERY_STALL_SECONDS",
+                    str(DEFAULT_DELIVERY_STALL_SECONDS),
+                )
             ),
             ingest_stored_stall_seconds=int(
                 env.get(

@@ -17,7 +17,7 @@ is in ROADMAP §9 M1.
 
 ## Warm-up — carried-forward durability fix
 
-- [ ] **M2-0 · deliver pre-record durability fix** (spec §9). Deliver's
+- [x] **M2-0 · deliver pre-record durability fix** (spec §9). Deliver's
       pre-record blind spot is covered by queue retry only (~4 min window): if
       the DB stays down through all attempts the delivery is lost invisibly —
       the outbox row is claimed but no `delivery_log` row exists for the retry
@@ -27,6 +27,13 @@ is in ROADMAP §9 M1.
       stored-stall sweep. Behavior change — deferred out of the I-55 /simplify
       pass, now due. Unit-test the pre-record crash path re-driving to
       `delivered`.
+      **Done 2026-08-18** — `pre_record` is INSERT-only rather than a hoisted
+      `upsert_pending` (hoisting it verbatim would clobber the prior row state
+      the `on_update`/overwrite gates read — proved by the guard tests), plus
+      `discard_pre_records` for the disabled-association no-op, failure
+      recording for config/adapter errors that used to vanish, and
+      `sweep_stalled_deliveries` (`DELIVERY_STALL_SECONDS`) for rows stranded
+      in `pending`/`delivering`. Full story: ISSUES **I-56**.
 
 ## Alerting (spec §3, §4)
 
@@ -105,6 +112,21 @@ is in ROADMAP §9 M1.
 ## Discovered follow-ups
 
 (append here during iterations)
+
+### From M2-0
+
+- The pre-record cannot help when Postgres is wholly unreachable (it is itself
+  a DB write) — see I-56's residual note. If M3 wants coverage for that case,
+  the only real answer is not claiming the outbox row until the delivery is
+  durably recorded, which is a dispatcher-side change, not a handler-side one.
+- `sweep_stalled_deliveries` uses one fixed window for both `pending` and
+  `delivering`. A deployment with legitimately long single transfers must widen
+  it globally; if that becomes awkward, split the window per state (a `pending`
+  row is never legitimately slow — only a `delivering` one is).
+- The new `PgDeliveryRepo` SQL is `# pragma: no cover` per repo convention, so
+  the three statements are unverified against a real Postgres until the **M2-I**
+  rehearsal. Worth an explicit step there: kill a worker mid-transfer and watch
+  the stall sweep recover the row.
 
 ### Carried forward from M1
 
