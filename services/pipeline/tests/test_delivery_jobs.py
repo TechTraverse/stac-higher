@@ -5,7 +5,7 @@ import pytest
 from _delivery_fake import FakeDeliveryRepo
 from pipeline.config import Settings
 from pipeline.connections.repo import ConnectionRow
-from pipeline.delivery.repo import DeliverTarget
+from pipeline.delivery.repo import DeliverTarget, PreRecord
 from pipeline.jobs import dispatch
 from pipeline.jobs.dispatch import (
     JOB_DELIVER,
@@ -17,6 +17,22 @@ from pipeline.main import build_queue
 from pipeline.queue.memory import InMemoryQueue
 
 pytestmark = pytest.mark.asyncio
+
+
+class _PreRecordStub:
+    """The M2-0 pre-record surface every deliver-handler stub needs: the handler
+    records intent before it loads anything, so a stub without these methods
+    never reaches the code under test."""
+
+    def __init__(self, _url): ...
+
+    async def pre_record(self, _aid, items):
+        return [
+            PreRecord(id=f"row{n}", item_id=item_id, created=True)
+            for n, (item_id, _created_at) in enumerate(items, start=1)
+        ]
+
+    async def discard_pre_records(self, _row_ids): ...
 
 
 def _s3_connection(endpoint):
@@ -58,8 +74,7 @@ async def test_deliver_handler_calls_worker_per_item(monkeypatch):
         connection=_s3_connection("http://minio:9000"),
     )
 
-    class _Repo:
-        def __init__(self, _url): ...
+    class _Repo(_PreRecordStub):
         async def load_target(self, _aid):
             return target
         async def get_item(self, _c, item_id):
@@ -94,8 +109,7 @@ async def test_deliver_handler_noops_when_target_gone(monkeypatch):
     settings = Settings.from_env(env={})
     dispatch.register(queue, settings)
 
-    class _Repo:
-        def __init__(self, _url): ...
+    class _Repo(_PreRecordStub):
         async def load_target(self, _aid):
             return None  # disabled/deleted between dispatch and delivery
 
@@ -117,8 +131,7 @@ async def _run_deliver_capturing(monkeypatch, connection, settings):
         config={"path_template": "{filename}"}, connection=connection,
     )
 
-    class _Repo:
-        def __init__(self, _url): ...
+    class _Repo(_PreRecordStub):
         async def load_target(self, _aid):
             return target
         async def get_item(self, _c, item_id):
@@ -239,8 +252,7 @@ async def test_deliver_runs_items_concurrently_for_s3(monkeypatch):
         connection=_s3_connection("http://minio:9000"),
     )
 
-    class _Repo:
-        def __init__(self, _url): ...
+    class _Repo(_PreRecordStub):
         async def load_target(self, _aid):
             return target
         async def get_item(self, _c, item_id):
@@ -288,8 +300,7 @@ async def test_deliver_sftp_destination_runs_serial(monkeypatch):
         connection=conn,
     )
 
-    class _Repo:
-        def __init__(self, _url): ...
+    class _Repo(_PreRecordStub):
         async def load_target(self, _aid):
             return target
         async def get_item(self, _c, item_id):

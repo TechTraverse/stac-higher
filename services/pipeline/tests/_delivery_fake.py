@@ -10,6 +10,7 @@ from pipeline.delivery.repo import (
     DeliverTarget,
     DeliveryRepo,
     DeliveryRow,
+    PreRecord,
     ReferenceSource,
     RetryRow,
 )
@@ -57,8 +58,14 @@ class FakeDeliveryRepo(DeliveryRepo):
                     status="pending",
                     item_created_at=item_created_at,
                     next_attempt_at=None,
+                    updated_at=dt.datetime.now(dt.UTC),
                 )
                 return rid
+        return self._insert(association_id, item_id, item_created_at)
+
+    def _insert(
+        self, association_id: str, item_id: str, item_created_at: str | None
+    ) -> str:
         self._seq += 1
         rid = f"row{self._seq}"
         self.rows[rid] = {
@@ -71,13 +78,18 @@ class FakeDeliveryRepo(DeliveryRepo):
             "error": None,
             "delivered_assets": {},
             "next_attempt_at": None,
+            "updated_at": dt.datetime.now(dt.UTC),
         }
         return rid
+
+    def _touch(self, row_id: str) -> None:
+        self.rows[row_id]["updated_at"] = dt.datetime.now(dt.UTC)
 
     async def mark_delivering(self, row_id: str) -> int:
         rec = self.rows[row_id]
         rec["status"] = "delivering"
         rec["attempts"] += 1
+        self._touch(row_id)
         return rec["attempts"]
 
     async def mark_delivered(
@@ -92,6 +104,7 @@ class FakeDeliveryRepo(DeliveryRepo):
             bytes=byte_count,
             error=None,
             delivered_assets=dict(delivered_assets or {}),
+            updated_at=dt.datetime.now(dt.UTC),
         )
 
     async def mark_failed(
@@ -109,6 +122,7 @@ class FakeDeliveryRepo(DeliveryRepo):
             error=error,
             delivered_assets=dict(delivered_assets or {}),
             next_attempt_at=next_attempt_at,
+            updated_at=dt.datetime.now(dt.UTC),
         )
 
     async def list_due_retries(self, limit: int) -> list[RetryRow]:
@@ -131,3 +145,66 @@ class FakeDeliveryRepo(DeliveryRepo):
     async def requeue_for_retry(self, row_ids: list[str]) -> None:
         for rid in row_ids:
             self.rows[rid].update(status="pending", next_attempt_at=None)
+            self._touch(rid)
+
+    # -- M2-0: pre-record + stall recovery ---------------------------------
+
+    async def pre_record(
+        self, association_id: str, items: list[tuple[str, str | None]]
+    ) -> list[PreRecord]:
+        out: list[PreRecord] = []
+        for item_id, item_created_at in items:
+            existing = next(
+                (
+                    rid
+                    for rid, rec in self.rows.items()
+                    if (rec["association_id"], rec["item_id"]) == (association_id, item_id)
+                ),
+                None,
+            )
+            if existing is not None:
+                # INSERT-only: an existing row keeps its status/attempts, so the
+                # on_update + overwrite gates still read the true prior state.
+                rec = self.rows[existing]
+                out.append(
+                    PreRecord(
+                        id=existing,
+                        item_id=item_id,
+                        created=False,
+                        attempts=rec["attempts"],
+                        delivered_assets=dict(rec.get("delivered_assets") or {}),
+                    )
+                )
+                continue
+            rid = self._insert(association_id, item_id, item_created_at)
+            out.append(PreRecord(id=rid, item_id=item_id, created=True))
+        return out
+
+    async def discard_pre_records(self, row_ids: list[str]) -> None:
+        for rid in row_ids:
+            rec = self.rows.get(rid)
+            # Guarded like the SQL: only untouched placeholders.
+            if rec is not None and rec["status"] == "pending" and rec["attempts"] == 0:
+                del self.rows[rid]
+
+    async def sweep_stalled_deliveries(
+        self, older_than_seconds: int, limit: int
+    ) -> int:
+        cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=older_than_seconds)
+        now = dt.datetime.now(dt.UTC)
+        swept = 0
+        for rec in self.rows.values():
+            if swept >= limit:
+                break
+            if rec["status"] not in ("pending", "delivering"):
+                continue
+            if rec.get("updated_at", now) >= cutoff:
+                continue
+            rec.update(
+                status="failed",
+                error=f"stalled in {rec['status']}; recovered by the delivery stall sweep",
+                next_attempt_at=now,
+                updated_at=now,
+            )
+            swept += 1
+        return swept

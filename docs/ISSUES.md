@@ -519,3 +519,54 @@ same propagate-without-retry assumption.
   to terminal `failed` (no infinite hot loop on a persistent itemize failure).
   Unit tests cover both sweeps and the full crash → sweep → re-drive →
   `itemized` path (`test_ingest_recovery.py`).
+
+---
+
+## M2 — operable platform (Phase 6)
+
+### I-56 · Delivery had no record of intent before `deliver_item`, and no sweep for rows stranded mid-flight ✅ resolved (M2-0)
+Two halves of the same hole, carried out of the I-55 `/simplify` pass as a
+deferred behavior change:
+
+1. **Nothing was recorded before the fallible work.** The deliver handler ran
+   `load_target` → `parse_delivery_config` → `build_adapter` → `get_item`
+   before `deliver_item` wrote its first `delivery_log` row. A fault there was
+   covered only by the queue-level `DELIVER_RETRY` (I-55: 4 attempts × 60 s),
+   and once those were spent the delivery was lost **invisibly** — the outbox
+   row was already claimed and the retry sweep had no row to re-drive. An
+   `AdapterBuildError` was worse than that: it logged and returned, so the
+   whole batch vanished with no retry at all.
+2. **`pending` and `delivering` were unrecoverable states.** `list_due_retries`
+   only sees `failed` rows with a due `next_attempt_at`, so a worker that died
+   mid-transfer left its row at `delivering` forever — the delivery-side twin
+   of the ingest `fetching` stall (I-52) — and any row `requeue_for_retry`
+   flipped to `pending` was stranded the same way if its job then died.
+
+**Resolved (M2-0).** `pre_record` inserts a placeholder row per item at the top
+of the deliver handler, before anything fallible. It is deliberately
+**INSERT-only** (`ON CONFLICT DO NOTHING`), not a hoisted `upsert_pending`:
+resetting an existing row to `pending` would clobber the state
+`deliver_item`'s `on_update: ignore` fire-once gate and log-based overwrite
+gate both read. A `load_target` miss (disabled/deleted association) discards
+the placeholders this job created — guarded on `status = 'pending' AND
+attempts = 0` so a concurrent delivery is never deleted — instead of leaving
+phantom rows. Config-parse and adapter-build failures now settle their rows
+`failed` with the real cause on the normal retry schedule (dead-lettering at
+`max_attempts`) rather than disappearing. `sweep_stalled_deliveries`
+(`DELIVERY_STALL_SECONDS`, default 30 min) re-enters `pending`/`delivering`
+rows past the stall window into the retry path, preserving `attempts` so
+`max_attempts` still converges; it runs at the top of the existing
+`delivery_retry_sweep` tick, which re-enqueues them in the same tick.
+
+**Residual, stated honestly:** the pre-record is itself a DB write, so it does
+not help when Postgres is wholly unreachable — nothing inside the pipeline can,
+and in that state Procrastinate cannot fetch jobs either, so the work stays
+queued rather than lost. What it converts from silent loss to a visible,
+recoverable row is the far more common partial failure: a heavy
+`pgstac.get_item` timing out under load while ordinary writes succeed, bad
+credentials, a malformed config. Per the repo's convention the `PgDeliveryRepo`
+SQL is `# pragma: no cover` (the `FakeDeliveryRepo` carries the behavioral
+contract); the three new statements want confirmation in the M2-I rehearsal.
+- Resolved by: M2-0, `ai/m2-0-deliver-prerecord`.
+- Tracked in: `delivery/repo.py` (`pre_record`, `discard_pre_records`,
+  `sweep_stalled_deliveries`), `jobs/dispatch.py`, `tests/test_delivery_prerecord.py`.

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import abc
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.connections.repo import ConnectionRow, _to_connection_row
@@ -53,6 +53,22 @@ class ReferenceSource:
     filename: str
     fetch_path: str
     connection: ConnectionRow
+
+
+@dataclass
+class PreRecord:
+    """One pre-recorded ``delivery_log`` row (M2-0). ``created`` is True when
+    this job inserted the placeholder — only those may be discarded when the
+    association turns out to be gone; a pre-existing row is history.
+    ``attempts``/``delivered_assets`` carry the row's prior state so a failure
+    BEFORE ``deliver_item`` can schedule the retry (and dead-letter at the cap)
+    on the same terms, without wiping the fingerprint map."""
+
+    id: str
+    item_id: str
+    created: bool
+    attempts: int = 0
+    delivered_assets: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -132,6 +148,35 @@ class DeliveryRepo(abc.ABC):
     @abc.abstractmethod
     async def list_due_retries(self, limit: int) -> list[RetryRow]:
         """Failed rows whose ``next_attempt_at`` has passed, oldest first."""
+
+    @abc.abstractmethod
+    async def pre_record(
+        self, association_id: str, items: list[tuple[str, str | None]]
+    ) -> list[PreRecord]:
+        """Ensure a ``delivery_log`` row exists for each ``(item_id,
+        item_created_at)`` BEFORE the deliver job does anything that can fail
+        (M2-0). INSERT-only: an existing row is returned untouched, because
+        ``deliver_item``'s ``on_update``/overwrite gates read its prior state.
+        A transient fault before ``deliver_item`` records anything would
+        otherwise lose the delivery outright — the outbox row is already
+        claimed and the retry sweep would have nothing to re-drive."""
+
+    @abc.abstractmethod
+    async def discard_pre_records(self, row_ids: list[str]) -> None:
+        """Delete placeholder rows this job created after discovering the
+        association is disabled/deleted — a legitimate no-op must not leave
+        phantom ``pending`` rows for the stall sweep to churn on."""
+
+    @abc.abstractmethod
+    async def sweep_stalled_deliveries(
+        self, older_than_seconds: int, limit: int
+    ) -> int:
+        """Crash recovery, mirroring the ingest stored-stall sweep (I-52/I-55):
+        rows stranded in ``pending``/``delivering`` past the stall window
+        (the job died between pre-record and delivery, or a worker crashed
+        mid-transfer) become ``failed`` and due, so the retry sweep re-drives
+        them. ``attempts`` is preserved, so ``max_attempts`` dead-lettering
+        still converges. Returns the number of rows recovered."""
 
     @abc.abstractmethod
     async def requeue_for_retry(self, row_ids: list[str]) -> None:
@@ -346,6 +391,83 @@ class PgDeliveryRepo(DeliveryRepo):
             )
             for r in rows
         ]
+
+    async def pre_record(  # pragma: no cover
+        self, association_id: str, items: list[tuple[str, str | None]]
+    ) -> list[PreRecord]:
+        if not items:
+            return []
+        item_ids = [i for i, _ in items]
+        async with await self._connect() as conn:
+            # INSERT-only (DO NOTHING): an existing row keeps its status,
+            # attempts and delivered_assets, so deliver_item's on_update and
+            # overwrite gates still read the true prior state.
+            cur = await conn.execute(
+                "INSERT INTO stac_higher.delivery_log"
+                " (association_id, item_id, item_created_at, status, attempts)"
+                " SELECT %s, i.item_id, i.item_created_at, 'pending', 0"
+                " FROM UNNEST(%s::text[], %s::timestamptz[])"
+                "   AS i(item_id, item_created_at)"
+                " ON CONFLICT (association_id, item_id) DO NOTHING"
+                " RETURNING id",
+                (association_id, item_ids, [c for _, c in items]),
+            )
+            created_ids = {str(r[0]) for r in await cur.fetchall()}
+            cur = await conn.execute(
+                "SELECT id, item_id, attempts, delivered_assets"
+                " FROM stac_higher.delivery_log"
+                " WHERE association_id = %s AND item_id = ANY(%s)",
+                (association_id, item_ids),
+            )
+            rows = await cur.fetchall()
+            await conn.commit()
+        return [
+            PreRecord(
+                id=str(r[0]),
+                item_id=r[1],
+                created=str(r[0]) in created_ids,
+                attempts=int(r[2]),
+                delivered_assets=dict(r[3]) if r[3] else {},
+            )
+            for r in rows
+        ]
+
+    async def discard_pre_records(self, row_ids: list[str]) -> None:  # pragma: no cover
+        if not row_ids:
+            return
+        async with await self._connect() as conn:
+            # Guarded: only untouched placeholders. A concurrent job that has
+            # since started delivering this row must not lose its record.
+            await conn.execute(
+                "DELETE FROM stac_higher.delivery_log"
+                " WHERE id = ANY(%s) AND status = 'pending' AND attempts = 0",
+                (row_ids,),
+            )
+            await conn.commit()
+
+    async def sweep_stalled_deliveries(  # pragma: no cover
+        self, older_than_seconds: int, limit: int
+    ) -> int:
+        async with await self._connect() as conn:
+            # next_attempt_at = now() makes them due immediately, so the retry
+            # sweep in this same tick re-enqueues them. attempts is preserved:
+            # upsert_pending keeps the count for pending/delivering rows, so
+            # max_attempts dead-lettering still converges.
+            cur = await conn.execute(
+                "UPDATE stac_higher.delivery_log SET"
+                "   status = 'failed',"
+                "   error = 'stalled in ' || status"
+                "     || '; recovered by the delivery stall sweep',"
+                "   next_attempt_at = now(), updated_at = now()"
+                " WHERE id IN ("
+                "   SELECT id FROM stac_higher.delivery_log"
+                "   WHERE status IN ('pending', 'delivering')"
+                "     AND updated_at < now() - make_interval(secs => %s)"
+                "   ORDER BY updated_at LIMIT %s)",
+                (older_than_seconds, limit),
+            )
+            await conn.commit()
+        return cur.rowcount or 0
 
     async def requeue_for_retry(self, row_ids: list[str]) -> None:  # pragma: no cover
         if not row_ids:
