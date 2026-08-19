@@ -346,6 +346,19 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   fixture: `tests/contract-fixtures/webhook-channel-config.json`. In-app
   needs no dispatch — the alerts row + watermark IS the delivery (bell UI is
   M2-D). Email is a deferred third `kind`.
+- **M2-D · `/monitoring` page + header alert bell** (spec §7) — one island
+  (`components/monitoring/`) with three cards: **Alerts** (open/resolved
+  views, operator ack/resolve with audited verbs, auto-advances the M2-C read
+  watermark on open), **Data flows** (`GET /api/monitoring/flows`, the new
+  cross-collection association list — direction, connection health,
+  files/items/bytes, activity recency, delivery latency + per-status counts,
+  and a live late/on-time hint against the declared §5.1 window; rows link to
+  the collection's Data-flow tab), and **Notification channels** (list /
+  add / remove, webhook secret never displayed). Header gains the
+  **AlertBell** (30s-polled unread firing count, badge links to
+  /monitoring) and a Monitoring nav link. e2e: `app/e2e/monitoring.spec.ts`
+  (nav + bell, card render, resolved view, webhook channel create/delete
+  round-trip).
 
 ## Phases 7–8 — Not started ⬜
 

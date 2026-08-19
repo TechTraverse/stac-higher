@@ -134,6 +134,32 @@ export async function listAssociations(
   return result.rows.map(toAssociationWithGroup);
 }
 
+/**
+ * Every non-deleted association visible to the caller, across ALL collections
+ * (`groups = null` for admin) — the /monitoring flows feed (M2-D). Scoped by
+ * the owning connection's group, like the connections list.
+ */
+export async function listAssociationsForGroups(
+  groups: string[] | null,
+): Promise<AssociationWithGroup[]> {
+  await runMigrations();
+  const params: unknown[] = [];
+  let groupClause = "";
+  if (groups !== null) {
+    params.push(groups);
+    groupClause = ` AND c.group_id = ANY($1::text[])`;
+  }
+  const result = await query<AssociationRow>(
+    `SELECT ${ASSOCIATION_COLUMNS}
+       FROM stac_higher.collection_connections cc
+       LEFT JOIN stac_higher.connections c ON c.id = cc.connection_id
+      WHERE cc.deleted_at IS NULL${groupClause}
+      ORDER BY cc.collection_id, cc.created_at DESC`,
+    params,
+  );
+  return result.rows.map(toAssociationWithGroup);
+}
+
 export async function getAssociation(
   id: string,
 ): Promise<AssociationWithGroup | null> {

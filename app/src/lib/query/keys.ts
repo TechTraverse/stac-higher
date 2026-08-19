@@ -34,6 +34,25 @@ export const associationKeys = {
     [...associationKeys.detail(collectionId, id), "backfill", backfillId] as const,
 };
 
+/** Alerts + monitoring surfaces (M2-B/M2-D). */
+export const alertKeys = {
+  all: () => ["alerts"] as const,
+  list: (state: string) => [...alertKeys.all(), "list", state] as const,
+  unread: () => [...alertKeys.all(), "unread"] as const,
+};
+
+/** Cross-collection flow telemetry for /monitoring (M2-D). */
+export const monitoringKeys = {
+  all: () => ["monitoring"] as const,
+  flows: () => [...monitoringKeys.all(), "flows"] as const,
+};
+
+/** Per-group notification channels (M2-C/M2-D). */
+export const channelKeys = {
+  all: () => ["channels"] as const,
+  list: () => [...channelKeys.all(), "list"] as const,
+};
+
 export const stacKeys = {
   all: (endpointUrl: string) => ["stac", endpointUrl] as const,
 

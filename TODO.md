@@ -92,9 +92,18 @@ is in ROADMAP §9 M1.
       `webhook_failed` alert, auto-resolved on the next success. App:
       `/api/channels*` CRUD (secret write-only), `/api/alerts/unread` +
       `/api/alerts/read` (member+, ungated). Residuals: ISSUES **I-58**.
-- [ ] **M2-D · `/monitoring` page + header alert bell** (spec §7). Per-association
+- [x] **M2-D · `/monitoring` page + header alert bell** (spec §7). Per-association
       flow timelines, delivery latency, alert list with ack/resolve; unread
       firing count in the Header island. e2e coverage.
+      **Done 2026-08-19** — `/monitoring` island with Alerts (open/resolved,
+      audited ack/resolve, advances the read watermark on open), Data flows
+      (new `GET /api/monitoring/flows` cross-collection list; activity
+      recency, latency, per-status counts, late/on-time hint vs the §5.1
+      window — display-only, the alert row stays authoritative), and
+      Notification channels (add/remove; the channels-UI question from the
+      M2-C follow-up settled: it lives here). `AlertBell` in the Header
+      (30s poll of `/api/alerts/unread`). Full e2e suite green (29 passed)
+      incl. 4 new monitoring specs. Follow-ups below.
 
 ## Retention & GC (spec §5)
 
@@ -227,6 +236,31 @@ is in ROADMAP §9 M1.
   ever reports the old CHECK surviving, that assumption is why.
 - `create_pending_deliveries` inserts row-per-channel in a loop — fine at
   channel cardinality (a handful per group), not a bulk path.
+
+### From M2-D
+
+- **Local-stack maintenance**: migration 015 changes the alerts dedup index,
+  so a pipeline container built before M2-C fails its flow_monitor upsert
+  (`ON CONFLICT` no longer matches an index) every minute once the app
+  migrates the shared DB. After merging M2-C+, rebuild:
+  `docker compose build pipeline && docker compose up -d pipeline` (watch the
+  I-54-era gotcha: `build` can exit 0 on a failed BuildKit pull — grep for
+  `ERROR`).
+- **e2e gotcha**: something else may own :4321 (this run: the user's Cursor
+  editor listens there), which makes Playwright's webServer time out. The
+  config honors `E2E_PORT` — run `E2E_PORT=4399 npm run test:e2e:ci`.
+- The flows card's late/on-time hint re-implements a display-level
+  approximation of the monitor's evaluation (`isLate` ignores the
+  edited_at fallback and the outstanding-delivery breach check). Kept simple
+  deliberately — if the hint and the alert list ever visibly disagree,
+  either derive the hint from the open alerts instead or expose the
+  monitor's verdict on the flows API.
+- The bell polls `/api/alerts/unread` every 30s from EVERY page's header —
+  at envelope scale that's one cheap indexed count per user per 30s, fine;
+  if it ever matters, piggyback the count onto an existing poll.
+- `/monitoring` shows all three cards to members (read-only, verbs hidden).
+  Group-scoping means members only see their groups' data — same posture as
+  /connections.
 
 ### Carried forward from M1
 
