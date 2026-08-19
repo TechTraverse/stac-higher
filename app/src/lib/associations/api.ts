@@ -5,8 +5,8 @@
  */
 import type { Association, Backfill, Delivery, DeliveryListing } from "./types";
 import type {
-  AssociationCreateInput,
-  AssociationUpdateInput,
+  AssociationCreatePayload,
+  AssociationUpdatePayload,
 } from "./schemas";
 
 export class AssociationApiError extends Error {
@@ -60,7 +60,7 @@ export async function listAssociations(
 
 export async function createAssociation(
   collectionId: string,
-  input: AssociationCreateInput,
+  input: AssociationCreatePayload,
 ): Promise<Association> {
   return associationFetch<Association>(collectionId, "", {
     method: "POST",
@@ -71,7 +71,7 @@ export async function createAssociation(
 export async function updateAssociation(
   collectionId: string,
   id: string,
-  input: AssociationUpdateInput,
+  input: AssociationUpdatePayload,
 ): Promise<Association> {
   return associationFetch<Association>(
     collectionId,

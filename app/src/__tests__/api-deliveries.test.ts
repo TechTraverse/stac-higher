@@ -134,7 +134,7 @@ describe("GET .../deliveries", () => {
   });
 
   it("401s an unauthenticated caller", async () => {
-    const anon: AuthContext = { authenticated: false, mode: "oidc" };
+    const anon: AuthContext = { authenticated: false, mode: "oidc", identity: null };
     const res = await call(deliveriesRoute, anon, params);
     expect(res.status).toBe(401);
   });

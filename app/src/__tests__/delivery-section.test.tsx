@@ -102,7 +102,7 @@ function s3Connection(): Connection {
   return {
     id: "3a9f1c2e-0000-4000-8000-000000000001",
     name: "S3 dest",
-    description: null,
+    description: "",
     protocol: "s3",
     config: { bucket: "dest" },
     credentials_set: true,

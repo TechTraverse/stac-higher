@@ -225,6 +225,15 @@ export type AssociationUpdateInput =
   | z.infer<typeof ingestUpdateSchema>
   | z.infer<typeof deliveryUpdateSchema>;
 
+// Pre-parse payload shapes for API clients: `z.input` leaves defaulted fields
+// optional, so the browser can send a sparse config and the server-side parse
+// fills nested defaults (see `buildConfig` in DataFlowTab).
+export type AssociationCreatePayload = z.input<typeof associationCreateSchema>;
+
+export type AssociationUpdatePayload =
+  | z.input<typeof ingestUpdateSchema>
+  | z.input<typeof deliveryUpdateSchema>;
+
 export type ParsedCreate =
   | { success: true; data: AssociationCreateInput }
   | { success: false; error: z.ZodError };
