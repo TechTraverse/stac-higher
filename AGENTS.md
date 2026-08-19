@@ -117,6 +117,10 @@ Astro server routes:
 | `/api/alerts` | GET | List alerts (member+: own groups via the alert's connection; admin: all). Filters: `?state=firing\|acknowledged\|resolved\|open`, `?limit` — M2-B |
 | `/api/alerts/[id]/ack` | POST | Acknowledge a firing alert (operator+, audited `ack`; suppresses notification, not detection — the pipeline keeps bumping `last_seen`) |
 | `/api/alerts/[id]/resolve` | POST | Manually resolve an open alert (operator+, audited `resolve`); if the condition persists the monitor raises a NEW row, which re-notifies |
+| `/api/alerts/unread` | GET | The caller's unread firing-alert count (member+; feeds the M2-D header bell) — M2-C |
+| `/api/alerts/read` | POST | Advance the caller's own read watermark (member+; deliberately NOT operator-gated/audited — personal UI state) — M2-C |
+| `/api/channels` | GET, POST | List (member+: own groups; admin: all) / create (operator+) per-group notification channels (`in_app` \| `webhook`); webhook signing secret is write-only (`has_secret`) — M2-C, ADR 0010 |
+| `/api/channels/[id]` | GET, PUT, DELETE | Get / replace-config / delete a channel (group-owned; PUT replaces `config` wholesale, kind+group immutable) |
 | `/api/catalog/[...path]` | POST, PUT, PATCH, DELETE | BFF for built-in-catalog browser writes (ADR 0008): transaction endpoints only; injects the session access token server-side; operator+, audited. Reads stay direct |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
@@ -165,6 +169,20 @@ shape ⇒ a new/updated shared fixture** (see that directory's README for the
 format and semantics). Group ownership is enforced in-route
 (operator+ to mutate; `reference` storage mode is s3-only). UI: the **Data flow**
 tab on built-in-catalog collection pages.
+
+**Alerting & notifications (M2-B/M2-C, ADR 0010)**: the pipeline's
+`flow_monitor` reconciles `stac_higher.alerts` each minute (raise / re-fire /
+auto-resolve, deduped per `(source, kind, connection, association, channel)`);
+the app owns the DDL (migrations 014/015) plus the audited `ack`/`resolve`
+verbs. Per-group `notification_channels` (`in_app` | `webhook`) are CRUD'd at
+`/api/channels*`; in-app delivery is the alerts row + the per-user
+`alert_reads` watermark (`/api/alerts/unread`, `/api/alerts/read`). Webhook
+dispatch is PIPELINE-side (`pipeline/notify/`) behind the connections egress
+policy — never widen the app's `safeFetch` for it — durable via the
+`notification_deliveries` ledger (sweep retry → dead-letter → channel-anchored
+`webhook_failed` alert; HMAC-signed when the channel config has a `secret`).
+The webhook `config` is a cross-runtime contract
+(`webhook-channel-config.json` fixture).
 
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in

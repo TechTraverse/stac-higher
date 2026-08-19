@@ -147,6 +147,33 @@ export function matchGatedRoute(
     return { action: "create", resourceType: "connection", resourceId: null };
   }
 
+  // M2-C: per-group notification channels (spec §4). /api/alerts/read is a
+  // POST but NOT gated — it only moves the caller's own read watermark.
+  if (m === "POST" && path === "/api/channels") {
+    return {
+      action: "create",
+      resourceType: "notification_channel",
+      resourceId: null,
+    };
+  }
+  const channelId = path.match(/^\/api\/channels\/([^/]+)$/);
+  if (channelId) {
+    if (m === "PUT" || m === "PATCH") {
+      return {
+        action: "update",
+        resourceType: "notification_channel",
+        resourceId: channelId[1],
+      };
+    }
+    if (m === "DELETE") {
+      return {
+        action: "delete",
+        resourceType: "notification_channel",
+        resourceId: channelId[1],
+      };
+    }
+  }
+
   // Phase 3: minting presigned upload URLs is a gated mutation (operator+),
   // audited by the guard. The resource is the target collection, not a row id.
   if (m === "POST" && path === "/api/uploads") {

@@ -16,6 +16,7 @@ import {
   ingestConfigSchema,
   ingestExpectationSchema,
 } from "@/lib/associations/schemas";
+import { webhookChannelConfigSchema } from "@/lib/notifications/schemas";
 
 interface FixtureCase {
   name: string;
@@ -63,4 +64,8 @@ describe("ingest expectation contract (tests/contract-fixtures/ingest-expectatio
 
 describe("delivery expectation contract (tests/contract-fixtures/delivery-expectation.json)", () => {
   describeDirection("delivery-expectation.json", deliveryExpectationSchema);
+});
+
+describe("webhook channel config contract (tests/contract-fixtures/webhook-channel-config.json)", () => {
+  describeDirection("webhook-channel-config.json", webhookChannelConfigSchema);
 });

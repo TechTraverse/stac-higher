@@ -18,9 +18,12 @@ suite fails until the fixture (and the other validator) is updated with it.
 ## File format
 
 One JSON file per shape — the §5.1 configs (`ingest-config.json`,
-`delivery-config.json`) and, since M2-A, the direction-specific expectations
+`delivery-config.json`), the direction-specific expectations since M2-A
 (`ingest-expectation.json`, `delivery-expectation.json`, validated by
-`schemas.ts`'s expectation schemas and `pipeline/flow/expectation.py`):
+`schemas.ts`'s expectation schemas and `pipeline/flow/expectation.py`), and
+the webhook channel config since M2-C (`webhook-channel-config.json`,
+validated by `app/src/lib/notifications/schemas.ts` and
+`pipeline/notify/config.py`):
 
 - `minimal` — the smallest valid document a client can submit.
 - `defaults` — the defaults-applied document the app writes for `minimal`

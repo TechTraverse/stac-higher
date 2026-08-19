@@ -1,0 +1,55 @@
+{
+  "$comment": "Golden fixture for the webhook notification-channel config shape (M2-C, ADR 0010). Consumed by app/src/__tests__/contract-fixtures.test.ts (webhookChannelConfigSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_webhook_config). Zod is the strict write gatekeeper (http/https scheme, unknown keys rejected); the Python parser is a lenient reader — scheme and egress policy are enforced at dispatch time, not parse time.",
+  "minimal": { "url": "https://hooks.example.com/stac" },
+  "defaults": { "url": "https://hooks.example.com/stac" },
+  "cases": [
+    {
+      "name": "url with signing secret",
+      "config": { "url": "https://hooks.example.com/stac", "secret": "s3cret" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "plain http target",
+      "config": { "url": "http://hooks.example.com/stac" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "empty object (a webhook must have a target)",
+      "config": {},
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "blank url",
+      "config": { "url": "   " },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "non-string url",
+      "config": { "url": 123 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "non-string secret",
+      "config": { "url": "https://hooks.example.com/stac", "secret": 42 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "non-http scheme (writer rejects; reader defers to dispatch-time egress)",
+      "config": { "url": "ftp://hooks.example.com/stac" },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown key alongside the url",
+      "config": { "url": "https://hooks.example.com/stac", "extra": true },
+      "app": "reject",
+      "pipeline": "accept"
+    }
+  ]
+}

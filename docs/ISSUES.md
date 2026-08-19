@@ -584,3 +584,30 @@ fixed via `npm audit fix` when CI was introduced. The `security.yml` npm-audit
 gate therefore fails on **critical** only (prod deps); the full report stays
 visible in the job log. Closing this issue = the Astro 6 → 7 upgrade.
 - Tracked in: `.github/workflows/security.yml` (npm-deps job).
+
+## Phase 6 — alerting & notifications (M2-C)
+
+### I-58 · Notification semantics: in_app rows are declarative-only; no recovered/resolved events; webhooks are at-least-once
+
+Three accepted M2-C simplifications (ADR 0010):
+
+- An `in_app` channel row has no runtime behavior — the alerts row plus the
+  per-user `alert_reads` watermark serve every member of the group whether or
+  not an `in_app` row exists. The row exists so a group's channel list states
+  intent (and so email can slot in later); if in-app opt-OUT ever matters, the
+  bell/unread queries must start honoring the row.
+- Webhooks fire only on `alert.firing` (a NEW alert row). Auto-resolve,
+  manual resolve, and recovery send nothing — an operator watching only a
+  webhook target never learns the incident ended. The payload's `event` field
+  leaves room for `alert.resolved` later.
+- Webhook delivery is at-least-once (stall revival / duplicate enqueue can
+  POST twice); consumers must dedupe on `alert.id`. The signing secret is
+  stored plaintext in `notification_channels.config` (unlike connection
+  credentials' AES-GCM envelope) — acceptable for a shared HMAC secret, but
+  an envelope upgrade is mechanical if posture changes.
+- `PgNotifyRepo` SQL is `# pragma: no cover` per repo convention — unverified
+  against real Postgres until the M2-I rehearsal (add a webhook leg to the
+  rehearsal script: stop a source, watch the alert fire AND the webhook land,
+  kill the worker mid-POST and watch the stall revival).
+- Tracked in: `pipeline/notify/*`, `app/src/lib/notifications/*`,
+  `docs/decisions/0010-alerting-notifications.md`.

@@ -623,6 +623,81 @@ const MIGRATIONS = [
         ON stac_higher.notification_channels (group_id);
     `,
   },
+  {
+    // M2-C (M2 spec §4, ADR 0010): notification dispatch + in-app read state.
+    //
+    // - alerts.channel_id anchors channel-scoped alerts (a webhook channel
+    //   that terminally fails to notify must itself be visible as a
+    //   `job_failure`/`webhook_failed` alert). The anchor CHECK and the open
+    //   dedup index grow the third leg; the pipeline's sync_alerts ON CONFLICT
+    //   target must match the index expressions exactly, so both sides change
+    //   together in this slice.
+    // - alerts.notified_at is the fan-out watermark: the pipeline's notify
+    //   sweep fans a firing, un-notified alert out to the owning group's
+    //   webhook channels, then stamps it (crash between the two re-runs the
+    //   idempotent fan-out — at-least-once by design).
+    // - notification_deliveries is the per-(alert, channel) webhook ledger,
+    //   deliberately shaped like delivery_log: the pipeline claims
+    //   pending/failed rows, retries with backoff via its sweep, and
+    //   dead-letters at the attempt cap. UNIQUE (alert_id, channel_id) makes
+    //   fan-out idempotent.
+    // - alert_reads is the per-user read watermark for the header bell
+    //   (M2-D): unread = firing alerts whose first_seen is past the caller's
+    //   watermark. A watermark (not per-alert rows) because "read" here means
+    //   "the bell was opened", not per-row triage — ack/resolve is the
+    //   per-row verb and lives on the alert itself.
+    name: "015_notification_dispatch_and_read_state",
+    sql: `
+      ALTER TABLE stac_higher.alerts
+        ADD COLUMN IF NOT EXISTS channel_id uuid
+          REFERENCES stac_higher.notification_channels(id) ON DELETE CASCADE,
+        ADD COLUMN IF NOT EXISTS notified_at timestamptz;
+
+      -- The migration-014 anchor CHECK was unnamed; PostgreSQL auto-named it.
+      ALTER TABLE stac_higher.alerts
+        DROP CONSTRAINT IF EXISTS alerts_check;
+      ALTER TABLE stac_higher.alerts
+        DROP CONSTRAINT IF EXISTS alerts_anchor_check;
+      ALTER TABLE stac_higher.alerts
+        ADD CONSTRAINT alerts_anchor_check CHECK (
+          connection_id IS NOT NULL
+          OR association_id IS NOT NULL
+          OR channel_id IS NOT NULL
+        );
+
+      DROP INDEX IF EXISTS stac_higher.alerts_open_dedup_idx;
+      CREATE UNIQUE INDEX IF NOT EXISTS alerts_open_dedup_idx
+        ON stac_higher.alerts (
+          source, kind,
+          coalesce(connection_id::text, ''),
+          coalesce(association_id::text, ''),
+          coalesce(channel_id::text, '')
+        )
+        WHERE state <> 'resolved';
+
+      CREATE TABLE IF NOT EXISTS stac_higher.notification_deliveries (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        alert_id uuid NOT NULL
+          REFERENCES stac_higher.alerts(id) ON DELETE CASCADE,
+        channel_id uuid NOT NULL
+          REFERENCES stac_higher.notification_channels(id) ON DELETE CASCADE,
+        status text NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending','delivering','delivered','failed','dead')),
+        attempts integer NOT NULL DEFAULT 0,
+        last_error text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (alert_id, channel_id)
+      );
+      CREATE INDEX IF NOT EXISTS notification_deliveries_status_idx
+        ON stac_higher.notification_deliveries (status, updated_at);
+
+      CREATE TABLE IF NOT EXISTS stac_higher.alert_reads (
+        user_sub text PRIMARY KEY,
+        last_read_at timestamptz NOT NULL DEFAULT now()
+      );
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that
