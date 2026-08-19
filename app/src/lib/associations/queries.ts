@@ -17,8 +17,8 @@ import {
   updateAssociation,
 } from "./api";
 import type {
-  AssociationCreateInput,
-  AssociationUpdateInput,
+  AssociationCreatePayload,
+  AssociationUpdatePayload,
 } from "./schemas";
 
 export function useAssociations(collectionId: string) {
@@ -44,7 +44,7 @@ export function useAssociationDeleteImpact(
 export function useCreateAssociation(collectionId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: AssociationCreateInput) =>
+    mutationFn: (input: AssociationCreatePayload) =>
       createAssociation(collectionId, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: associationKeys.list(collectionId) });
@@ -55,7 +55,7 @@ export function useCreateAssociation(collectionId: string) {
 export function useUpdateAssociation(collectionId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, input }: { id: string; input: AssociationUpdateInput }) =>
+    mutationFn: ({ id, input }: { id: string; input: AssociationUpdatePayload }) =>
       updateAssociation(collectionId, id, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: associationKeys.list(collectionId) });

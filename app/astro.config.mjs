@@ -16,7 +16,7 @@ export default defineConfig({
   integrations: [react()],
 
   vite: {
-    plugins: [tailwindcss()],
+    plugins: [/** @type {import('vite').PluginOption} */ (tailwindcss())],
     resolve: {
       alias: {
         // app-local alias
