@@ -22,6 +22,7 @@ from pipeline.jobs import (
     health_sweep,
     heartbeat,
     ingest,
+    monitor,
     staging_cleanup,
 )
 from pipeline.log import configure_logging
@@ -45,6 +46,9 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     dispatch.register(queue, settings)
     # Phase 5 Slice C: user-initiated backfill bridge (chunked bulk jobs).
     backfill.register(queue, settings)
+    # M2-B: §6.6 alerting — expectation/health/job-failure conditions →
+    # stac_higher.alerts (raise / re-fire / auto-resolve).
+    monitor.register(queue, settings)
     return queue
 
 

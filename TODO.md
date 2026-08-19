@@ -56,7 +56,7 @@ is in ROADMAP §9 M1.
       (`expect_activity_within_seconds` / `deliver_within_seconds`), editable
       in both dialogs, with `pipeline/flow/expectation.py` lenient readers and
       two new golden fixtures. Follow-ups below.
-- [ ] **M2-B · alerts core** (spec §3). Migration 013 (`alerts`,
+- [x] **M2-B · alerts core** (spec §3). Migration 013 (`alerts`,
       `notification_channels`); periodic `pipeline.flow_monitor` evaluating
       expectations against `flow_stats`; the three §6.6 sources (`flow`,
       `health` on the existing sweep's ok→error transition, `job_failure` on
@@ -64,6 +64,16 @@ is in ROADMAP §9 M1.
       `(source, connection_id, association_id, kind)` with `last_seen` re-fire
       and **auto-resolve** when the condition clears; `GET /api/alerts`
       (member+, group-scoped) and audited operator+ `ack`/`resolve` routes.
+      **Done 2026-08-18** — landed as migration **014** (the CI slice took
+      013; the spec's 013/014/015 are 014/015/016 on disk). Monitor is a
+      single sync per tick (`pipeline/flow/monitor.py`): gather every
+      currently-true condition → `sync_alerts` raises / bumps `last_seen` /
+      auto-resolves in one transaction, with the resolve scope limited to
+      `MONITOR_KINDS` so future writers (M2-C webhook failures) are never
+      clobbered. `health` observes connection `status='error'` as state each
+      tick (dedup makes that equivalent to the ok→error transition hook, and
+      it also catches error states set outside the sweep). Group scoping is
+      DERIVED (alert → connection → group), not stored. Follow-ups below.
 - [ ] **M2-C · notification channels** (spec §4, ADR **0010**). In-app (alerts
       row + per-user read state) and webhook; per-group channel CRUD. Webhook
       dispatch lives **pipeline-side** next to the connections egress policy —
@@ -162,6 +172,28 @@ is in ROADMAP §9 M1.
   the `IngestSection` extraction (mirroring `DeliverySection`) noted below
   remains open — M2-A chose the minimal diff because another agent had
   in-flight edits to `DataFlowTab.tsx`.
+
+### From M2-B
+
+- Migration numbering drift: the spec's 013/014/015 are **014/015/016** on
+  disk (the CI slice landed `013_backfill_one_open_per_association` first).
+  M2-F and M2-G must use 015/016.
+- The delivery-SLO breach check treats a stale `last_latency_seconds` above
+  the window as still-breaching until a faster delivery lands — an idle
+  association whose LAST delivery was slow keeps its alert open. Defensible
+  (last known state), but if operators find it noisy, add a recency cutoff.
+- `sync_alerts` upserts conditions one statement at a time inside one
+  transaction — fine at alert cardinality (dozens), not built for thousands
+  of simultaneous conditions. Revisit only if M3-scale fan-out ever produces
+  that many distinct firing conditions.
+- The monitor's Pg SQL (incl. the expression `ON CONFLICT` against the
+  partial dedup index) is `# pragma: no cover` — **M2-I must exercise**: raise
+  → re-fire (last_seen bump, no duplicate) → ack → auto-resolve → re-fire as
+  a new row, against real Postgres.
+- M2-C hooks left ready: `notification_channels` DDL exists (no CRUD yet);
+  `sync_alerts` returns `(newly_raised, auto_resolved)` so the notify job can
+  key off newly-raised rows; `MONITOR_KINDS` is the ownership boundary a
+  webhook-failure alert writer must stay outside of.
 
 ### Carried forward from M1
 
