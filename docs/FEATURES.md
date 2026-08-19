@@ -309,6 +309,22 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   in **both** Data-flow halves; golden fixtures
   `tests/contract-fixtures/{ingest,delivery}-expectation.json` pin the
   cross-runtime shape against `pipeline/flow/expectation.py`.
+- **M2-B · alerts core** — migration **014** (`alerts` +
+  `notification_channels`; the spec's numbering shifted by one after the CI
+  slice took 013) with an open-alert dedup partial unique index on
+  `(source, kind, connection, association)`. The pipeline's periodic
+  `pipeline.flow_monitor` (`pipeline/flow/monitor.py` + `flow/repo.py`,
+  `jobs/monitor.py`) reconciles the three §6.6 sources each minute — `flow`
+  (declared §5.1 expectations vs the M2-A `flow_stats` rollup: ingest
+  inactivity, delivery SLO incl. outstanding-late rows), `health` (connections
+  in `status='error'`), `job_failure` (dead deliveries, retry-cap ingest
+  failures, latest-backfill-failed) — raising `firing` rows, bumping
+  `last_seen` on re-observation (acknowledged rows keep tracking), and
+  auto-resolving its OWN kinds when the condition clears. App surface:
+  `GET /api/alerts` (member+, group-scoped via the alert's connection) and
+  audited operator+ `POST /api/alerts/[id]/ack` / `.../resolve`
+  (state-guarded; a manual resolve with the condition still true re-fires as
+  a NEW row, which is what re-notifies). Notification fan-out is M2-C.
 
 ## Phases 7–8 — Not started ⬜
 

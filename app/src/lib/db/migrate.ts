@@ -548,6 +548,81 @@ const MIGRATIONS = [
         WHERE status IN ('queued','running');
     `,
   },
+  {
+    // M2-B (ROADMAP §5 ALERTS + NOTIFICATION_CHANNELS, §6.6; M2 spec §3-§4).
+    // The spec numbered this migration 013, but the CI slice took that number
+    // first (013_backfill_one_open_per_association) — the spec's 013/014/015
+    // are therefore 014/015/016 on disk.
+    //
+    // alerts is written by the PIPELINE's flow_monitor job (raise, last_seen
+    // re-fire, auto-resolve) and by the app's audited ack/resolve routes —
+    // never DDL from the pipeline (ADR 0001). Lifecycle: firing →
+    // acknowledged → resolved; `acknowledged` suppresses notification, not
+    // detection, so last_seen keeps updating on an acknowledged row.
+    //
+    // Dedup (spec §3.3): at most ONE open (non-resolved) alert per condition
+    // (source, kind, connection, association). Resolved rows are history — a
+    // condition that re-fires after a resolve gets a NEW row (which is what
+    // re-notifies). The partial unique index below is the ON CONFLICT arbiter
+    // for the pipeline's raise-or-bump upsert; the coalesce() wrapping is
+    // needed because a plain unique index treats NULLs as distinct.
+    //
+    // Group scoping is derived, not stored: alert → connection (directly or
+    // through the association) → connections.group_id. No group_id column to
+    // drift when a connection changes hands.
+    name: "014_alerts_and_notification_channels",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.alerts (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        source text NOT NULL CHECK (source IN ('flow','health','job_failure')),
+        kind text NOT NULL,
+        connection_id uuid
+          REFERENCES stac_higher.connections(id) ON DELETE CASCADE,
+        association_id uuid
+          REFERENCES stac_higher.collection_connections(id) ON DELETE CASCADE,
+        state text NOT NULL DEFAULT 'firing'
+          CHECK (state IN ('firing','acknowledged','resolved')),
+        message text NOT NULL,
+        first_seen timestamptz NOT NULL DEFAULT now(),
+        last_seen timestamptz NOT NULL DEFAULT now(),
+        acknowledged_at timestamptz,
+        acknowledged_by text,
+        resolved_at timestamptz,
+        CHECK (connection_id IS NOT NULL OR association_id IS NOT NULL)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS alerts_open_dedup_idx
+        ON stac_higher.alerts (
+          source, kind,
+          coalesce(connection_id::text, ''),
+          coalesce(association_id::text, '')
+        )
+        WHERE state <> 'resolved';
+      CREATE INDEX IF NOT EXISTS alerts_state_last_seen_idx
+        ON stac_higher.alerts (state, last_seen DESC);
+      CREATE INDEX IF NOT EXISTS alerts_association_idx
+        ON stac_higher.alerts (association_id);
+      CREATE INDEX IF NOT EXISTS alerts_connection_idx
+        ON stac_higher.alerts (connection_id);
+
+      -- Per-group notification channels (§5). DDL lands with the alerts table
+      -- (one migration for the spec-§3/§4 pair); the channel CRUD + dispatch
+      -- is M2-C. in_app needs no config; webhook carries url + optional
+      -- signing secret in config (a cross-runtime contract fixed in M2-C).
+      CREATE TABLE IF NOT EXISTS stac_higher.notification_channels (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        group_id text NOT NULL,
+        kind text NOT NULL CHECK (kind IN ('in_app','webhook')),
+        config jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_by text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS notification_channels_group_idx
+        ON stac_higher.notification_channels (group_id);
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

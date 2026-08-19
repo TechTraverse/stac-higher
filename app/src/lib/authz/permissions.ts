@@ -33,14 +33,17 @@ export function isAdmin(identity: CanonicalIdentity): boolean {
 }
 
 /** `test` = test-connection, `backfill` = deliver-association backfill,
- * `redeliver` = dead-letter recovery (ROADMAP §5 audit action enum). */
+ * `redeliver` = dead-letter recovery, `ack`/`resolve` = alert lifecycle
+ * transitions (ROADMAP §5 audit action enum; M2-B adds `resolve`). */
 export type GatedAction =
   | "create"
   | "update"
   | "delete"
   | "test"
   | "backfill"
-  | "redeliver";
+  | "redeliver"
+  | "ack"
+  | "resolve";
 
 export interface GatedRouteMatch {
   action: GatedAction;
@@ -87,6 +90,17 @@ const SUB_ACTION_ROUTES: {
     pattern: /^\/api\/connections\/([^/]+)\/test$/,
     action: "test",
     resourceType: "connection",
+  },
+  // M2-B: alert lifecycle transitions (§3.3). Group ownership in-route.
+  {
+    pattern: /^\/api\/alerts\/([^/]+)\/ack$/,
+    action: "ack",
+    resourceType: "alert",
+  },
+  {
+    pattern: /^\/api\/alerts\/([^/]+)\/resolve$/,
+    action: "resolve",
+    resourceType: "alert",
   },
   // Modeled as an update of the connection (clears the TOFU pin); the
   // request path in the audit detail distinguishes it from a config edit.

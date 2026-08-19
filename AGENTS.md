@@ -114,6 +114,9 @@ Astro server routes:
 | `/api/collections/[id]/connections/[assocId]/backfills/[backfillId]` | GET | Poll a backfill request |
 | `/api/collections/[id]/connections/[assocId]/deliveries` | GET | Delivery status for a deliver association (member+): recent `delivery_log` rows + per-status counts — Slice D |
 | `/api/collections/[id]/connections/[assocId]/deliveries/[deliveryId]/redeliver` | POST | Dead-letter recovery (operator+, audited `redeliver`): flip a `dead` row back into the retry path; the pipeline's retry sweep requeues it — Slice D |
+| `/api/alerts` | GET | List alerts (member+: own groups via the alert's connection; admin: all). Filters: `?state=firing\|acknowledged\|resolved\|open`, `?limit` — M2-B |
+| `/api/alerts/[id]/ack` | POST | Acknowledge a firing alert (operator+, audited `ack`; suppresses notification, not detection — the pipeline keeps bumping `last_seen`) |
+| `/api/alerts/[id]/resolve` | POST | Manually resolve an open alert (operator+, audited `resolve`); if the condition persists the monitor raises a NEW row, which re-notifies |
 | `/api/catalog/[...path]` | POST, PUT, PATCH, DELETE | BFF for built-in-catalog browser writes (ADR 0008): transaction endpoints only; injects the session access token server-side; operator+, audited. Reads stay direct |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
