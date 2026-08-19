@@ -1,169 +1,139 @@
-# TODO — M1 work queue
+# TODO — M2 work queue
 
 The solo agent loop (AGENTS.md) works this file top-down: pick the **first
 unchecked item**, one task per iteration, worktree off `ai/main`, `npm run
 verify` (+ pipeline `pytest`/`ruff` when the pipeline is touched) before merge.
-Scope sources: ROADMAP §9 "Named milestones" (M1), the Slice B-iii bullet, and
-the referenced ISSUES/ADR entries.
 
-## Pre-B-iii hardening wave
+Scope source: **`docs/superpowers/specs/2026-08-18-m2-operable-platform-design.md`**
+(approved 2026-08-18), which derives from ROADMAP §9 M2 / Phase 6, §5.1, §6.5,
+§6.6, §8. Read the spec section named in a task before starting it.
 
-- [x] **I-39 pair** — make `associationUpdateSchema` direction-aware
-      (discriminated like the create schema) and wrap the per-association body
-      in `match_item` — including `parse_delivery_config` — in the isolation
-      guard so a bad config skips that association, never the batch.
-      (ISSUES I-39; app `associations/schemas.ts` + pipeline
-      `delivery/matcher.py`, `dispatcher/loop.py`.)
-- [x] **I-53 contract fixtures** — golden JSON fixtures (valid + invalid
-      ingest/delivery config documents) in one shared location, consumed by
-      both the vitest and pytest suites; add the "new cross-runtime shape ⇒
-      new shared fixture" rule to AGENTS.md.
-- [x] **I-51 soft-delete half (ADR 0009)** — `deleted_at` on
-      connections/associations + credential/host-key scrub on delete; CASCADE →
-      RESTRICT FKs; partial unique indexes on `deleted_at IS NULL`; pipeline
-      not-deleted filters (scheduler, matcher, reference-source loader);
-      counted impact previews on the DELETE routes + UI dialogs;
-      reference-backed item removal on connection delete (marks their ledger
-      rows so the asset route stops resolving them). The GC-dependent half
-      (collection-delete asset removal, `archived`) stays in Phase 6.
+**M2 gate (Phase 6 done-when):** stopping a source's data flow raises an alert
+within the declared expectation window and notifies the group's channels; an
+expired item leaves the catalog and, after the grace window, object storage.
 
-## Slice B-iii — retry, dead-letter, crash recovery, concurrency
+M1 is closed — its queue is in git history at `fd8135c`; the rehearsal evidence
+is in ROADMAP §9 M1.
 
-- [x] **Slice B-iii** per the expanded ROADMAP bullet: delivery retry →
-      dead-letter (`next_attempt_at`, app-managed sweep), ingest crash
-      recovery (I-52), claim→process→mark in one transaction (I-40),
-      per-connection concurrency caps, live SFTP + FTP destination runs
-      (I-45), plus the I-49 ride-alongs.
+## Warm-up — carried-forward durability fix
 
-## Slice C — low latency + backfill
+- [ ] **M2-0 · deliver pre-record durability fix** (spec §9). Deliver's
+      pre-record blind spot is covered by queue retry only (~4 min window): if
+      the DB stays down through all attempts the delivery is lost invisibly —
+      the outbox row is claimed but no `delivery_log` row exists for the retry
+      sweep to find. Hoist `upsert_pending` ahead of the fallible
+      `load_target`/`get_item` work (dispatch time, or the top of the deliver
+      handler) so `delivery_retry_sweep` owns recovery, matching the ingest
+      stored-stall sweep. Behavior change — deferred out of the I-55 /simplify
+      pass, now due. Unit-test the pre-record crash path re-driving to
+      `delivered`.
 
-- [x] **Slice C** — NOTIFY-woken dispatcher loop (replaces the 60s poll as the
-      primary wake path; poll stays as fallback), bounded retry for the I-38
-      visibility race, and user-initiated backfill as chunked bulk jobs.
+## Alerting (spec §3, §4)
 
-## BFF (ADR 0008)
+- [ ] **M2-A · flow telemetry substrate** (spec §2, §7). Pipeline writes
+      `collection_connections.flow_stats` on ingest settle/itemize and on every
+      delivery terminal transition (files, bytes, `last_activity_at`,
+      `last_error_at`, latency, per-status counts). Move `listDeliveries`'
+      per-status counts onto the rollup — today it aggregates the association's
+      WHOLE `delivery_log` on a 15s-polled path (negligible now, unbounded by
+      M3). Make the §5.1 `expectation` editable in **both** Data-flow halves
+      (the explicit Slice D deferral) with a shared contract fixture.
+- [ ] **M2-B · alerts core** (spec §3). Migration 013 (`alerts`,
+      `notification_channels`); periodic `pipeline.flow_monitor` evaluating
+      expectations against `flow_stats`; the three §6.6 sources (`flow`,
+      `health` on the existing sweep's ok→error transition, `job_failure` on
+      dead deliveries / ingest retry-cap / failed backfills); dedup on
+      `(source, connection_id, association_id, kind)` with `last_seen` re-fire
+      and **auto-resolve** when the condition clears; `GET /api/alerts`
+      (member+, group-scoped) and audited operator+ `ack`/`resolve` routes.
+- [ ] **M2-C · notification channels** (spec §4, ADR **0010**). In-app (alerts
+      row + per-user read state) and webhook; per-group channel CRUD. Webhook
+      dispatch lives **pipeline-side** next to the connections egress policy —
+      do NOT widen the app's `safeFetch` private/loopback guard; retry through
+      the queue, and record terminal webhook failure as a `job_failure` alert.
+      Golden fixture for the webhook `config` shape (new cross-runtime
+      contract).
+- [ ] **M2-D · `/monitoring` page + header alert bell** (spec §7). Per-association
+      flow timelines, delivery latency, alert list with ack/resolve; unread
+      firing count in the Header island. e2e coverage.
 
-- [x] **I-50 BFF** — built-in-catalog browser writes routed through an app
-      server route with server-side session-token injection; register the
-      route in the permission guard (RBAC + audit); client routing branch in
-      `stacFetch`; UI-path leg in `tests/integration/` replacing the
-      password-grant client for this case.
+## Retention & GC (spec §5)
 
-## Slice D — delivery UI
+- [ ] **M2-E · collection Settings tab** (spec §7). Group ownership,
+      `externally_writable`, `retention_days`, `gc_grace_days`, `archived`
+      (ADR 0009's archived state). The retention columns exist since migration
+      003 and have never been readable or writable. e2e coverage.
+- [ ] **M2-F · retention & GC** (spec §5, ADR **0011**). Migration 014:
+      `asset_gc` (the single marked-then-collected queue for retention /
+      item-delete / collection-delete / archive) + `collection_settings.archived`.
+      `pipeline.retention_gc` bulk-expires per `retention_days` → deletes from
+      pgstac (delete events do NOT propagate to destinations, §6.4) → marks
+      assets with `collect_after = now() + gc_grace_days`;
+      `pipeline.asset_collect` deletes past the grace. Counted **dry-run
+      preview** in the UI before any apply, audited. Closes **I-51's GC half**
+      (collection delete no longer orphans canonical bytes) and settles the
+      ADR 0009 open question below on reference-mode association delete.
 
-- [x] **Slice D** — Data-flow tab delivery half: delivery association
-      create/edit (path template, filters, payload options, `on_update`,
-      overwrite, retry), enable/disable, redeliver action, delivery status
-      surfaced from `delivery_log`.
+## Hygiene & telemetry (spec §6, §8)
 
-## M1 gate
+- [ ] **M2-G · high-volume table hygiene** (spec §6, ADR **0012**). Migration
+      015: partition `item_events` and `audit_log` via **attach-don't-copy**
+      (rename → partitioned parent under the original name → `ATTACH` the old
+      table as a bounded legacy partition); handle `audit_log`'s append-only
+      triggers per partition (partition drop is DELETE-shaped). Retention
+      **sweeps** — not partitioning — for `delivery_log`, `ingest_files`, and
+      `connection_checks`: both of the first two carry natural UNIQUE keys
+      (`(association_id, item_id)`, `(association_id, source_path, version)`)
+      that a time-partitioned unique index would break. Amend **I-36** and
+      **I-11** rather than leaving them promising something the schema won't
+      do; closes **I-12**. Fold in the stranded-`running` `connection_checks`
+      cleanup noted below.
+- [ ] **M2-H · service telemetry** (spec §8). Prometheus exposition on the
+      pipeline (`:8083/metrics`) with counters/histograms across the ingest and
+      delivery stages, plus a structured-JSON logging consistency pass
+      (`log.py` exists; usage is uneven). No scraper in docker-compose.
 
-- [x] **M1 demo rehearsal** — full loop driven through the UI on the
-      auth-enforced stack (lead only: dev server + Docker + e2e): create both
-      S3 connections, configure ingest + delivery on a collection, drop a file
-      in the source bucket, watch the item appear in the catalog and the
-      payload land in the destination bucket; kill the destination mid-run and
-      show retry → dead-letter → redeliver. Record evidence in ROADMAP; then
-      promote `ai/main → main` via PR.
-      **Run 2026-07-26, evidence in ROADMAP §9 M1. Two findings (I-54, I-55)
-      queued below. The `ai/main → main` PR is the remaining human step.**
+## M2 gate
 
-## Post-rehearsal fixes (M1 findings, 2026-07-26)
-
-- [x] **I-54 durable fix** — pgstac 0.9.10 `get_tstz_constraint` drops
-      fractional seconds when re-parsing partition CHECK constraints, so the
-      second single-item load into a collection dies on a CheckViolation
-      (dev DB carries a manual `CREATE OR REPLACE` hotfix; any fresh stack
-      breaks). Check upstream pgstac for a fix/release first; otherwise ship
-      the patched function as a pinned, documented hotfix migration
-      (extends ADR 0007's boundary — note it there) with a test that loads
-      two items with microsecond datetimes into one collection.
-      (ISSUES I-54.)
-      **Done 2026-07-30: upstream v0.9.11 (which we pin) already had the fix —
-      the real gap was schema drift on persisted volumes. `pgstac-migrate`
-      compose one-shot + regression tests; ADR 0001 amended. Full story:
-      ISSUES I-54 resolution note.**
-- [x] **I-55 ingest-job retry + `stored`-stall recovery** — register ingest
-      (and audit deliver) tasks with a Procrastinate retry strategy matching
-      itemize.py's "propagates → retries" comment, and/or extend the I-52
-      recovery sweep to re-settle `stored` rows older than a stall window
-      (itemize is idempotent). Unit-test the itemize-crash path re-driving to
-      `itemized`. (ISSUES I-55.)
-      **Done 2026-07-30: `RetrySpec` queue retry on all chain stages +
-      deliver, and a `sweep_stuck_stored` recovery sweep with a terminal
-      dead-end at the retry cap. Full story: ISSUES I-55 resolution note.**
+- [ ] **M2-I · M2 demo rehearsal** (lead only: dev server + Docker + e2e). On
+      the auth-enforced stack: stop a source mid-flow → alert fires within the
+      declared expectation window → webhook + bell notify → ack → recovery
+      auto-resolves; set `retention_days` on a collection → expired item leaves
+      the catalog → after a shortened grace window its bytes leave MinIO.
+      Record evidence in ROADMAP §9 M2; then promote `ai/main → main` via PR.
 
 ## Discovered follow-ups
 
 (append here during iterations)
 
-- I-55 /simplify altitude note: deliver's pre-record blind spot is covered by
-  queue retry only (~4 min window) — if the DB stays down through all 4
-  attempts, the delivery is lost invisibly (outbox claimed, no delivery_log
-  row for the retry sweep). The durable fix is hoisting `upsert_pending`
-  ahead of the fallible `load_target`/`get_item` work (dispatch time or top
-  of the deliver handler) so the delivery_retry_sweep owns recovery, matching
-  the ingest stored-stall sweep. Behavior change — deferred.
+### Carried forward from M1
 
-- Fixed in the I-39 iteration: `api-assets.test.ts` 500'd with the Docker
-  stack down (the Phase 4 reference seam added an unmocked Postgres query
-  ahead of the offline presign path) — now stubs `lookupReferenceHref`.
-  Watch for the same pattern if other unit-tested routes grow DB lookups.
-- Fixed in the I-53 iteration: whitespace-only `source_path`/`path_template`
-  passed Zod's `min(1)` but the Python parsers `.strip()`-reject — the Zod
-  schemas now use a non-blank refine (found by writing the fixtures).
 - ADR 0009 leaves ASSOCIATION-delete reference semantics implicit: deleting a
   reference-mode ingest association (connection kept) leaves its items serving
   from `source_href` with no update path — the same "unmanaged dead links"
-  argument that justified removal on connection delete. Decide in Phase 6
-  whether association delete should also remove (or the dialog should push
-  toward disable-instead-of-delete).
-- Deleted-connection `connection_checks` claims now skip the scrubbed row
-  (`deleted_at IS NULL` in the drain's connection load), which strands such a
-  check at `running`. Harmless (the app can no longer poll it — the parent
-  404s) but worth a cleanup sweep when B-iii adds the stalled-job sweeps.
-- B-iii live finding (fixed): SFTP/FTP `put` now creates parent directories;
-  the delfer FTP test server does NOT chroot — FTP connections against it need
-  `root_path=/ftp/demo` (compose comment corrected). Slice D's connection form
-  help text should surface the root-path requirement for FTP servers.
-- B-iii live observation: when a NEW item event lands while a row is `failed`
-  awaiting retry, the event's delivery resets the attempt cycle (by design,
-  I-44) and the sweep's requeue can overlap it — final state is correct
-  (delivered), but the Slice D delivery-status UI should explain attempt
-  counts as "attempts this cycle," not lifetime.
-- Slice C live gotcha: `docker compose build` can exit 0 while the build
-  FAILED (BuildKit registry `DeadlineExceeded` resolving base-image
-  metadata) — after rebuilding the pipeline image, confirm the container
-  actually has the new code (or grep build output for `ERROR`); pre-pulling
-  the two base images clears the timeout.
-- Slice D prerequisite discovered in Slice C: `delivery_log` has no API read
-  route yet — the "delivery status surfaced from delivery_log" half of
-  Slice D needs a member+-visible read endpoint (mirror the backfill-poll
-  access pattern) before the UI can render status. **Done in Slice D**
-  (`GET .../deliveries` + `POST .../deliveries/[id]/redeliver`), along with
-  the FTP root-path help text and "attempts this cycle" labeling notes above.
-- Fixed in the Slice D iteration: `EmptyState` requires an `icon` prop that
-  `DataFlowTab`'s ingest empty state never passed — any collection with zero
-  ingest sources crashed the tab render. Both halves now pass icons; if a
-  shared component's required prop is this easy to omit, consider making
-  `icon` optional with a default in a future shared-package pass.
-- Slice D deferral: the §5.1 flow `expectation`
-  (`expect_activity_within_seconds`) is not editable in either Data-flow form
-  half — it's the Phase 6 absence-of-data alert knob; surface it when the
-  alerting UI lands (M2).
-- e2e precondition added in Slice D: `data-flow.spec.ts` creates a connection
-  through the API, so the dev server needs `CREDENTIALS_MASTER_KEY` (source
-  the repo-root `.env` first — documented in the `run-e2e` skill).
-- /simplify note (Slice D pass): the Data-flow split is lopsided — delivery
-  got `DeliverySection`/`DeliveryFormDialog` components while the ~500-line
-  ingest half stays inline in `DataFlowTab.tsx` with its own form-seeding
-  pattern. Extract a mirroring `IngestSection` (+ form dialog, seeding via
-  the mount-per-open pattern, schema-parsed `formFromAssociation` like the
-  delivery dialog) in a future pass; migrating both dialogs to the repo's
-  RHF+Zod form pattern would be the full-depth version. Small shared bits
-  already unified in `components/collections/shared.ts`.
-- /simplify note (Slice D pass): `listDeliveries`' per-status counts query
-  aggregates the association's WHOLE delivery_log on a 15s-polled path —
-  negligible today, unbounded growth by M3 scale. When Phase 6 partitions
-  delivery_log (I-36), move the counts to pipeline-maintained rollups (the
-  association's `flow_stats` column already exists for exactly this).
+  argument that justified removal on connection delete. **Decide in M2-F**
+  (either remove on delete, or push the dialog toward disable-instead-of-delete).
+- Deleted-connection `connection_checks` claims skip the scrubbed row
+  (`deleted_at IS NULL` in the drain's connection load), stranding such a check
+  at `running`. Harmless (the app can no longer poll it — the parent 404s) but
+  **fold the cleanup into M2-G**'s `connection_checks` sweep.
+- Unit-test gotcha: `api-assets.test.ts` once 500'd with the Docker stack down
+  because the Phase 4 reference seam added an unmocked Postgres query ahead of
+  the offline presign path (now stubs `lookupReferenceHref`). Watch for the
+  same pattern whenever a unit-tested route grows a DB lookup — M2-B/M2-F add
+  several.
+- Infra gotcha: `docker compose build` can exit 0 while the build FAILED
+  (BuildKit registry `DeadlineExceeded` resolving base-image metadata). After
+  rebuilding the pipeline image, confirm the container actually has the new
+  code, or grep the build output for `ERROR`; pre-pulling the base images
+  clears the timeout.
+- /simplify note (Slice D): the Data-flow split is lopsided — delivery got
+  `DeliverySection`/`DeliveryFormDialog` while the ~500-line ingest half stays
+  inline in `DataFlowTab.tsx` with its own form-seeding pattern. **M2-A edits
+  both halves** (expectation fields), so it is the natural moment to extract a
+  mirroring `IngestSection` (+ form dialog, mount-per-open seeding,
+  schema-parsed `formFromAssociation`); migrating both dialogs to the repo's
+  RHF+Zod form pattern is the full-depth version.
+- Shared-package note: `EmptyState` requires an `icon` prop that was easy to
+  omit (it crashed empty Data-flow tabs until fixed). Consider making `icon`
+  optional with a default in a future shared-package pass.

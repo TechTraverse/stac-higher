@@ -643,6 +643,15 @@ there are no intermediate demos; the first demo is M1, complete:
   **ai/main → main promotion (the PR) remains — human step.**
 - **M2 — Operable platform** (Phase 6): monitoring/alerts, `/metrics`,
   partitioning + retention/GC, archived collections (ADR 0009's GC half).
+  **Scoped + sliced 2026-08-18** —
+  `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.md` is the
+  approved design (10 slices M2-0…M2-I, seeded into `TODO.md`). One deliberate
+  deviation from §5: `delivery_log` and `ingest_files` get retention **sweeps**
+  rather than time-partitioning, because their natural UNIQUE keys
+  (`(association_id, item_id)`, `(association_id, source_path, version)`) are
+  incompatible with a partitioned unique index — only `item_events` and
+  `audit_log` partition (spec §6, ADR 0012). Gate: a live rehearsal of the
+  Phase 6 done-when on the auth-enforced stack, then the promotion PR.
 - **M3 — NOAA-scale readiness:** sustained ~30 items/s (~2.6M items/day,
   mission-critical subscribers) — dispatcher throughput headroom beyond
   Slice C, concurrency-safe multi-worker operation (I-40 and the ingest-ledger
