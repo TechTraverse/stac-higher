@@ -120,7 +120,7 @@ is in ROADMAP §9 M1.
       `canManageCollection` (ADR 0003: unowned = any operator), transfer rule
       = target group must be the caller's (admin excepted). e2e green
       (31 passed). Follow-ups below.
-- [ ] **M2-F · retention & GC** (spec §5, ADR **0011**). Migration 014:
+- [x] **M2-F · retention & GC** (spec §5, ADR **0011**). Migration 014:
       `asset_gc` (the single marked-then-collected queue for retention /
       item-delete / collection-delete / archive) + `collection_settings.archived`.
       `pipeline.retention_gc` bulk-expires per `retention_days` → deletes from
@@ -130,6 +130,17 @@ is in ROADMAP §9 M1.
       preview** in the UI before any apply, audited. Closes **I-51's GC half**
       (collection delete no longer orphans canonical bytes) and settles the
       ADR 0009 open question below on reference-mode association delete.
+      **Done 2026-08-19** — landed as migration **017** (numbering note
+      below). `asset_gc` marks are key PREFIXES (one row per item /
+      collection — §5.3 nests assets per item); mark-FIRST-then-delete is the
+      crash-safety invariant. Pipeline `pipeline/gc/`: `retention_gc` +
+      `asset_collect` (five-minute sweeps, `GC_BATCH_ITEMS`); archive expires
+      everything per ADR 0009 ("delete the data, keep the record"). App: BFF
+      deletes mark prefixes; archived refuses item writes + new associations
+      (409s); Settings warn-and-proceed dialog with the counted dry-run
+      (`/settings/impact`). Reference-mode ASSOCIATION delete now removes its
+      items (question settled; dialog counts them). I-51 closed; residuals:
+      ISSUES **I-59**.
 
 ## Hygiene & telemetry (spec §6, §8)
 
@@ -288,13 +299,27 @@ is in ROADMAP §9 M1.
   fields; RHF adds no value at this size). If it grows (dry-run preview,
   per-field audit hints), migrate then.
 
+### From M2-F
+
+- **Grace-window item-id reuse** (I-59's sharpest edge): an open prefix mark
+  collects NEW bytes written under a re-used item id. If M3's flows re-create
+  ids routinely, snapshot key lists at mark time instead of prefixes.
+- The retention sweep's `list_expired_items` orders archived-collection
+  deletion by id with no per-collection progress cursor — fine at 500/tick;
+  a 10M-item archive takes ~14 days of ticks. Acceptable; note for M3.
+- e2e does NOT cover the GC loop (needs the pipeline's five-minute sweeps —
+  M2-I exercises it live with gc_grace_days=0). The vitest/pytest suites
+  cover marking, ordering, and collection logic.
+- M2-E's archived copy said "read-only + assets scheduled for collection";
+  implemented as: item writes refused, metadata edits/deletes allowed, sweep
+  expires all items via the archive reason. Settings copy still accurate.
+
 ### Carried forward from M1
 
-- ADR 0009 leaves ASSOCIATION-delete reference semantics implicit: deleting a
-  reference-mode ingest association (connection kept) leaves its items serving
-  from `source_href` with no update path — the same "unmanaged dead links"
-  argument that justified removal on connection delete. **Decide in M2-F**
-  (either remove on delete, or push the dialog toward disable-instead-of-delete).
+- ~~ADR 0009 leaves ASSOCIATION-delete reference semantics implicit~~
+  **Settled in M2-F (ADR 0011)**: association delete removes its
+  reference-backed items, mirroring connection delete; the dialog counts them
+  and suggests disable-instead-of-delete.
 - Deleted-connection `connection_checks` claims skip the scrubbed row
   (`deleted_at IS NULL` in the drain's connection load), stranding such a check
   at `running`. Harmless (the app can no longer poll it — the parent 404s) but

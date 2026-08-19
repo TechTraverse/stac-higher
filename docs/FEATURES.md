@@ -372,6 +372,20 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   e2e: `collection-settings.spec.ts` (persist-across-reload + client-side
   validation). The M2-F dry-run preview lands with the deletion jobs.
 
+- **M2-F · retention & GC** ([ADR 0011](decisions/0011-retention-gc.md), closes
+  I-51's GC half) — migration **017**: `stac_higher.asset_gc`, the single
+  marked-then-collected queue (key-PREFIX marks; open-key unique index makes
+  re-marking idempotent). Pipeline `pipeline/gc/`: `retention_gc` (five-minute
+  sweep; mark-first-then-delete per expired item, archive expires everything)
+  and `asset_collect` (`delete_prefix` under the platform bucket once the
+  grace passes; errors keep the mark open). App: BFF deletes mark item /
+  collection prefixes best-effort after upstream success; archived collections
+  refuse item writes (409) and new associations (409); the Settings tab shows
+  the counted dry-run (`/api/collections/[id]/settings/impact`) in a
+  warn-and-proceed dialog before enabling/tightening retention or archiving.
+  Reference-mode association delete now removes its items (dialog counts them
+  and suggests disable-instead-of-delete).
+
 ## Phases 7–8 — Not started ⬜
 
 Push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).

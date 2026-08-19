@@ -19,6 +19,7 @@ from pipeline.jobs import (
     backfill,
     dispatch,
     drain,
+    gc,
     health_sweep,
     heartbeat,
     ingest,
@@ -53,6 +54,9 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # M2-C: §4 notification fan-out — firing alerts → group webhook channels
     # via the notification_deliveries ledger (in-app needs no dispatch).
     notify.register(queue, settings)
+    # M2-F: §6.5 retention & GC — expire items per collection settings, then
+    # collect marked asset prefixes after the grace window (ADR 0011).
+    gc.register(queue, settings)
     return queue
 
 

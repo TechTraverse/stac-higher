@@ -66,6 +66,10 @@ DEFAULT_INGEST_STORED_STALL_SECONDS = 1800  # 30 min
 # single transfers legitimately run longer than the window.
 DEFAULT_DELIVERY_STALL_SECONDS = 1800  # 30 min
 
+# Retention & GC (M2-F, ADR 0011). Batch size bounds one sweep tick's work;
+# large backlogs drain across the five-minute ticks.
+DEFAULT_GC_BATCH_ITEMS = 500
+
 # Webhook notification dispatch (M2-C). Attempts include the first; failed
 # rows retry after the cool-off until the cap, then dead-letter (which raises
 # a `webhook_failed` alert). A claim stranded `delivering` past the stall
@@ -114,6 +118,8 @@ class Settings:
     ingest_stored_stall_seconds: int = DEFAULT_INGEST_STORED_STALL_SECONDS
     #: Delivery crash recovery (M2-0) — see DEFAULT_DELIVERY_STALL_SECONDS.
     delivery_stall_seconds: int = DEFAULT_DELIVERY_STALL_SECONDS
+    #: Retention & GC sweep batch size (M2-F).
+    gc_batch_items: int = DEFAULT_GC_BATCH_ITEMS
     #: Webhook notification dispatch (M2-C) — see the DEFAULT_WEBHOOK_* constants.
     webhook_max_attempts: int = DEFAULT_WEBHOOK_MAX_ATTEMPTS
     webhook_retry_seconds: int = DEFAULT_WEBHOOK_RETRY_SECONDS
@@ -174,6 +180,7 @@ class Settings:
                     str(DEFAULT_INGEST_STORED_STALL_SECONDS),
                 )
             ),
+            gc_batch_items=int(env.get("GC_BATCH_ITEMS", str(DEFAULT_GC_BATCH_ITEMS))),
             webhook_max_attempts=int(
                 env.get("WEBHOOK_MAX_ATTEMPTS", str(DEFAULT_WEBHOOK_MAX_ATTEMPTS))
             ),

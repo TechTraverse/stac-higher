@@ -11,7 +11,7 @@
  * user edit never clobbers it. `updated_at` is maintained app-side (like
  * connections) so pipeline flow-stat writes don't masquerade as user edits.
  */
-import { query } from "@/lib/db/connection";
+import { getClient, query } from "@/lib/db/connection";
 import { runMigrations } from "@/lib/db/migrate";
 import type { ConnectionProtocol } from "@/lib/connections/schemas";
 import type {
@@ -273,27 +273,78 @@ export async function updateAssociation(
 }
 
 /**
- * Soft-delete (ADR 0009): the association leaves every listing/read; its
- * ingest_files and delivery_log history rows are retained as provenance.
- * Reference-backed items ingested through it keep serving from their recorded
- * source_href — item removal happens only on CONNECTION delete (ADR 0009 §3).
+ * Soft-delete (ADR 0009, reference semantics settled by ADR 0011): the
+ * association leaves every listing/read; its ingest_files and delivery_log
+ * history rows are retained as provenance. Reference-backed items ingested
+ * through it are REMOVED from the catalog — the same "unmanaged dead links"
+ * rationale as connection delete: with the flow gone there is no update path
+ * and no source guarantee. (Reference items store no canonical bytes, so
+ * there is nothing to GC.) The delete dialog's impact preview counts them.
  */
 export async function deleteAssociation(id: string): Promise<boolean> {
   await runMigrations();
-  const result = await query(
-    `UPDATE stac_higher.collection_connections
-        SET deleted_at = now(), updated_at = now()
-      WHERE id = $1 AND deleted_at IS NULL`,
+
+  // Remove reference-backed items BEFORE the soft-delete, mirroring
+  // connections/deletion.ts: a crash mid-way leaves the association live and
+  // the operation retryable — never soft-deleted-but-still-served items.
+  // Per-item and failure-tolerant (item already gone / pgstac-less dev DB).
+  const refs = await query<{ collection_id: string; item_id: string }>(
+    `SELECT DISTINCT cc.collection_id, f.item_id
+       FROM stac_higher.ingest_files f
+       JOIN stac_higher.collection_connections cc ON cc.id = f.association_id
+      WHERE f.association_id = $1
+        AND f.item_id IS NOT NULL
+        AND f.source_href IS NOT NULL
+        AND f.reference_removed_at IS NULL`,
     [id],
   );
-  return (result.rowCount ?? 0) > 0;
+  for (const row of refs.rows) {
+    try {
+      await query(`SELECT pgstac.delete_item($1, $2)`, [
+        row.item_id,
+        row.collection_id,
+      ]);
+    } catch (err) {
+      console.warn(
+        `[associations] pgstac.delete_item failed for ${row.collection_id}/${row.item_id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `UPDATE stac_higher.ingest_files
+          SET reference_removed_at = now()
+        WHERE association_id = $1
+          AND item_id IS NOT NULL
+          AND source_href IS NOT NULL
+          AND reference_removed_at IS NULL`,
+      [id],
+    );
+    const result = await client.query(
+      `UPDATE stac_higher.collection_connections
+          SET deleted_at = now(), updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL`,
+      [id],
+    );
+    await client.query("COMMIT");
+    return (result.rowCount ?? 0) > 0;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /** Counted blast radius for the association delete dialog (ADR 0009). */
 export interface AssociationDeleteImpact {
   /** Provenance rows RETAINED (never deleted). */
   history: { ingest_files: number; delivery_log: number };
-  /** Items that stay in the catalog but stop being managed via this flow. */
+  /** Reference-backed items REMOVED from the catalog on delete (ADR 0011). */
   reference_items: number;
 }
 

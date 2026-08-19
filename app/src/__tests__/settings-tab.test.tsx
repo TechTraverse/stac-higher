@@ -115,6 +115,48 @@ describe("SettingsTab", () => {
     ).toBe(true);
   });
 
+  it("tightening retention shows the counted dry-run before saving (M2-F)", async () => {
+    useSettingsMock.mockReturnValue(loaded({ retentionDays: null }));
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ total_items: 40, expired_items: 12 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+
+    render(<SettingsTab collectionId="sentinel-2" />);
+    fireEvent.change(screen.getByTestId("settings-retention"), {
+      target: { value: "14" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+
+    // Nothing saved yet — the warn-and-proceed dialog is up with the counts.
+    const impact = await screen.findByTestId("settings-impact");
+    expect(impact.textContent).toContain("12 of 40 items");
+    expect(updateMutate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("settings-confirm"));
+    expect(updateMutate).toHaveBeenCalledTimes(1);
+    expect(updateMutate.mock.calls[0][0].retention_days).toBe(14);
+  });
+
+  it("archiving shows the total-item warning before saving", async () => {
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ total_items: 7, expired_items: 7 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+
+    render(<SettingsTab collectionId="sentinel-2" />);
+    fireEvent.click(screen.getByTestId("settings-archived"));
+    fireEvent.click(screen.getByTestId("settings-save"));
+
+    const impact = await screen.findByTestId("settings-impact");
+    expect(impact.textContent).toContain("All 7 items");
+    expect(updateMutate).not.toHaveBeenCalled();
+  });
+
   it("shows the archived badge when archived", () => {
     useSettingsMock.mockReturnValue(loaded({ archived: true }));
     render(<SettingsTab collectionId="sentinel-2" />);

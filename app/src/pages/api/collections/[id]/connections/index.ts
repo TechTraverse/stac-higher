@@ -15,6 +15,7 @@ import type { APIRoute } from "astro";
 import { authzError } from "@/lib/authz/guard";
 import { canMutate } from "@/lib/authz/permissions";
 import { jsonResponse } from "@/lib/http/response";
+import { getCollectionSettings } from "@/lib/collections/settings";
 import {
   canManageCollection,
   resolveUsableConnection,
@@ -97,6 +98,14 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
         "forbidden",
         "You do not have permission to manage this collection",
       );
+    }
+
+    // ADR 0009/0011 (M2-F): archived collections accept no new associations
+    // — archive means the data plane is winding down, not gaining flows.
+    if ((await getCollectionSettings(collectionId)).archived) {
+      return jsonResponse(409, {
+        error: `Collection '${collectionId}' is archived and cannot gain new data flows`,
+      });
     }
 
     const connection = await resolveUsableConnection(

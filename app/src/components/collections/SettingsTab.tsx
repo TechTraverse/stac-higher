@@ -26,7 +26,15 @@ import {
   SelectValue,
   Switch,
 } from "@stac-higher/shared";
-import { Archive, Save, Settings2 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Archive, Save, Settings2, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthMe } from "@/lib/query/auth";
 import {
@@ -55,6 +63,11 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
   const [gcGraceDays, setGcGraceDays] = useState<string>("30");
   const [archived, setArchived] = useState(false);
   const [seeded, setSeeded] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [confirm, setConfirm] = useState<{
+    archiving: boolean;
+    impact: { total_items: number | null; expired_items: number | null };
+  } | null>(null);
 
   // Seed the form once from the loaded settings (refetches don't clobber
   // in-progress edits; a save invalidates and we keep the saved values).
@@ -96,7 +109,8 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
     new Set([...groups, ...(settings?.groupId ? [settings.groupId] : [])]),
   );
 
-  const save = () => {
+  const doSave = () => {
+    setConfirm(null);
     update.mutate(
       {
         group_id: groupId,
@@ -110,6 +124,43 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
         onError: (err) => toast.error(`Save failed: ${err.message}`),
       },
     );
+  };
+
+  // Warn-and-proceed (M2-F, spec §5.3 / ADR 0009 §6): saving a change that
+  // starts deleting data — enabling/tightening retention, or archiving —
+  // first shows the counted dry-run so the operator sees what the sweep will
+  // expire before it exists.
+  const save = async () => {
+    const archiving = archived && !settings?.archived;
+    const retentionTightened =
+      retentionParsed !== null &&
+      (settings?.retentionDays === null ||
+        settings === undefined ||
+        retentionParsed < (settings?.retentionDays ?? Infinity));
+    if (!archiving && !retentionTightened) {
+      doSave();
+      return;
+    }
+    setPreviewLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (archiving) params.set("archived", "true");
+      else if (retentionParsed !== null)
+        params.set("retention_days", String(retentionParsed));
+      const res = await fetch(
+        `/api/collections/${encodeURIComponent(collectionId)}/settings/impact?${params}`,
+        { credentials: "same-origin" },
+      );
+      const impact = res.ok
+        ? ((await res.json()) as {
+            total_items: number | null;
+            expired_items: number | null;
+          })
+        : { total_items: null, expired_items: null };
+      setConfirm({ archiving, impact });
+    } finally {
+      setPreviewLoading(false);
+    }
   };
 
   return (
@@ -238,14 +289,59 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
           <div>
             <Button
               data-testid="settings-save"
-              disabled={update.isPending || retentionInvalid || graceInvalid}
-              onClick={save}
+              disabled={
+                update.isPending ||
+                previewLoading ||
+                retentionInvalid ||
+                graceInvalid
+              }
+              onClick={() => void save()}
             >
               <Save className="mr-1.5 h-4 w-4" />
               Save settings
             </Button>
           </div>
         )}
+
+        <Dialog
+          open={confirm !== null}
+          onOpenChange={(open) => !open && setConfirm(null)}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <TriangleAlert className="h-5 w-5 text-destructive" />
+                {confirm?.archiving
+                  ? "Archive this collection?"
+                  : "Enable retention?"}
+              </DialogTitle>
+              <DialogDescription data-testid="settings-impact">
+                {confirm?.archiving
+                  ? confirm.impact.total_items === null
+                    ? "Every item in this collection will be deleted (count unavailable)."
+                    : `All ${confirm.impact.total_items} items in this collection will be deleted from the catalog.`
+                  : confirm?.impact.expired_items === null
+                    ? `Items older than ${retentionParsed} days will be deleted (count unavailable).`
+                    : `${confirm?.impact.expired_items} of ${confirm?.impact.total_items} items are already older than ${retentionParsed} days and will be deleted by the first sweep.`}{" "}
+                Their asset files leave object storage after the{" "}
+                {graceParsed}-day grace window. This is ADR 0009
+                warn-and-proceed: it does exactly what it says.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setConfirm(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                data-testid="settings-confirm"
+                onClick={doSave}
+              >
+                {confirm?.archiving ? "Archive collection" : "Enable retention"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   );

@@ -3,6 +3,7 @@
 from pipeline.config import Settings
 from pipeline.jobs.dispatch import JOB_DISPATCH_POLL
 from pipeline.jobs.drain import JOB_NAME as DRAIN_JOB
+from pipeline.jobs.gc import COLLECT_JOB_NAME, RETENTION_JOB_NAME
 from pipeline.jobs.health_sweep import JOB_NAME as SWEEP_JOB
 from pipeline.jobs.heartbeat import JOB_NAME as HEARTBEAT_JOB
 from pipeline.jobs.ingest import JOB_DISCOVER, JOB_FETCH, JOB_GROUP, JOB_ITEMIZE, JOB_POLL
@@ -21,3 +22,4 @@ def test_build_queue_registers_all_periodic_jobs():
     assert {JOB_POLL, JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE} <= registered
     assert JOB_DISPATCH_POLL in registered
     assert {MONITOR_JOB, NOTIFY_SWEEP_JOB, WEBHOOK_JOB_NAME} <= registered
+    assert {RETENTION_JOB_NAME, COLLECT_JOB_NAME} <= registered
