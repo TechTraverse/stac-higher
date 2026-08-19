@@ -34,6 +34,13 @@ export const associationKeys = {
     [...associationKeys.detail(collectionId, id), "backfill", backfillId] as const,
 };
 
+/** Collection platform settings (M2-E). */
+export const collectionSettingsKeys = {
+  all: () => ["collection-settings"] as const,
+  detail: (collectionId: string) =>
+    [...collectionSettingsKeys.all(), collectionId] as const,
+};
+
 /** Alerts + monitoring surfaces (M2-B/M2-D). */
 export const alertKeys = {
   all: () => ["alerts"] as const,

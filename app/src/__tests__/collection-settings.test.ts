@@ -11,6 +11,7 @@ import { query } from "@/lib/db/connection";
 import {
   defaultCollectionSettings,
   getCollectionSettings,
+  upsertCollectionSettings,
 } from "@/lib/collections/settings";
 
 const mockQuery = vi.mocked(query);
@@ -27,6 +28,7 @@ describe("collection settings defaults (ADR 0003)", () => {
       externallyWritable: false,
       retentionDays: null, // keep forever
       gcGraceDays: 30,
+      archived: false,
     });
   });
 
@@ -45,6 +47,7 @@ describe("collection settings defaults (ADR 0003)", () => {
           externally_writable: true,
           retention_days: 14,
           gc_grace_days: 7,
+          archived: true,
         },
       ],
       rowCount: 1,
@@ -56,6 +59,40 @@ describe("collection settings defaults (ADR 0003)", () => {
       externallyWritable: true,
       retentionDays: 14,
       gcGraceDays: 7,
+      archived: true,
     });
+  });
+});
+
+describe("upsertCollectionSettings (M2-E)", () => {
+  it("upserts the full document and re-reads the stored row", async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // upsert
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            collection_id: "goes-abi",
+            group_id: "weather",
+            externally_writable: false,
+            retention_days: 30,
+            gc_grace_days: 7,
+            archived: false,
+          },
+        ],
+        rowCount: 1,
+      } as never);
+
+    const settings = await upsertCollectionSettings("goes-abi", {
+      groupId: "weather",
+      externallyWritable: false,
+      retentionDays: 30,
+      gcGraceDays: 7,
+      archived: false,
+    });
+
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain("ON CONFLICT (collection_id) DO UPDATE");
+    expect(params).toEqual(["goes-abi", "weather", false, 30, 7, false]);
+    expect(settings.retentionDays).toBe(30);
   });
 });

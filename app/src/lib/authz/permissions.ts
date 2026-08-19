@@ -215,6 +215,17 @@ export function matchGatedRoute(
       }
     }
   }
+  // M2-E: collection platform settings (ownership, exposure, retention,
+  // archived). Full-document PUT; group ownership enforced in-route.
+  const collSettings = path.match(/^\/api\/collections\/([^/]+)\/settings$/);
+  if (collSettings && (m === "PUT" || m === "PATCH")) {
+    return {
+      action: "update",
+      resourceType: "collection_settings",
+      resourceId: collSettings[1],
+    };
+  }
+
   const collConnId = path.match(
     /^\/api\/collections\/([^/]+)\/connections\/([^/]+)$/,
   );
