@@ -24,6 +24,8 @@ export interface CollectionSettings {
   /** null = keep forever. */
   retentionDays: number | null;
   gcGraceDays: number;
+  /** ADR 0009's archived state (declarative until M2-F's GC honors it). */
+  archived: boolean;
 }
 
 export function defaultCollectionSettings(
@@ -35,6 +37,7 @@ export function defaultCollectionSettings(
     externallyWritable: false,
     retentionDays: null,
     gcGraceDays: DEFAULT_GC_GRACE_DAYS,
+    archived: false,
   };
 }
 
@@ -44,13 +47,14 @@ interface CollectionSettingsRow {
   externally_writable: boolean;
   retention_days: number | null;
   gc_grace_days: number;
+  archived: boolean;
 }
 
 export async function getCollectionSettings(
   collectionId: string,
 ): Promise<CollectionSettings> {
   const result = await query<CollectionSettingsRow>(
-    `SELECT collection_id, group_id, externally_writable, retention_days, gc_grace_days
+    `SELECT collection_id, group_id, externally_writable, retention_days, gc_grace_days, archived
        FROM stac_higher.collection_settings
       WHERE collection_id = $1`,
     [collectionId],
@@ -63,5 +67,45 @@ export async function getCollectionSettings(
     externallyWritable: row.externally_writable,
     retentionDays: row.retention_days,
     gcGraceDays: row.gc_grace_days,
+    archived: row.archived,
   };
+}
+
+export interface CollectionSettingsUpdate {
+  groupId: string | null;
+  externallyWritable: boolean;
+  retentionDays: number | null;
+  gcGraceDays: number;
+  archived: boolean;
+}
+
+/**
+ * Full-document upsert (the Settings form submits every field; the table is
+ * sparse, so the first save creates the row). Returns the stored settings.
+ */
+export async function upsertCollectionSettings(
+  collectionId: string,
+  update: CollectionSettingsUpdate,
+): Promise<CollectionSettings> {
+  await query(
+    `INSERT INTO stac_higher.collection_settings
+       (collection_id, group_id, externally_writable, retention_days, gc_grace_days, archived)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (collection_id) DO UPDATE SET
+       group_id = EXCLUDED.group_id,
+       externally_writable = EXCLUDED.externally_writable,
+       retention_days = EXCLUDED.retention_days,
+       gc_grace_days = EXCLUDED.gc_grace_days,
+       archived = EXCLUDED.archived,
+       updated_at = now()`,
+    [
+      collectionId,
+      update.groupId,
+      update.externallyWritable,
+      update.retentionDays,
+      update.gcGraceDays,
+      update.archived,
+    ],
+  );
+  return getCollectionSettings(collectionId);
 }

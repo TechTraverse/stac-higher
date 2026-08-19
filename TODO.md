@@ -107,10 +107,19 @@ is in ROADMAP §9 M1.
 
 ## Retention & GC (spec §5)
 
-- [ ] **M2-E · collection Settings tab** (spec §7). Group ownership,
+- [x] **M2-E · collection Settings tab** (spec §7). Group ownership,
       `externally_writable`, `retention_days`, `gc_grace_days`, `archived`
       (ADR 0009's archived state). The retention columns exist since migration
       003 and have never been readable or writable. e2e coverage.
+      **Done 2026-08-19** — Settings tab on built-in-catalog collection pages
+      (read-only for members, editable operator+); migration **016** adds
+      `collection_settings.archived` (pulled forward from M2-F's migration so
+      the tab ships the full §7 field set — DECLARATIVE until M2-F enforces
+      it, the UI copy says so). `GET`/`PUT /api/collections/[id]/settings`:
+      PUT is guard-audited (`collection_settings`), current-owner rule via
+      `canManageCollection` (ADR 0003: unowned = any operator), transfer rule
+      = target group must be the caller's (admin excepted). e2e green
+      (31 passed). Follow-ups below.
 - [ ] **M2-F · retention & GC** (spec §5, ADR **0011**). Migration 014:
       `asset_gc` (the single marked-then-collected queue for retention /
       item-delete / collection-delete / archive) + `collection_settings.archived`.
@@ -261,6 +270,23 @@ is in ROADMAP §9 M1.
 - `/monitoring` shows all three cards to members (read-only, verbs hidden).
   Group-scoping means members only see their groups' data — same posture as
   /connections.
+
+### From M2-E
+
+- **Migration numbering for M2-F/G**: `archived` took **016**, so M2-F's
+  `asset_gc` migration is **017** and M2-G's partitioning is **018** (the
+  M2-B note about 015/016 is superseded).
+- Ownership transfer edge: an ADMIN can assign a collection to ANY group
+  (string is not validated against known groups — groups only exist as
+  claims). A typo'd group id silently makes the collection unmanageable by
+  everyone but admins. Low risk; a groups directory would fix it properly.
+- `archived` currently changes nothing but a badge. M2-F must wire: archived
+  → read-only in the BFF write path (decide exact scope there — ADR 0011)
+  and assets → `asset_gc`. The Settings copy promises "read-only + assets
+  scheduled for collection"; keep M2-F honest against it or amend both.
+- The tab's form is local useState, not the repo's RHF+Zod pattern (5 flat
+  fields; RHF adds no value at this size). If it grows (dry-run preview,
+  per-field audit hints), migrate then.
 
 ### Carried forward from M1
 

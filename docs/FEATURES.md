@@ -360,6 +360,18 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   (nav + bell, card render, resolved view, webhook channel create/delete
   round-trip).
 
+- **M2-E · collection Settings tab** (spec §7) — a **Settings** tab on
+  built-in-catalog collection pages (`SettingsTab.tsx`) finally exposing the
+  migration-003 columns: owning group (ADR 0003 rules — unowned/public by
+  default, transfers must target one of the caller's groups, admin excepted),
+  `externally_writable`, `retention_days` (empty = keep forever),
+  `gc_grace_days`, and `archived` (migration **016** adds the column; ADR
+  0009's state — declarative until M2-F's GC honors it, and the UI copy says
+  so). API: `GET`/`PUT /api/collections/[id]/settings` (PUT operator+, guard-
+  audited as `collection_settings`, group rules via `canManageCollection`).
+  e2e: `collection-settings.spec.ts` (persist-across-reload + client-side
+  validation). The M2-F dry-run preview lands with the deletion jobs.
+
 ## Phases 7–8 — Not started ⬜
 
 Push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).

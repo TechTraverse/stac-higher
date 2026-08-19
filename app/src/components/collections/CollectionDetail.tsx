@@ -11,6 +11,7 @@ import { Skeleton } from "@stac-higher/shared";
 import { ItemCard } from "@stac-higher/shared";
 import { AssetManager } from "@/components/assets/AssetManager";
 import { DataFlowTab } from "./DataFlowTab";
+import { SettingsTab } from "./SettingsTab";
 import { StacMap } from "@stac-higher/shared";
 import { ExtentLayer } from "@stac-higher/shared";
 import { bboxToLngLatBounds } from "@/lib/map/bbox";
@@ -165,6 +166,11 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
                 — external catalogs are browse-only (ROADMAP §1). */}
             {catalog?.builtIn && (
               <TabsTrigger value="dataflow">Data flow</TabsTrigger>
+            )}
+            {/* Settings (ownership/retention/archived — M2-E) is platform
+                metadata, so built-in only, like Data flow. */}
+            {catalog?.builtIn && (
+              <TabsTrigger value="settings">Settings</TabsTrigger>
             )}
             <TabsTrigger value="json">Raw JSON</TabsTrigger>
           </TabsList>
@@ -327,6 +333,12 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
           {catalog?.builtIn && (
             <TabsContent value="dataflow">
               <DataFlowTab collectionId={collectionId} />
+            </TabsContent>
+          )}
+
+          {catalog?.builtIn && (
+            <TabsContent value="settings">
+              <SettingsTab collectionId={collectionId} />
             </TabsContent>
           )}
 

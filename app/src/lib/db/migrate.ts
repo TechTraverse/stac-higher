@@ -698,6 +698,19 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    // M2-E (M2 spec §7, ADR 0009's archived state). The spec bundled this
+    // column with M2-F's asset_gc migration; it lands here instead so the
+    // Settings tab exposes the full §7 field set in one slice. Until M2-F,
+    // `archived` is DECLARATIVE-ONLY — nothing enforces it yet (the same
+    // dead-wiring posture retention_days has had since migration 003).
+    // M2-F's retention/GC job gives it teeth (archive → GC path).
+    name: "016_collection_settings_archived",
+    sql: `
+      ALTER TABLE stac_higher.collection_settings
+        ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that
