@@ -66,6 +66,13 @@ DEFAULT_INGEST_STORED_STALL_SECONDS = 1800  # 30 min
 # single transfers legitimately run longer than the window.
 DEFAULT_DELIVERY_STALL_SECONDS = 1800  # 30 min
 
+# History-table retention (M2-G, ADR 0012). connection_checks are ephemeral
+# test requests; delivery_log/ingest_files provenance is pruned only for
+# soft-deleted associations (plus itemless terminal deliveries) past the
+# window — live flows keep their full ledgers.
+DEFAULT_CONNECTION_CHECKS_RETENTION_DAYS = 30
+DEFAULT_HISTORY_RETENTION_DAYS = 365
+
 # Retention & GC (M2-F, ADR 0011). Batch size bounds one sweep tick's work;
 # large backlogs drain across the five-minute ticks.
 DEFAULT_GC_BATCH_ITEMS = 500
@@ -120,6 +127,9 @@ class Settings:
     delivery_stall_seconds: int = DEFAULT_DELIVERY_STALL_SECONDS
     #: Retention & GC sweep batch size (M2-F).
     gc_batch_items: int = DEFAULT_GC_BATCH_ITEMS
+    #: History-table retention windows (M2-G).
+    connection_checks_retention_days: int = DEFAULT_CONNECTION_CHECKS_RETENTION_DAYS
+    history_retention_days: int = DEFAULT_HISTORY_RETENTION_DAYS
     #: Webhook notification dispatch (M2-C) — see the DEFAULT_WEBHOOK_* constants.
     webhook_max_attempts: int = DEFAULT_WEBHOOK_MAX_ATTEMPTS
     webhook_retry_seconds: int = DEFAULT_WEBHOOK_RETRY_SECONDS
@@ -181,6 +191,15 @@ class Settings:
                 )
             ),
             gc_batch_items=int(env.get("GC_BATCH_ITEMS", str(DEFAULT_GC_BATCH_ITEMS))),
+            connection_checks_retention_days=int(
+                env.get(
+                    "CONNECTION_CHECKS_RETENTION_DAYS",
+                    str(DEFAULT_CONNECTION_CHECKS_RETENTION_DAYS),
+                )
+            ),
+            history_retention_days=int(
+                env.get("HISTORY_RETENTION_DAYS", str(DEFAULT_HISTORY_RETENTION_DAYS))
+            ),
             webhook_max_attempts=int(
                 env.get("WEBHOOK_MAX_ATTEMPTS", str(DEFAULT_WEBHOOK_MAX_ATTEMPTS))
             ),

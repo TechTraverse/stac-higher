@@ -202,6 +202,16 @@ item/collection deletes (closes I-51's GC half) and enforces `archived`
 Reference-mode association delete now removes its reference-backed items
 (ADR 0009 question settled). Nothing is deleted on an unconfigured platform.
 
+**Table hygiene (M2-G, ADR 0012)**: `item_events` and `audit_log` are
+monthly-partitioned (migration 018, attach-don't-copy; `runMigrations()`
+reconciles partitions two months ahead). `delivery_log` / `ingest_files` /
+`connection_checks` are deliberately NOT partitioned (UNIQUE-key upsert
+models) — the pipeline's hourly `history_retention` sweep prunes them
+conservatively (checks by age; ledger rows only for soft-deleted
+associations or itemless terminal deliveries; stranded running checks on
+deleted connections flipped to failed). Audit rows die only by partition
+DETACH+DROP.
+
 Outbound server fetches go through `safeFetch` (blocks private/loopback targets;
 for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in
 `.env.local`; silence logs with `SAFE_FETCH_LOG=0`). `/api/proxy` rejects

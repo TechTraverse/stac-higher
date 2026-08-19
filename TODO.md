@@ -144,7 +144,7 @@ is in ROADMAP §9 M1.
 
 ## Hygiene & telemetry (spec §6, §8)
 
-- [ ] **M2-G · high-volume table hygiene** (spec §6, ADR **0012**). Migration
+- [x] **M2-G · high-volume table hygiene** (spec §6, ADR **0012**). Migration
       015: partition `item_events` and `audit_log` via **attach-don't-copy**
       (rename → partitioned parent under the original name → `ATTACH` the old
       table as a bounded legacy partition); handle `audit_log`'s append-only
@@ -156,6 +156,17 @@ is in ROADMAP §9 M1.
       **I-11** rather than leaving them promising something the schema won't
       do; closes **I-12**. Fold in the stranded-`running` `connection_checks`
       cleanup noted below.
+      **Done 2026-08-19** — landed as migration **018**. The attach was
+      validated against a REAL Postgres before merge (scratch DB + the dev
+      DB's live rows via e2e); three non-obvious mechanics are documented in
+      ADR 0012: legacy PKs must drop before ATTACH, parent checks must match
+      legacy constraint names, legacy audit triggers must drop so the
+      parent's clones can land. `RECONCILE_PARTITIONS_SQL` provisions months
+      m+1/m+2 on every runMigrations() (ranges can never overlap the legacy
+      bound by construction). Hourly `pipeline.history_retention` sweeps the
+      three UNIQUE-keyed tables conservatively; stranded-running checks on
+      deleted connections flip to failed (M1 carry-forward folded in).
+      I-36/I-11 amended, I-12 closed. Follow-ups below.
 - [ ] **M2-H · service telemetry** (spec §8). Prometheus exposition on the
       pipeline (`:8083/metrics`) with counters/histograms across the ingest and
       delivery stages, plus a structured-JSON logging consistency pass
@@ -314,16 +325,31 @@ is in ROADMAP §9 M1.
   implemented as: item writes refused, metadata edits/deletes allowed, sweep
   expires all items via the archive reason. Settings copy still accurate.
 
+### From M2-G
+
+- **No automated partition-drop retention yet** (I-11's remaining amber
+  half): monthly partitions accumulate until an operator DETACH+DROPs them.
+  A compliance window policy (env or per-deployment) + a pipeline job could
+  automate it, but audit-retention duration is a human decision — deferred.
+- The two-month partition cushion assumes the app runs at least once every
+  ~2 months (runMigrations reconciles on every API request). A totally idle
+  app + active pipeline crossing 2 month boundaries would fail outbox
+  inserts until any app request lands. Documented in ADR 0012; acceptable.
+- `history_retention` never prunes live-association ledger rows by design —
+  a decade-old live flow keeps a decade of ingest_files. If M3 volumes make
+  that a problem, the current-state/history split (rejected here) is the
+  revisit path.
+- Deleted-connection checks now flip to `failed`, which the flow monitor's
+  health source ignores (deleted connections filtered) — no alert noise.
+
 ### Carried forward from M1
 
 - ~~ADR 0009 leaves ASSOCIATION-delete reference semantics implicit~~
   **Settled in M2-F (ADR 0011)**: association delete removes its
   reference-backed items, mirroring connection delete; the dialog counts them
   and suggests disable-instead-of-delete.
-- Deleted-connection `connection_checks` claims skip the scrubbed row
-  (`deleted_at IS NULL` in the drain's connection load), stranding such a check
-  at `running`. Harmless (the app can no longer poll it — the parent 404s) but
-  **fold the cleanup into M2-G**'s `connection_checks` sweep.
+- ~~Deleted-connection `connection_checks` claims stranding at `running`~~
+  **Folded into M2-G**: the hourly history sweep flips them to `failed`.
 - Unit-test gotcha: `api-assets.test.ts` once 500'd with the Docker stack down
   because the Phase 4 reference seam added an unmocked Postgres query ahead of
   the offline presign path (now stubs `lookupReferenceHref`). Watch for the

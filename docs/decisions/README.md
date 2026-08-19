@@ -17,6 +17,7 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0009](0009-deletion-semantics.md) | Deletion semantics: soft-delete, retained history, warn-and-proceed | accepted (implementation pending) | 5 |
 | [0010](0010-alerting-notifications.md) | Alerting & notification model | accepted | 6 |
 | [0011](0011-retention-gc.md) | Retention & GC: one marked-then-collected queue | accepted | 6 |
+| [0012](0012-table-hygiene.md) | High-volume table hygiene: partition two, sweep three | accepted | 6 |
 
 ## Key invariants these establish
 
@@ -30,11 +31,12 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 - **0008** — Browser sessions write to the built-in catalog **only through the app BFF route** (server-side session-token injection; token never reaches page JS). External clients keep direct bearer auth at the proxy. Catalog mutations thereby pass the permission guard and land in `audit_log`. Until implemented: I-50.
 - **0010** — Webhook egress lives **pipeline-side** behind `resolve_pinned` (the connections egress policy); the app's `safeFetch` guard is never widened for notifications. Notification durability is ledger-shaped (`notification_deliveries` + sweep + dead-letter → channel-anchored `webhook_failed` alert), not queue-retry-shaped. Only NEW alert rows notify; in-app delivery is the alerts row + the per-user `alert_reads` watermark.
 - **0011** — `asset_gc` is the ONLY path by which canonical bytes are deleted, and every mark carries a grace window from `gc_grace_days`. Mark-first-then-delete ordering is invariant (a crash must never orphan bytes). Sweeps touch only collections with declared retention or `archived` — an unconfigured platform deletes nothing. Archive expires all items ("delete the data, keep the record"); reference-mode association delete removes its items (aligned with connection delete).
+- **0012** — `item_events`/`audit_log` are monthly-partitioned (attach-don't-copy; reconcile provisions two months ahead on every runMigrations). `delivery_log`/`ingest_files` are NEVER time-partitioned (their UNIQUE keys are the upsert model) — they age out via the conservative `history_retention` sweep, which only prunes soft-deleted-association rows and itemless terminal deliveries. Audit rows die ONLY by partition drop (DETACH+DROP — the sanctioned escape hatch past the append-only triggers).
 - **0009** — Nothing cascades into history: connections/associations **soft-delete** (`deleted_at`, credentials scrubbed at delete time); `ingest_files`/`delivery_log`/`connection_checks` rows are permanent passive records. Every destructive action is **warn-and-proceed** with a counted impact preview — no require-cleanup gates. Deleting a connection removes its reference-backed items (never leaves dead links); deleting a collection deletes real data files via the §6.5 GC path. Until implemented: I-51.
 
 ## Adding an ADR
 
 1. Copy the format of an existing record: a `# ADR NNNN — Title` heading, then **Status**, **Context**, **Decision**, **Consequences** (and **Revisit** if the choice is expected to be reconsidered).
-2. Number sequentially (next: `0012`).
+2. Number sequentially (next: `0013`).
 3. Add a row to the index above and, if it changes an invariant, note it in "Key invariants."
 4. ADRs are immutable once accepted — supersede with a new ADR rather than editing history; mark the old one `superseded by NNNN`.
