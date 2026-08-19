@@ -45,12 +45,16 @@ class ErrorConnection:
 @dataclass(frozen=True)
 class AlertCondition:
     """One currently-true alerting condition. ``(source, kind, connection_id,
-    association_id)`` is the dedup identity (spec §3.3)."""
+    association_id, channel_id)`` is the dedup identity (spec §3.3; M2-C added
+    the channel leg for webhook-failure alerts)."""
 
     source: str  # "flow" | "health" | "job_failure"
     kind: str
     connection_id: str | None = None
     association_id: str | None = None
+    #: Channel-anchored alerts (M2-C ``webhook_failed``); always None for the
+    #: monitor's own kinds.
+    channel_id: str | None = None
     message: str = ""
 
 
@@ -227,21 +231,31 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
         raised = 0
         async with await self._connect() as conn:
             for c in conditions:
-                # The partial unique index (migration 014) is the arbiter:
-                # a re-observed condition bumps last_seen + message on the
-                # open row (firing OR acknowledged — ack suppresses
+                # The partial unique index (migrations 014/015) is the
+                # arbiter: a re-observed condition bumps last_seen + message
+                # on the open row (firing OR acknowledged — ack suppresses
                 # notification, not detection). xmax = 0 marks a fresh row.
+                # The conflict target must match the index expressions
+                # EXACTLY, including the M2-C channel leg.
                 cur = await conn.execute(
                     "INSERT INTO stac_higher.alerts"
-                    " (source, kind, connection_id, association_id, message)"
-                    " VALUES (%s, %s, %s, %s, %s)"
+                    " (source, kind, connection_id, association_id, channel_id, message)"
+                    " VALUES (%s, %s, %s, %s, %s, %s)"
                     " ON CONFLICT (source, kind,"
                     "   coalesce(connection_id::text, ''),"
-                    "   coalesce(association_id::text, ''))"
+                    "   coalesce(association_id::text, ''),"
+                    "   coalesce(channel_id::text, ''))"
                     " WHERE state <> 'resolved'"
                     " DO UPDATE SET last_seen = now(), message = EXCLUDED.message"
                     " RETURNING (xmax = 0)",
-                    (c.source, c.kind, c.connection_id, c.association_id, c.message),
+                    (
+                        c.source,
+                        c.kind,
+                        c.connection_id,
+                        c.association_id,
+                        c.channel_id,
+                        c.message,
+                    ),
                 )
                 row = await cur.fetchone()
                 if row and row[0]:
@@ -253,17 +267,20 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
                 " SET state = 'resolved', resolved_at = now()"
                 " WHERE a.state <> 'resolved' AND a.kind = ANY(%s)"
                 " AND NOT EXISTS ("
-                "   SELECT 1 FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[])"
-                "     AS c(source, kind, conn, assoc)"
+                "   SELECT 1 FROM unnest("
+                "     %s::text[], %s::text[], %s::text[], %s::text[], %s::text[])"
+                "     AS c(source, kind, conn, assoc, chan)"
                 "   WHERE c.source = a.source AND c.kind = a.kind"
                 "   AND c.conn = coalesce(a.connection_id::text, '')"
-                "   AND c.assoc = coalesce(a.association_id::text, ''))",
+                "   AND c.assoc = coalesce(a.association_id::text, '')"
+                "   AND c.chan = coalesce(a.channel_id::text, ''))",
                 (
                     list(owned_kinds),
                     [c.source for c in conditions],
                     [c.kind for c in conditions],
                     [c.connection_id or "" for c in conditions],
                     [c.association_id or "" for c in conditions],
+                    [c.channel_id or "" for c in conditions],
                 ),
             )
             resolved = cur.rowcount or 0

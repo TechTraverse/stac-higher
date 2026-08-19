@@ -66,6 +66,15 @@ DEFAULT_INGEST_STORED_STALL_SECONDS = 1800  # 30 min
 # single transfers legitimately run longer than the window.
 DEFAULT_DELIVERY_STALL_SECONDS = 1800  # 30 min
 
+# Webhook notification dispatch (M2-C). Attempts include the first; failed
+# rows retry after the cool-off until the cap, then dead-letter (which raises
+# a `webhook_failed` alert). A claim stranded `delivering` past the stall
+# window is presumed crashed and re-enters the retry path.
+DEFAULT_WEBHOOK_MAX_ATTEMPTS = 5
+DEFAULT_WEBHOOK_RETRY_SECONDS = 60
+DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10
+DEFAULT_WEBHOOK_STALL_SECONDS = 900  # 15 min
+
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
     if raw is None:
@@ -105,6 +114,11 @@ class Settings:
     ingest_stored_stall_seconds: int = DEFAULT_INGEST_STORED_STALL_SECONDS
     #: Delivery crash recovery (M2-0) — see DEFAULT_DELIVERY_STALL_SECONDS.
     delivery_stall_seconds: int = DEFAULT_DELIVERY_STALL_SECONDS
+    #: Webhook notification dispatch (M2-C) — see the DEFAULT_WEBHOOK_* constants.
+    webhook_max_attempts: int = DEFAULT_WEBHOOK_MAX_ATTEMPTS
+    webhook_retry_seconds: int = DEFAULT_WEBHOOK_RETRY_SECONDS
+    webhook_timeout_seconds: int = DEFAULT_WEBHOOK_TIMEOUT_SECONDS
+    webhook_stall_seconds: int = DEFAULT_WEBHOOK_STALL_SECONDS
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -159,5 +173,17 @@ class Settings:
                     "INGEST_STORED_STALL_SECONDS",
                     str(DEFAULT_INGEST_STORED_STALL_SECONDS),
                 )
+            ),
+            webhook_max_attempts=int(
+                env.get("WEBHOOK_MAX_ATTEMPTS", str(DEFAULT_WEBHOOK_MAX_ATTEMPTS))
+            ),
+            webhook_retry_seconds=int(
+                env.get("WEBHOOK_RETRY_SECONDS", str(DEFAULT_WEBHOOK_RETRY_SECONDS))
+            ),
+            webhook_timeout_seconds=int(
+                env.get("WEBHOOK_TIMEOUT_SECONDS", str(DEFAULT_WEBHOOK_TIMEOUT_SECONDS))
+            ),
+            webhook_stall_seconds=int(
+                env.get("WEBHOOK_STALL_SECONDS", str(DEFAULT_WEBHOOK_STALL_SECONDS))
             ),
         )

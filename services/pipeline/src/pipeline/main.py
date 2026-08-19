@@ -23,6 +23,7 @@ from pipeline.jobs import (
     heartbeat,
     ingest,
     monitor,
+    notify,
     staging_cleanup,
 )
 from pipeline.log import configure_logging
@@ -49,6 +50,9 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # M2-B: §6.6 alerting — expectation/health/job-failure conditions →
     # stac_higher.alerts (raise / re-fire / auto-resolve).
     monitor.register(queue, settings)
+    # M2-C: §4 notification fan-out — firing alerts → group webhook channels
+    # via the notification_deliveries ledger (in-app needs no dispatch).
+    notify.register(queue, settings)
     return queue
 
 

@@ -25,6 +25,7 @@ interface AlertRow {
   kind: string;
   connection_id: string | null;
   association_id: string | null;
+  channel_id: string | null;
   state: AlertState;
   message: string;
   first_seen: Date | string;
@@ -43,6 +44,8 @@ export interface ApiAlert {
   kind: string;
   connection_id: string | null;
   association_id: string | null;
+  /** Set on channel-anchored alerts (M2-C `webhook_failed`). */
+  channel_id: string | null;
   state: AlertState;
   message: string;
   first_seen: string;
@@ -61,17 +64,21 @@ export interface ApiAlert {
 export type AlertWithGroup = ApiAlert;
 
 // Joined through the association when the alert carries one: the effective
-// connection is COALESCE(direct, association's). No deleted_at filters —
-// alerts on a soft-deleted connection remain visible history.
+// connection is COALESCE(direct, association's). Channel-anchored alerts
+// (M2-C webhook failures) derive their group from the channel instead. No
+// deleted_at filters — alerts on a soft-deleted connection remain visible
+// history.
 const ALERT_SELECT = `
   SELECT a.id, a.source, a.kind, a.connection_id, a.association_id,
-         a.state, a.message, a.first_seen, a.last_seen,
+         a.channel_id, a.state, a.message, a.first_seen, a.last_seen,
          a.acknowledged_at, a.acknowledged_by, a.resolved_at,
-         c.group_id, c.name AS connection_name, cc.collection_id
+         COALESCE(c.group_id, nch.group_id) AS group_id,
+         c.name AS connection_name, cc.collection_id
     FROM stac_higher.alerts a
     LEFT JOIN stac_higher.collection_connections cc ON cc.id = a.association_id
     LEFT JOIN stac_higher.connections c
-      ON c.id = COALESCE(a.connection_id, cc.connection_id)`;
+      ON c.id = COALESCE(a.connection_id, cc.connection_id)
+    LEFT JOIN stac_higher.notification_channels nch ON nch.id = a.channel_id`;
 
 function toApiAlert(row: AlertRow): ApiAlert {
   return {
@@ -80,6 +87,7 @@ function toApiAlert(row: AlertRow): ApiAlert {
     kind: row.kind,
     connection_id: row.connection_id,
     association_id: row.association_id,
+    channel_id: row.channel_id,
     state: row.state,
     message: row.message,
     first_seen: iso(row.first_seen) ?? "",
@@ -113,7 +121,9 @@ export async function listAlerts(
   const params: unknown[] = [];
   if (groups !== null) {
     params.push(groups);
-    where.push(`c.group_id = ANY($${params.length}::text[])`);
+    where.push(
+      `COALESCE(c.group_id, nch.group_id) = ANY($${params.length}::text[])`,
+    );
   }
   if (options.state === "open") {
     where.push(`a.state <> 'resolved'`);
@@ -171,4 +181,58 @@ export async function resolveAlert(id: string): Promise<ApiAlert | null> {
     [id],
   );
   return result.rows[0] ? getAlert(id) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Per-user read state (M2-C, spec §4): the in-app channel's "unread" half.
+// A single watermark per user, not per-alert rows — "read" means the bell was
+// opened; per-row triage is ack/resolve on the alert itself. An alert counts
+// as unread while it is FIRING and first RAISED after the watermark, so a
+// last_seen bump on an already-seen condition does not re-unread it, while a
+// resolve→re-fire cycle (a NEW row) does.
+// ---------------------------------------------------------------------------
+
+/**
+ * Firing alerts the caller has not seen yet (group-scoped like listAlerts;
+ * `groups = null` for admin).
+ */
+export async function countUnreadAlerts(
+  userSub: string,
+  groups: string[] | null,
+): Promise<number> {
+  await runMigrations();
+  const params: unknown[] = [userSub];
+  let groupClause = "";
+  if (groups !== null) {
+    params.push(groups);
+    groupClause = ` AND COALESCE(c.group_id, nch.group_id) = ANY($${params.length}::text[])`;
+  }
+  const result = await query<{ count: string }>(
+    `SELECT count(*) AS count
+       FROM stac_higher.alerts a
+       LEFT JOIN stac_higher.collection_connections cc ON cc.id = a.association_id
+       LEFT JOIN stac_higher.connections c
+         ON c.id = COALESCE(a.connection_id, cc.connection_id)
+       LEFT JOIN stac_higher.notification_channels nch ON nch.id = a.channel_id
+      WHERE a.state = 'firing'
+        AND a.first_seen > COALESCE(
+          (SELECT r.last_read_at FROM stac_higher.alert_reads r
+            WHERE r.user_sub = $1),
+          '-infinity'::timestamptz)${groupClause}`,
+    params,
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+/** Advance the caller's watermark to now. Returns the new watermark (ISO). */
+export async function markAlertsRead(userSub: string): Promise<string> {
+  await runMigrations();
+  const result = await query<{ last_read_at: Date | string }>(
+    `INSERT INTO stac_higher.alert_reads (user_sub, last_read_at)
+     VALUES ($1, now())
+     ON CONFLICT (user_sub) DO UPDATE SET last_read_at = now()
+     RETURNING last_read_at`,
+    [userSub],
+  );
+  return iso(result.rows[0]?.last_read_at ?? null) ?? "";
 }

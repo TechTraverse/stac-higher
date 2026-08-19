@@ -27,6 +27,7 @@ const dbRow = {
   kind: "connection_error",
   connection_id: "3a9f1c2e-0000-4000-8000-000000000001",
   association_id: null,
+  channel_id: null,
   state: "firing" as const,
   message: "connection 'src' failing health checks: boom",
   first_seen: new Date("2026-08-18T00:00:00Z"),
@@ -54,7 +55,9 @@ describe("listAlerts", () => {
     expect(alerts[0].group_id).toBe("g1");
 
     const [sql, params] = mockQuery.mock.calls[0];
-    expect(sql).toMatch(/c\.group_id = ANY\(\$1::text\[\]\)/);
+    expect(sql).toMatch(
+      /COALESCE\(c\.group_id, nch\.group_id\) = ANY\(\$1::text\[\]\)/,
+    );
     // Group derivation goes through the association's connection too.
     expect(sql).toMatch(/COALESCE\(a\.connection_id, cc\.connection_id\)/);
     expect(sql).toMatch(/ORDER BY \(a\.state = 'firing'\) DESC, a\.last_seen DESC/);

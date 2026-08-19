@@ -52,6 +52,10 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `CREDENTIALS_MASTER_KEY` | _(unset)_ | base64-encoded 32-byte AES-256-GCM key, **identical to the app's**. Decrypts connection credentials. Absent at startup is tolerated — the connection drain/health-sweep ticks fail loudly (logged) instead of killing the process. |
 | `EGRESS_ALLOW_HOSTS` | _(empty)_ | Comma-separated hostnames the egress policy permits even when they resolve to private/loopback addresses (e.g. the compose-internal test servers). Matched case-insensitively. |
 | `ASSET_HREF_BASE` | `/api/assets` | Root-relative base path ITEMIZE uses when building an item's asset `href`s (`{ASSET_HREF_BASE}/{collection}/{item}/{filename}`) — must match the app's asset route (ADR 0005). |
+| `WEBHOOK_MAX_ATTEMPTS` | `5` | Webhook notification attempts (including the first) before a `notification_deliveries` row dead-letters and raises a `webhook_failed` alert (M2-C, ADR 0010). |
+| `WEBHOOK_RETRY_SECONDS` | `60` | Cool-off before the notify sweep re-enqueues a `failed` webhook delivery. |
+| `WEBHOOK_TIMEOUT_SECONDS` | `10` | Per-POST webhook timeout. |
+| `WEBHOOK_STALL_SECONDS` | `900` | A webhook delivery stranded `delivering` this long is presumed crashed and re-enters the retry path (counts as an attempt). |
 
 ## Connections (Phase 2)
 

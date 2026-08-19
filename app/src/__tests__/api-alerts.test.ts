@@ -43,6 +43,7 @@ function alert(overrides: Partial<ApiAlert> = {}): ApiAlert {
     kind: "connection_error",
     connection_id: "3a9f1c2e-0000-4000-8000-000000000001",
     association_id: null,
+    channel_id: null,
     state: "firing",
     message: "connection 'src' failing health checks: boom",
     first_seen: "2026-08-18T00:00:00.000Z",

@@ -325,6 +325,27 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   audited operator+ `POST /api/alerts/[id]/ack` / `.../resolve`
   (state-guarded; a manual resolve with the condition still true re-fires as
   a NEW row, which is what re-notifies). Notification fan-out is M2-C.
+- **M2-C · notification channels** ([ADR 0010](decisions/0010-alerting-notifications.md)) —
+  migration **015**: `notification_deliveries` (the per-(alert, channel)
+  webhook ledger), `alert_reads` (per-user read watermark),
+  `alerts.channel_id` + `notified_at`, and the dedup index/CHECK grown to the
+  channel leg (the pipeline's `sync_alerts` conflict target moved in
+  lockstep). App: per-group channel CRUD at `/api/channels*`
+  (`lib/notifications/`, operator+ mutations audited as
+  `notification_channel`, webhook secret write-only → `has_secret`), plus the
+  in-app read state (`GET /api/alerts/unread`, `POST /api/alerts/read` —
+  member+, ungated). Pipeline: `pipeline/notify/` — the minute
+  `pipeline.notify_sweep` fans firing un-notified alerts out to the owning
+  group's webhook channels (never through the channel an alert is about) and
+  drives ledger retry/stall recovery; `pipeline.webhook_notify` claims a row
+  and POSTs `{"event":"alert.firing","alert":{…}}` through the connections
+  egress policy (`resolve_pinned`, pinned-IP dial, HMAC-SHA256
+  `X-StacHigher-Signature` when a secret is set); terminal failure
+  dead-letters and raises a channel-anchored `webhook_failed` alert,
+  auto-resolved by the next successful delivery. Webhook `config` contract
+  fixture: `tests/contract-fixtures/webhook-channel-config.json`. In-app
+  needs no dispatch — the alerts row + watermark IS the delivery (bell UI is
+  M2-D). Email is a deferred third `kind`.
 
 ## Phases 7–8 — Not started ⬜
 

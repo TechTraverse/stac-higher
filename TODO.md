@@ -74,13 +74,24 @@ is in ROADMAP §9 M1.
       tick (dedup makes that equivalent to the ok→error transition hook, and
       it also catches error states set outside the sweep). Group scoping is
       DERIVED (alert → connection → group), not stored. Follow-ups below.
-- [ ] **M2-C · notification channels** (spec §4, ADR **0010**). In-app (alerts
+- [x] **M2-C · notification channels** (spec §4, ADR **0010**). In-app (alerts
       row + per-user read state) and webhook; per-group channel CRUD. Webhook
       dispatch lives **pipeline-side** next to the connections egress policy —
       do NOT widen the app's `safeFetch` private/loopback guard; retry through
       the queue, and record terminal webhook failure as a `job_failure` alert.
       Golden fixture for the webhook `config` shape (new cross-runtime
       contract).
+      **Done 2026-08-19** — migration 015 (`notification_deliveries` ledger,
+      `alert_reads` watermark, `alerts.channel_id`+`notified_at`, dedup index
+      grown to the channel leg — `sync_alerts`' conflict target moved in
+      lockstep). "Retry through the queue" landed as the repo's standard
+      ledger+sweep shape (delivery_log model): `pipeline.notify_sweep` fans
+      out + retries with cool-off + revives stalls; `pipeline.webhook_notify`
+      claims and POSTs via `resolve_pinned` (pinned-IP dial, optional HMAC
+      `X-StacHigher-Signature`); dead-letter raises a CHANNEL-anchored
+      `webhook_failed` alert, auto-resolved on the next success. App:
+      `/api/channels*` CRUD (secret write-only), `/api/alerts/unread` +
+      `/api/alerts/read` (member+, ungated). Residuals: ISSUES **I-58**.
 - [ ] **M2-D · `/monitoring` page + header alert bell** (spec §7). Per-association
       flow timelines, delivery latency, alert list with ack/resolve; unread
       firing count in the Header island. e2e coverage.
@@ -194,6 +205,28 @@ is in ROADMAP §9 M1.
   `sync_alerts` returns `(newly_raised, auto_resolved)` so the notify job can
   key off newly-raised rows; `MONITOR_KINDS` is the ownership boundary a
   webhook-failure alert writer must stay outside of.
+  *(M2-C note: fan-out keys off the durable `alerts.notified_at` watermark,
+  not the tick's return counts — a crash between raise and notify would have
+  lost the in-memory signal.)*
+
+### From M2-C
+
+- Accepted-simplification bundle is ISSUES **I-58**: in_app rows are
+  declarative-only, no `alert.resolved`/recovery webhook events, at-least-once
+  POST delivery, plaintext HMAC secret in `config`, and `PgNotifyRepo` SQL
+  unexercised until **M2-I** (add a webhook leg to the rehearsal: alert fires
+  → webhook lands signed → kill the worker mid-POST → stall revival retries →
+  dead-letter raises `webhook_failed` → next success auto-resolves it).
+- **M2-D contract**: the bell reads `GET /api/alerts/unread` and calls
+  `POST /api/alerts/read` on open; both exist and are member+-ungated. The
+  channels CRUD has no UI yet — M2-D's `/monitoring` page is the natural home
+  for a channels management panel (spec §7 doesn't name one; decide there).
+- The migration-015 CHECK/index rebuild assumes the migration-014 unnamed
+  anchor CHECK auto-named `alerts_check` (single unnamed table-level CHECK —
+  deterministic in practice, `IF EXISTS`-guarded regardless). If a deployment
+  ever reports the old CHECK surviving, that assumption is why.
+- `create_pending_deliveries` inserts row-per-channel in a loop — fine at
+  channel cardinality (a handful per group), not a bulk path.
 
 ### Carried forward from M1
 

@@ -15,6 +15,7 @@ import pytest
 from pipeline.delivery.config import parse_delivery_config
 from pipeline.flow.expectation import parse_delivery_expectation, parse_ingest_expectation
 from pipeline.ingest.config import parse_ingest_config
+from pipeline.notify.config import parse_webhook_config
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "contract-fixtures"
 
@@ -27,6 +28,7 @@ INGEST = _load("ingest-config.json")
 DELIVERY = _load("delivery-config.json")
 INGEST_EXPECTATION = _load("ingest-expectation.json")
 DELIVERY_EXPECTATION = _load("delivery-expectation.json")
+WEBHOOK = _load("webhook-channel-config.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -57,6 +59,17 @@ def test_ingest_expectation_cases(case):
 @pytest.mark.parametrize("case", DELIVERY_EXPECTATION["cases"], ids=lambda c: c["name"])
 def test_delivery_expectation_cases(case):
     _check(parse_delivery_expectation, case)
+
+
+@pytest.mark.parametrize("case", WEBHOOK["cases"], ids=lambda c: c["name"])
+def test_webhook_channel_config_cases(case):
+    _check(parse_webhook_config, case)
+
+
+def test_webhook_channel_config_matches_golden():
+    parsed = parse_webhook_config(WEBHOOK["minimal"])
+    assert parsed.url == WEBHOOK["defaults"]["url"]
+    assert parsed.secret is None
 
 
 def test_ingest_expectation_matches_golden():
