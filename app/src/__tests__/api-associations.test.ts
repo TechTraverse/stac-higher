@@ -23,6 +23,7 @@ vi.mock("@/lib/collections/settings", () => ({
     externallyWritable: false,
     retentionDays: null,
     gcGraceDays: 30,
+    archived: false,
   }),
 }));
 vi.mock("@/lib/connections/storage", async (importOriginal) => {
@@ -129,6 +130,7 @@ const unowned = {
   externallyWritable: false,
   retentionDays: null,
   gcGraceDays: 30,
+  archived: false,
 };
 
 const ASSOC_IMPACT = {
