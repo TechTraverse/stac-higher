@@ -379,6 +379,26 @@ is in ROADMAP §9 M1.
   and itemized (it increments at both stages by design — they measure stage
   throughput, not unique bytes). Label docs say so; don't sum stages.
 
+### From the M2 hygiene review pass
+
+- `api-deliveries.test.ts` (~103-108) and `api-backfills.test.ts` (~93-98)
+  still carry `as never`-cast `CollectionSettings` fixture literals missing
+  `archived` (the same drift class that broke CI in the M2 promotion) —
+  ~10 hand-copied settings literals across the suites. A typed
+  `makeCollectionSettings(overrides)` factory would make the compiler flag
+  every call site the next time the shape grows.
+- `/monitoring` runs two independent 30s alert polls when the alerts card is
+  on its Resolved view (FlowsCard keeps `open` mounted while AlertsCard polls
+  `resolved`). Cheap fix if it ever matters: hoist one `useAlerts("open")`
+  into MonitoringPage and derive the card's open view from it.
+- The expectation-breach alert kinds (`ingest_inactivity`, `delivery_slo`)
+  are cross-runtime contract strings the frontend now branches on
+  (`EXPECTATION_BREACH_KIND` in `lib/monitoring/api.ts`, pinned by literal
+  strings in `monitoring-page.test.tsx`; writer: pipeline `MONITOR_KINDS`).
+  Per the contract-fixture rule they deserve a
+  `tests/contract-fixtures/alert-kinds.json` consumed by both suites —
+  deferred because it needs a pytest-side consumer too.
+
 ### Carried forward from M1
 
 - ~~ADR 0009 leaves ASSOCIATION-delete reference semantics implicit~~

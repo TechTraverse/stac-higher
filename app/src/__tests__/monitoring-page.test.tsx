@@ -94,7 +94,6 @@ function flow(overrides: Partial<Association> = {}): Association {
       items: 10,
       bytes: 2048,
       failed: 0,
-      // Far in the past — always "late" against a 3600s window.
       last_activity_at: "2026-01-01T00:00:00.000Z",
     },
     created_by: "u1",
@@ -155,6 +154,51 @@ describe("MonitoringPage", () => {
     render(<MonitoringPage />);
 
     expect(screen.getByText(/on time · activity ≤ 3600s/)).toBeTruthy();
+  });
+
+  it("marks a deliver flow late on an open delivery_slo alert", () => {
+    // Literal kind string on purpose: it pins the cross-runtime contract
+    // (pipeline MONITOR_KINDS) so a typo in EXPECTATION_BREACH_KIND fails here.
+    useAlertsMock.mockReturnValue(
+      loaded([
+        alert({
+          kind: "delivery_slo",
+          message: "delivery took 900s (expected within 600s)",
+        }),
+      ]),
+    );
+    useFlowsMock.mockReturnValue(
+      loaded([
+        flow({
+          direction: "deliver",
+          expectation: { deliver_within_seconds: 600 },
+        }),
+      ]),
+    );
+    useChannelsMock.mockReturnValue(loaded([]));
+
+    render(<MonitoringPage />);
+
+    expect(screen.getByText(/late · deliver ≤ 600s/)).toBeTruthy();
+  });
+
+  it("withholds the verdict when the alerts query has no data", () => {
+    // A failed alerts query must not read as "no open alerts" → "on time".
+    useAlertsMock.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("boom"),
+      refetch: vi.fn(),
+    });
+    useFlowsMock.mockReturnValue(loaded([flow()]));
+    useChannelsMock.mockReturnValue(loaded([]));
+
+    render(<MonitoringPage />);
+
+    expect(screen.getByText(/^activity ≤ 3600s$/)).toBeTruthy();
+    expect(screen.queryByText(/on time/)).toBeNull();
+    expect(screen.queryByText(/late ·/)).toBeNull();
   });
 
   it("lists channels with the signed badge, never the secret", () => {

@@ -19,7 +19,7 @@ import {
 } from "@stac-higher/shared";
 import { ArrowDownToLine, ArrowUpFromLine, Waves } from "lucide-react";
 import type { Association } from "@/lib/associations/types";
-import type { Alert } from "@/lib/monitoring/api";
+import { ALERTS_PAGE_LIMIT, type Alert } from "@/lib/monitoring/api";
 import { useAlerts, useFlows } from "@/lib/monitoring/queries";
 import {
   expectationWindow,
@@ -36,11 +36,18 @@ function FlowRow({
   openAlerts,
 }: {
   flow: Association;
-  openAlerts: Alert[];
+  /** null while the alerts query has no data (loading or errored). */
+  openAlerts: Alert[] | null;
 }) {
   const stats = readFlowStats(flow.flow_stats);
   const window = expectationWindow(flow.direction, flow.expectation);
-  const late = isLate(flow.direction, flow.id, openAlerts);
+  const late =
+    openAlerts !== null && isLate(flow.direction, flow.id, openAlerts);
+  // "on time" needs evidence: a loaded, untruncated alert list with no breach
+  // row. A full page may have dropped the row, and a failed query proves
+  // nothing — both fall back to showing the bare window.
+  const onTimeKnown =
+    openAlerts !== null && openAlerts.length < ALERTS_PAGE_LIMIT;
   const DirectionIcon =
     flow.direction === "ingest" ? ArrowDownToLine : ArrowUpFromLine;
 
@@ -102,11 +109,18 @@ function FlowRow({
       <div className="shrink-0 text-right">
         {window === null ? (
           <span className="text-xs text-muted-foreground">no expectation</span>
-        ) : (
+        ) : late || onTimeKnown ? (
           <Badge variant={late ? "destructive" : "default"}>
             {late ? "late" : "on time"} ·{" "}
             {flow.direction === "ingest" ? "activity ≤" : "deliver ≤"} {window}s
           </Badge>
+        ) : (
+          <span
+            className="text-xs text-muted-foreground"
+            title="Alert status unavailable — see the alerts list"
+          >
+            {flow.direction === "ingest" ? "activity ≤" : "deliver ≤"} {window}s
+          </span>
         )}
       </div>
     </div>
@@ -115,9 +129,10 @@ function FlowRow({
 
 export function FlowsCard() {
   const { data: flows, isLoading, isError, error, refetch } = useFlows();
-  // Same query the alerts card polls, so the hint tracks it for free; while
-  // it loads (or errors) the hint reads on-time, which the list then corrects.
-  const openAlerts = useAlerts("open").data ?? [];
+  // Same query the alerts card polls, so the hint tracks it for free. No
+  // data (loading or errored) → null, and the rows withhold their verdict
+  // rather than showing a false "on time".
+  const openAlerts = useAlerts("open").data ?? null;
 
   return (
     <Card data-testid="flows-card">

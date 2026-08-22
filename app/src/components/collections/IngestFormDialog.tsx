@@ -67,10 +67,19 @@ function emptyForm(): IngestFormState {
 
 /** Seed the form from a stored config. The server only writes schema-complete
  * configs, so parse once through the contract instead of re-narrowing each
- * field by hand (an unparseable config falls back to the empty form). */
+ * field by hand. A config the CURRENT schema rejects (written before a schema
+ * tightening) falls back to empty config fields — but the expectation is
+ * independent of `config` and must survive the fallback, or saving the form
+ * would silently disarm the flow monitor for this source. */
 function formFromAssociation(a: Association): IngestFormState {
+  const expectActivity = expectationSecondsField(
+    a.expectation,
+    "expect_activity_within_seconds",
+  );
   const parsed = ingestConfigSchema.safeParse(a.config);
-  if (!parsed.success) return { ...emptyForm(), connectionId: a.connection_id };
+  if (!parsed.success) {
+    return { ...emptyForm(), connectionId: a.connection_id, expectActivity };
+  }
   const c = parsed.data;
   const isMove = c.post_ingest.startsWith("move:");
   return {
@@ -84,10 +93,7 @@ function formFromAssociation(a: Association): IngestFormState {
     metadataStrategy: c.metadata.strategy,
     postIngest: isMove ? "move" : c.post_ingest === "delete" ? "delete" : "leave",
     movePath: isMove ? c.post_ingest.slice("move:".length) : "",
-    expectActivity: expectationSecondsField(
-      a.expectation,
-      "expect_activity_within_seconds",
-    ),
+    expectActivity,
   };
 }
 
@@ -147,6 +153,14 @@ export function IngestFormDialog({
       toast.error("A destination path is required for the move action");
       return;
     }
+    // The write contract validates the rest (numeric bounds included), so the
+    // form can't drift from the server's schema.
+    const parsedConfig = ingestConfigSchema.safeParse(buildConfig(form));
+    if (!parsedConfig.success) {
+      const issue = parsedConfig.error.issues[0];
+      toast.error(`${issue.path.join(".")}: ${issue.message}`);
+      return;
+    }
     const expectSeconds = parseExpectationSeconds(form.expectActivity);
     if (expectSeconds === undefined) {
       toast.error("The activity window must be a whole number of seconds (≥ 1)");
@@ -156,7 +170,7 @@ export function IngestFormDialog({
       expectSeconds === null
         ? null
         : { expect_activity_within_seconds: expectSeconds };
-    const config = buildConfig(form);
+    const config = parsedConfig.data;
 
     const callbacks = {
       onSuccess: () => {

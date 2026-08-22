@@ -48,9 +48,23 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 
 export type AlertListState = "open" | "resolved";
 
+/** One page of alerts is all the UI fetches; a full page means the list may
+ * be truncated, so absence of an alert row proves nothing (the flows card's
+ * on-time hint checks this before trusting a miss). */
+export const ALERTS_PAGE_LIMIT = 100;
+
+/** The flow monitor's alert kind for a blown §5.1 expectation, per direction.
+ * Cross-runtime contract strings — the authoritative writer is MONITOR_KINDS
+ * in services/pipeline/src/pipeline/flow/monitor.py; unit tests pin the
+ * literals so a drift here fails the suite. */
+export const EXPECTATION_BREACH_KIND = {
+  ingest: "ingest_inactivity",
+  deliver: "delivery_slo",
+} as const;
+
 export async function listAlerts(state: AlertListState): Promise<ApiAlert[]> {
   const data = await apiFetch<{ alerts: ApiAlert[] }>(
-    `/api/alerts?state=${state}&limit=100`,
+    `/api/alerts?state=${state}&limit=${ALERTS_PAGE_LIMIT}`,
   );
   return data.alerts;
 }
