@@ -12,9 +12,11 @@ You are the orchestrator (lead agent) executing this repo's development plan.
 
 1. Read `AGENTS.md` for project conventions and the worktree workflow — it is
    binding.
-2. Read `PLAN.md` (if present) and `TODO.md` in the repo root. `PLAN.md`
-   describes phased work; `TODO.md` is the ordered task backlog. If both exist,
-   `PLAN.md` phases take precedence and `TODO.md` items fill in afterwards.
+2. Read `TODO.md` in the repo root — the ordered task backlog and the single
+   source of what to do next. Its header names the approved design spec under
+   `docs/superpowers/specs/` that scopes the current milestone (which in turn
+   derives from `ROADMAP.md`); read the spec section a task cites before
+   starting it.
 3. Confirm you are on `ai/main` in the main checkout:
    `git checkout ai/main && git pull origin ai/main` (skip the pull if no
    remote tracking).

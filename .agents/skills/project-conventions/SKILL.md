@@ -27,16 +27,25 @@ exist precisely to bridge the Header island and the page island.
 ## Three-Tier State — pick the right tier
 
 1. **Nanostores** — cross-island persistent state only (catalog selection,
-   theme). Module-level atoms shared across React trees; persisted via
-   `@nanostores/persistent`. Do not put per-page state here.
-2. **TanStack Query** — all server state. Query keys include the catalog URL
-   (`["stac", catalogUrl, "collections", ...]`) so switching catalogs
-   invalidates everything. Use the key factory (`app/src/lib/query/keys.ts`) —
-   never inline key arrays; mutations invalidate by key prefix.
+   theme, map view/draw state, sidebar). Module-level atoms shared across
+   React trees; persisted via `@nanostores/persistent`. Do not put per-page
+   state here. `app/src/stores/catalogStore.ts` is app-local; `mapStore.ts` /
+   `uiStore.ts` are re-export proxies for the shared package's stores.
+2. **TanStack Query** — all server state. The key factory is
+   `app/src/lib/query/keys.ts` for ALL domains — never inline key arrays;
+   mutations invalidate by key prefix. **Only `stacKeys` includes the catalog
+   URL** (`["stac", catalogUrl, ...]` — switching catalogs invalidates STAC
+   data); the platform-route factories (`extensionKeys`, `connectionKeys`,
+   `associationKeys`, `alertKeys`, `monitoringKeys`, `channelKeys`,
+   `collectionSettingsKeys`) are catalog-agnostic. Hooks live per domain:
+   STAC hooks in `app/src/lib/query/`, platform hooks next to their client
+   functions (`app/src/lib/{connections,associations,monitoring}/queries.ts`).
 3. **React Hook Form + Zod** — form state. Schemas in
    `app/src/lib/stac-api/schemas.ts`. `useFieldArray` for repeatable sections
    (providers, assets, properties). The resolver uses an `as any` cast (Zod v4
    type inference vs `zodResolver`) — known pattern, don't "fix" it.
+   (Exception noted: a couple of small platform dialogs use local `useState`;
+   prefer RHF+Zod when a form grows past a handful of flat fields.)
 
 ## Import Rules
 
@@ -68,6 +77,30 @@ shape and STAC JSON (`formToStacCollection` / `stacCollectionToForm`) → sticky
 JSON preview sidebar via `watch()` → mutation on submit with toast feedback →
 redirect via `window.location.href` on success (full page reload, not SPA
 navigation — islands make client-side routing pointless here).
+
+## Server-Side Rules (API routes — most platform code lives here)
+
+- **Routes** are Astro endpoints under `app/src/pages/api/`; the full route
+  table is in `AGENTS.md`. Every route consumes `locals.auth` (set by
+  `src/middleware.ts`) — never tokens or cookies directly.
+- **Gating**: a new mutation route MUST be registered in the gated-route
+  table (`app/src/lib/authz/permissions.ts` — `matchGatedRoute` /
+  `SUB_ACTION_ROUTES`); the guard then role-checks (operator|admin) and
+  writes the `audit_log` row. GROUP ownership is enforced inside the route
+  (the guard can't see the DB); a row outside the caller's groups is a 404.
+  Authz failures use `{ error, code }` (401 `unauthenticated` /
+  403 `forbidden`). Deliberately ungated personal-state routes (e.g.
+  `POST /api/alerts/read`) are the documented exception, not a pattern.
+- **DDL**: the app owns ALL `stac_higher.*` DDL — append a migration to
+  `MIGRATIONS` in `app/src/lib/db/migrate.ts` (next number, never reorder);
+  the pipeline never runs DDL (ADR 0001). Partitioned tables are reconciled
+  by `runMigrations()` (ADR 0012).
+- **Cross-runtime contracts**: any config shape both runtimes read (Zod
+  schema ↔ Python parser) needs a golden fixture in
+  `tests/contract-fixtures/` consumed by both suites (see the `new-test`
+  skill).
+- **Outbound fetches** go through `safeFetch` (private/loopback blocked);
+  never widen it for pipeline concerns — pipeline egress has its own policy.
 
 ## Map Components
 

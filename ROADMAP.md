@@ -9,6 +9,10 @@ Earth-Search-class scale, for gov/defense-adjacent deployments.
 This document is the long-term plan: locked decisions, target architecture,
 data model, flows, and a phased implementation roadmap. Each phase is designed
 to be implemented over 1–3 working sessions and to be independently shippable.
+**What has already shipped is catalogued in [`docs/FEATURES.md`](docs/FEATURES.md)**
+(per-phase entry points and residuals) — this file keeps the spec (§1–§8), the
+phase/milestone status board (§9), and the forward plan; the phase-by-phase
+build narrative lives in FEATURES.md and git history.
 
 ---
 
@@ -18,7 +22,7 @@ to be implemented over 1–3 working sessions and to be independently shippable.
 |---|---|
 | Deployment model | Enterprise, multi-user. Cloud-portable; AWS first (GovCloud-compatible). Local dev stays a single `docker compose up`. Not air-gapped — AWS managed services are available where the deployment allows. |
 | Compliance posture | Gov/defense-adjacent; FISMA High is the eventual operating environment. Consequences are first-class, not bolt-ons: audit logging from Phase 1, KMS-encrypted credentials, host-key pinning, documented network-policy requirements. |
-| Scale envelope | Earth-Search class: **100k+ items/day sustained**, million-item backfills, assets 100 MB–multi-GB, and **most items delivered** to at least one destination. Supported honestly: FTP/SFTP endpoints carry NRT-subset volumes; full-envelope volume assumes object storage on at least one side of every flow. A load-test gate precedes any production scale claim (Phase 8). |
+| Scale envelope | Earth-Search class: **100k+ items/day sustained**, million-item backfills, assets 100 MB–multi-GB, and **most items delivered** to at least one destination. Supported honestly: FTP/SFTP endpoints carry NRT-subset volumes; full-envelope volume assumes object storage on at least one side of every flow. A load-test gate precedes any production scale claim (Phase 8). (**M3 raises the bar** to ~30 items/s ≈ 2.6M items/day — see §9; the byte-volume arithmetic in §2 is computed against the original envelope and must be redone as part of M3 scoping.) |
 | Identity | OIDC with a pluggable IdP. Keycloak ships in docker-compose as the default; Cognito/Entra/Okta swappable per deployment. An **app-side claims-mapping layer** (per-deployment config mapping arbitrary claim paths → canonical `groups`/`roles`) is the compatibility contract — IdPs are not required to emit our token shape. |
 | Access control | Connections are **group-owned**. Roles: `member` (view group connections, associate them), `operator` (create/edit/operate connections), `admin` (cross-group everything). |
 | Catalog scope | Ingest/delivery associations attach to **built-in-catalog collections only** (enforced in the API). External catalogs stay browse-only in the client. A `stac-api` connection protocol (harvest another STAC API, CQL2-filtered) is a reserved future protocol — the adapter model must not foreclose it. |
@@ -196,6 +200,18 @@ New tables live in the existing `stac_higher` schema alongside `extensions`.
 Migrations continue to run via the existing middleware mechanism (revisit in
 Phase 0 if the pipeline service also needs migration authority).
 
+> **This ERD is the design-time shape.** The canonical, current schema is the
+> migration list in `app/src/lib/db/migrate.ts` (001–018 as of M2). Known
+> deltas the diagram doesn't show: `collection_settings.archived` (016) and the
+> `asset_gc` queue (017, ADR 0011); the split expectation fields
+> (`expect_activity_within_seconds` / `deliver_within_seconds`, M2-A);
+> `alerts.kind`/`channel_id`/`notified_at` + the dedup index,
+> `notification_deliveries`, and `alert_reads` (014/015, ADR 0010);
+> `delivery_log.delivered_assets`/`next_attempt_at` (009/011);
+> `item_events.claimed_at`/`dispatch_attempts`/`next_dispatch_at` (011/012);
+> soft-delete columns (010, ADR 0009); monthly partitioning of `item_events`
+> and `audit_log` (018, ADR 0012).
+
 ```mermaid
 erDiagram
     GROUPS ||--o{ CONNECTIONS : owns
@@ -296,10 +312,13 @@ erDiagram
     }
 ```
 
-At envelope scale, `ingest_files`, `item_events`, `delivery_log`, and
-`audit_log` are high-volume tables: time-partitioned from the start, each with
-its own retention/cleanup job. `audit_log` retention is compliance-driven and
-configured per deployment, never silently truncated.
+High-volume table hygiene shipped in M2-G per [ADR 0012](docs/decisions/0012-table-hygiene.md),
+amending the original partition-everything plan: `item_events` and `audit_log`
+are monthly-partitioned; `ingest_files`, `delivery_log`, and
+`connection_checks` are deliberately **not** (their natural UNIQUE keys are the
+upsert model) and age out via the conservative `history_retention` sweep.
+`audit_log` retention is compliance-driven and configured per deployment,
+never silently truncated — rows die only by partition DETACH+DROP.
 
 ### 5.1 Association `config` shapes
 
@@ -492,17 +511,24 @@ flowchart LR
 
 ### 6.5 Retention & GC
 
+*(Implemented by M2-F — [ADR 0011](docs/decisions/0011-retention-gc.md);
+`pipeline/gc/`, migration 017.)*
+
 - `collection_settings.retention_days` defines a rolling window per
   collection (`null` = keep forever).
 - A scheduled GC job selects expired items in bulk, deletes them from pgstac
   (which emits `delete` outbox events for bookkeeping — deletions do not
   propagate to destinations), and marks their canonical assets for removal.
 - Asset removal happens after `gc_grace_days` (default 30) — recoverable from
-  oops-deletes; storage never leaks. Ledger and log rows age out on their own
-  partition-drop schedules.
+  oops-deletes; storage never leaks. Ledger and log rows age out per ADR 0012:
+  partition drops for `item_events`/`audit_log`, the `history_retention`
+  sweep for the UNIQUE-keyed tables.
 - Manual item/collection deletion follows the same marked-then-collected path.
 
 ### 6.6 Observability
+
+*(Implemented by M2-A/B/C/D/H — [ADR 0010](docs/decisions/0010-alerting-notifications.md);
+`pipeline/flow/`, `pipeline/notify/`, `pipeline/metrics.py`, `/monitoring`.)*
 
 - **Connection health:** scheduled lightweight checks (connect + list) update
   `status` / `last_checked_at` / `last_error`; real job failures feed the same
@@ -512,8 +538,8 @@ flowchart LR
   Absence-of-data is only detectable against a declared expectation — an
   empty poll may be normal.
 - **Alerts:** `alerts` rows (firing → acknowledged → resolved) with
-  dedup/re-fire on `last_seen`. Notification channels per group: in-app
-  first; email + webhook later.
+  dedup/re-fire on `last_seen`. Notification channels per group: in-app and
+  webhook shipped; email is a deferred third `kind`.
 - **Service telemetry:** Prometheus `/metrics` + structured JSON logs from
   day one; OpenTelemetry traces as later hardening.
 
@@ -552,12 +578,15 @@ Enforcement by plane:
 
 ## 8. UI surface
 
+Every row is live except `/admin` (Phase 7+) and the parenthesized Settings
+visibility knob (needs read-visibility, I-1).
+
 | Page | Contents |
 |---|---|
 | `/connections` | List + live health badges; per-protocol create/edit wizard (SSH-family: host/port/user/key; S3: bucket/region/endpoint/keys); Test connection; host-key re-verify action on mismatch |
 | Collection **Data flow** tab | Associate connections; ingest config (patterns, grouping, metadata, poll frequency, storage mode); delivery config (path template, filters, payload options, on_update, expectations); enable/disable; backfill/redeliver |
-| Collection **Settings** | Group ownership, visibility, externally-writable flag, retention period |
-| `/monitoring` | Flow timelines per association, delivery latency, alert list with ack/resolve; alert bell in header |
+| Collection **Settings** | Group ownership, (visibility,) externally-writable flag, retention period, grace window, archived |
+| `/monitoring` | Flow telemetry per association, delivery latency, alert list with ack/resolve, notification-channel management; alert bell in header |
 | `/admin` | Groups, cross-group connections/collections overview, audit-log viewer |
 | Item forms | Asset upload via presigned flow |
 
@@ -572,17 +601,19 @@ islands, TanStack Query for server state, shared components in
 Dependency chain: `0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8`, though 6 and 7 can
 swap, and 8's IaC work can start in parallel any time after 2.
 
-**Implementation status — 2026-07-16** (legend: ✅ done · 🚧 in progress · ⬜ not started):
+**Implementation status — 2026-08-21** (legend: ✅ done · 🚧 in progress · ⬜ not started):
 
 | Phase | Status | Notes |
 |---|---|---|
-| 0 — Foundations | ✅ Done | Merged to `ai/main`, full stack verified live (`docker compose up`, heartbeat through the queue, client on the built-in catalog). |
-| 1 — Auth, RBAC & audit | ✅ Done | Merged & verified. One item carried forward: per-collection **read-visibility** filtering at the proxy needs OPA / a custom filter factory (ADR 0002) — transaction protection + audience validation are done and integration-tested. |
-| 2 — Connections | ✅ Done | Merged to `ai/main` (app CRUD + AES-256-GCM credential envelope + RBAC/audit, pipeline adapters s3/sftp/ftp/ftps, egress SSRF policy + IP-pinning, TOFU host-key pinning, drain + health-sweep jobs, `/connections` UI). Live-verified end-to-end: SFTP/FTP/S3 test-connections, egress block of the metadata IP, and a TOFU host-key-mismatch catch. FTPS live-tested only on amd64 (test-server image caveat); shares the FTP adapter path + unit-tested. |
-| 3 — Object storage & asset service | ✅ Done | App storage lib + `GET /api/assets/{collection}/{item}/{asset}` (RBAC → presigned 302) + `POST /api/uploads` (operator+, presigned PUT) + manual asset upload in the item form + pipeline staging-TTL cleanup job. No new tables. Live-verified: upload → PUT to MinIO → asset-route 302 → byte round-trip; staging sweep deletes an expired upload and leaves canonical assets intact. ADR 0005. |
-| 4 — Ingest pipeline | 🚧 In progress | **Slice A done** (app associations + Data-flow UI): `collection_connections` + `ingest_files` (migration 005), ingest `config` Zod schema (§5.1), `/api/collections/[id]/connections` CRUD (operator+, group-scoped, audited), Data-flow tab. **Slice B (pipeline): B1, B2+B3, B4, and B4a all done** (B1: adapter `list()`→`FileEntry` metadata + `build_adapter` decrypt→adapter seam; B2+B3: `IngestRepo`, `ingest_poll` scheduler, DISCOVER settled-check, GROUP, copy-mode FETCH → canonical storage; B4: EXTRACT — `raster_auto`/`sidecar`/`defaults_only` — + ITEMIZE — stac-pydantic gate + pypgstac upsert + post-ingest — ADR 0006, no Dockerfile change; B4a: best-effort geometry extraction (COG/GeoTIFF/netCDF/GRIB/Zarr via bundled GDAL) + opt-in collection-extent fallback + fail-fast + `stac_higher:geometry_source` provenance — **RESOLVED ISSUE I-27** (pgstac's NOT NULL geometry)). A `/simplify` quality pass was applied across the B4/B4a slice (behavior-identical). Full pipeline suite: **234 passed, 2 skipped**. **B5 (integration + live end-to-end) largely verified (2026-07-17)** — DB integration test (real pypgstac upsert→query→update), a `raster_auto` e2e (GeoTIFF from MinIO → EXTRACT → ITEMIZE → queryable pgstac item with `ST_Polygon` geometry + `/api/assets` href, in-place update on a changed raster), and netCDF/collection-inheritance paths all live-verified. **Slice C (`storage_mode: reference`) code done** — migration 006 (`ingest_files.source_href`); GROUP/FETCH/EXTRACT reference branches (**RESOLVED ISSUE I-21**, reference no longer stalls at `settled`); `resolveAssetTarget` 302s straight to `source_href`, no presigning, no decryption; durably-reachable sources only, private-source reference deferred (I-32). **Slice C done + merged (26edd43).** **Phase 4 LIVE-VERIFIED end-to-end (2026-07-20, Task 10):** a reference association (poll → … → itemized, `GET /api/assets` 302→source, no canonical copy) AND an SFTP copy association (first live SFTP `list`/`get` → canonical copy → itemize, I-4) both ran uninterrupted through the real scheduler — **done-when met**. The in-container run found+fixed I-35 (pipeline image missing `libexpat1` for rasterio's bundled GDAL). |
-| 5 — Delivery pipeline | 🚧 In progress | **Slice A done** (event outbox + dispatcher skeleton): app migration 007 + **ADR 0007** add the durable `item_events` outbox — a **row-level** trigger on partitioned `pgstac.items` (A0 spike: row-level cascades to every partition incl. future, catching bulk/partition-direct writes a statement-level-on-parent trigger would miss; empty-payload NOTIFY coalesces per-txn) writing one row per change + a payload-less wake. Pipeline `dispatcher/` (poll-driven `dispatch_once`: claim outbox in id order → `pgstac.get_item` → match `direction='deliver'` associations → cql2 `item_filter` + `asset_keys` → **log matched pairs, no transfer yet**) + delivery `config` cross-runtime contract (Zod `deliveryConfigSchema` + Python `delivery/config.py`) + delivery associations now creatable via the API. **Live-verified (2026-07-21):** real trigger fired on insert/delete; real `dispatch_once`/`PgDispatchRepo` vs live pgstac matched only the passing-filter association (both assets), excluded the non-matching one, logged, and drained the outbox; deletes drain without dispatching; idempotent. Finding: pgstac updates surface as delete+insert (ADR 0007). **Slice B-i done + live-verified (2026-07-21):** the byte-moving core — migration 008 `delivery_log`, `delivery/path.py` renderer, adapter `move()`/`put_atomic()`, `delivery/worker.py` `deliver_item`, and dispatcher fan-out (one batched `pipeline.deliver` job per association, enqueue-before-drain). Live-verified 16/16 vs real pgstac + MinIO: trigger → `dispatch_once` → `deliver_item` copied the asset byte-identical to a MinIO destination (`delivery_log` `delivered`/`attempts=1`), a changed re-upsert redelivered into the same row (`attempts=2`, overwrite), a delete drained with no delivery. Pipeline 268 pass/2 skip; app verify 472 pass; 7 task + opus whole-branch reviews clean. Finding I-46: pypgstac upsert emits `insert`/`update`(single)/no-op/`delete` (not the transaction-API delete+insert). **Slice B-ii done + live-verified (2026-07-22):** migration 009 `delivery_log.delivered_assets` (per-asset fingerprint map); `upsert_pending` resets `attempts=0` on redelivery — **resolves I-44**; item-level `on_update` gate + per-asset log-based `overwrite`; payload sidecars (checksum per asset, item JSON every event, `{item_id}.done` completion marker written last); reference-mode reads via the ingest source adapter (ledger-first, enabled-gated, no HTTP client); same-endpoint S3→S3 `CopyObject` with streaming fallback (sha256 checksums force streaming; md5 rides a single-part etag). Pipeline 306 pass/2 skip, ruff clean; app verify 472. **Live-verified 23/23** through the production wiring vs real pgstac + MinIO: real `CopyObject` (etag fingerprint) + full payload at rendered paths, metadata-only update rewrote only the item JSON, changed bytes redelivered, `shasum -c` passed on the sha256 sidecar, `ignore`/`never` policies held, a reference item delivered from its source bucket with no canonical object, and a disabled source failed cleanly then recovered. New residuals I-48 (md5-via-etag ↔ SSE-KMS) and I-49 (reference-delivery residuals). **Slice B-iii done + live-verified (2026-07-25):** migration 011 (`next_attempt_at`, `item_events.claimed_at`, `ingest_files.retries`); retry sweep → dead-letter at `max_attempts`; ingest crash-recovery sweeps (I-52); per-event dispatcher isolation (I-39); atomic outbox claim (I-40 claim half); per-connection concurrency caps (S3 bounded-gather, SFTP/FTP serial); I-49 ride-alongs. Live: SFTP + FTP destinations delivered byte-identical (I-45), a failing destination climbed attempts 1→5 → `dead`, a stopped-then-restarted SFTP recovered via the sweep, and the recovery sweep re-settled stalled/failed ledger rows. Findings fixed: SFTP/FTP `put` now creates parent dirs; delfer FTP test server needs `root_path=/ftp/demo` (no chroot). Pipeline 374 pass; app verify 517. **Slice C done + live-verified (2026-07-25):** migration 012 (`item_events.dispatch_attempts`/`next_dispatch_at`, `delivery_backfills`); the dispatcher's primary wake is now a `LISTEN item_events` loop (minute poll kept as fallback; overlap safe via atomic claims) — live: dispatch 89 ms after commit, e2e delivery 0.17 s (FTP) / 1.6 s (SFTP); I-38 bounded visibility retry (5 deferrals with cool-off, then loud drain — live-verified with a synthetic ghost event); user-initiated backfill as chunked bulk jobs via the ADR 0004 bridge (POST audited `backfill`, 409 on disabled/duplicate; sweep enqueued all 3 pre-existing items, `completed`; a failed reference item recovered through the retry sweep). Pipeline 389 pass, ruff clean; app verify 526. **Slice D done + e2e-verified (2026-07-25):** the Data-flow tab's delivery half — deliver-association create/edit (full §5.1 config: path template, CQL2 item filter, asset keys, payload toggles, `on_update`, `overwrite`, retry, concurrency), enable/disable, backfill (Slice C endpoints, polled to terminal), delivery status from `delivery_log` via new member+ `GET .../deliveries` (recent rows + per-status counts, attempts labeled **per cycle** per I-44), and redeliver on dead rows via operator+ audited `POST .../deliveries/[id]/redeliver` (status-guarded flip dead→failed, `attempts=0`, due `next_attempt_at` — the retry sweep requeues it, ADR 0004 bridge). Shared `AssociationDeleteDialog` (ADR 0009) now serves both halves; FTP root-path help text ride-along; fixed the latent `EmptyState` icon crash on empty Data-flow tabs. App verify 570; e2e 25/25 incl. the new `data-flow.spec.ts` config-flow test (needs `CREDENTIALS_MASTER_KEY` — run-e2e skill updated). |
-| 6–8 | ⬜ Not started | — |
+| 0 — Foundations | ✅ Done (2026-07-14) | Full local stack, queue interface, app-owned migrations. [FEATURES §Phase 0](docs/FEATURES.md). |
+| 1 — Auth, RBAC & audit | ✅ Done | OIDC + claims mapping, dev-bypass, guard + append-only audit, opt-in proxy enforcement. Carried forward: per-collection **read-visibility** needs OPA / a filter factory (ADR 0002, I-1). [FEATURES §Phase 1](docs/FEATURES.md). |
+| 2 — Connections | ✅ Done (live-verified 2026-07-16) | CRUD + credential envelope, adapters, egress SSRF policy, TOFU pinning, test/health bridge, `/connections` UI. [FEATURES §Phase 2](docs/FEATURES.md). |
+| 3 — Object storage & asset service | ✅ Done (live-verified 2026-07-16) | Offline presigning, asset 302 route, uploads, staging TTL sweep (ADR 0005). [FEATURES §Phase 3](docs/FEATURES.md). |
+| 4 — Ingest pipeline | ✅ Done (live-verified end-to-end 2026-07-20) | Slices A, B1–B5, C (`reference` mode). Done-when met: dropped file → catalogued item through the real scheduler, copy and reference both. [FEATURES §Phase 4](docs/FEATURES.md). |
+| 5 — Delivery pipeline | ✅ Done (Slices A→D live/e2e-verified by 2026-07-25) | Outbox + NOTIFY dispatcher, delivery worker + payloads/policies, retry → dead-letter → redeliver, backfill bridge, Data-flow delivery UI. [FEATURES §Phase 5](docs/FEATURES.md). |
+| 6 — Operable platform (M2) | 🚧 Code-complete (2026-08-19) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`). Open: the **M2-I rehearsal** of the done-when, then promotion. [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
+| 7 — Direct interaction | ⬜ Not started | — |
+| 8 — Cloud, scale gate & viz | ⬜ Not started | — |
 
 ### Named milestones (2026-07-24)
 
@@ -640,491 +671,67 @@ there are no intermediate demos; the first demo is M1, complete:
   volume; fixed by the `pgstac-migrate` compose one-shot + drift-guard test),
   I-55 by queue-level `RetrySpec` on the chain + deliver jobs and a
   stored-stall recovery sweep; see the ISSUES I-54/I-55 resolution notes.
-  **ai/main → main promotion (the PR) remains — human step.**
+  **Promoted:** `main` fast-forwarded to `ai/main` and pushed 2026-08-19.
+  (The push exposed a verify/CI gap — CI's app-scoped `astro check` wasn't
+  in local `verify`; six fixture type errors failed CI on main. Fixed, and
+  root `verify` now runs the same check so the gates match.)
 - **M2 — Operable platform** (Phase 6): monitoring/alerts, `/metrics`,
   partitioning + retention/GC, archived collections (ADR 0009's GC half).
-  **Scoped + sliced 2026-08-18** —
+  Scoped + sliced 2026-08-18 —
   `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.md` is the
-  approved design (10 slices M2-0…M2-I, seeded into `TODO.md`). One deliberate
-  deviation from §5: `delivery_log` and `ingest_files` get retention **sweeps**
-  rather than time-partitioning, because their natural UNIQUE keys
-  (`(association_id, item_id)`, `(association_id, source_path, version)`) are
-  incompatible with a partitioned unique index — only `item_events` and
-  `audit_log` partition (spec §6, ADR 0012). Gate: a live rehearsal of the
-  Phase 6 done-when on the auth-enforced stack, then the promotion PR.
+  approved design (10 slices M2-0…M2-I, worked through `TODO.md`).
+  **Code-complete 2026-08-19: M2-0 through M2-H all merged** — flow
+  telemetry (`flow_stats` rollups, split per-direction expectations), the
+  alerts core (`pipeline.flow_monitor`, migrations 014/015, audited
+  ack/resolve), notification channels (in-app + HMAC-signed webhooks via the
+  pipeline-side `notify` ledger, ADR 0010), the `/monitoring` page + header
+  alert bell, the collection Settings tab, retention & GC (`asset_gc`
+  marked-then-collected queue, ADR 0011), table hygiene (partitioned
+  `item_events`/`audit_log` + retention sweeps, ADR 0012 — the deliberate
+  deviation from §5's partition-everything plan, forced by the ledgers'
+  UNIQUE upsert keys), and Prometheus `/metrics` (M2-H). Migrations 013–018;
+  residuals in ISSUES I-58/I-59.
+  **Gate (open): M2-I — a live rehearsal of the Phase 6 done-when on the
+  auth-enforced stack** (stop a source → alert within the expectation window
+  → webhook + bell → ack → auto-resolve on recovery; retention expiry →
+  item leaves the catalog → bytes leave MinIO after the grace window), then
+  the promotion PR. The rehearsal must also exercise the `pragma: no cover`
+  SQL listed in `TODO.md`'s M2 follow-ups (stall sweeps, monitor upserts,
+  the webhook leg, GC sweeps).
+
+  *M2 rehearsal evidence (to be recorded by M2-I):* —
 - **M3 — NOAA-scale readiness:** sustained ~30 items/s (~2.6M items/day,
   mission-critical subscribers) — dispatcher throughput headroom beyond
   Slice C, concurrency-safe multi-worker operation (I-40 and the ingest-ledger
   claims), and a measured load rehearsal against a synthetic 30 items/s feed.
   This pulls the Phase 8 load-gate *measurement* forward; the AWS/IaC half of
-  Phase 8 stays put.
+  Phase 8 stays put. **Not yet scoped** — needs its own design spec (the M2
+  pattern), including redoing §2's byte-volume arithmetic at the 20×-higher
+  item rate.
 - **M4 — Production deployment** (Phases 7–8 as required by the target
   environment).
 
-Per-phase detail and any carried-forward items are noted inline below.
+### Phases 0–5 — delivered
 
-### Phase 0 — Foundations ✅ **Done (2026-07-14)**
-Repo and runtime scaffolding so every later phase has a place to land.
+Per-phase delivery detail (entry points, slice narratives, residuals) lives in
+[`docs/FEATURES.md`](docs/FEATURES.md); the full build history is in git (this
+file's pre-2026-08-21 revisions carried the slice-by-slice narrative) and in
+the M1 evidence above. Every done-when was met live: Phase 4's dropped-file →
+catalogued-item (2026-07-20) and Phase 5's item-change → destination payload
+with retry/dead-letter/redeliver (2026-07-25), both re-proven end-to-end by
+the M1 rehearsal.
 
-- `services/pipeline`: Python package (uv/ruff/pytest), **queue interface**
-  with the Procrastinate backend wired to the existing Postgres (SQS backend
-  lands in Phase 8), health endpoint, Dockerfile, compose service.
-- docker-compose grows: MinIO, Keycloak, stac-auth-proxy (pass-through mode).
-- Built-in catalog: seed the local stac-fastapi as a default, undeletable
-  catalog entry in the client; verify collection/item CRUD against it.
-- Decide/implement migration ownership for `stac_higher` (app middleware vs.
-  dedicated migration step) — one owner, not two.
-- **Done when:** `docker compose up` brings up the full stack; pipeline
-  service runs a no-op scheduled job through the queue interface; client
-  talks to the built-in catalog out of the box.
-- **✅ Delivered:** `services/pipeline` (queue interface + Procrastinate
-  backend + `/health` + Dockerfile) ✅; compose grows MinIO / Keycloak
-  (:8180) / stac-auth-proxy (:8081, pass-through) ✅; built-in catalog seeded
-  as an undeletable client entry ✅; migration ownership settled
-  (ADR 0001 — app middleware owns `stac_higher`, Procrastinate owns its own
-  schema) ✅. **Done-when verified live:** whole stack healthy, heartbeat
-  ticking through the queue, CRUD through the proxy against the built-in
-  catalog. All three sub-branches merged to `ai/main`.
+### Phase 6 — Observability & retention 🚧 **Code-complete (M2, 2026-08-19)**
 
-### Phase 1 — Auth, RBAC & audit core ✅ **Done (2026-07-14)**
-- OIDC login in the Astro app (session, token refresh); Keycloak realm
-  template with `member`/`operator`/`admin` roles and example groups.
-- **Claims-mapping layer**: per-deployment config → canonical groups/roles;
-  Keycloak mapping ships as the default config.
-- stac-auth-proxy enforcing catalog read visibility from group claims;
-  integration tests for its CQL2 *transaction* filtering (v1.0-era feature).
-- Permission middleware in the Astro API; `collection_settings` table (group
-  ownership, with a confirmed default for pre-existing collections).
-- **`audit_log`**: append-only table + write path through the permission
-  middleware; login, CRUD, and credential events from day one.
-- Dev-bypass mode (env-gated static identity) so local development of later
-  phases doesn't require the IdP dance.
-- **Done when:** two users in different groups see different connections and
-  collections; roles gate mutations end-to-end; every mutation appears in the
-  audit log.
-- **✅ Delivered:** OIDC login (PKCE, encrypted session cookie, token
-  refresh, RP-initiated logout) ✅; claims-mapping layer (Keycloak/Cognito/
-  Entra shapes tested) ✅; realm template with `member`/`operator`/`admin` +
-  example groups + test users ✅; permission middleware + `collection_settings`
-  (pre-existing-collection default settled in ADR 0003) ✅; append-only
-  `audit_log` (trigger-enforced, login/CRUD events, secrets redacted) —
-  verified live: 47 rows written, `UPDATE`/`DELETE` rejected ✅; dev-bypass
-  mode ✅. Opt-in proxy enforcement (`infra/compose.auth-enforced.yml`)
-  integration-tested: anonymous writes rejected, operator CRUD, wrong
-  realm/audience rejected ✅. A **security review caught and fixed a critical
-  open redirect** in the OIDC `returnTo` handling (CWE-601). All sub-branches
-  merged to `ai/main`.
-- **⚠️ Carried forward:** per-collection **read-visibility** filtering from
-  group claims is not achievable via stac-auth-proxy config alone — it needs
-  OPA or a small custom filter factory (documented in ADR 0002). The
-  "different groups see different *collections*" clause of the done-when is
-  therefore deferred to that follow-up; connection-level isolation lands with
-  Phase 2.
-
-### Phase 2 — Connections ✅ **Done (2026-07-16)**
-- ✅ `connections` table, CRUD API + Zod schemas, credential envelope encryption
-  (provider interface: local master key now, KMS later). Merged to `ai/main`.
-- ✅ Python adapter layer: one interface (`list/get/put/delete/test`),
-  implementations for s3 (boto3), sftp (asyncssh — also covers ssh file
-  transfer), ftp + ftps (aioftp). `stac-api` protocol reserved in the enum,
-  raises `NotImplementedError`.
-- ✅ **Egress policy in the adapter layer**: deny private/loopback/link-local/
-  metadata by default + `EGRESS_ALLOW_HOSTS` allowlist. Hardened against two
-  SSRF vectors an adversarial review found — DNS-rebinding TOCTOU (resolve+pin
-  the IP; FTPS/S3-https keep the hostname for TLS with a fail-closed recheck,
-  documented residual) and FTP PASV/EPSV data-channel redirect (data channel
-  forced to the validated control host).
-- ✅ **Host-key TOFU pinning**: captured on first successful test, hard-fail on
-  mismatch, re-verify via `/api/connections/[id]/host-key/reset`.
-- ✅ Test-connection endpoint (app → `connection_checks` request table → pipeline
-  drain job runs `test` → result surfaced) and scheduled health checks. The
-  drain (`* * * * *`, drains all pending) and health sweep (`*/5 * * * *`) are
-  registered periodic jobs; neither touches `connections.updated_at`. ADR 0004.
-- ✅ `/connections` UI: list with status/credential/host-key badges, per-protocol
-  wizard forms (write-only credentials), test+poll, host-key reset.
-- **Done when:** a user can create each protocol type, see credentials
-  write-only, test it, watch health status update on schedule, and a host-key
-  change is caught and surfaced. — **Met.**
-- **Verified live (2026-07-16):** full `docker compose up` + `infra/compose.test-servers.yml`
-  drove real test-connections through the drain job — SFTP (host key TOFU-pinned),
-  FTP, and S3/MinIO all reached `ok`; a connection targeting `169.254.169.254`
-  was blocked by the egress policy; a tampered host-key pin was caught as a
-  hard-fail mismatch. FTPS was live-tested only on amd64 (its vsftpd test-server
-  image is amd64-only / crashes under Rosetta on Apple Silicon); it shares the
-  `FtpAdapter` code path exercised by the live FTP test and is unit-tested.
-- **Cross-runtime contract (fixed; consumed by Phase 3+):** the credential
-  envelope byte format (`0x01 ‖ nonce ‖ AES-256-GCM`), the `connections` /
-  `connection_checks` table DDL, and the adapter interface (`test/list/get/put/
-  delete`) are the seam the object-storage/asset service and ingestion phases
-  build on. `CREDENTIALS_MASTER_KEY` must be shared by the app and the pipeline.
-
-### Phase 3 — Object storage & asset service ✅ **Done (2026-07-16)**
-- ✅ Storage abstraction in app + pipeline (S3 SDK against MinIO/S3), bucket
-  layout per §5.3. App: `app/src/lib/storage/` (config/keys/client/presign/
-  resolve); pipeline: `services/pipeline/.../storage/platform.py` (egress-pinned
-  platform-bucket client). New app deps: `@aws-sdk/client-s3` +
-  `@aws-sdk/s3-request-presigner`. **No new tables** — keys derive from URL
-  params / request bodies.
-- ✅ `/api/assets/{collection}/{item}/{asset}`: auth check → presigned 302
-  (canonical). The redirect target is abstracted behind `resolveAssetTarget`, so
-  `reference` mode (Phase 4) branches there without touching the route. The
-  `{asset}` segment is the object filename (ADR 0005).
-- ✅ `POST /api/uploads`: presigned PUT URLs (operator+, gated + audited).
-  Manual UI uploads write **direct to canonical** — the app is a trusted RBAC'd
-  writer that owns the item id; the staging+finalize path (§6.2) is for the
-  untrusted external push flow (Phase 7), and its `stagingKey` layout + the TTL
-  sweep already exist as that seam.
-- ✅ Manual asset upload in item forms (flow C): `AssetUpload` wired into the
-  item form's asset rows (pick file → presign → browser PUT → href written
-  back). Staging TTL cleanup job (`0 * * * *`) sweeps abandoned `staging/`
-  uploads older than `STAGING_TTL_SECONDS` (24h default).
-- **Done when:** a user uploads a file in the item form, the item's asset
-  href resolves through the asset route, and unauthorized users get 403. —
-  **Met.**
-- **Verified live (2026-07-16):** full `docker compose up` (MinIO + database) +
-  the app dev server drove the real routes — `POST /api/uploads` → presigned PUT
-  to MinIO (200) → `GET /api/assets/...` → 302 → follow → the original bytes came
-  back. The pipeline `cleanup_expired` primitive ran against live MinIO: a seeded
-  `staging/` object was deleted while the canonical asset was left intact. The
-  unauthenticated-→-403 path is unit-verified (dev-bypass is always an operator,
-  so it can't be reached live).
-- **Cross-runtime contract (consumed by Phase 4+):** the §5.3 key layout
-  (`assets/{collection}/{item}/{filename}`, `staging/{upload_id}/{filename}`),
-  the `resolveAssetTarget` seam (where `storage_mode: reference` branches), and
-  the platform-storage client are what ingest/delivery build on. Manually
-  uploaded bytes are not yet server-side validated (no finalize step) — that
-  arrives with the Phase 7 push path.
-
-### Phase 4 — Ingest pipeline 🚧 **In progress**
-
-Delivered in slices (each verify-gated on its own worktree branch off `ai/main`).
-
-- ✅ **Slice A — app associations + Data-flow UI:** `collection_connections` +
-  `ingest_files` ledger (migration 005; app owns DDL, pipeline reads/writes
-  rows). Ingest `config` Zod schema (§5.1) as the cross-runtime contract.
-  `/api/collections/[id]/connections` CRUD — operator+ gated & audited, group
-  ownership enforced in-route, `reference` mode restricted to s3 connections,
-  duplicate (collection,connection,direction) → 409. Data-flow tab (ingest
-  half) on built-in-catalog collections. `ingest_files` is a plain table here;
-  Phase 6 time-partitions it (mirrors the audit_log deferral). **Live-verified
-  2026-07-16** (migration auto-applied, full CRUD + audit through the running
-  stack).
-- ✅ **Slice B1 — adapter list-metadata + `build_adapter`:** `StorageAdapter.list()`
-  now returns `list[FileEntry]` (path/size/mtime/etag/is_dir) across s3/sftp/ftp
-  — the metadata the settled-check needs. New `connections/build.py::build_adapter`
-  (decrypt → adapter) is the seam the ingest workers consume for `list`/`get`;
-  `probe.run_adapter_test` refactored onto it. 117 pipeline tests, ruff clean.
-- ✅ **Slice B2+B3 — ingest repo + scheduler + DISCOVER/GROUP/FETCH (copy):**
-  `IngestRepo` (+ `PgIngestRepo`, FakeRepo) mirroring `connections/repo.py`;
-  `ingest/config.py` (Python §5.1 mirror + `**`-aware glob matching);
-  `ingest_poll` scheduler (per-association poll, interval-as-N-whole-minute-ticks
-  — Procrastinate is 1-min granular); DISCOVER (`adapter.list` → source-relative
-  path normalization → glob filter → fingerprint = etag|`{size}:{mtime}` →
-  settled-check across two polls, with re-ingest versioning on a post-`itemized`
-  change); GROUP (none = one item/file immediate, shared_basename groups siblings
-  after the timeout window, `on_timeout` ingest_partial|discard); FETCH copy-mode
-  (buffered `adapter.get` → `platform.put_object` at
-  `assets/{collection}/{item}/{filename}`, sha256 checksum, ledger → `stored`).
-  `jobs/ingest.py` chains the stages via the queue (`register_task`),
-  idempotent against the ledger. (At this point reference mode stopped at
-  `settled`; Slice C below adds its GROUP/FETCH branches.)
-  164 pipeline tests, ruff clean.
-- ✅ **Slice B4 — EXTRACT + ITEMIZE:** all three metadata strategies —
-  `raster_auto` (rio-stac/pystac over an in-memory `MemoryFile` read of the
-  primary raster), `sidecar` (XML via `defusedxml`, XXE/entity-expansion
-  hardened, or JSON via stdlib `json`), `defaults_only` (null-geometry item
-  from collection defaults). ITEMIZE validates every built item with the
-  **core** `stac_pydantic.Item` (offline, core-structural gate — not the API
-  variant, which requires a `root` link EXTRACT-built items don't carry), then
-  upserts via **pypgstac** `Loader.load_items(..., Methods.upsert)`, verified
-  to write item data only (`ON COMMIT DROP` staging tables + pgstac's own
-  upsert functions — no DDL, ADR-0001-compatible), then runs post-ingest
-  (`leave`/`delete`/`move:<path>`, non-fatal). New pipeline deps
-  (`rio-stac==0.12.0`, `pystac==1.15.1`, `rasterio>=1.5,<2`,
-  `defusedxml>=0.7.1`, `stac-pydantic==3.6.0`, `pypgstac[psycopg]==0.9.11`) —
-  rasterio's bundled-GDAL wheels mean **no system GDAL, no Dockerfile
-  change**. `docker-compose.yml`'s `pgstac` image pinned `:latest` → `v0.9.11`
-  to keep the pypgstac client and pgstac schema in lockstep. Re-ingest
-  versioning (fingerprint change → new version, same `item_id`) flows through
-  the ledger's existing `stored`→re-EXTRACT path. 201 pipeline unit tests +
-  a DB integration test (upsert → query → update, gated on `DATABASE_URL`).
-  ADR 0006. rustac evaluation for bulk paths still open.
-- ✅ **Slice C — `storage_mode: reference` (done, live-verified, merged):**
-  ships as **durably-reachable sources only** — no presigning, no app
-  decryption, preserving the `crypto.ts` "app never decrypts" invariant.
-  Migration 006 adds `ingest_files.source_href` (nullable). The `config` Zod
-  guard rejects `post_ingest` delete/move when `storage_mode: reference` (the
-  source bytes ARE the catalog's asset). Pipeline: `S3Adapter.public_object_url`
-  mints a stable, credential-free source URL; FETCH's reference branch records
-  it as `source_href` and advances the ledger `settled` → `stored` with no
-  copy; GROUP now forms groups for reference mode identically to copy mode
-  (**RESOLVED ISSUE I-21** — reference no longer stalls at `settled`); EXTRACT's
-  byte-source seam (`MemberByteSource`/`CanonicalByteSource`/
-  `SourceAdapterByteSource`) lets `build_item` read source bytes directly;
-  ITEMIZE is unchanged; `post_ingest` skips destructive actions in reference
-  mode as defense-in-depth. App: `resolveAssetTarget` branches via
-  `lookupReferenceHref` to 302 straight to `source_href`. Private-source
-  reference (credentialed sources, via a pipeline resolver endpoint), a
-  reference-mode checksum, and the source-endpoint browser-reachability split
-  (same class as I-15) are deferred — see I-32 through I-34. **Live-verified
-  end-to-end (2026-07-20):** a real reference association ran through the
-  scheduler (poll → DISCOVER → GROUP → FETCH reference → EXTRACT source-byte
-  read → ITEMIZE) into a queryable `ST_Polygon` pgstac item with **no canonical
-  copy**, and `GET /api/assets/…` 302'd to the `source_href` (byte-identical
-  bytes on follow). The in-container run surfaced **ISSUE I-35** (the pipeline
-  image lacked `libexpat1`, so rasterio's bundled GDAL failed to import
-  in-container — B4 had verified `raster_auto` host-side, masking it) — fixed
-  by adding `libexpat1` to the runtime image.
-- 🟢 **Slice B5 — integration + live end-to-end test.** Two live legs, both
-  verified:
-  - **FETCH copy chain** (2026-07-16): an S3/MinIO source file flowed poll →
-    DISCOVER (seen → settled across two polls) → GROUP → FETCH into canonical
-    storage (`assets/e2e-ingest-test/scene/scene.tif`), byte-identical (sha256
-    match), ledger `stored`, idempotent across re-polls.
-  - **EXTRACT → ITEMIZE** (2026-07-17): verified against the live stack (pgstac
-    0.9.10 + MinIO). (a) The DB integration test (`test_integration_itemize.py`)
-    upserted an item via the real `PgPgstacWriter` (pypgstac `Methods.upsert`),
-    queried it back, and confirmed an in-place update on re-upsert. (b) A real
-    single-band GeoTIFF stored in canonical MinIO was run through the real
-    `build_item` (`raster_auto`/rio-stac reading from MinIO) → `validate_item`
-    (stac-pydantic) → `PgPgstacWriter` upsert: the item became **queryable in
-    pgstac with a non-null `ST_Polygon` geometry** and an asset href of
-    `/api/assets/{collection}/{item}/{filename}`, the asset bytes round-tripped
-    back out of MinIO, and a **changed raster (different footprint) re-ingested
-    into the same item id, updated in place** (exactly one item, no duplicate).
-    Together with the FETCH leg (and the ITEMIZE upsert being the same call the
-    scheduler-driven handler makes), the full copy-mode chain is exercised
-    end-to-end against real infrastructure.
-  - **⚠️ Live-run finding (ISSUE I-27):** pgstac's `items` table enforces a
-    NOT NULL `geometry`, so `defaults_only` (and geometry-less `sidecar`) items
-    — which emit `geometry: null` — cannot be catalogued as-is; the fix is an
-    open product decision (see I-27). `raster_auto` (the headline path) is
-    unaffected and fully works.
-  - **✅ Continuous scheduler-driven runs (2026-07-20, Slice C Task 10):** both
-    outstanding legs now verified against a rebuilt pipeline image running the
-    live scheduler. (1) A **reference** association over a provisioned S3/MinIO
-    connection ran uninterrupted poll → DISCOVER (seen→settled) → GROUP → FETCH
-    reference (`source_href`, no copy) → EXTRACT (source-byte read via the
-    adapter) → ITEMIZE → queryable `ST_Polygon` item; `GET /api/assets/…`
-    302'd to the source URL. (2) An **SFTP source** (I-4) over a provisioned
-    connection ran the copy chain end-to-end (first live SFTP `list`/`get` →
-    canonical copy → itemize; asset route 302'd to a presigned canonical URL).
-    The in-container run also surfaced and fixed **I-35** (missing `libexpat1`).
-- **Done when:** files dropped on a source connection appear as STAC items
-  with assets in object storage within one poll cycle, idempotently across
-  restarts and re-polls; a changed source file produces an updated item.
-
-### Phase 5 — Delivery pipeline 🚧 **In progress**
-
-Delivered in slices (each verify-gated on its own worktree branch off `ai/main`).
-
-- ✅ **Slice A — event outbox + dispatcher skeleton (done, live-verified,
-  merged):** app migration 007 adds the durable `item_events` outbox with a
-  **row-level** trigger on `pgstac.items` (**ADR 0007**; the A0 spike settled the
-  mechanism — `pgstac.items` is partitioned and PostgreSQL clones row-level
-  triggers to every partition incl. future ones, so it catches bulk /
-  partition-direct writes a statement-level-on-parent trigger with transition
-  tables would miss; the payload-less `NOTIFY item_events` coalesces per
-  transaction, so a bulk upsert wakes the dispatcher once). ADR 0007 extends
-  ADR 0001 to license the app owning a trigger attached to a pgstac table it
-  does not own (the trigger writes only into `stac_higher`). Pipeline
-  `dispatcher/` consumes the outbox in `id` order (`FOR UPDATE SKIP LOCKED`),
-  reads the item via `pgstac.get_item`, matches enabled `direction='deliver'`
-  associations, applies the CQL2 `item_filter` (cql2 bindings — hardened to
-  isolate a filter that references a property an item lacks) + `asset_keys`, and
-  **logs the matched (item × association) pairs — no byte transfer yet**
-  (poll-driven `dispatch_poll` tick; Slice C swaps in a `LISTEN`-woken loop).
-  The delivery `config` (§5.1) ships as a cross-runtime contract (Zod
-  `deliveryConfigSchema` + Python `delivery/config.py`), and delivery
-  associations are creatable via the existing `/api/collections/[id]/connections`
-  route. **Live-verified end-to-end (2026-07-21):** a real pgstac item insert
-  fired the trigger (one outbox row); the real `dispatch_once`/`PgDispatchRepo`
-  against live pgstac matched only the passing-`item_filter` association (with
-  both assets), excluded the non-matching one, logged the match, and drained the
-  outbox row; a delete event drained **without** dispatching (deletions never
-  propagate); re-runs were idempotent. **Finding (ADR 0007):** pgstac implements
-  an item update as delete+insert, so an update surfaces as a `delete` then an
-  `insert` outbox row — benign (the delete drains, the insert redelivers), but
-  Slice B's `on_update` must derive first-delivery-vs-redelivery from
-  `delivery_log`, never from the outbox `op`.
-- 🟢 **Slice B-i — delivery worker (thin vertical slice, done + live-verified
-  2026-07-21):** the byte-moving core for the S3 happy path. Migration 008
-  `delivery_log` (app DDL, `UNIQUE(association_id, item_id)`); `delivery/path.py`
-  (`render_path` over `{collection}{item_id}{filename}{yyyy}{mm}{dd}`, UTC date
-  tokens, fail-loud on a date-less item); adapter `move()` + `put_atomic()` (S3
-  copy+delete & a direct-PUT override, SFTP `posix_rename`, FTP `rename`);
-  `delivery/repo.py` (`DeliveryRepo`/`PgDeliveryRepo` — `delivery_log` transitions
-  + destination-target load) + `delivery/worker.py` (`deliver_item`: canonical
-  `get_object` → `render_path` → `put_atomic` → `delivery_log`, per-item failure
-  isolation); dispatcher groups matches into one batched `pipeline.deliver` job
-  **per association** and enqueues **before** draining the outbox (at-least-once),
-  with the `deliver` handler running each item through the worker. **Live-verified
-  16/16** (real code vs live pgstac + MinIO): trigger fires → `dispatch_once`
-  matches → `deliver_item` copies the asset to the MinIO destination at the
-  rendered key **byte-identical**, `delivery_log` `delivered`/`attempts=1`; a
-  changed re-upsert redelivers into the **same** row (`attempts=2`, overwrite
-  byte-identical); a delete drains with **no** delivery. Pipeline suite 268
-  passed/2 skipped; app verify 472 passed; 7 task reviews + opus whole-branch
-  review all clean. Live finding I-46: pypgstac upsert emits `insert`/`update`
-  (single row)/no-op/`delete` outbox ops (the ADR 0007 delete+insert is the
-  transaction-API path) — benign for delivery.
-- ✅ **Slice B-ii — payloads, policies, reference source, S3→S3 copy (done +
-  live-verified 2026-07-22):** migration 009 adds
-  `delivery_log.delivered_assets` jsonb, a per-asset `{fingerprint, size,
-  filename}` map keyed by asset key — the change-detection substrate for
-  everything else in this slice. Fingerprints are `sha256:<hex>` (streamed
-  bytes) or `etag:<etag>/<size>` (server-side copy); the two kinds compare
-  unequal, so switching an association's transfer path costs at most one
-  redundant redeliver, never a missed one. `upsert_pending` now resets
-  `attempts = 0` on the redelivery conflict branch — **resolves I-44**. The
-  worker (`delivery/worker.py`) gained an item-level `on_update` gate
-  (`ignore` = fire-once-per-item, keyed off a prior `delivery_log` row's
-  status, never the outbox `op` — I-37) and a per-asset log-based `overwrite`
-  policy (`never`/`always`/`if_newer` compared against `delivered_assets`, no
-  destination round-trip). Payload sidecars land beside the assets: a
-  coreutils-format checksum per written file (`{filename}.{algo}`), the item
-  JSON rewritten on every processed event (`{item_id}.json`), and a completion
-  marker (`{item_id}.done`, a JSON manifest) written **last** and only when
-  something was actually written. Reference-mode delivery reads bytes through
-  the ingest source connection's adapter — ledger-first (`load_reference_sources`
-  over `ingest_files`), the adapter built lazily per connection
-  (`build_adapter`, decrypting only when invoked) and cached per item — no HTTP
-  client. Same-endpoint S3→S3 destinations get a server-side `CopyObject`
-  (`can_server_side_copy`: s3 protocol + normalized connection endpoint equal
-  to the platform's `STAGING_S3_ENDPOINT`, both-`None` meaning real AWS; a
-  malformed endpoint degrades to streaming) via `S3Adapter.copy_object_from`,
-  computed once per job in `jobs/dispatch.py`; a copy failure logs a warning
-  and falls back to streaming. The checksums×copy trade: a `sha256` payload
-  checksum forces streaming (there's no hash without the bytes); `md5` can
-  ride a single-part object's ETag (`platform.head_object`), but a multipart
-  ETag isn't an md5 and falls back to streaming too. New modules:
-  `delivery/transfer.py` (fingerprints + the copy gate), `delivery/payload.py`
-  (sidecar builders). Pipeline suite 306 passed/2 skipped, ruff clean; app
-  verify 472; 9 task reviews + whole-branch review (with fix wave: enabled-gated
-  reference sources, base copy seam, ISSUES I-48/I-49) all clean.
-  **Live-verified 23/23 (2026-07-22)** vs real pgstac + MinIO through the
-  production wiring (`dispatch_poll` → `dispatch_once` → `pipeline.deliver`):
-  real `CopyObject` delivery (`etag:` fingerprint; md5 sidecar from the
-  single-part etag; item JSON + `.done` manifest at the rendered paths); a
-  metadata-only re-upsert rewrote only `{item_id}.json` (asset object untouched,
-  `attempts` reset to 1 — I-44); changed bytes redelivered byte-identical with
-  an updated sidecar; `sha256` checksums forced streaming and
-  `shasum -a 256 -c` passed against the delivered sidecar; `on_update: ignore`
-  left row and destination untouched; `overwrite: never` kept destination bytes
-  across a source change while the item JSON refreshed; a reference item
-  delivered byte-identical from the source bucket (sha256 fingerprint, no
-  canonical object ever existed); a disabled source connection failed the
-  delivery with a clear error and recovered on re-enable (`attempts=1`).
-  A post-merge `/simplify` pass (behavior-identical, suite 310/2 after) deduped
-  the worker's stream+hash path (off the event loop), removed a double-hash and
-  `overwrite: never` wasted reads, named `is_multipart_etag`, aligned the jsonb
-  write style, and consolidated test fixtures.
-- ✅ **Slice B-iii done + live-verified (2026-07-25):** delivery retry →
-  dead-letter (migration 011 `next_attempt_at`; `pipeline.delivery_retry_sweep`
-  requeues due failed rows pending-first and re-derives asset keys from the
-  item's current assets; `deliver_item` schedules exponential/fixed backoff per
-  the §5.1 retry config and dead-letters at `max_attempts`), **ingest crash
-  recovery** (I-52: `pipeline.ingest_recovery_sweep` resets stalled `fetching`
-  rows and re-settles `failed` rows bounded by `ingest_files.retries`,
-  `INGEST_*` env knobs), per-event dispatcher error isolation (I-39 closed),
-  atomic outbox claim via `item_events.claimed_at` stamped inside the
-  `FOR UPDATE SKIP LOCKED` statement (I-40 claim half — no double-claim; stale
-  claims reclaim after 10 min), per-connection concurrency caps
-  (`max_concurrent_transfers` honored for S3 destinations; single-channel
-  SFTP/FTP run serial by design), and the I-49 ride-alongs (partial delivered
-  map survives failure so retries skip already-written assets, completion
-  manifest pruned to current assets, basename-collision warning, missing
-  tests added). Preceded by the pre-B-iii hardening wave (I-39 pair, ADR 0009
-  soft-delete half I-51, contract fixtures I-53 — all landed 2026-07-25).
-  **Live-verified against the real stack + `compose.test-servers.yml`:**
-  (1) live **SFTP** destination delivery — full payload (asset byte-identical,
-  `sha256` sidecar matching, item JSON, `.done` marker last) into nested
-  `path_template` directories; (2) live **FTP** destination delivery (I-45's
-  live half); (3) a persistently failing destination climbed attempts 1→5 via
-  the sweep and **dead-lettered** (`status='dead'`, `next_attempt_at` NULL);
-  (4) **dead-destination recovery**: SFTP stopped → `failed` with a scheduled
-  retry → server restarted → the next sweep re-enqueued and the delivery
-  landed the changed bytes; (5) a new event on a `dead` row started a fresh
-  cycle and delivered (I-44 semantics); (6) the ingest recovery sweep reset a
-  45-min-stale `fetching` row and retried a `failed` row (`retries` 0→1)
-  live. Two live findings, both fixed with unit tests: SFTP/FTP `put` now
-  creates missing parent directories (delivery templates are
-  directory-shaped), and the delfer FTP test server does **not** chroot — an
-  FTP connection against it needs `root_path=/ftp/demo`. Pipeline 374 pass /
-  ruff clean; app verify 517 pass.
-- 🚧 **Slice C — NOTIFY-woken low-latency + user-initiated backfill.** Code
-  done; live verification pending. The dispatcher's primary wake path is now a
-  `LISTEN item_events` loop (`dispatcher/listener.py`, run by `main.py`
-  alongside the worker): each payload-less trigger NOTIFY (ADR 0007) wakes a
-  drain-until-empty dispatch (`dispatch_until_empty`), with the minute
-  `dispatch_poll` cron kept as fallback — overlap is safe (atomic claims,
-  I-40) and the single-instance assumption is documented in the module.
-  The I-38 visibility race got its bounded retry: migration 012 adds
-  `item_events.dispatch_attempts`/`next_dispatch_at`; a claimed event whose
-  item is not yet visible is released with a 15 s cool-off up to 5 attempts,
-  then drains loudly — **resolves I-38**. User-initiated backfill (§6.4)
-  landed as the ADR 0004 bridge pattern: `POST
-  .../connections/[assocId]/backfill` (operator+, audited `backfill`,
-  409 on open duplicates/disabled) inserts a `stac_higher.delivery_backfills`
-  row; the pipeline's minute sweep (`jobs/backfill.py`) claims it (plus
-  stale-running crash resume via `cursor_item_id`), pages the collection's
-  item ids from pgstac, and enqueues chunked bulk `pipeline.deliver` jobs
-  (200 items/job, `asset_keys=None` → re-derived per item), recording
-  progress per chunk and a terminal completed/failed status the app polls.
-  **Live-verified (2026-07-25)** against the in-container pipeline (image
-  rebuilt) + real pgstac/MinIO/SFTP/FTP: (1) **NOTIFY latency** — a
-  transaction-API item update dispatched **89 ms** after commit
-  (`wake_path: "notify"`, outbox `processed_at - occurred_at`), with
-  end-to-end `delivery_log.delivered_at` latency **0.17 s (FTP)** and
-  **1.6 s (SFTP)** — the single-digit-second SLO the poll could not claim;
-  (2) **I-38 bounded retry** — a synthetic outbox event for a nonexistent
-  item was deferred five times (`dispatch_attempts` 0→4 logged, cool-off
-  visible in `next_dispatch_at`, retries ridden by the poll fallback) then
-  drained loudly at the cap (`attempts=5`, `processed_at` stamped) instead
-  of busy-looping or draining silently; (3) **backfill** — POST on a
-  disabled association 409'd, enable → 202 (`delivery_backfills` row), the
-  minute sweep claimed it and enqueued all 3 pre-existing `b2live` items
-  (`items_enqueued=3`, `completed` in <1 s), 2 items landed fresh bytes at
-  the rendered destination keys, the reference-mode item **correctly
-  failed** (its source association disabled — the documented ADR 0009
-  refusal) with `next_attempt_at` scheduled, and after re-enabling the
-  source the **retry sweep recovered it** (`delivered`, `attempts=2`);
-  duplicate POST 409'd against the open backfill and every POST landed an
-  `action='backfill'` audit row; (4) **listener resilience** — pre-migration
-  the catch-up drain hit `UndefinedColumn` and the listener's
-  reconnect-with-backoff loop recovered without killing the process, then
-  went quiet once migration 012 applied (via the app middleware path).
-- ⬜ **Slice D — Data-flow tab: delivery half (UI).** Not started.
-
-Original phase intent (for reference):
-
-- **Outbox event bridge** per §5.4: vendored statement-level trigger →
-  `item_events` + payload-less NOTIFY wake-up; dispatcher consumes the outbox
-  (survives restarts, safe under bulk loads). Spike pgstac partition/trigger
-  behavior and pin the pgstac version before committing.
-- Dispatcher (association matching, `item_filter` via cql2 bindings, asset
-  filters) + batched fan-out delivery workers per §6.4: path templates,
-  payload options (item JSON / checksums / completion marker), `on_update`
-  policy, S3→S3 server-side copy, `.part` rename, per-connection concurrency
-  caps, retry → dead-letter, `delivery_log` (time-partitioned).
-- Data flow tab (delivery half): config, redeliver, backfill (chunked bulk
-  jobs).
-- **Done when:** an item created by ingest, UI, *or* direct API write lands
-  on a delivery destination within seconds (measured in `delivery_log`), an
-  updated item redelivers only changed assets, and a dead destination
-  produces a dead-letter + redeliver path, not a stuck queue.
-
-### Phase 6 — Observability & retention ⬜ **Not started**
-- Flow expectations + monitor job + `alerts` lifecycle (fire/ack/resolve).
-- **Retention GC** per §6.5: `retention_days` per collection, bulk expiry,
-  grace-window asset removal, partition-drop hygiene for ledger/log tables.
-- `/monitoring` dashboard: activity timelines, latency, alert management;
-  header alert bell; collection settings UI for retention.
-- Notification channels: in-app, then email (SMTP) and webhook.
-- Prometheus metrics + structured logging across pipeline service.
+All planned surface is built (see the M2 milestone above and
+[FEATURES §Phase 6](docs/FEATURES.md)): flow expectations + monitor +
+alerts lifecycle, retention GC per §6.5 with ADR 0012's amended hygiene plan,
+`/monitoring` + header bell + Settings UI, in-app + webhook notification
+channels (email deferred), Prometheus metrics + structured logging.
 - **Done when:** stopping a source's data flow raises an alert within the
   declared expectation window and notifies the group's channels; an expired
   item leaves the catalog and, after the grace window, object storage.
+  **Open — proven live only by the pending M2-I rehearsal.**
 
 ### Phase 7 — Direct interaction (push ingest) ⬜ **Not started**
 - Externally-writable flag per collection; stac-auth-proxy write policies.
@@ -1166,34 +773,35 @@ Original phase intent (for reference):
 - **Byte-volume economics:** the envelope implies 10s–100s of TB/day. The
   mitigations (reference mode, server-side copy, honest FTP claims) are
   design-level — validate transfer costs and throughput in the Phase 8 load
-  test before contractual scale commitments.
+  test before contractual scale commitments. M3's ~30 items/s target is 20×
+  the original item rate; its scoping must redo this arithmetic.
 - **pgstac trigger restructuring:** upstream is replacing its item-trigger
   machinery, and `items_deleted_log`/`pgstac_updated_at` (a poll-friendly
-  change feed) is landing. Pin pgstac, upgrade-test the vendored outbox
-  trigger each bump, and re-evaluate replacing it with pgstac's native feed
-  at Phase 5.
+  change feed) is landing. The vendored outbox trigger was kept through
+  Phase 5 (the native feed hadn't shipped in the pinned 0.9.11); pin pgstac,
+  upgrade-test the trigger on each bump, and re-evaluate the native feed at
+  the next pgstac upgrade (I-23 lockstep).
 - **stac-auth-proxy transaction filtering is young** (v1.0.0, Feb 2026):
-  adopt, but integration-test per-collection write policies in Phase 1 rather
-  than assuming them; watch upstream for breaking filter-factory changes.
+  adopted and integration-tested (the enforcement suite + BFF leg); watch
+  upstream for breaking filter-factory changes.
 - **Postgres-queue ceiling:** batch-oriented jobs keep the envelope within
-  Procrastinate's comfort zone on paper (single-digit jobs/sec); the Phase 8
-  load test decides where the Procrastinate→SQS boundary actually sits per
-  deployment size.
-- **High-volume table hygiene:** `ingest_files`, `item_events`,
-  `delivery_log`, `audit_log` all grow at envelope rate — partitioning and
-  retention jobs are part of each table's definition of done, not an
-  afterthought.
+  Procrastinate's comfort zone on paper (single-digit jobs/sec against the
+  original 100k/day envelope); the Phase 8 load test — and M3's 30 items/s
+  rehearsal before it — decide where the Procrastinate→SQS boundary actually
+  sits per deployment size.
 - **Grouping edge cases:** multi-file products with unreliable arrival order
   are the perpetual ingest headache; the timeout + partial-ingest policy is
   the escape hatch, expect tuning.
 - **FTPS/SSH variance in the wild:** implicit vs. explicit FTPS, SCP-only SSH
   hosts, keyboard-interactive auth — adapter layer needs a compatibility
-  matrix and integration tests against containerized servers.
-- **Migration ownership** once two runtimes (TS app, Python pipeline) share
-  `stac_higher` — settled in Phase 0.
-- **Pre-existing collections:** `collection_settings` needs a confirmed
-  default (owning group, visibility) for collections that exist before
-  Phase 1 lands.
-- **Scheduler/monitor HA:** the poll scheduler and flow monitor must be safe
-  with two pipeline replicas (leader election or partitioned ownership) —
-  decide when the monolith first scales horizontally, at latest in Phase 8.
+  matrix and integration tests against containerized servers (FTPS live
+  coverage still blocked on arm64, I-6).
+- **Scheduler/monitor HA:** the poll scheduler, dispatcher listener, and flow
+  monitor are all singletons today (safe — atomic claims make overlap
+  harmless, so this is throughput, not correctness; I-40). Leader election or
+  partitioned ownership is due when the monolith first scales horizontally,
+  at latest in Phase 8 / M3.
+
+Settled since first drafted: **high-volume table hygiene** (M2-F/M2-G, ADR
+0011/0012 — the partition-vs-sweep split); **migration ownership** (Phase 0,
+ADR 0001); **pre-existing collection defaults** (unowned + public, ADR 0003).

@@ -26,7 +26,15 @@ CLAUDE.md                  ← shim: "@AGENTS.md" import + Claude-only content
 .claude/settings.json      ← Claude Code permissions + hooks (astro check, shadcn guard)
 .claude/prompts/ai-loop.md ← Claude Code multi-agent orchestrator prompt
 .claude/worktrees/         ← AI worktrees (gitignored)
+docs/superpowers/specs/    ← approved design specs (milestone/slice scope sources —
+docs/superpowers/plans/       TODO.md cites the active one); plans are their
+                              step-by-step implementation breakdowns
 ```
+
+The specs/plans track is part of the AI surface: a milestone is scoped by
+writing a dated spec there (brainstorm → approved design), `TODO.md` names it
+as the scope source, and the solo loop reads the spec section a task cites
+before starting it.
 
 ## Rules of the road
 

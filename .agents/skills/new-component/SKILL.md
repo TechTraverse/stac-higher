@@ -14,12 +14,18 @@ barrel (`packages/shared/src/index.ts`) and consider a co-located
 `*.stories.tsx`.
 
 **App** (`app/src/components/`) if it is page-specific:
-- `collections/` — collection-related UI
+- `collections/` — collection-related UI (incl. the Data-flow and Settings tabs)
 - `items/` — item-related UI
 - `catalogs/` — catalog management
+- `connections/` — connections list/wizard/test UI
+- `monitoring/` — /monitoring cards + the header AlertBell
+- `assets/` — asset upload widgets
 - `extensions/` — extension list/detail/form/picker/dynamic fields
 - `search/` — search panel and results
 - `layout/` — header, providers, page wrappers
+
+(Shared package also carries `extensions/` — the RJSF theme — and
+`__fixtures__/` for Storybook data.)
 
 ## 2. Match conventions
 
@@ -28,7 +34,13 @@ Read 2–3 existing components in the target directory first. Then:
 - shadcn/ui primitives for all UI elements — never hand-edit `components/ui/`
 - `lucide-react` for icons
 - `useStore()` from `@nanostores/react` for global state
-- TanStack Query hooks from `app/src/lib/query/` for server data
+- TanStack Query hooks for server data: STAC hooks in `app/src/lib/query/`,
+  platform hooks per domain (`app/src/lib/<domain>/queries.ts`); keys always
+  from the factory in `app/src/lib/query/keys.ts`
+- **Role-gate mutating verbs**: components render read-only for members and
+  show mutation buttons only for operator/admin — `useAuthMe()`
+  (`app/src/lib/query/auth.ts`) → check `identity.roles` (see
+  `MonitoringPage.tsx` for the pattern)
 - Reuse existing map components (`StacMap`, `FootprintLayer`, `ExtentLayer`, `BboxInput`) rather than building new ones
 
 ## 3. Create and verify

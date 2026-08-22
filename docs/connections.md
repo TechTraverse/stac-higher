@@ -79,7 +79,8 @@ connection outside your groups is a **404** (existence is group-scoped).
 | `/api/connections` | POST | operator+ | `group_id` must be one of the caller's groups (admin: any). 201 → the connection. |
 | `/api/connections/[id]` | GET | member+ (owning group) | |
 | `/api/connections/[id]` | PUT | operator+ (owning group) | Protocol immutable. `credentials` replaces the envelope wholesale (never merged). Config/credential changes reset `status` to `unverified`; an SSH-family host/port change clears the host-key pin. |
-| `/api/connections/[id]` | DELETE | operator+ (owning group) | 204. Cascades to its checks. |
+| `/api/connections/[id]` | DELETE | operator+ (owning group) | Soft-delete (ADR 0009): sets `deleted_at`, scrubs credentials + host-key pin, soft-deletes its associations, removes reference-backed items from pgstac; history rows (checks, ledger, delivery log) are retained. Returns the counted impact. |
+| `/api/connections/[id]/impact` | GET | operator+ (owning group) | Pre-flight counted impact for the warn-and-proceed delete dialog (associations, ledger rows, reference-backed items). |
 | `/api/connections/[id]/test` | POST | operator+ (owning group) | Inserts a pending `connection_checks` row, 202 → `{check}`. Audited as `test`. |
 | `/api/connections/[id]/checks/[checkId]` | GET | member+ (owning group) | Poll: `{check}` with `status` pending→running→done\|failed and `result`. |
 | `/api/connections/[id]/host-key/reset` | POST | operator+ (owning group) | §5.2 re-verify: clears the TOFU pin (ssh/sftp only) so the next test re-pins. Audited. |

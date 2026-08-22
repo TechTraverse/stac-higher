@@ -25,6 +25,7 @@ Facts:
 - **Dev**: `npm run dev` (from `app/`, http://localhost:4321)
 - **Build**: `npm run build` (from `app/`, outputs to `app/dist/`)
 - **Unit tests**: `npm test` (from `app/`); `npm run test:watch` for watch mode
+- **Pipeline tests**: `uv run pytest` and `uv run ruff check .` (from `services/pipeline/` — run both whenever the pipeline is touched; `DATABASE_URL=…` enables the DB-gated integration tests. Full pipeline reference: `services/pipeline/README.md`)
 - **E2E**: `npm run test:e2e:ci` (from `app/` — list reporter, agent-friendly). Read the `run-e2e` skill first; the suite has real preconditions and gotchas.
 - **Proxy integration tests**: `npm run test:integration` (repo root — needs the Docker stack in auth-enforced mode, so lead/human only; skips cleanly otherwise. See `tests/integration/README.md`.)
 - **Storybook**: `npm run storybook` (from `packages/shared/`, http://localhost:6006)
