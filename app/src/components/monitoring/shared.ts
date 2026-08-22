@@ -1,5 +1,5 @@
 /** Display helpers for the /monitoring surfaces (M2-D). */
-import type { AlertState } from "@/lib/monitoring/api";
+import type { Alert, AlertState } from "@/lib/monitoring/api";
 
 /** Compact relative time ("3m ago") for telemetry timestamps. */
 export function timeAgo(isoValue: string | null | undefined): string {
@@ -94,17 +94,24 @@ export function expectationWindow(
   return typeof value === "number" && value >= 1 ? value : null;
 }
 
-/** True when the declared window is currently blown (mirrors the monitor's
- * evaluation closely enough for display; the alert row is authoritative). */
+/** The monitor kind that fires when a direction's declared window is blown. */
+const EXPECTATION_BREACH_KIND: Record<"ingest" | "deliver", string> = {
+  ingest: "ingest_inactivity",
+  deliver: "delivery_slo",
+};
+
+/** True when the monitor holds an open expectation-breach alert for this
+ * association — the alert row's own verdict (edited_at fallback, outstanding
+ * deliveries and all), not a local re-derivation of it. */
 export function isLate(
   direction: "ingest" | "deliver",
-  window: number | null,
-  stats: FlowStatsView,
+  associationId: string,
+  openAlerts: Alert[],
 ): boolean {
-  if (window === null) return false;
-  if (direction === "ingest") {
-    if (!stats.lastActivityAt) return false; // monitor falls back to edited_at
-    return Date.now() - Date.parse(stats.lastActivityAt) > window * 1000;
-  }
-  return stats.lastLatencySeconds !== null && stats.lastLatencySeconds > window;
+  return openAlerts.some(
+    (a) =>
+      a.association_id === associationId &&
+      a.kind === EXPECTATION_BREACH_KIND[direction] &&
+      a.state !== "resolved",
+  );
 }

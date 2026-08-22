@@ -2,9 +2,10 @@
  * /monitoring per-association flow view (M2-D, spec §7): every association
  * the caller can see, with the pipeline-written flow_stats rollup — activity
  * recency, delivery latency, per-status delivery counts — and the declared
- * §5.1 expectation with a live late/on-time hint (the alert row stays
- * authoritative; this is display). Read-only: flow mutations live on the
- * collection's Data-flow tab, which each row links to.
+ * §5.1 expectation with a late/on-time hint derived from the open alerts
+ * (the monitor's own verdict, so the hint and the alert list can't disagree).
+ * Read-only: flow mutations live on the collection's Data-flow tab, which
+ * each row links to.
  */
 import {
   Badge,
@@ -18,7 +19,8 @@ import {
 } from "@stac-higher/shared";
 import { ArrowDownToLine, ArrowUpFromLine, Waves } from "lucide-react";
 import type { Association } from "@/lib/associations/types";
-import { useFlows } from "@/lib/monitoring/queries";
+import type { Alert } from "@/lib/monitoring/api";
+import { useAlerts, useFlows } from "@/lib/monitoring/queries";
 import {
   expectationWindow,
   formatBytes,
@@ -29,10 +31,16 @@ import {
 
 const COUNT_ORDER = ["delivered", "pending", "delivering", "failed", "dead"];
 
-function FlowRow({ flow }: { flow: Association }) {
+function FlowRow({
+  flow,
+  openAlerts,
+}: {
+  flow: Association;
+  openAlerts: Alert[];
+}) {
   const stats = readFlowStats(flow.flow_stats);
   const window = expectationWindow(flow.direction, flow.expectation);
-  const late = isLate(flow.direction, window, stats);
+  const late = isLate(flow.direction, flow.id, openAlerts);
   const DirectionIcon =
     flow.direction === "ingest" ? ArrowDownToLine : ArrowUpFromLine;
 
@@ -107,6 +115,9 @@ function FlowRow({ flow }: { flow: Association }) {
 
 export function FlowsCard() {
   const { data: flows, isLoading, isError, error, refetch } = useFlows();
+  // Same query the alerts card polls, so the hint tracks it for free; while
+  // it loads (or errors) the hint reads on-time, which the list then corrects.
+  const openAlerts = useAlerts("open").data ?? [];
 
   return (
     <Card data-testid="flows-card">
@@ -133,7 +144,7 @@ export function FlowsCard() {
         ) : (
           <div className="grid gap-2">
             {flows.map((flow) => (
-              <FlowRow key={flow.id} flow={flow} />
+              <FlowRow key={flow.id} flow={flow} openAlerts={openAlerts} />
             ))}
           </div>
         )}
