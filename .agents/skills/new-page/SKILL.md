@@ -51,7 +51,11 @@ export function MyPageComponent() {
 Everything interactive on the page belongs in this single island — separate
 islands can't share React context (QueryClient, form context).
 
+If the page exposes mutations, role-gate the verbs: render read-only for
+members, mutation buttons for operator/admin via `useAuthMe()` →
+`identity.roles` (see `MonitoringPage.tsx`). Add the nav link in `Header`.
+
 ## 3. Verify
 
 - `npm run verify` from the repo root must pass.
-- If the dev server is running: `curl -s -o /dev/null -w "%{http_code}" http://localhost:4321/<route>` should return 200.
+- If the dev server is running: `curl -s -o /dev/null -w "%{http_code}" http://localhost:4321/<route>` should return 200. (Something else may own :4321 — an editor's built-in server has squatted it before; confirm the response is actually Astro's before trusting a 200.)
