@@ -403,6 +403,7 @@ is in ROADMAP §9 M1.
   `ingestConfigSchema`-parsed `formFromAssociation`); data-flow e2e green.
   Still open (full-depth version): migrating both dialogs to the repo's
   RHF+Zod form pattern.
-- Shared-package note: `EmptyState` requires an `icon` prop that was easy to
-  omit (it crashed empty Data-flow tabs until fixed). Consider making `icon`
-  optional with a default in a future shared-package pass.
+- ~~Shared-package note: `EmptyState` requires an `icon` prop that was easy to
+  omit (it crashed empty Data-flow tabs until fixed).~~ **Done**
+  (`ai/emptystate-icon`): `icon` is optional, defaulting to lucide's Inbox;
+  existing callers unaffected.
