@@ -132,8 +132,10 @@ describe("MonitoringPage", () => {
     expect(markReadMutate).toHaveBeenCalledTimes(1);
   });
 
-  it("renders flow telemetry with the late hint when the window is blown", () => {
-    useAlertsMock.mockReturnValue(loaded([]));
+  it("marks a flow late when the monitor holds an open breach alert for it", () => {
+    // The hint is derived from the open alerts (the monitor's verdict), not
+    // re-computed locally from flow_stats.
+    useAlertsMock.mockReturnValue(loaded([alert()]));
     useFlowsMock.mockReturnValue(loaded([flow()]));
     useChannelsMock.mockReturnValue(loaded([]));
 
@@ -142,6 +144,17 @@ describe("MonitoringPage", () => {
     expect(screen.getByText("sentinel-2")).toBeTruthy();
     expect(screen.getByText(/12 files · 10 items · 2\.0 KB/)).toBeTruthy();
     expect(screen.getByText(/late · activity ≤ 3600s/)).toBeTruthy();
+  });
+
+  it("marks a flow on time when no open breach alert exists for it", () => {
+    // A breach alert for a DIFFERENT association must not mark this flow late.
+    useAlertsMock.mockReturnValue(loaded([alert({ association_id: "other" })]));
+    useFlowsMock.mockReturnValue(loaded([flow()]));
+    useChannelsMock.mockReturnValue(loaded([]));
+
+    render(<MonitoringPage />);
+
+    expect(screen.getByText(/on time · activity ≤ 3600s/)).toBeTruthy();
   });
 
   it("lists channels with the signed badge, never the secret", () => {
