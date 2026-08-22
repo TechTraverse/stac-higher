@@ -52,8 +52,9 @@ Reference: [`auth.md`](auth.md). Decisions: [ADR 0002 — proxy enforcement scop
 
 ---
 
-**BFF for built-in-catalog writes (ADR 0008, post-Phase-5 hardening —
-resolves I-50).** Under auth enforcement the browser cannot present a bearer
+## Cross-phase — BFF for built-in-catalog writes (ADR 0008) ✅
+
+**Post-Phase-5 hardening — resolves I-50.** Under auth enforcement the browser cannot present a bearer
 token (it lives in the httpOnly session cookie), so built-in-catalog
 mutations route through `/api/catalog/[...path]`
 (`app/src/pages/api/catalog/`): transaction endpoints only, writes only; the
@@ -64,6 +65,8 @@ unconditionally (dev pass-through included); the guard gates the paths
 (operator+, `catalog_collection`/`catalog_item` resource types) so every UI
 catalog mutation is audited. UI-path enforcement leg:
 `tests/integration/bff-catalog-writes.test.mjs`.
+
+---
 
 ## Phase 2 — Connections ✅
 
@@ -100,16 +103,16 @@ No new tables: the asset route derives keys from URL params; uploads derive from
 
 ---
 
-## Phase 4 — Ingest pipeline 🚧
+## Phase 4 — Ingest pipeline ✅
 
-Poll-based ingest of files from source connections into built-in-catalog collections. Delivered in slices: **Slice A (app associations + Data-flow UI) done**; **Slice B (pipeline ingest chain) in progress** — **B1 (adapter list-metadata + `build_adapter`) done**, **B2+B3 (ingest repo + scheduler + DISCOVER/GROUP/FETCH copy-mode) done and live-verified** (2026-07-16: MinIO source file → poll → DISCOVER → GROUP → FETCH → canonical storage, byte-identical, idempotent), **B4 (EXTRACT/ITEMIZE) done** (pipeline unit tests + a DB integration test; ADR 0006), **B4a (best-effort geometry extraction + collection-extent fallback, ISSUE I-27) done** (226 pipeline unit tests, 2 skipped, after the 3D-bbox fix); a **`/simplify` quality pass** was applied across the B4/B4a slice (behavior-identical cleanups). **B5 (live end-to-end through EXTRACT/ITEMIZE) largely verified (2026-07-17)**: DB integration test, `raster_auto` e2e, netCDF, and collection-inheritance all live-verified. **Slice C (`storage_mode: reference`) done + merged, live-verified** — durably-reachable-source-only (no app decryption, no presigning of source bytes); private-source reference is deferred (ISSUES). **Live end-to-end (2026-07-20, Task 10):** a reference association ran the real scheduler poll → … → itemized (queryable `ST_Polygon` item, no canonical copy, `GET /api/assets` 302→source URL) and an SFTP copy association closed I-4 (first live SFTP `list`/`get` → canonical copy → itemize) — Phase 4's done-when is met. The in-container run found+fixed I-35 (pipeline image missing `libexpat1`).
+Poll-based ingest of files from source connections into built-in-catalog collections. Delivered in slices: **Slice A (app associations + Data-flow UI) done**; **Slice B (pipeline ingest chain) done** — **B1 (adapter list-metadata + `build_adapter`) done**, **B2+B3 (ingest repo + scheduler + DISCOVER/GROUP/FETCH copy-mode) done and live-verified** (2026-07-16: MinIO source file → poll → DISCOVER → GROUP → FETCH → canonical storage, byte-identical, idempotent), **B4 (EXTRACT/ITEMIZE) done** (pipeline unit tests + a DB integration test; ADR 0006), **B4a (best-effort geometry extraction + collection-extent fallback, ISSUE I-27) done** (226 pipeline unit tests, 2 skipped, after the 3D-bbox fix); a **`/simplify` quality pass** was applied across the B4/B4a slice (behavior-identical cleanups). **B5 (live end-to-end through EXTRACT/ITEMIZE) largely verified (2026-07-17)**: DB integration test, `raster_auto` e2e, netCDF, and collection-inheritance all live-verified. **Slice C (`storage_mode: reference`) done + merged, live-verified** — durably-reachable-source-only (no app decryption, no presigning of source bytes); private-source reference is deferred (ISSUES). **Live end-to-end (2026-07-20, Task 10):** a reference association ran the real scheduler poll → … → itemized (queryable `ST_Polygon` item, no canonical copy, `GET /api/assets` 302→source URL) and an SFTP copy association closed I-4 (first live SFTP `list`/`get` → canonical copy → itemize) — Phase 4's done-when is met. The in-container run found+fixed I-35 (pipeline image missing `libexpat1`).
 
 | Feature | Status | Entry points |
 |---|---|---|
 | Association + ledger tables | ✅ | migration `005_ingest_associations_and_files`: `stac_higher.collection_connections` (both directions; app writes `ingest` this phase) + `stac_higher.ingest_files` ledger (app owns DDL; pipeline reads/writes rows — ADR 0001) |
 | Ingest `config` Zod schema (§5.1) | ✅ | `app/src/lib/associations/schemas.ts` — cross-runtime contract (source_path, include/exclude, poll_frequency, storage_mode, grouping, metadata, post_ingest); nested defaults filled via function-defaults |
 | Association CRUD API | ✅ | `GET/POST /api/collections/[id]/connections`, `GET/PUT/DELETE /api/collections/[id]/connections/[assocId]` — operator+ gated & audited; group ownership enforced in-route; `reference` mode restricted to s3 connections; duplicate (collection,connection,direction) → 409 |
-| Data-flow tab (ingest half) | ✅ | `app/src/components/collections/DataFlowTab.tsx`, wired into `CollectionDetail.tsx` (built-in catalog only): add/edit ingest sources, enable/disable, remove |
+| Data-flow tab (ingest half) | ✅ | `app/src/components/collections/IngestSection.tsx` + `IngestFormDialog.tsx` (extracted 2026-08-21 to mirror the delivery half), composed by `DataFlowTab.tsx` in `CollectionDetail.tsx` (built-in catalog only): add/edit ingest sources, enable/disable, remove |
 | Adapter list-metadata + `build_adapter` (Slice B1) | ✅ | `services/pipeline/.../adapters/*` `list()` → `FileEntry` (path/size/mtime/etag/is_dir) across s3/sftp/ftp; `connections/build.py::build_adapter` (decrypt→adapter seam the ingest workers consume); `probe` refactored onto it |
 | Ingest repo + scheduler + DISCOVER/GROUP/FETCH (Slice B2+B3) | ✅ | `services/pipeline/.../ingest/`: `IngestRepo` (+ `PgIngestRepo`, FakeRepo) mirroring `connections/repo.py`; `config.py` (Python §5.1 mirror + glob matching); `ingest_poll` scheduler (poll_frequency as N whole-minute ticks); `discover.py` settled-check state machine (size/fingerprint unchanged across 2 polls) + adapter-path normalization; `group.py` none/shared_basename + timeout; `fetch.py` copy-mode (buffered `get` → `platform.put_object` at `assets/{collection}/{item}/{filename}`, sha256 checksum); `jobs/ingest.py` chains the stages via the queue |
 | EXTRACT + ITEMIZE (Slice B4) | ✅ | `services/pipeline/src/pipeline/ingest/extract.py` (`build_item` dispatcher + `raster_auto`/`sidecar`/`defaults_only` strategies, reading canonical-storage bytes via an in-memory `rasterio.MemoryFile`); `ingest/itemize.py` (`run_itemize` — re-reads `stored` ledger members, EXTRACT → stac-pydantic `validate_item` gate → pgstac upsert → post-ingest, idempotent against the ledger); `ingest/postingest.py` (`apply_post_ingest` — `leave`/`delete`/`move:<path>`, non-fatal); `stac/pgstac_writer.py` (`PgstacWriter` ABC + `PgPgstacWriter`, pypgstac `Methods.upsert`); wired into the queue as `jobs/ingest.py`'s `pipeline.ingest_itemize` task. Part of the full pipeline suite (226 passed, 2 skipped) + a DB integration test (`test_integration_itemize.py`, upsert→query→update, gated on `DATABASE_URL`). No Dockerfile change (bundled-GDAL rasterio wheels); pgstac image pinned to `v0.9.11`. [ADR 0006](decisions/0006-ingest-metadata-and-upsert.md) |
@@ -120,7 +123,7 @@ No new client deps in Slice A. Slice B1/B2+B3 added no deps (stdlib only). Slice
 
 ---
 
-## Phase 5 — Delivery pipeline 🚧
+## Phase 5 — Delivery pipeline ✅
 
 **Slice A — event outbox + dispatcher skeleton** (done, live-verified). The
 event-driven bridge from catalog changes to delivery, matching only (no byte
@@ -229,7 +232,8 @@ I-40); per-event dispatcher isolation (I-39); per-connection concurrency caps
 Live: SFTP + FTP destination delivery (I-45), attempts 1→5 → `dead`,
 dead-destination recovery, ledger recovery sweeps (evidence in ROADMAP §9).
 
-**Slice C — NOTIFY-woken low latency + user-initiated backfill** (code done).
+**Slice C — NOTIFY-woken low latency + user-initiated backfill** (done,
+live-verified 2026-07-25: 89 ms NOTIFY→dispatch, backfill bridge exercised).
 Entry points:
 
 - **NOTIFY listener** — `services/pipeline/src/pipeline/dispatcher/listener.py`
@@ -283,13 +287,21 @@ Entry points:
   `useRequestBackfill` + `useBackfill` (3s poll to terminal status) in
   `app/src/lib/associations/queries.ts`; client functions in `api.ts`.
 - Ride-alongs: FTP `root_path` help text in the connection form (B-iii live
-  finding — non-chrooting servers need the absolute path) and a fix for the
-  required-but-omitted `EmptyState` icon that crashed both empty Data-flow
-  halves.
+  finding — non-chrooting servers need the absolute path). (`EmptyState`'s
+  once-required `icon` prop, which crashed both empty Data-flow halves when
+  omitted, has since been made optional with an Inbox default — 2026-08-21.)
+
+Residuals in [`ISSUES.md`](ISSUES.md): I-36, I-40 through I-43, I-46 through I-48 (I-37, I-38, I-39, I-44, I-45, I-49 resolved — archived).
+
+---
 
 ## Phase 6 — Operable platform (M2) 🚧
 
 Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.md`.
+**All implementation slices (M2-0…M2-H) are code-complete and merged; the only
+remaining item is M2-I, the live demo rehearsal of the Phase 6 done-when on the
+auth-enforced stack (human-led — see `TODO.md`), which is why this phase is 🚧
+rather than ✅.**
 
 - **M2-0 · deliver pre-record durability** — INSERT-only `pre_record` ahead of
   everything fallible in the deliver job, failure recording for config/adapter
@@ -410,6 +422,20 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   consistency pass: the two remaining %-style call sites (delivery matcher)
   moved to `extra={}` fields — the codebase now logs data exclusively as
   structured fields.
+
+Residuals in [`ISSUES.md`](ISSUES.md): I-58 (M2-C notification semantics), I-59 (M2-F GC residuals); I-56 resolved (archived). Migration numbering note: the spec's 013/014/015 landed as 014–018 on disk after the CI slice took 013.
+
+---
+
+## Cross-phase — CI/CD (GitHub Actions, 2026-08-18) ✅
+
+| Feature | Status | Entry points |
+|---|---|---|
+| CI gate | ✅ | `.github/workflows/ci.yml` — app job (the same app-scoped `astro check` + build + vitest that root `npm run verify` runs locally; aligned 2026-08-21 after the M2 promotion exposed the gap), pipeline job (ruff + pytest incl. the pgstac DB integration tests), Storybook build, and a Playwright e2e job against the compose stack |
+| Security scanning | ✅ | `.github/workflows/security.yml` (npm audit — critical-only gate, see ISSUES I-57 — plus gitleaks), `codeql.yml`, Trivy in `containers.yml` |
+| Container images + releases | ✅ | `containers.yml` → GHCR images for the app and pipeline; `release.yml` |
+
+---
 
 ## Phases 7–8 — Not started ⬜
 
