@@ -395,13 +395,14 @@ is in ROADMAP §9 M1.
   rebuilding the pipeline image, confirm the container actually has the new
   code, or grep the build output for `ERROR`; pre-pulling the base images
   clears the timeout.
-- /simplify note (Slice D): the Data-flow split is lopsided — delivery got
+- ~~/simplify note (Slice D): the Data-flow split is lopsided — delivery got
   `DeliverySection`/`DeliveryFormDialog` while the ~500-line ingest half stays
-  inline in `DataFlowTab.tsx` with its own form-seeding pattern. **M2-A edits
-  both halves** (expectation fields), so it is the natural moment to extract a
-  mirroring `IngestSection` (+ form dialog, mount-per-open seeding,
-  schema-parsed `formFromAssociation`); migrating both dialogs to the repo's
-  RHF+Zod form pattern is the full-depth version.
+  inline in `DataFlowTab.tsx` with its own form-seeding pattern.~~
+  **Done** (`ai/ingest-section`): extracted `IngestSection` +
+  `IngestFormDialog` mirroring the delivery half (mount-per-open seeding,
+  `ingestConfigSchema`-parsed `formFromAssociation`); data-flow e2e green.
+  Still open (full-depth version): migrating both dialogs to the repo's
+  RHF+Zod form pattern.
 - Shared-package note: `EmptyState` requires an `icon` prop that was easy to
   omit (it crashed empty Data-flow tabs until fixed). Consider making `icon`
   optional with a default in a future shared-package pass.
