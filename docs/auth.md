@@ -103,19 +103,32 @@ untouched.
 The permission guard (`src/lib/authz/guard.ts`, called from
 `src/middleware.ts`) consumes `locals.auth` exclusively:
 
-- **Reads stay open** — no existing page or read route is gated on login.
-- **Gated API mutations** (extensions CRUD today: `POST /api/extensions`,
-  `POST /api/extensions/import`, `PUT|DELETE /api/extensions/[id]`) require
-  the `operator` or `admin` role. Anonymous → `401`, insufficient role →
-  `403`, both with the JSON shape `{ error, code }`
-  (`code: "unauthenticated" | "forbidden"`). The gated-route table lives in
-  `src/lib/authz/permissions.ts`.
+- **Reads stay open** — no existing page or catalog read route is gated on
+  login. (The platform surfaces — connections, associations, settings,
+  alerts, channels, audit — require authentication and are group-scoped
+  in-route.)
+- **Gated API mutations** require the `operator` or `admin` role. The
+  gated-route table (`src/lib/authz/permissions.ts`) now spans the whole
+  platform surface: extensions CRUD, connections CRUD + `test` +
+  host-key reset, ingest/deliver associations (+ `backfill`, `redeliver`),
+  notification channels CRUD, alert `ack`/`resolve`, collection settings
+  PUT, presigned-upload minting (`POST /api/uploads`), and the ADR 0008
+  catalog BFF (`/api/catalog/[...path]` transaction writes). The audited
+  action enum is `create | update | delete | test | backfill | redeliver |
+  ack | resolve`. Anonymous → `401`, insufficient role → `403`, both with
+  the JSON shape `{ error, code }`
+  (`code: "unauthenticated" | "forbidden"`). GROUP ownership (operators act
+  only within their own groups) needs the row, so it is enforced inside the
+  routes, not the guard. Deliberately ungated: `POST /api/alerts/read`
+  (personal read-watermark, member+).
 - **Every gated mutation lands one `stac_higher.audit_log` row** (allowed or
   denied), as do OIDC login/logout. The table is append-only (DB triggers
-  reject UPDATE/DELETE/TRUNCATE); `detail` is redacted of credential-shaped
-  keys/values before insert (`src/lib/audit/log.ts`) and audit failures log
-  loudly but never fail the audited request.
-- `GET /api/audit?limit&before` — paginated viewer seam for the Phase 6 UI.
+  reject UPDATE/DELETE/TRUNCATE) and monthly-partitioned since migration 018
+  (ADR 0012 — rows die only by partition DETACH+DROP); `detail` is redacted
+  of credential-shaped keys/values before insert (`src/lib/audit/log.ts`)
+  and audit failures log loudly but never fail the audited request.
+- `GET /api/audit?limit&before` — the paginated audit viewer (M2 exposes it
+  on `/monitoring`-adjacent surfaces; also consumable directly).
   Operators see rows whose `actor_groups` overlap their own groups; admins
   see everything; members/anonymous are rejected.
 
