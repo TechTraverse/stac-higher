@@ -1,9 +1,10 @@
 import { Card, CardContent } from "@shared/components/ui/card";
 import { Button } from "@shared/components/ui/button";
-import type { LucideIcon } from "lucide-react";
+import { Inbox, type LucideIcon } from "lucide-react";
 
 interface EmptyStateProps {
-  icon: LucideIcon;
+  /** Defaults to a neutral Inbox — omitting it must never crash the state. */
+  icon?: LucideIcon;
   title: string;
   description: string;
   action?: {
@@ -13,7 +14,7 @@ interface EmptyStateProps {
   };
 }
 
-export function EmptyState({ icon: Icon, title, description, action }: EmptyStateProps) {
+export function EmptyState({ icon: Icon = Inbox, title, description, action }: EmptyStateProps) {
   return (
     <Card className="border-dashed">
       <CardContent className="flex flex-col items-center justify-center py-12 text-center">
