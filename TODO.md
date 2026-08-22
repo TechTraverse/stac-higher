@@ -290,12 +290,14 @@ is in ROADMAP §9 M1.
 - **e2e gotcha**: something else may own :4321 (this run: the user's Cursor
   editor listens there), which makes Playwright's webServer time out. The
   config honors `E2E_PORT` — run `E2E_PORT=4399 npm run test:e2e:ci`.
-- The flows card's late/on-time hint re-implements a display-level
+- ~~The flows card's late/on-time hint re-implements a display-level
   approximation of the monitor's evaluation (`isLate` ignores the
-  edited_at fallback and the outstanding-delivery breach check). Kept simple
-  deliberately — if the hint and the alert list ever visibly disagree,
-  either derive the hint from the open alerts instead or expose the
-  monitor's verdict on the flows API.
+  edited_at fallback and the outstanding-delivery breach check).~~
+  **Done** (`ai/flows-late-hint`): the hint is now derived from the open
+  alerts list (an `ingest_inactivity`/`delivery_slo` row for the
+  association), so it can't disagree with the alert list. The hint lags the
+  monitor's one-minute tick by design; it reads on-time while the alerts
+  query loads.
 - The bell polls `/api/alerts/unread` every 30s from EVERY page's header —
   at envelope scale that's one cheap indexed count per user per 30s, fine;
   if it ever matters, piggyback the count onto an existing poll.
