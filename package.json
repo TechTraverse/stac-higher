@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "verify": "npm run build --workspace app && npm run test --workspace app",
+    "verify": "npm run check --workspace app && npm run build --workspace app && npm run test --workspace app",
     "test:integration": "node --test \"tests/integration/**/*.test.mjs\""
   },
   "engines": {

@@ -21,7 +21,7 @@ Facts:
 ## Commands
 
 - **Install**: `npm install` (repo root)
-- **Verify**: `npm run verify` (repo root — app build + unit tests; **must pass before declaring any task done**)
+- **Verify**: `npm run verify` (repo root — app-scoped typecheck + app build + unit tests, the same gates CI runs; **must pass before declaring any task done**)
 - **Dev**: `npm run dev` (from `app/`, http://localhost:4321)
 - **Build**: `npm run build` (from `app/`, outputs to `app/dist/`)
 - **Unit tests**: `npm test` (from `app/`); `npm run test:watch` for watch mode
@@ -297,8 +297,9 @@ when changing shared components.
 ## Gotchas
 
 - Full-project `npx astro check` currently OOMs (pre-existing Vite/rolldown
-  plugin type conflict between root and `app/node_modules`). Rely on
-  `npm run verify` (build + vitest) instead.
+  plugin type conflict between root and `app/node_modules`). The app-scoped
+  check (`npm run check` from `app/`) is fast and green — `npm run verify`
+  runs it first, matching CI. Never run the check from the repo root.
 - The Zod v4 → `zodResolver` type inference mismatch forces an `as any` cast on
   form resolvers — this is a known pattern, not a bug to fix.
 - `extensions.spec.ts` and `proxy.spec.ts` (e2e) require the Docker backend on
