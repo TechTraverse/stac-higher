@@ -15,6 +15,13 @@ const meta: Meta<typeof EmptyState> = {
 export default meta;
 type Story = StoryObj<typeof EmptyState>;
 
+export const DefaultIcon: Story = {
+  args: {
+    title: "Nothing here yet",
+    description: "Callers that omit `icon` get the neutral Inbox default.",
+  },
+};
+
 export const NoAction: Story = {
   args: {
     icon: Database,
