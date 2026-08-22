@@ -245,7 +245,8 @@ export type AssociationUpdateInput =
 
 // Pre-parse payload shapes for API clients: `z.input` leaves defaulted fields
 // optional, so the browser can send a sparse config and the server-side parse
-// fills nested defaults (see `buildConfig` in DataFlowTab).
+// fills nested defaults (see `buildConfig` in IngestFormDialog /
+// DeliveryFormDialog).
 export type AssociationCreatePayload = z.input<typeof associationCreateSchema>;
 
 export type AssociationUpdatePayload =

@@ -46,7 +46,7 @@ On a fresh DB the drain/health-sweep jobs log `UndefinedTable` each tick until t
 - Tracked in: here. Workaround for local pipeline-only testing: apply migration 004 first.
 
 ### I-8 · Full-project `npx astro check` OOMs 🟡
-A pre-existing Vite/rolldown plugin type conflict between the repo root and `app/node_modules` OOMs a full-project `astro check`. Rely on `npm run verify` (build + vitest) and the scoped PostToolUse `astro check` hook instead.
+A pre-existing Vite/rolldown plugin type conflict between the repo root and `app/node_modules` OOMs a full-project `astro check`. The app-scoped check (`npm run check` from `app/`) is unaffected — `npm run verify` runs it first (matching CI), and the scoped PostToolUse `astro check` hook covers edits. Never run the check from the repo root.
 - Tracked in: `AGENTS.md` "Gotchas".
 
 ---

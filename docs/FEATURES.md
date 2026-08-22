@@ -352,7 +352,9 @@ Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.m
   watermark on open), **Data flows** (`GET /api/monitoring/flows`, the new
   cross-collection association list — direction, connection health,
   files/items/bytes, activity recency, delivery latency + per-status counts,
-  and a live late/on-time hint against the declared §5.1 window; rows link to
+  and a late/on-time hint for the declared §5.1 window derived from the open
+  alerts list — the monitor's own verdict, withheld when the alerts query
+  has no data or its page is full; rows link to
   the collection's Data-flow tab), and **Notification channels** (list /
   add / remove, webhook secret never displayed). Header gains the
   **AlertBell** (30s-polled unread firing count, badge links to

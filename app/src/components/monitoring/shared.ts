@@ -1,5 +1,9 @@
 /** Display helpers for the /monitoring surfaces (M2-D). */
-import type { Alert, AlertState } from "@/lib/monitoring/api";
+import {
+  EXPECTATION_BREACH_KIND,
+  type Alert,
+  type AlertState,
+} from "@/lib/monitoring/api";
 
 /** Compact relative time ("3m ago") for telemetry timestamps. */
 export function timeAgo(isoValue: string | null | undefined): string {
@@ -94,15 +98,10 @@ export function expectationWindow(
   return typeof value === "number" && value >= 1 ? value : null;
 }
 
-/** The monitor kind that fires when a direction's declared window is blown. */
-const EXPECTATION_BREACH_KIND: Record<"ingest" | "deliver", string> = {
-  ingest: "ingest_inactivity",
-  deliver: "delivery_slo",
-};
-
 /** True when the monitor holds an open expectation-breach alert for this
  * association — the alert row's own verdict (edited_at fallback, outstanding
- * deliveries and all), not a local re-derivation of it. */
+ * deliveries and all), not a local re-derivation of it. A miss only means
+ * "on time" when the alert list is complete — the caller checks that. */
 export function isLate(
   direction: "ingest" | "deliver",
   associationId: string,
