@@ -191,13 +191,37 @@ is in ROADMAP §9 M1.
       the catalog → after a shortened grace window its bytes leave MinIO.
       Record evidence in ROADMAP §9 M2; then promote `ai/main → main` via PR.
 
+## Pre-M5 hardening (sequenced 2026-08-27, after M2-I)
+
+Local-only work that should land before M5 implementation begins (ROADMAP §9
+steering order: M2-I → Phase 7 → Phase 9/M5 → M3 → Phase 8). Neither item
+blocks the Phase 9 *scoping* queue below — planning can proceed in parallel.
+
+- [ ] **Astro 7 migration** (I-57). The Astro 6.x high-severity advisories
+      are fixed only in Astro 7; the migration gets more expensive as the
+      app grows, and M5 adds substantial new UI on top of it. Full verify +
+      e2e after; watch the known rolldown/root-check gotcha (I-8) for
+      changes in behavior.
+- [ ] **OGC API serving exposure** (pulled forward from Phase 8 stretch —
+      ROADMAP §8). Add **titiler-pgstac** (OGC API Tiles for rasters) and
+      **tipg** (OGC API Features/Tiles for vectors) to docker compose behind
+      a per-collection **serving toggle** on the Settings tab. Local,
+      cloud-independent, high demo value for OGC-conformance requirements.
+      Scope honestly against I-1: until read-visibility lands, the toggle
+      may only expose collections that are already public — say so in the
+      UI copy. Small design pass first (compose wiring, toggle semantics,
+      what the collection page links to), then implement.
+
 ## Phase 9 — Processes (M5) scoping queue
 
 Planning-only tasks (no application/pipeline code, no migrations) toward the
 Phase 9 design spec. Scope sources: ROADMAP §9 Phase 9 (+ §5 `PROCESS_*`,
 §5.6, §6.7, §8 Phase 9 table), ADRs **0013**/**0014** (proposed), ISSUES
-I-60…I-65. Sits behind M2-I deliberately — do not start these while the M2
-gate is open unless the lead says otherwise.
+I-60…I-66. Sits behind M2-I deliberately — do not start these while the M2
+gate is open unless the lead says otherwise. Already settled 2026-08-27 (do
+not relitigate): M5 precedes M3; Phase 7 precedes Phase 9 with a
+producer-parameterized finalize; slice 1 is `inline_python`-only on a
+platform-built image; a per-process run-rate ceiling is a requirement.
 
 - [ ] **P9-A · executor-backend investigation** (feeds ADR 0013, I-61).
       Establish concrete `Executor` backend candidates: locally, what
@@ -205,11 +229,12 @@ gate is open unless the lead says otherwise.
       granted (socket exposure hardening included); in cloud, ECS/Fargate
       task launch latency + GovCloud quotas vs. a K8s Job. Deliverable: a
       written comparison + recommended backend pair appended to ADR 0013.
-- [ ] **P9-B · finalize sequencing decision** (feeds ADR 0014). Decide Phase
-      7 dependency vs. shared finalize slice (validate + checksum + move +
-      rewrite + upsert, parameterized by producer). Deliverable: the
-      dependency stated in ADR 0014 + the ROADMAP §9 dependency chain
-      updated if Phase 9 can precede Phase 7 via the shared slice.
+- [ ] **P9-B · finalize seam check** (feeds ADR 0014; sequencing itself is
+      settled — Phase 7 first). Verify Phase 7's finalize design is
+      **producer-parameterized** (validate + checksum + move + rewrite +
+      upsert with push-ingest as merely the first caller) so Phase 9 plugs
+      in without a parallel path. Deliverable: the seam's interface sketch
+      recorded for both the Phase 7 build and the Phase 9 design spec.
 - [ ] **P9-C · inline-editor dependency evaluation** (I-65). CodeMirror vs.
       Monaco for `/processes/[id]`: bundle size vs. the island pattern,
       shadcn/theming fit, maintenance posture, supply-chain review per the
@@ -227,11 +252,14 @@ gate is open unless the lead says otherwise.
       lineage panel's 30-day strip needs (a new requirement — decide table
       vs. derived).
 - [ ] **P9-F · Phase 9 design spec** (the M2 pattern —
-      `docs/superpowers/specs/`). Consumes P9-A…P9-E; slices the milestone;
-      settles milestone ordering vs. M3/M4 (I-60), the `process_stalled`
-      expectation scope (I-63), cycle-detection scope (I-64), and run-log
-      storage/retention (I-62); accepts or revises ADRs 0013/0014. Includes
-      redoing the throughput arithmetic with process-generated items (§10).
+      `docs/superpowers/specs/`). Consumes P9-A…P9-E; slices the milestone
+      (slice 1: `inline_python` on a platform-built image, per ADR 0013);
+      settles the `process_stalled` expectation scope (I-63), cycle-detection
+      scope (I-64 — the run-rate-ceiling backstop is already a requirement),
+      run-log storage/retention (I-62), and the OGC API — Processes facade
+      evaluation (I-66); accepts or revises ADRs 0013/0014. Includes redoing
+      the throughput arithmetic with process-generated items (§10 — M5
+      precedes M3, so M3 scoping consumes this number).
 
 ## Discovered follow-ups
 

@@ -40,12 +40,13 @@ run-scoped staging prefix; the platform finalizes.**
   other item, including `on_update` semantics when a re-run upserts the
   same item ids.
 
-**This is Phase 7's finalize step with a different producer.** The Phase 9
-design spec must make the relationship explicit: either Phase 7 lands first
-and Phase 9 consumes its finalize, or the finalize step is built as a shared
-slice both phases consume (validate + checksum + move + rewrite + upsert,
-parameterized by producer). Building two parallel finalize paths is the
-outcome to avoid.
+**This is Phase 7's finalize step with a different producer.**
+**Sequencing settled 2026-08-27: Phase 7 lands first and Phase 9 consumes
+its finalize** (ROADMAP §9 steering order). The obligation this places on
+Phase 7's build: the finalize slice (validate + checksum + move + rewrite +
+upsert) must be **parameterized by producer** from day one — push-ingest is
+merely its first caller — so Phase 9 plugs in without a parallel path.
+`TODO.md` P9-B is the check that Phase 7's design honors this seam.
 
 ### Loop hazard
 
@@ -89,6 +90,7 @@ are not statically knowable.
 
 ## Revisit
 
-Accept/revise in the Phase 9 design spec, jointly with the Phase 7
-sequencing decision (shared finalize slice vs. dependency) and the cycle-
-detection scope (I-64).
+Accept/revise in the Phase 9 design spec. The Phase 7 sequencing question is
+settled (Phase 7 first, producer-parameterized finalize — above); still open
+for the spec: the cycle-detection scope (I-64, with the run-rate-ceiling
+backstop now a requirement) and the run-scoped credential mechanics.

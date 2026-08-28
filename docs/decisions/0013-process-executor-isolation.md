@@ -87,6 +87,18 @@ boundary.
   `process_runs.log_ref` — never interleaved into the pipeline's own logs as
   trusted content.
 
+## Slice-1 scope (settled 2026-08-27)
+
+The first M5 slice supports **`inline_python` only, executed on a
+platform-built base image** — the `container` runtime kind (user-supplied
+image references) is a later slice. This keeps user-image supply-chain
+review, registry policy, and image-scanning machinery out of the first
+accreditation surface while exercising the full executor boundary; the
+`runtime.kind` contract shape (§5.6) already carries `container` so nothing
+is foreclosed. The build order also runs local-first (ROADMAP §9 steering
+order): the local docker backend is implemented first, cloud backends are
+paper-investigated (P9-A, I-61) and built only in Phase 8.
+
 ## Consequences
 
 - **B** adds the first component whose local and cloud implementations
