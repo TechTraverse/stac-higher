@@ -356,6 +356,69 @@ Accepted M2-F simplifications (ADR 0011 "Consequences"):
 
 ---
 
+## Phase 9 — Processes (planning, 2026-08-27)
+
+Open design questions from the Phase 9 planning pass (ROADMAP §9 Phase 9 /
+M5; ADRs [0013](decisions/0013-process-executor-isolation.md) and
+[0014](decisions/0014-process-output-path.md), both proposed). None block
+current work; all must be settled by the Phase 9 design spec (`TODO.md`
+P9-F) before any implementation.
+
+### I-60 · Milestone ordering: does Processes (M5) precede or follow M3? 🔴
+The M-number is nominal (assigned in creation order, not execution order).
+Process runs multiply item throughput — every output is a full catalog item
+that fans out to delivery — so M3's ~30 items/s arithmetic must include
+process-generated items **either way**. Sequencing question: is Processes a
+demo-driver worth landing on the pre-M3 architecture, or does running user
+code at scale require M3's multi-worker/HA work (I-40) first?
+- Tracked in: ROADMAP §9 (M5 note, dependency chain), §10; decided by P9-F.
+
+### I-61 · Executor backend: local dev vs. GovCloud 🔴
+ADR 0013's recommended container-per-run interface needs concrete backends:
+locally, docker-socket availability inside the compose pipeline container
+(and the hardening cost of granting it); in cloud, ECS/Fargate task quotas,
+launch latency (felt on interactive test runs), and GovCloud service
+availability vs. a K8s Job. A backend pair that keeps local dev a single
+`docker compose up` is a hard requirement (§1 locked decisions).
+- Tracked in: ADR 0013 "Revisit"; investigated by `TODO.md` P9-A.
+
+### I-62 · Run-log storage & retention 🔴
+Run logs land in object storage under a `log_ref` (ADR 0013 invariant) —
+but under which prefix (a `logs/` sibling of `assets/`/`staging/` in §5.3?),
+with what size cap per run, and which sweep ages them out (a
+`history_retention` leg keyed to `process_runs` pruning? an `asset_gc`
+reason? a plain TTL like staging)? Log bytes from a chatty process are
+unbounded without a policy.
+- Tracked in: here; decided by P9-F.
+
+### I-63 · `process_stalled` expectation: per-source or per-process? 🔴
+The `run_within_seconds` expectation could live on each `process_sources`
+row (mirroring per-association expectations — natural for cron triggers with
+different cadences) or once per process (simpler, matches how operators
+think about "is my process running"). Affects the alert dedup key and the
+`/monitoring` flows shape.
+- Tracked in: here; decided by P9-F with ADR 0010's dedup model in view.
+
+### I-64 · Cycle-detection scope for the output→source loop hazard 🔴
+ADR 0014 refuses associations that close a feedback loop. Direct
+source/output edges are cheap to check at association time. But a loop can
+also close transitively through delivery→re-ingest edges (process output →
+delivery association → external system → ingest association → source
+collection) — statically visible only while both ends are our associations,
+undecidable once an external system is in the path. Where does the refusal
+stop, and does anything (rate limiting? run-budget alarms?) backstop the
+undetectable loops?
+- Tracked in: ADR 0014 "Revisit", ROADMAP §10; decided by P9-F.
+
+### I-65 · Inline-editor dependency choice + supply-chain review 🔴
+`/processes/[id]` wants a code editor (CodeMirror vs. Monaco) — a
+significant new frontend dependency under the no-new-deps-without-need rule
+and the platform's compliance posture (supply-chain review before adoption).
+A plain textarea may be acceptable for a first slice.
+- Tracked in: ROADMAP §8 Phase 9 table; evaluated by `TODO.md` P9-C.
+
+---
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
