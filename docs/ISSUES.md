@@ -361,17 +361,19 @@ Accepted M2-F simplifications (ADR 0011 "Consequences"):
 Open design questions from the Phase 9 planning pass (ROADMAP §9 Phase 9 /
 M5; ADRs [0013](decisions/0013-process-executor-isolation.md) and
 [0014](decisions/0014-process-output-path.md), both proposed). None block
-current work; all must be settled by the Phase 9 design spec (`TODO.md`
-P9-F) before any implementation.
+current work; the open ones must be settled by the Phase 9 design spec
+(`TODO.md` P9-F) before any implementation.
 
-### I-60 · Milestone ordering: does Processes (M5) precede or follow M3? 🔴
-The M-number is nominal (assigned in creation order, not execution order).
-Process runs multiply item throughput — every output is a full catalog item
-that fans out to delivery — so M3's ~30 items/s arithmetic must include
-process-generated items **either way**. Sequencing question: is Processes a
-demo-driver worth landing on the pre-M3 architecture, or does running user
-code at scale require M3's multi-worker/HA work (I-40) first?
-- Tracked in: ROADMAP §9 (M5 note, dependency chain), §10; decided by P9-F.
+### I-60 · Milestone ordering: does Processes (M5) precede or follow M3? 🟢
+**Settled 2026-08-27: M5 precedes M3** (local-first steering order, ROADMAP
+§9: M2-I → Phase 7 → Phase 9/M5 → M3 → Phase 8/M4 — no cloud environment is
+targeted before Phase 8). Rationale: Processes is fully buildable in docker
+compose; the load measurement is not, and running it *after* M5 means M3
+measures the real workload including process-generated items. The standing
+obligation this leaves: M3's ~30 items/s arithmetic MUST include
+process-generated volume (ROADMAP §10), and M5 implementation stays within
+the singleton pre-M3 architecture (I-40 untouched).
+- Tracked in: ROADMAP §9 (steering order, M5 note), §10.
 
 ### I-61 · Executor backend: local dev vs. GovCloud 🔴
 ADR 0013's recommended container-per-run interface needs concrete backends:
@@ -406,9 +408,11 @@ also close transitively through delivery→re-ingest edges (process output →
 delivery association → external system → ingest association → source
 collection) — statically visible only while both ends are our associations,
 undecidable once an external system is in the path. Where does the refusal
-stop, and does anything (rate limiting? run-budget alarms?) backstop the
-undetectable loops?
-- Tracked in: ADR 0014 "Revisit", ROADMAP §10; decided by P9-F.
+stop? **Backstop settled 2026-08-27:** regardless of detection scope, a
+per-process run-rate ceiling with an alert on breach is a design-spec
+requirement — it caps the blast radius of any loop the detector cannot see.
+The detection scope itself remains open.
+- Tracked in: ADR 0014 "Revisit", ROADMAP §10; scope decided by P9-F.
 
 ### I-65 · Inline-editor dependency choice + supply-chain review 🔴
 `/processes/[id]` wants a code editor (CodeMirror vs. Monaco) — a
@@ -416,6 +420,21 @@ significant new frontend dependency under the no-new-deps-without-need rule
 and the platform's compliance posture (supply-chain review before adoption).
 A plain textarea may be acceptable for a first slice.
 - Tracked in: ROADMAP §8 Phase 9 table; evaluated by `TODO.md` P9-C.
+
+### I-66 · OGC API — Processes conformant facade: worth exposing? 🔴
+The Phase 9 capability is the domain of the OGC API — Processes standard
+(execute/jobs/results; Part 3 covers workflow chaining). Our internal design
+is deliberately richer (event triggers, revisions, group ownership) and must
+NOT be contorted to the standard — but a conformant read/execute *facade*
+over `/processes` + `process_runs` (the standard's `/processes` and `/jobs`
+resources map cleanly onto ours) would be a credible interoperability story
+for OGC-conformance-minded deployments (NOAA). Evaluate: conformance classes
+worth claiming, auth fit (the standard assumes OIDC-ish bearer auth — fine),
+and whether the facade is a Phase 9 slice or a later add-on. Related: the
+serving exposure work (titiler-pgstac / tipg, `TODO.md` "Pre-M5 hardening")
+covers OGC API Tiles/Features — together these make the platform's OGC
+story: Features (STAC API core), Tiles, and potentially Processes.
+- Tracked in: ROADMAP §9 Phase 9; decided by P9-F.
 
 ---
 

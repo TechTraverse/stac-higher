@@ -741,8 +741,11 @@ rows in the second table.
 **Deliberate divergence from the mockups:** the mockups' "OGC API hosting"
 *destination type* (expose a collection via Tiles/Features) is **not** a
 connection row here — it maps to catalog-exposure knobs on collection Settings
-plus the titiler-pgstac / tipg adoption (Phase 8 stretch). A serving toggle,
-not a delivery flow.
+plus the titiler-pgstac / tipg adoption. A serving toggle, not a delivery
+flow. **Pulled forward from Phase 8 stretch (2026-08-27):** both services run
+fine in docker compose, so OGC serving is local, cloud-independent work —
+tracked in `TODO.md` "Pre-M5 hardening". Until read-visibility (I-1) lands,
+the toggle can only expose collections that are already public.
 
 RBAC for the Phase 9 surface follows §7: processes are group-owned; member
 views, operator+ creates/deploys/re-runs; every deploy/run/re-run/cancel is
@@ -756,11 +759,17 @@ islands, TanStack Query for server state, shared components in
 
 ## 9. Phases
 
-Dependency chain: `0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8`, though 6 and 7 can
-swap, and 8's IaC work can start in parallel any time after 2. Phase 9
-(Processes, proposed) depends on Phase 7's finalize step (or a shared slice of
-it — ADR 0014) and on the M2 monitoring substrate; its ordering vs. M3/M4 is
-an open question (I-60), not a decision this chain makes.
+Dependency chain: `0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8`, though 8's IaC work
+can start in parallel any time after 2. Phase 9 (Processes, proposed) depends
+on Phase 7's finalize step (**Phase 7 precedes 9** — settled 2026-08-27, ADR
+0014) and on the M2 monitoring substrate.
+
+**Steering order (settled 2026-08-27, local-first):** everything buildable in
+`docker compose` lands before any cloud environment is targeted —
+**M2-I → Phase 7 → Phase 9 (M5) → M3 → Phase 8 (M4)**. Cloud work begins at
+Phase 8 and not before; until then cloud constraints (Fargate quotas,
+GovCloud service availability) are tracked as paper investigations (P9-A,
+I-61), never as deployments. This settles I-60: M5 precedes M3.
 
 **Implementation status — 2026-08-21** (legend: ✅ done · 🚧 in progress · ⬜ not started):
 
@@ -876,12 +885,16 @@ there are no intermediate demos; the first demo is M1, complete:
   transformations as the third flow primitive — group-owned processes with
   immutable revisions, isolated execution (ADR 0013), staged-then-finalized
   output (ADR 0014), the `/processes` + `/graph` UI surface, and process
-  alert kinds in the monitor. **The number is nominal — ordering vs. M3/M4
-  is deliberately open** (I-60): process runs multiply item throughput, so
-  M3's scale arithmetic must include process-generated items whether M5
-  lands before or after it. **Not yet scoped** — needs its own design spec
-  (the M2 pattern) worked from the Phase 9 section, the two proposed ADRs,
-  and the `TODO.md` scoping queue.
+  alert kinds in the monitor. **Ordering settled 2026-08-27 (I-60): M5
+  precedes M3** — the number is creation-order, not execution-order.
+  Processes is locally buildable; the M3 load measurement is the natural
+  point to include process-generated volume, so M3's scale arithmetic MUST
+  count process output items (§10). **Slice-1 scope constraint** (ADR 0013):
+  `inline_python` on a platform-built executor image only — user-supplied
+  `container` images are a later slice, keeping image supply-chain review
+  out of the first accreditation surface. **Not yet scoped** — needs its own
+  design spec (the M2 pattern) worked from the Phase 9 section, the two
+  proposed ADRs, and the `TODO.md` scoping queue.
 
 ### Phases 0–5 — delivered
 
@@ -924,7 +937,10 @@ channels (email deferred), Prometheus metrics + structured logging.
   fan-out, million-item backfill) against both queue backends; production
   scale claims follow the measurements, and pipeline modules split into
   services only if the numbers say so.
-- Stretch: titiler-pgstac for raster previews in the collection/item UI.
+- Stretch: raster previews in the collection/item UI (rides on the OGC
+  serving services — titiler-pgstac/tipg themselves were **pulled forward
+  to local work 2026-08-27**, see §8 and `TODO.md` "Pre-M5 hardening";
+  Phase 8 keeps only their cloud deployment).
 - **Done when:** the full ICD loop runs on AWS from IaC, with KMS-encrypted
   credentials, S3 object storage, and a written load-test report against the
   envelope.
@@ -938,7 +954,11 @@ Geospatial Data Platform mockups; requirements translated into this repo's
 terms. Planning artifacts: §5 `PROCESS_*` entities + §5.6 config shapes,
 §6.7 flow, the §8 Phase 9 UI table, [ADR 0013](docs/decisions/0013-process-executor-isolation.md)
 (executor isolation, proposed) and [ADR 0014](docs/decisions/0014-process-output-path.md)
-(output path, proposed), the `TODO.md` scoping queue, and ISSUES I-60…I-65.
+(output path, proposed), the `TODO.md` scoping queue, and ISSUES I-60…I-66.
+Sequencing settled 2026-08-27: Phase 7 precedes 9; M5 precedes M3 (see the
+steering order above). Slice 1 is `inline_python`-only (ADR 0013); an OGC
+API — Processes conformant facade over `/processes` + runs is an open
+evaluation for the design spec (I-66).
 
 - **Data model:** `processes`, `process_revisions` (immutable code+config
   snapshots; deploy = new revision), `process_sources` (built-in-catalog
@@ -1022,10 +1042,10 @@ toggle (§8), not a connection.
   at latest in Phase 8 / M3.
 - **Processes multiply item throughput (Phase 9, proposed):** every
   process-generated item is a full catalog item that fans out to delivery
-  like any other — M3's ~30 items/s arithmetic must include
-  process-generated volume regardless of whether M5 lands before or after
-  M3 (I-60). A misconfigured high-fan-out process is also a self-inflicted
-  load amplifier; per-process rate/backlog limits belong in the design spec.
+  like any other — and with M5 sequenced before M3 (I-60 settled), M3's
+  ~30 items/s arithmetic MUST include process-generated volume. A
+  misconfigured high-fan-out process is also a self-inflicted load
+  amplifier; per-process rate/backlog limits belong in the design spec.
 - **Untrusted user code in a FISMA-High-bound platform (Phase 9):** the
   executor boundary (ADR 0013) is a new, security-critical surface — local
   dev (docker socket availability) and GovCloud (Fargate task quotas,
@@ -1037,7 +1057,10 @@ toggle (§8), not a connection.
   through delivery→re-ingest edges) can run away silently; the refusal
   check's scope is an open question (I-64) — too narrow misses real loops,
   too broad (full transitive closure across external systems) is
-  undecidable.
+  undecidable. **Backstop requirement (settled 2026-08-27):** whatever the
+  detection scope, a per-process run-rate ceiling with an alert on breach
+  is a design-spec requirement — it caps the blast radius of any loop the
+  detector cannot see.
 
 Settled since first drafted: **high-volume table hygiene** (M2-F/M2-G, ADR
 0011/0012 — the partition-vs-sweep split); **migration ownership** (Phase 0,
