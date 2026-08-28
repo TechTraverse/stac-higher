@@ -184,12 +184,24 @@ is in ROADMAP §9 M1.
 
 ## M2 gate
 
-- [ ] **M2-I · M2 demo rehearsal** (lead only: dev server + Docker + e2e). On
+- [x] **M2-I · M2 demo rehearsal** (lead only: dev server + Docker + e2e). On
       the auth-enforced stack: stop a source mid-flow → alert fires within the
       declared expectation window → webhook + bell notify → ack → recovery
       auto-resolves; set `retention_days` on a collection → expired item leaves
       the catalog → after a shortened grace window its bytes leave MinIO.
       Record evidence in ROADMAP §9 M2; then promote `ai/main → main` via PR.
+      **Done 2026-08-28** — both gate legs closed live on a fresh-wiped
+      auth-enforced stack, fully UI-driven (real Keycloak login); every
+      `pragma: no cover` SQL from the follow-ups exercised: delivery stall
+      sweep (worker SIGKILLed mid-324MB-transfer → revived → delivered,
+      attempts 2), monitor raise → re-fire (last_seen bump, no dup) → ack
+      (detection continues) → auto-resolve → re-raise as new row → audited
+      manual resolve, webhook kill-mid-POST → stall revival → dead-letter →
+      `webhook_failed` → auto-resolve on next success (HMAC verified), GC
+      sweeps (mark-first `asset_gc` → collect; delete not propagated to
+      destinations), and `flow_stats->counts` == `GROUP BY` (exact).
+      Evidence: ROADMAP §9 M2. Findings below + ISSUES I-67. Promotion PR
+      is the human's.
 
 ## Pre-M5 hardening (sequenced 2026-08-27, after M2-I)
 
@@ -468,6 +480,25 @@ platform-built image; a per-process run-rate ceiling is a requirement.
   Per the contract-fixture rule they deserve a
   `tests/contract-fixtures/alert-kinds.json` consumed by both suites —
   deferred because it needs a pytest-side consumer too.
+
+### From M2-I
+
+- **Item edit form crashes for pipeline-ingested items** (ISSUES **I-67**):
+  `/collections/[id]/items/[itemId]/edit` dies with "Could not find a
+  definition for https://geojson.org/schema/Geometry.json" — RJSF cannot
+  resolve the remote GeoJSON $ref riding in with the projection extension
+  (`proj:geometry`). Every raster_auto-ingested item carries it, so the whole
+  edit-form surface is broken for pipeline items. Workaround: BFF PUT.
+- **Settings tab copy is stale**: still says retention/GC "lands (M2-F)" and
+  archived enforcement "arrives with retention & GC (M2-F)" — both shipped.
+  Small copy fix.
+- Keycloak dev realm: default 30-min SSO idle ends long-idle operator
+  sessions ("Token is not active" on refresh; the app handles it cleanly and
+  re-login works). For demo machines consider a longer `ssoSessionIdleTimeout`
+  in the realm file (needs `down -v` to re-import).
+- Rehearsal used runtime Keycloak-admin tweaks (added `:4399` redirect URI,
+  raised idle timeout) because Cursor owned :4321 — if that stays common,
+  consider adding `http://localhost:4399/*` to the realm file's app client.
 
 ### Carried forward from M1
 
