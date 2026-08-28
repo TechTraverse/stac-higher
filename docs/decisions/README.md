@@ -18,6 +18,11 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0010](0010-alerting-notifications.md) | Alerting & notification model | accepted | 6 (M2-B/C) |
 | [0011](0011-retention-gc.md) | Retention & GC: one marked-then-collected queue | accepted | 6 (M2-F) |
 | [0012](0012-table-hygiene.md) | High-volume table hygiene: partition two, sweep three | accepted | 6 (M2-G) |
+| [0013](0013-process-executor-isolation.md) | Process executor isolation | **proposed** | 9 (M5) |
+| [0014](0014-process-output-path.md) | Process output path: staging + platform finalize | **proposed** | 9 (M5) |
+
+Proposed ADRs establish no invariants until accepted (via the Phase 9 design
+spec); their draft invariants live inside the documents.
 
 ## Key invariants these establish
 
@@ -37,6 +42,6 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 ## Adding an ADR
 
 1. Copy the format of an existing record: a `# ADR NNNN — Title` heading, then **Status**, **Context**, **Decision**, **Consequences** (and **Revisit** if the choice is expected to be reconsidered).
-2. Number sequentially (next: `0013`).
+2. Number sequentially (next: `0015`).
 3. Add a row to the index above and, if it changes an invariant, note it in "Key invariants."
 4. ADRs are immutable once accepted — supersede with a new ADR rather than editing history; mark the old one `superseded by NNNN`.

@@ -222,6 +222,12 @@ erDiagram
     COLLECTION_CONNECTIONS ||--o{ ALERTS : raises
     CONNECTIONS ||--o{ ALERTS : raises
     GROUPS ||--o{ NOTIFICATION_CHANNELS : configures
+    GROUPS ||--o{ PROCESSES : owns
+    PROCESSES ||--o{ PROCESS_REVISIONS : snapshots
+    PROCESSES ||--o{ PROCESS_SOURCES : "consumes from"
+    PROCESSES ||--o{ PROCESS_OUTPUTS : "publishes to"
+    PROCESSES ||--o{ PROCESS_RUNS : executes
+    PROCESSES ||--o{ ALERTS : raises
 
     CONNECTIONS {
         uuid id PK
@@ -310,7 +316,57 @@ erDiagram
         text kind "in_app|email|webhook"
         jsonb config
     }
+    PROCESSES {
+        uuid id PK
+        text name
+        text description
+        text group_id "owning group"
+        uuid current_revision FK
+        boolean enabled
+        timestamptz deleted_at "soft-delete per ADR 0009"
+    }
+    PROCESS_REVISIONS {
+        uuid id PK
+        uuid process_id FK
+        jsonb runtime "see 5.6 — inline_python | container"
+        text code "inline source; null for container"
+        jsonb env "secret values are refs into 5.2 envelope"
+        text created_by
+        timestamptz created_at "immutable snapshot"
+    }
+    PROCESS_SOURCES {
+        uuid id PK
+        uuid process_id FK
+        text collection_id "built-in catalog only (enforced)"
+        jsonb trigger "see 5.6 — item_event | cron"
+        boolean enabled
+    }
+    PROCESS_OUTPUTS {
+        uuid id PK
+        uuid process_id FK
+        text collection_id "built-in catalog only (enforced)"
+    }
+    PROCESS_RUNS {
+        uuid id PK
+        uuid process_id FK
+        uuid revision_id FK "pinned at execution time"
+        text status "queued|running|succeeded|failed|dead"
+        int attempts
+        jsonb input_items "trigger item refs (one run = N items)"
+        jsonb output_items "published item refs"
+        text log_ref "object-storage key for captured run logs"
+        timestamptz started_at
+        timestamptz finished_at
+    }
 ```
+
+> The `PROCESS_*` entities are **Phase 9 (proposed, M5 — see §9)**: design-time
+> shapes only, no migrations exist. The app owns their DDL per ADR 0001; the
+> pipeline reads them and writes `process_runs` state columns, mirroring the
+> `collection_connections`/`ingest_files` split. Hygiene stance (to be confirmed
+> against ADR 0012's criteria in the Phase 9 design spec): `process_runs` is
+> likely **not** partitioned — runs are verb targets (`re-run`) like
+> `delivery_log` rows — and ages out via the `history_retention` sweep.
 
 High-volume table hygiene shipped in M2-G per [ADR 0012](docs/decisions/0012-table-hygiene.md),
 amending the original partition-everything plan: `item_events` and `audit_log`
@@ -416,6 +472,46 @@ restructured upstream.
 - **Audit:** every mutation, credential lifecycle event, test-connection,
   backfill, redeliver, and login lands in `audit_log` (append-only, no
   secrets in `detail`).
+
+### 5.6 Process `trigger` / `runtime` shapes *(Phase 9, proposed)*
+
+Both shapes are **cross-runtime contracts** (app Zod schema ↔ pipeline
+reader) and get golden fixtures in `tests/contract-fixtures/` per the
+existing rule, before any implementation.
+
+**Trigger** (per `process_sources` row):
+
+```jsonc
+{ "kind": "item_event",            // new/updated items on the source collection,
+  "item_filter": null }            //   batched off the item_events outbox like the
+                                   //   delivery dispatcher; optional CQL2 subset
+                                   //   (same evaluation path as delivery)
+{ "kind": "cron",                  // scheduled, like the ingest scheduler
+  "schedule": "*/15 * * * *" }
+```
+
+**Runtime** (per `process_revisions` row):
+
+```jsonc
+{
+  "kind": "inline_python",         // code stored platform-side (revision.code) | "container" (image ref)
+  "image": null,                   // container kind only: user-supplied image reference
+  "memory_mb": 512,
+  "timeout_seconds": 900,
+  "retry": { "max_attempts": 3, "backoff": "exponential" }   // reuses the queue RetrySpec pattern
+}
+```
+
+**Env secret-refs (extends §5.2):** `process_revisions.env` values that are
+secrets are **references** into the existing encrypted-credentials envelope —
+plaintext secrets never appear in process config, revisions, or audit detail.
+Resolution happens only in the pipeline at run launch, and only into the
+executor's environment (never into the platform worker's own process — ADR
+0013's isolation boundary).
+
+**Revisions:** code + config snapshots are immutable; "deploy" = create a
+revision + set `current_revision`. Every run pins the revision that executed
+it, aligning with ADR 0009's nothing-cascades-into-history stance.
 
 ---
 
@@ -543,6 +639,45 @@ flowchart LR
 - **Service telemetry:** Prometheus `/metrics` + structured JSON logs from
   day one; OpenTelemetry traces as later hardening.
 
+### 6.7 Processes *(Phase 9, proposed)*
+
+A **process** is a group-owned, user-defined transformation consuming items
+from source collections and publishing items into output collections — the
+third flow primitive alongside ingest and delivery associations.
+
+```mermaid
+flowchart LR
+    T1["item_event trigger<br/>consume item_events outbox<br/>match process_sources<br/>apply item_filter (cql2)"] --> Q["RUN queued<br/>process_runs ledger row<br/>one run = N trigger items<br/>revision pinned"]
+    T2["cron trigger<br/>scheduler, like ingest"] --> Q
+    Q --> X["EXECUTE<br/>isolated executor (ADR 0013)<br/>secret-ref env resolved at launch<br/>logs captured → log_ref"]
+    X --> S["user code writes assets +<br/>item JSON to run-scoped<br/>staging/ prefix (5.3)<br/>via short-lived scoped creds"]
+    S --> F["FINALIZE (ADR 0014)<br/>validate (stac-pydantic) ·<br/>checksum · staging → canonical ·<br/>rewrite hrefs → /api/assets/... ·<br/>upsert via pypgstac"]
+    F --> O["output collection<br/>outbox event fires →<br/>delivery composes for free"]
+    X -->|"failure"| R["retry per RetrySpec<br/>→ dead + alert<br/>→ manual re-run in UI<br/>(audited, operator+)"]
+```
+
+- **Triggers:** `item_event` batches off the existing `item_events` outbox
+  exactly like the delivery dispatcher (one consumer group per process
+  source); `cron` rides the ingest scheduler pattern. Optional CQL2
+  `item_filter` per source, same evaluation path as delivery.
+- **Runs are batch-oriented ledger rows** (`process_runs`): `queued | running
+  | succeeded | failed | dead`, attempts, timings, `log_ref`, input/output
+  item refs. Dead runs get a manual **re-run** verb — the `redeliver` analog,
+  audited, operator+.
+- **Isolation:** user code never sees decrypted platform credentials, the DB,
+  or canonical storage — it runs behind the ADR 0013 executor boundary and
+  writes only to its run-scoped staging prefix (ADR 0014).
+- **Composition:** finalized output items emit ordinary outbox events, so
+  they flow to delivery associations like any other item. A process whose
+  output collection is also (transitively) a source is a **feedback loop** —
+  detected and refused at association time (cycle-detection scope is an open
+  question, §10).
+- **Test runs** from the UI cross the app↔pipeline boundary via a request
+  table per ADR 0004, like `connection_checks`.
+- **Monitoring:** `flow_monitor` gains process alert kinds (`process_failed`,
+  `process_stalled` against a `run_within_seconds` expectation); `/metrics`
+  gains per-process run/duration/outcome counters per the M2-H pattern.
+
 ---
 
 ## 7. Access control
@@ -578,8 +713,9 @@ Enforcement by plane:
 
 ## 8. UI surface
 
-Every row is live except `/admin` (Phase 7+) and the parenthesized Settings
-visibility knob (needs read-visibility, I-1).
+Every row is live except `/admin` (Phase 7+), the parenthesized Settings
+visibility knob (needs read-visibility, I-1), and the **Phase 9 (proposed)**
+rows in the second table.
 
 | Page | Contents |
 |---|---|
@@ -590,6 +726,28 @@ visibility knob (needs read-visibility, I-1).
 | `/admin` | Groups, cross-group connections/collections overview, audit-log viewer |
 | Item forms | Asset upload via presigned flow |
 
+**Phase 9 (proposed — from the NOAA mockups, translated to repo terms; see the
+§9 Phase 9 terminology note):**
+
+| Page | Contents |
+|---|---|
+| `/` or a new `/overview` | Catalog overview: per-collection rollup (item counts, last ingest, source/destination health from `flow_stats` + connection status) with the `/connections` health badges surfaced as a strip |
+| Collection page **lineage panel** (Data flow tab) | Upstream connection/process → collection → destinations lineage (processes join associations as edge types) + a 30-day health-history strip — requires a small daily `flow_stats` history rollup, a new data requirement |
+| Collection create/edit form | Mockup deltas folded in: `item_assets` definitions, extent editors, license/keywords |
+| `/processes` | Dashboard: per-process health, last run, success rate, run sparkline |
+| `/processes/[id]` | Editor: sources + triggers, outputs, runtime config, inline code editor (**new dependency decision** — CodeMirror vs. Monaco, flagged against the no-new-deps rule), env vars (secret-refs), test run (ADR 0004 bridge), recent runs with re-run |
+| `/graph` (or a `/monitoring` tab) | Pipeline graph: connections → collections → processes → collections → destinations with health-colored edges; fed by one new read endpoint (e.g. `/api/monitoring/graph`) assembling nodes/edges from connections, `collection_connections`, `process_sources`/`process_outputs` + statuses; member+ scoped like `/api/monitoring/flows` |
+
+**Deliberate divergence from the mockups:** the mockups' "OGC API hosting"
+*destination type* (expose a collection via Tiles/Features) is **not** a
+connection row here — it maps to catalog-exposure knobs on collection Settings
+plus the titiler-pgstac / tipg adoption (Phase 8 stretch). A serving toggle,
+not a delivery flow.
+
+RBAC for the Phase 9 surface follows §7: processes are group-owned; member
+views, operator+ creates/deploys/re-runs; every deploy/run/re-run/cancel is
+audited through the existing guard + `audit_log` pattern.
+
 All new UI follows the existing conventions: Astro thin shells + React
 islands, TanStack Query for server state, shared components in
 `packages/shared` where reusable.
@@ -599,7 +757,10 @@ islands, TanStack Query for server state, shared components in
 ## 9. Phases
 
 Dependency chain: `0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8`, though 6 and 7 can
-swap, and 8's IaC work can start in parallel any time after 2.
+swap, and 8's IaC work can start in parallel any time after 2. Phase 9
+(Processes, proposed) depends on Phase 7's finalize step (or a shared slice of
+it — ADR 0014) and on the M2 monitoring substrate; its ordering vs. M3/M4 is
+an open question (I-60), not a decision this chain makes.
 
 **Implementation status — 2026-08-21** (legend: ✅ done · 🚧 in progress · ⬜ not started):
 
@@ -614,6 +775,7 @@ swap, and 8's IaC work can start in parallel any time after 2.
 | 6 — Operable platform (M2) | 🚧 Code-complete (2026-08-19) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`). Open: the **M2-I rehearsal** of the done-when, then promotion. [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
 | 7 — Direct interaction | ⬜ Not started | — |
 | 8 — Cloud, scale gate & viz | ⬜ Not started | — |
+| 9 — Processes | ⬜ Proposed (2026-08-27) | Planning only: this file's Phase 9 section, ADRs 0013/0014 (proposed), scoping queue in `TODO.md`. No design spec yet. |
 
 ### Named milestones (2026-07-24)
 
@@ -710,6 +872,16 @@ there are no intermediate demos; the first demo is M1, complete:
   item rate.
 - **M4 — Production deployment** (Phases 7–8 as required by the target
   environment).
+- **M5 — Processes** (Phase 9, proposed 2026-08-27): user-defined
+  transformations as the third flow primitive — group-owned processes with
+  immutable revisions, isolated execution (ADR 0013), staged-then-finalized
+  output (ADR 0014), the `/processes` + `/graph` UI surface, and process
+  alert kinds in the monitor. **The number is nominal — ordering vs. M3/M4
+  is deliberately open** (I-60): process runs multiply item throughput, so
+  M3's scale arithmetic must include process-generated items whether M5
+  lands before or after it. **Not yet scoped** — needs its own design spec
+  (the M2 pattern) worked from the Phase 9 section, the two proposed ADRs,
+  and the `TODO.md` scoping queue.
 
 ### Phases 0–5 — delivered
 
@@ -757,6 +929,53 @@ channels (email deferred), Prometheus metrics + structured logging.
   credentials, S3 object storage, and a written load-test report against the
   envelope.
 
+### Phase 9 — Processes ⬜ **Proposed (M5, 2026-08-27)**
+
+User-defined, group-owned transformations that consume items from **source
+collections** and publish items into **output collections** — the third flow
+primitive alongside ingest and delivery associations. Derived from the NOAA
+Geospatial Data Platform mockups; requirements translated into this repo's
+terms. Planning artifacts: §5 `PROCESS_*` entities + §5.6 config shapes,
+§6.7 flow, the §8 Phase 9 UI table, [ADR 0013](docs/decisions/0013-process-executor-isolation.md)
+(executor isolation, proposed) and [ADR 0014](docs/decisions/0014-process-output-path.md)
+(output path, proposed), the `TODO.md` scoping queue, and ISSUES I-60…I-65.
+
+- **Data model:** `processes`, `process_revisions` (immutable code+config
+  snapshots; deploy = new revision), `process_sources` (built-in-catalog
+  collections only, `item_event`/`cron` triggers, optional CQL2 filter),
+  `process_outputs`, `process_runs` (batch ledger with `re-run` verb). App
+  owns all DDL (ADR 0001); trigger/runtime shapes are cross-runtime
+  contracts with golden fixtures.
+- **Pipeline:** a `pipeline/processes/` module (executor + repo); dispatcher
+  matching extended to process sources; scheduler extended for cron
+  triggers; `flow_monitor` extended with `process_failed`/`process_stalled`
+  (against a `run_within_seconds` expectation); `/metrics` counters per the
+  M2-H pattern; UI test runs bridged via a request table (ADR 0004).
+- **Execution & output:** user code is untrusted relative to the platform —
+  it runs behind the ADR 0013 executor boundary (recommendation:
+  container-per-run behind an executor interface, mirroring the Phase-0
+  queue-interface pattern) and never writes pgstac or canonical storage
+  directly; outputs land in a run-scoped staging prefix and are finalized by
+  the platform (ADR 0014 — Phase 7's finalize step with a different
+  producer; the dependency or shared-slice opportunity is explicit).
+- **UI:** `/processes`, `/processes/[id]`, the `/graph` pipeline view, the
+  collection lineage panel, and the overview rollup (§8 Phase 9 table).
+- **Done when** (to be firmed up by the design spec): an operator can create
+  a process in the UI, deploy a revision, watch an item landing in a source
+  collection produce a validated item in the output collection through an
+  isolated run, see the run (and its logs) in `/processes`, and see the
+  output item deliver onward through an ordinary delivery association —
+  with a failed run going dead → alerting → manually re-run.
+
+**Terminology note (mockup ↔ repo).** The mockups say **product** for a
+built-in-catalog collection (+ its settings and flows), **destination** for a
+deliver association, and **pipeline graph** for the flow topology. The repo's
+existing vocabulary — collection, ingest/deliver association, flows,
+monitoring — stays canonical in schema, code, and docs; UI copy MAY adopt
+"product" later, which is a copy decision, not a schema one. The mockups'
+"OGC API hosting" destination type is deliberately re-mapped to a serving
+toggle (§8), not a connection.
+
 ### Beyond the phases
 - **`stac-api` harvest protocol**: poll an external STAC API with a CQL2
   filter, mirror matching items (metadata-only via `reference` mode, or with
@@ -801,6 +1020,24 @@ channels (email deferred), Prometheus metrics + structured logging.
   harmless, so this is throughput, not correctness; I-40). Leader election or
   partitioned ownership is due when the monolith first scales horizontally,
   at latest in Phase 8 / M3.
+- **Processes multiply item throughput (Phase 9, proposed):** every
+  process-generated item is a full catalog item that fans out to delivery
+  like any other — M3's ~30 items/s arithmetic must include
+  process-generated volume regardless of whether M5 lands before or after
+  M3 (I-60). A misconfigured high-fan-out process is also a self-inflicted
+  load amplifier; per-process rate/backlog limits belong in the design spec.
+- **Untrusted user code in a FISMA-High-bound platform (Phase 9):** the
+  executor boundary (ADR 0013) is a new, security-critical surface — local
+  dev (docker socket availability) and GovCloud (Fargate task quotas,
+  image-registry policy) may force different backends behind the interface
+  (I-61), and the container path adds image supply-chain review to the
+  compliance story. The inline-editor frontend dependency (CodeMirror vs.
+  Monaco) needs its own supply-chain review before adoption (I-65).
+- **Process feedback loops:** output→source cycles (direct, or transitive
+  through delivery→re-ingest edges) can run away silently; the refusal
+  check's scope is an open question (I-64) — too narrow misses real loops,
+  too broad (full transitive closure across external systems) is
+  undecidable.
 
 Settled since first drafted: **high-volume table hygiene** (M2-F/M2-G, ADR
 0011/0012 — the partition-vs-sweep split); **migration ownership** (Phase 0,

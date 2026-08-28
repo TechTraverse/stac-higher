@@ -191,6 +191,48 @@ is in ROADMAP §9 M1.
       the catalog → after a shortened grace window its bytes leave MinIO.
       Record evidence in ROADMAP §9 M2; then promote `ai/main → main` via PR.
 
+## Phase 9 — Processes (M5) scoping queue
+
+Planning-only tasks (no application/pipeline code, no migrations) toward the
+Phase 9 design spec. Scope sources: ROADMAP §9 Phase 9 (+ §5 `PROCESS_*`,
+§5.6, §6.7, §8 Phase 9 table), ADRs **0013**/**0014** (proposed), ISSUES
+I-60…I-65. Sits behind M2-I deliberately — do not start these while the M2
+gate is open unless the lead says otherwise.
+
+- [ ] **P9-A · executor-backend investigation** (feeds ADR 0013, I-61).
+      Establish concrete `Executor` backend candidates: locally, what
+      docker-out-of-docker access the compose pipeline container can be
+      granted (socket exposure hardening included); in cloud, ECS/Fargate
+      task launch latency + GovCloud quotas vs. a K8s Job. Deliverable: a
+      written comparison + recommended backend pair appended to ADR 0013.
+- [ ] **P9-B · finalize sequencing decision** (feeds ADR 0014). Decide Phase
+      7 dependency vs. shared finalize slice (validate + checksum + move +
+      rewrite + upsert, parameterized by producer). Deliverable: the
+      dependency stated in ADR 0014 + the ROADMAP §9 dependency chain
+      updated if Phase 9 can precede Phase 7 via the shared slice.
+- [ ] **P9-C · inline-editor dependency evaluation** (I-65). CodeMirror vs.
+      Monaco for `/processes/[id]`: bundle size vs. the island pattern,
+      shadcn/theming fit, maintenance posture, supply-chain review per the
+      no-new-deps-without-need rule. Deliverable: a recommendation recorded
+      for the design spec (and whether a plain textarea suffices for slice 1).
+- [ ] **P9-D · contract-fixture plan**. Enumerate the Phase 9 cross-runtime
+      shapes (trigger, runtime, env secret-ref envelope, alert kinds
+      `process_failed`/`process_stalled`, `run_within_seconds` expectation)
+      and specify their `tests/contract-fixtures/` entries — folding in the
+      deferred `alert-kinds.json` fixture noted in the M2 hygiene follow-ups.
+- [ ] **P9-E · graph + lineage data design**. Shape `/api/monitoring/graph`
+      (nodes/edges from connections, `collection_connections`,
+      `process_sources`/`process_outputs` + statuses, member+ scoped like
+      `/api/monitoring/flows`) and the daily `flow_stats` history rollup the
+      lineage panel's 30-day strip needs (a new requirement — decide table
+      vs. derived).
+- [ ] **P9-F · Phase 9 design spec** (the M2 pattern —
+      `docs/superpowers/specs/`). Consumes P9-A…P9-E; slices the milestone;
+      settles milestone ordering vs. M3/M4 (I-60), the `process_stalled`
+      expectation scope (I-63), cycle-detection scope (I-64), and run-log
+      storage/retention (I-62); accepts or revises ADRs 0013/0014. Includes
+      redoing the throughput arithmetic with process-generated items (§10).
+
 ## Discovered follow-ups
 
 (append here during iterations)
