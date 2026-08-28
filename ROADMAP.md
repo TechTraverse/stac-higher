@@ -781,7 +781,7 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 3 — Object storage & asset service | ✅ Done (live-verified 2026-07-16) | Offline presigning, asset 302 route, uploads, staging TTL sweep (ADR 0005). [FEATURES §Phase 3](docs/FEATURES.md). |
 | 4 — Ingest pipeline | ✅ Done (live-verified end-to-end 2026-07-20) | Slices A, B1–B5, C (`reference` mode). Done-when met: dropped file → catalogued item through the real scheduler, copy and reference both. [FEATURES §Phase 4](docs/FEATURES.md). |
 | 5 — Delivery pipeline | ✅ Done (Slices A→D live/e2e-verified by 2026-07-25) | Outbox + NOTIFY dispatcher, delivery worker + payloads/policies, retry → dead-letter → redeliver, backfill bridge, Data-flow delivery UI. [FEATURES §Phase 5](docs/FEATURES.md). |
-| 6 — Operable platform (M2) | 🚧 Code-complete (2026-08-19) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`). Open: the **M2-I rehearsal** of the done-when, then promotion. [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
+| 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
 | 7 — Direct interaction | ⬜ Not started | — |
 | 8 — Cloud, scale gate & viz | ⬜ Not started | — |
 | 9 — Processes | ⬜ Proposed (2026-08-27) | Planning only: this file's Phase 9 section, ADRs 0013/0014 (proposed), scoping queue in `TODO.md`. No design spec yet. |
@@ -862,15 +862,56 @@ there are no intermediate demos; the first demo is M1, complete:
   deviation from §5's partition-everything plan, forced by the ledgers'
   UNIQUE upsert keys), and Prometheus `/metrics` (M2-H). Migrations 013–018;
   residuals in ISSUES I-58/I-59.
-  **Gate (open): M2-I — a live rehearsal of the Phase 6 done-when on the
-  auth-enforced stack** (stop a source → alert within the expectation window
-  → webhook + bell → ack → auto-resolve on recovery; retention expiry →
-  item leaves the catalog → bytes leave MinIO after the grace window), then
-  the promotion PR. The rehearsal must also exercise the `pragma: no cover`
-  SQL listed in `TODO.md`'s M2 follow-ups (stall sweeps, monitor upserts,
-  the webhook leg, GC sweeps).
+  **Gate met: M2-I rehearsal RUN 2026-08-28 — both done-when legs closed
+  live on the auth-enforced stack**, including every `pragma: no cover` SQL
+  path from the M2 follow-ups. Promotion PR pending (human).
 
-  *M2 rehearsal evidence (to be recorded by M2-I):* —
+  *M2 rehearsal evidence (recorded by M2-I, 2026-08-28, times UTC):*
+  Fresh-wiped stack (`down -v`), pipeline image rebuilt (build log ERROR-free),
+  auth-enforced overlay up healthy; anonymous transaction POST → 401, reads →
+  200. All 18 app migrations ran on the fresh DB, including 018's partition
+  path. App on :4399 in `AUTH_MODE=oidc` (Cursor holds :4321 — the known
+  gotcha; the `:4399` redirect URI was added to the Keycloak client at runtime
+  via the admin API, realm file untouched). Rehearsal-only pipeline overlay
+  shortened the crash-recovery windows (DELIVERY_STALL_SECONDS=90,
+  WEBHOOK_STALL/RETRY/MAX=60/15/3) and allowed `host.docker.internal` egress
+  for a host-side webhook receiver. **Setup 100% UI-driven as alice
+  (operator)**: real Keycloak login → `m2 source`/`m2 dest` S3 connections
+  (both Test → ok through the ADR 0004 bridge) → collection `m2-demo` via the
+  BFF → Data-flow ingest source (poll 60s, `**/*.tif`,
+  `expect_activity_within_seconds=120`) + delivery destination (item JSON +
+  sha256 sidecars + completion marker, `deliver_within_seconds=120`) → signed
+  webhook channel on /monitoring.
+  **Flow leg:** dropped a GeoTIFF → itemized → catalogued (`/api/assets/...`
+  href) → delivered in 92ms with full payload; sha256 sidecar verified.
+  Stopping the source raised `ingest_inactivity` within window+one tick;
+  the webhook landed 70ms later with `X-StacHigher-Signature` (HMAC
+  recomputed offline: match); the header bell showed unread 1 and opening
+  /monitoring advanced `alert_reads`. Observed live against real Postgres:
+  re-fire bumps `last_seen` on the SAME row (no duplicate, no re-notify),
+  audited **ack** suppresses notification while `last_seen` keeps bumping,
+  recovery **auto-resolves**, a later breach re-raises as a NEW row, and
+  audited manual **resolve** works. **Crash legs:** a worker SIGKILLed
+  mid-transfer (324MB item frozen at `delivering` via paused MinIO) was
+  revived by the delivery stall sweep → delivered, attempts 2; a worker
+  killed mid-webhook-POST left the notification `delivering` → stall revival
+  → 500-retries to the attempts cap → **dead** → channel-anchored
+  `webhook_failed` alert → next successful POST auto-resolved it.
+  **Retention leg:** item backdated via audited BFF PUT; Settings tab set
+  `retention_days=1`/`gc_grace_days=0`; the warn-and-proceed dialog showed
+  the counted dry-run ("1 of 3 items…"); the next five-minute tick expired
+  the item (`asset_gc` mark-first, reason `retention`) and `asset_collect`
+  removed the canonical prefix 57ms later — **item 404s from the catalog,
+  bytes gone from MinIO, and the already-delivered destination payload
+  remained** (delete events do not propagate, §6.4). **Consistency:**
+  `flow_stats->counts` exactly equaled `GROUP BY status` over `delivery_log`
+  (4 delivered) after the whole sequence; `/metrics` counters ticked
+  throughout. **Findings** (logged in ISSUES/TODO): the item edit form
+  crashes on pipeline-ingested items carrying `proj:geometry` (RJSF can't
+  resolve the remote GeoJSON schema $ref — I-67); the Settings tab copy
+  still says retention "arrives with M2-F"; Keycloak's default 30-min SSO
+  idle ends long-idle operator sessions (handled cleanly; demo realms may
+  want it longer).
 - **M3 — NOAA-scale readiness:** sustained ~30 items/s (~2.6M items/day,
   mission-critical subscribers) — dispatcher throughput headroom beyond
   Slice C, concurrency-safe multi-worker operation (I-40 and the ingest-ledger
@@ -906,7 +947,7 @@ catalogued-item (2026-07-20) and Phase 5's item-change → destination payload
 with retry/dead-letter/redeliver (2026-07-25), both re-proven end-to-end by
 the M1 rehearsal.
 
-### Phase 6 — Observability & retention 🚧 **Code-complete (M2, 2026-08-19)**
+### Phase 6 — Observability & retention ✅ **Done (M2 gate met 2026-08-28)**
 
 All planned surface is built (see the M2 milestone above and
 [FEATURES §Phase 6](docs/FEATURES.md)): flow expectations + monitor +
@@ -916,7 +957,8 @@ channels (email deferred), Prometheus metrics + structured logging.
 - **Done when:** stopping a source's data flow raises an alert within the
   declared expectation window and notifies the group's channels; an expired
   item leaves the catalog and, after the grace window, object storage.
-  **Open — proven live only by the pending M2-I rehearsal.**
+  **Met — proven live by the M2-I rehearsal 2026-08-28** (evidence under the
+  M2 milestone in §9).
 
 ### Phase 7 — Direct interaction (push ingest) ⬜ **Not started**
 - Externally-writable flag per collection; stac-auth-proxy write policies.

@@ -354,6 +354,21 @@ Accepted M2-F simplifications (ADR 0011 "Consequences"):
 - Tracked in: `pipeline/gc/*`, `app/src/lib/gc/marks.ts`,
   [ADR 0011](decisions/0011-retention-gc.md).
 
+### I-67 · Item edit form crashes on pipeline-ingested items (remote GeoJSON $ref) 🔴
+Found by the M2-I rehearsal (2026-08-28): `/collections/[id]/items/[itemId]/edit`
+crashes with "Could not find a definition for https://geojson.org/schema/Geometry.json"
+for any item carrying the projection extension's `proj:geometry` — RJSF cannot
+resolve the remote GeoJSON schema `$ref` (console also shows repeated
+`MissingRefError: can't resolve reference __rjsf_rootSchema#/definitions/assetfields`).
+Every `raster_auto`-ingested item includes `proj:geometry`, so the edit-form
+surface is effectively broken for pipeline-produced items; UI edits fall back
+to nothing (the page error-boundaries out). Candidate fixes: pre-resolve/cache
+the GeoJSON schema through `/api/extensions/resolve-schema`, strip or inline
+remote `$ref`s before handing the schema to RJSF, or register the GeoJSON
+definitions statically. Workaround: the audited BFF `PUT /api/catalog/...`
+(used by the rehearsal to backdate an item).
+- Tracked in: here; found in `TODO.md` "From M2-I".
+
 ---
 
 ## Phase 9 — Processes (planning, 2026-08-27)
