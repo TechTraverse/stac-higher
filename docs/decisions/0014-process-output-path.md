@@ -88,9 +88,39 @@ are not statically knowable.
 - Finalize gating already defers dispatch for staged items (§6.4), so
   delivery never sees a process output before its hrefs are canonical.
 
+## Finalize seam sketch (P9-B, 2026-08-29)
+
+Phase 7 has no design spec yet, so the seam is recorded here as the
+obligation its design must satisfy — stated as an interface so it cannot
+drift into a push-ingest-shaped one-off:
+
+```
+finalize(run: FinalizeRequest) -> FinalizeResult
+
+FinalizeRequest:
+  producer:            "push_ingest" | "process_run"   # extensible enum
+  staging_prefix:      str      # staging/uploads/{...} | staging/runs/{run_id}/
+  output_collections:  [str]    # the ONLY collections upsert may touch
+  items:               [staged item JSON refs]
+  provenance:          {producer-specific ledger key}  # upload id | run id
+
+FinalizeResult:
+  upserted: [{collection_id, item_id}]   # authoritative output_items
+  rejected: [{item_ref, reason}]
+```
+
+The steps (validate → checksum → move staging→canonical → rewrite hrefs →
+upsert restricted to `output_collections` → ordinary outbox events) contain
+no producer branching; producer differences live only in the request. Check
+criterion for the Phase 7 design review: if its finalize cannot accept a
+`FinalizeRequest` naming a different producer and staging prefix without
+code changes, the seam is violated. (Also recorded in the Phase 9 scoping
+notes, `docs/superpowers/specs/2026-08-29-phase9-scoping-notes.md`.)
+
 ## Revisit
 
 Accept/revise in the Phase 9 design spec. The Phase 7 sequencing question is
-settled (Phase 7 first, producer-parameterized finalize — above); still open
-for the spec: the cycle-detection scope (I-64, with the run-rate-ceiling
-backstop now a requirement) and the run-scoped credential mechanics.
+settled (Phase 7 first, producer-parameterized finalize — above, now with
+the P9-B interface sketch); still open for the spec: the cycle-detection
+scope (I-64, with the run-rate-ceiling backstop now a requirement) and the
+run-scoped credential mechanics.
