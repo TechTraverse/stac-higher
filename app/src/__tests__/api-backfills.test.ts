@@ -18,6 +18,7 @@ vi.mock("@/lib/associations/backfills", () => ({
 import { getAssociation } from "@/lib/associations/storage";
 import type { AssociationWithGroup } from "@/lib/associations/storage";
 import { getCollectionSettings } from "@/lib/collections/settings";
+import { makeCollectionSettings } from "./helpers/settings-fixtures";
 import { getBackfill, insertBackfill } from "@/lib/associations/backfills";
 import type { ApiBackfill } from "@/lib/associations/backfills";
 import { POST as backfillRoute } from "@/pages/api/collections/[id]/connections/[assocId]/backfill";
@@ -89,18 +90,12 @@ function call(
   } as never);
 }
 
-const unowned = {
-  collectionId: COLLECTION,
-  groupId: null,
-  externallyWritable: false,
-  retentionDays: null,
-  gcGraceDays: 30,
-};
+const unowned = makeCollectionSettings({ collectionId: COLLECTION });
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAssociation).mockResolvedValue(assoc());
-  vi.mocked(getCollectionSettings).mockResolvedValue(unowned as never);
+  vi.mocked(getCollectionSettings).mockResolvedValue(unowned);
   vi.mocked(insertBackfill).mockResolvedValue(backfill);
   vi.mocked(getBackfill).mockResolvedValue(backfill);
 });
@@ -155,7 +150,7 @@ describe("POST .../backfill", () => {
     vi.mocked(getCollectionSettings).mockResolvedValue({
       ...unowned,
       groupId: "other-group",
-    } as never);
+    });
     const res = await call(
       backfillRoute,
       authed(["operator"], ["not-eo"]),

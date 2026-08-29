@@ -46,6 +46,7 @@ function loaded(overrides: Partial<CollectionSettings> = {}) {
     retentionDays: null,
     gcGraceDays: 30,
     archived: false,
+    servingEnabled: false,
     ...overrides,
   };
   return { data, isLoading: false, isError: false, error: null, refetch: vi.fn() };
@@ -78,6 +79,7 @@ describe("SettingsTab", () => {
         retention_days: 30,
         gc_grace_days: 7,
         archived: false,
+        serving_enabled: false,
       },
       expect.anything(),
     );

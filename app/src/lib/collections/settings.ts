@@ -26,6 +26,12 @@ export interface CollectionSettings {
   gcGraceDays: number;
   /** ADR 0009's archived state (declarative until M2-F's GC honors it). */
   archived: boolean;
+  /**
+   * Advertise the local OGC serving endpoints (titiler-pgstac / tipg) on the
+   * collection page. LINK-LEVEL only — nothing gates the services themselves
+   * until per-collection read visibility (I-1) lands.
+   */
+  servingEnabled: boolean;
 }
 
 export function defaultCollectionSettings(
@@ -38,6 +44,7 @@ export function defaultCollectionSettings(
     retentionDays: null,
     gcGraceDays: DEFAULT_GC_GRACE_DAYS,
     archived: false,
+    servingEnabled: false,
   };
 }
 
@@ -48,13 +55,14 @@ interface CollectionSettingsRow {
   retention_days: number | null;
   gc_grace_days: number;
   archived: boolean;
+  serving_enabled: boolean;
 }
 
 export async function getCollectionSettings(
   collectionId: string,
 ): Promise<CollectionSettings> {
   const result = await query<CollectionSettingsRow>(
-    `SELECT collection_id, group_id, externally_writable, retention_days, gc_grace_days, archived
+    `SELECT collection_id, group_id, externally_writable, retention_days, gc_grace_days, archived, serving_enabled
        FROM stac_higher.collection_settings
       WHERE collection_id = $1`,
     [collectionId],
@@ -68,6 +76,7 @@ export async function getCollectionSettings(
     retentionDays: row.retention_days,
     gcGraceDays: row.gc_grace_days,
     archived: row.archived,
+    servingEnabled: row.serving_enabled,
   };
 }
 
@@ -77,6 +86,7 @@ export interface CollectionSettingsUpdate {
   retentionDays: number | null;
   gcGraceDays: number;
   archived: boolean;
+  servingEnabled: boolean;
 }
 
 /**
@@ -89,14 +99,15 @@ export async function upsertCollectionSettings(
 ): Promise<CollectionSettings> {
   await query(
     `INSERT INTO stac_higher.collection_settings
-       (collection_id, group_id, externally_writable, retention_days, gc_grace_days, archived)
-     VALUES ($1, $2, $3, $4, $5, $6)
+       (collection_id, group_id, externally_writable, retention_days, gc_grace_days, archived, serving_enabled)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (collection_id) DO UPDATE SET
        group_id = EXCLUDED.group_id,
        externally_writable = EXCLUDED.externally_writable,
        retention_days = EXCLUDED.retention_days,
        gc_grace_days = EXCLUDED.gc_grace_days,
        archived = EXCLUDED.archived,
+       serving_enabled = EXCLUDED.serving_enabled,
        updated_at = now()`,
     [
       collectionId,
@@ -105,6 +116,7 @@ export async function upsertCollectionSettings(
       update.retentionDays,
       update.gcGraceDays,
       update.archived,
+      update.servingEnabled,
     ],
   );
   return getCollectionSettings(collectionId);

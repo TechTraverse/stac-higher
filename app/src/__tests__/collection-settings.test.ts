@@ -28,6 +28,7 @@ describe("collection settings defaults (ADR 0003)", () => {
       externallyWritable: false,
       retentionDays: null, // keep forever
       gcGraceDays: 30,
+      servingEnabled: false,
       archived: false,
     });
   });
@@ -48,6 +49,7 @@ describe("collection settings defaults (ADR 0003)", () => {
           retention_days: 14,
           gc_grace_days: 7,
           archived: true,
+          serving_enabled: false,
         },
       ],
       rowCount: 1,
@@ -60,6 +62,7 @@ describe("collection settings defaults (ADR 0003)", () => {
       retentionDays: 14,
       gcGraceDays: 7,
       archived: true,
+      servingEnabled: false,
     });
   });
 });
@@ -88,11 +91,12 @@ describe("upsertCollectionSettings (M2-E)", () => {
       retentionDays: 30,
       gcGraceDays: 7,
       archived: false,
+      servingEnabled: false,
     });
 
     const [sql, params] = mockQuery.mock.calls[0];
     expect(sql).toContain("ON CONFLICT (collection_id) DO UPDATE");
-    expect(params).toEqual(["goes-abi", "weather", false, 30, 7, false]);
+    expect(params).toEqual(["goes-abi", "weather", false, 30, 7, false, false]);
     expect(settings.retentionDays).toBe(30);
   });
 });

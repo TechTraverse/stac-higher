@@ -381,6 +381,31 @@ definitions statically. Workaround: the audited BFF `PUT /api/catalog/...`
 
 ---
 
+## OGC serving (pre-M5 hardening, 2026-08-29)
+
+### I-68 · Canonical asset hrefs are not resolvable by the tiling service 🟡
+titiler-pgstac reads asset hrefs out of item JSON. Platform-ingested items
+carry app-relative `/api/assets/...` hrefs (ADR 0005 — bytes are reachable
+only through the app), which GDAL/the tiler cannot open, so raster tiling of
+canonical platform assets does not work out of the box; reference-mode items
+with absolute URLs (and `s3://stac-higher/...` hrefs, via the compose
+service's MinIO credentials) tile fine. Resolving it properly means choosing
+between absolute asset hrefs at ingest (`ASSET_HREF_BASE` set to an absolute
+base — couples items to a deployment hostname), a titiler-side href rewrite,
+or serving-path presign integration — a Phase 8 cloud-deployment decision,
+not a local one. The Settings-tab serving panel states the limitation.
+- Tracked in: `docs/serving.md`; decide in Phase 8.
+
+### I-69 · Serving toggle is advisory until I-1 🟡
+`collection_settings.serving_enabled` is LINK-LEVEL only: it controls whether
+the collection page advertises the titiler/tipg endpoints, not whether those
+services answer for the collection. Real gating needs the per-collection
+read-visibility layer (I-1) applied at/in front of the serving services. The
+UI copy says so. Revisit when I-1 lands.
+- Tracked in: `docs/serving.md`, migration 019; depends on I-1.
+
+---
+
 ## Phase 9 — Processes (planning, 2026-08-27)
 
 Open design questions from the Phase 9 planning pass (ROADMAP §9 Phase 9 /

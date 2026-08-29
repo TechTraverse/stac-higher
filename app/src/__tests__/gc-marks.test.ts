@@ -30,6 +30,7 @@ beforeEach(() => {
       retentionDays: null,
       gcGraceDays: 7,
       archived: false,
+      servingEnabled: false,
     });
 });
 

@@ -38,6 +38,7 @@ function settings(overrides: Partial<CollectionSettings> = {}): CollectionSettin
     retentionDays: null,
     gcGraceDays: 30,
     archived: false,
+    servingEnabled: false,
     ...overrides,
   };
 }
@@ -49,6 +50,7 @@ function payload(overrides: Record<string, unknown> = {}) {
     retention_days: 30,
     gc_grace_days: 7,
     archived: false,
+    serving_enabled: false,
     ...overrides,
   };
 }
@@ -122,6 +124,7 @@ describe("PUT /api/collections/[id]/settings", () => {
       retentionDays: 30,
       gcGraceDays: 7,
       archived: false,
+      servingEnabled: false,
     });
   });
 

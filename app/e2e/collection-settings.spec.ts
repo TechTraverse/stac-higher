@@ -33,15 +33,22 @@ test.describe("Collection Settings tab", () => {
     });
     expect(created.ok()).toBeTruthy();
     // Reset any settings row left by an earlier run (PUT is idempotent).
-    await request.put(`/api/collections/${COLLECTION_ID}/settings`, {
-      data: {
-        group_id: null,
-        externally_writable: false,
-        retention_days: null,
-        gc_grace_days: 30,
-        archived: false,
+    // Asserted: a silent 400 here (e.g. the payload missing a newly required
+    // field) leaks prior-run state into every assertion below.
+    const reset = await request.put(
+      `/api/collections/${COLLECTION_ID}/settings`,
+      {
+        data: {
+          group_id: null,
+          externally_writable: false,
+          retention_days: null,
+          gc_grace_days: 30,
+          archived: false,
+          serving_enabled: false,
+        },
       },
-    });
+    );
+    expect(reset.ok()).toBeTruthy();
   });
 
   test.afterAll(async ({ request }) => {
@@ -79,6 +86,29 @@ test.describe("Collection Settings tab", () => {
       "aria-checked",
       "true",
     );
+  });
+
+  test("serving toggle reveals links and persists", async ({ page }) => {
+    await page.goto(`/collections/${COLLECTION_ID}`);
+    await page.getByRole("tab", { name: "Settings" }).click();
+
+    // Off by default; links hidden.
+    const toggle = page.getByTestId("settings-serving");
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+    await expect(page.getByTestId("settings-serving-links")).toHaveCount(0);
+
+    // On → the titiler/tipg links appear; save persists across reload.
+    await toggle.click();
+    await expect(page.getByTestId("settings-serving-links")).toBeVisible();
+    await page.getByTestId("settings-save").click();
+    await expect(page.getByText("Collection settings saved")).toBeVisible();
+    await page.reload();
+    await page.getByRole("tab", { name: "Settings" }).click();
+    await expect(page.getByTestId("settings-serving")).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    await expect(page.getByTestId("settings-serving-links")).toBeVisible();
   });
 
   test("rejects an invalid retention value client-side", async ({ page }) => {

@@ -14,6 +14,8 @@ export const collectionSettingsUpdateSchema = z
     retention_days: z.number().int().min(1).max(36500).nullable(),
     gc_grace_days: z.number().int().min(0).max(36500),
     archived: z.boolean(),
+    /** Link-level OGC serving exposure (titiler-pgstac / tipg) — see I-1 caveat. */
+    serving_enabled: z.boolean(),
   })
   .strict();
 

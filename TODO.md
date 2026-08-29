@@ -223,7 +223,7 @@ blocks the Phase 9 *scoping* queue below — planning can proceed in parallel.
       (audit: 1 low, dev-only; security.yml gate tightened critical→high);
       I-8 amended (root check no longer OOMs, still app-scoped-only).
       Follow-up logged below (nested-form hydration warning).
-- [ ] **OGC API serving exposure** (pulled forward from Phase 8 stretch —
+- [x] **OGC API serving exposure** (pulled forward from Phase 8 stretch —
       ROADMAP §8). Add **titiler-pgstac** (OGC API Tiles for rasters) and
       **tipg** (OGC API Features/Tiles for vectors) to docker compose behind
       a per-collection **serving toggle** on the Settings tab. Local,
@@ -232,6 +232,18 @@ blocks the Phase 9 *scoping* queue below — planning can proceed in parallel.
       may only expose collections that are already public — say so in the
       UI copy. Small design pass first (compose wiring, toggle semantics,
       what the collection page links to), then implement.
+      **Done 2026-08-29** — design + caveats in `docs/serving.md`;
+      titiler-pgstac 1.7.2 (:8084) + tipg 1.0.1 (:8085) in compose (eoAPI's
+      pin combo; both live-smoked, `/collections/{id}/info` answering);
+      migration **019** `collection_settings.serving_enabled`; Settings-tab
+      toggle (operator+, audited with the settings PUT) revealing the
+      titiler collection links + tipg landing, with the I-1 public-until-
+      visibility copy and the I-68 asset-href caveat inline. Also landed:
+      the `makeCollectionSettings` typed fixture factory (the M2 hygiene
+      follow-up — the compiler flagged all 13 drift sites when the shape
+      grew, exactly as predicted) and the stale M2-F Settings copy fix
+      (M2-I finding). New issues: I-68 (tiler can't resolve `/api/assets`
+      hrefs — Phase 8 decision), I-69 (toggle advisory until I-1).
 
 ## Phase 9 — Processes (M5) scoping queue
 
