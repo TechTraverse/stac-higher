@@ -44,6 +44,17 @@ error line each. Don't dump the report directory.
 
 ## Gotchas (each of these has burned an agent before)
 
+- **Astro 7 daemonizes `astro dev` under AI agents**: it auto-detects agent
+  environments and backgrounds the server (parent exits → Playwright reports
+  "webServer exited early", and an orphaned server holds the port —
+  `npx astro dev stop` clears it). `playwright.config` sets
+  `ASTRO_DEV_BACKGROUND` in the webServer env to force foreground — do not
+  remove it.
+- **Test-data contamination**: `monitoring.spec.ts`'s channel cleanup clicks
+  the `.last()` Remove button in any row matching its URL — a leftover
+  channel from manual/lead work (e.g. a rehearsal webhook) can make it delete
+  the wrong row and fail. Clear stray `notification_channels` rows before a
+  full run.
 - **Astro CSRF**: POST/PUT/DELETE require an `Origin` header matching the dev
   server. `playwright.config` sets `use.extraHTTPHeaders.Origin` — do not remove
   it or API calls 403.

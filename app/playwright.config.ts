@@ -31,6 +31,10 @@ export default defineConfig({
     env: {
       SAFE_FETCH_ALLOW_HOSTS: "localhost,127.0.0.1",
       SAFE_FETCH_LOG: "0",
+      // Astro 7 auto-daemonizes `astro dev` when it detects an AI-agent
+      // environment, which makes Playwright's webServer see an early exit.
+      // Setting this disables the auto-detection so the server stays foreground.
+      ASTRO_DEV_BACKGROUND: "0",
     },
   },
 });

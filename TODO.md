@@ -209,11 +209,20 @@ Local-only work that should land before M5 implementation begins (ROADMAP §9
 steering order: M2-I → Phase 7 → Phase 9/M5 → M3 → Phase 8). Neither item
 blocks the Phase 9 *scoping* queue below — planning can proceed in parallel.
 
-- [ ] **Astro 7 migration** (I-57). The Astro 6.x high-severity advisories
+- [x] **Astro 7 migration** (I-57). The Astro 6.x high-severity advisories
       are fixed only in Astro 7; the migration gets more expensive as the
       app grows, and M5 adds substantial new UI on top of it. Full verify +
       e2e after; watch the known rolldown/root-check gotcha (I-8) for
       changes in behavior.
+      **Done 2026-08-29** — astro 6.1.5→7.2.9, @astrojs/node 10→11.1.4,
+      @astrojs/react 5→6.0.4. Zero source changes needed: verify (check +
+      build + 692 unit tests) and the full e2e suite (31/31) green. The one
+      behavioral catch: Astro 7 auto-daemonizes `astro dev` in AI-agent
+      environments — `ASTRO_DEV_BACKGROUND` added to the Playwright
+      webServer env (run-e2e skill + AGENTS gotchas updated). I-57 resolved
+      (audit: 1 low, dev-only; security.yml gate tightened critical→high);
+      I-8 amended (root check no longer OOMs, still app-scoped-only).
+      Follow-up logged below (nested-form hydration warning).
 - [ ] **OGC API serving exposure** (pulled forward from Phase 8 stretch —
       ROADMAP §8). Add **titiler-pgstac** (OGC API Tiles for rasters) and
       **tipg** (OGC API Features/Tiles for vectors) to docker compose behind
@@ -480,6 +489,14 @@ platform-built image; a per-process run-rate ceiling is a requirement.
   Per the contract-fixture rule they deserve a
   `tests/contract-fixtures/alert-kinds.json` consumed by both suites —
   deferred because it needs a pytest-side consumer too.
+
+### From the Astro 7 migration
+
+- The item form renders a nested `<form>` (React hydration warning "In HTML,
+  <form> cannot be a descendant of <form>" on ItemFormPage — likely the RJSF
+  extension-fields form inside the RHF form). Surfaced by Astro 7's dev
+  console relay; almost certainly pre-existing. Same neighborhood as I-67 —
+  fix together when touching the item form.
 
 ### From M2-I
 
