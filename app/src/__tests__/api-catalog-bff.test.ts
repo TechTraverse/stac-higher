@@ -27,6 +27,7 @@ import { getAuthConfig } from "@/lib/auth/config";
 import { readSession } from "@/lib/auth/session";
 import { getCollectionSettings } from "@/lib/collections/settings";
 import { markAssetGcTolerant } from "@/lib/gc/marks";
+import { makeCollectionSettings } from "./helpers/settings-fixtures";
 import { builtinCatalogUrl } from "@/lib/catalog/transactions";
 import {
   POST as postRoute,
@@ -80,14 +81,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAuthConfig).mockReturnValue(authCfg("bypass") as never);
   vi.mocked(safeFetch).mockResolvedValue(upstream() as never);
-  vi.mocked(getCollectionSettings).mockResolvedValue({
-    collectionId: "c1",
-    groupId: null,
-    externallyWritable: false,
-    retentionDays: null,
-    gcGraceDays: 30,
-    archived: false,
-  });
+  vi.mocked(getCollectionSettings).mockResolvedValue(
+    makeCollectionSettings({ collectionId: "c1" }),
+  );
 });
 
 describe("path scoping", () => {
@@ -213,14 +209,9 @@ describe("retention & GC hooks (M2-F, ADR 0011)", () => {
   });
 
   it("refuses item writes into an archived collection (409, not forwarded)", async () => {
-    vi.mocked(getCollectionSettings).mockResolvedValue({
-      collectionId: "c1",
-      groupId: null,
-      externallyWritable: false,
-      retentionDays: null,
-      gcGraceDays: 30,
-      archived: true,
-    });
+    vi.mocked(getCollectionSettings).mockResolvedValue(
+      makeCollectionSettings({ collectionId: "c1", archived: true }),
+    );
     const res = await call(postRoute, "collections/c1/items", {
       body: { id: "i1" },
     });
@@ -229,14 +220,9 @@ describe("retention & GC hooks (M2-F, ADR 0011)", () => {
   });
 
   it("archived collections still allow item deletes and metadata edits", async () => {
-    vi.mocked(getCollectionSettings).mockResolvedValue({
-      collectionId: "c1",
-      groupId: null,
-      externallyWritable: false,
-      retentionDays: null,
-      gcGraceDays: 30,
-      archived: true,
-    });
+    vi.mocked(getCollectionSettings).mockResolvedValue(
+      makeCollectionSettings({ collectionId: "c1", archived: true }),
+    );
     expect(
       (await call(deleteRoute, "collections/c1/items/i1", { method: "DELETE" }))
         .ok,

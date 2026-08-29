@@ -218,6 +218,87 @@ services:
       retries: 5
       start_period: 15s
 
+  # --- OGC serving (pre-M5 hardening; docs/serving.md) --------------------
+  # LINK-LEVEL exposure only: nothing gates requests to these services until
+  # per-collection read visibility (I-1) lands — the Settings-tab toggle only
+  # controls whether the collection page advertises them. Version pins follow
+  # eoAPI's tested combination for pgstac 0.9.x.
+
+  # OGC API Tiles for rasters, straight off pgstac. Reads item asset hrefs
+  # from the catalog — platform `/api/assets/...` hrefs are app-relative and
+  # not resolvable here; reference-mode items with absolute URLs (or s3://
+  # via the AWS_* env below, pointed at MinIO) tile directly.
+  titiler:
+    # rasterio/psycopg wheels are not published for arm64 (eoAPI does the same)
+    platform: linux/amd64
+    image: ghcr.io/stac-utils/titiler-pgstac:1.7.2
+    command: uvicorn titiler.pgstac.main:app --host 0.0.0.0 --port 8084
+    environment:
+      - POSTGRES_USER=username
+      - POSTGRES_PASS=password
+      - POSTGRES_DBNAME=postgis
+      - POSTGRES_HOST=database
+      - POSTGRES_PORT=5432
+      - DB_MIN_CONN_SIZE=1
+      - DB_MAX_CONN_SIZE=4
+      # GDAL http/S3 tuning (eoAPI defaults), pointed at the compose MinIO so
+      # s3://stac-higher/... hrefs resolve.
+      - CPL_TMPDIR=/tmp
+      - GDAL_CACHEMAX=25%
+      - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+      - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+      - VSI_CACHE=TRUE
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_S3_ENDPOINT=minio:9000
+      - AWS_HTTPS=NO
+      - AWS_VIRTUAL_HOSTING=FALSE
+    ports:
+      - "8084:8084"
+    depends_on:
+      database:
+        condition: service_healthy
+      pgstac-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8084/healthz")'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # OGC API Features + Tiles for vector TABLES in the shared PostGIS database
+  # (tipg serves database tables/functions, not STAC collections — the
+  # per-collection Settings toggle links it as the stack-wide vector surface).
+  tipg:
+    image: ghcr.io/developmentseed/tipg:1.0.1
+    command: uvicorn tipg.main:app --host 0.0.0.0 --port 8085
+    environment:
+      - POSTGRES_USER=username
+      - POSTGRES_PASS=password
+      - POSTGRES_DBNAME=postgis
+      - POSTGRES_HOST=database
+      - POSTGRES_PORT=5432
+      - DB_MIN_CONN_SIZE=1
+      - DB_MAX_CONN_SIZE=4
+    ports:
+      - "8085:8085"
+    depends_on:
+      database:
+        condition: service_healthy
+      pgstac-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8085/healthz")'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 volumes:
   pgdata:
   keycloak-data:

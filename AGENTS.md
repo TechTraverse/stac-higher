@@ -29,7 +29,7 @@ Facts:
 - **E2E**: `npm run test:e2e:ci` (from `app/` — list reporter, agent-friendly). Read the `run-e2e` skill first; the suite has real preconditions and gotchas.
 - **Proxy integration tests**: `npm run test:integration` (repo root — needs the Docker stack in auth-enforced mode, so lead/human only; skips cleanly otherwise. See `tests/integration/README.md`.)
 - **Storybook**: `npm run storybook` (from `packages/shared/`, http://localhost:6006)
-- **Backend**: `docker compose up -d` (repo root — full local stack: pgstac (:5433), stac-fastapi (:8082), stac-auth-proxy (:8081, pass-through), Keycloak (:8180, admin/admin), MinIO (:9000 API / :9001 console), pipeline service (:8083 `/health`))
+- **Backend**: `docker compose up -d` (repo root — full local stack: pgstac (:5433), stac-fastapi (:8082), stac-auth-proxy (:8081, pass-through), Keycloak (:8180, admin/admin), MinIO (:9000 API / :9001 console), pipeline service (:8083 `/health`), titiler-pgstac (:8084) + tipg (:8085) OGC serving (`docs/serving.md`))
 
 ## Architecture
 
@@ -80,6 +80,14 @@ docker-compose runs the full local platform stack:
 - **pipeline service** (`services/pipeline`, Python) — queue worker +
   scheduler with `/health` on :8083. See
   `docs/decisions/0001-migration-ownership.md` for schema ownership.
+- **OGC serving**: **titiler-pgstac** at :8084 (OGC API Tiles for rasters,
+  per STAC collection off pgstac) and **tipg** at :8085 (OGC API
+  Features/Tiles for vector tables in the shared PostGIS). LINK-LEVEL
+  exposure: the Settings tab's per-collection `serving_enabled` toggle
+  (migration 019) only controls whether the collection page advertises the
+  endpoints — nothing gates the services until I-1. Platform
+  `/api/assets/...` hrefs are not resolvable by the tiler (I-68). Full
+  design + caveats: `docs/serving.md`.
 
 Users configure additional catalogs in the `/catalogs` page (localStorage).
 The same PostgreSQL instance (port 5433) backs the Astro app's extension

@@ -882,6 +882,18 @@ const MIGRATIONS = [
       $mig$;
     `,
   },
+  {
+    // OGC serving exposure (pre-M5 hardening, pulled forward from Phase 8's
+    // stretch). LINK-LEVEL only: the flag controls whether the collection
+    // page ADVERTISES the local titiler-pgstac / tipg endpoints — it does
+    // not gate requests to those services (that needs I-1's read-visibility
+    // work). App-only column; the pipeline never reads it.
+    name: "019_collection_settings_serving_enabled",
+    sql: `
+      ALTER TABLE stac_higher.collection_settings
+        ADD COLUMN IF NOT EXISTS serving_enabled boolean NOT NULL DEFAULT false;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

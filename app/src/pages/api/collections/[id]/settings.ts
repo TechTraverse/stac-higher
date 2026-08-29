@@ -99,6 +99,7 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
       retentionDays: data.retention_days,
       gcGraceDays: data.gc_grace_days,
       archived: data.archived,
+      servingEnabled: data.serving_enabled,
     });
     return jsonResponse(200, settings);
   } catch (err) {

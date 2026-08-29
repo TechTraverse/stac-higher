@@ -19,6 +19,7 @@ vi.mock("@/lib/associations/deliveries", () => ({
 import { getAssociation } from "@/lib/associations/storage";
 import type { AssociationWithGroup } from "@/lib/associations/storage";
 import { getCollectionSettings } from "@/lib/collections/settings";
+import { makeCollectionSettings } from "./helpers/settings-fixtures";
 import {
   getDelivery,
   listDeliveries,
@@ -99,18 +100,12 @@ function call(
   } as never);
 }
 
-const unowned = {
-  collectionId: COLLECTION,
-  groupId: null,
-  externallyWritable: false,
-  retentionDays: null,
-  gcGraceDays: 30,
-};
+const unowned = makeCollectionSettings({ collectionId: COLLECTION });
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAssociation).mockResolvedValue(assoc());
-  vi.mocked(getCollectionSettings).mockResolvedValue(unowned as never);
+  vi.mocked(getCollectionSettings).mockResolvedValue(unowned);
   vi.mocked(listDeliveries).mockResolvedValue({
     deliveries: [delivery()],
     counts: { pending: 0, delivering: 0, delivered: 2, failed: 0, dead: 1 },
@@ -152,7 +147,7 @@ describe("GET .../deliveries", () => {
     vi.mocked(getCollectionSettings).mockResolvedValue({
       ...unowned,
       groupId: "other-group",
-    } as never);
+    });
     const res = await call(
       deliveriesRoute,
       authed(["member"], ["not-eo"]),

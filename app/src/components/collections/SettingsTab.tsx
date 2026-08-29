@@ -1,11 +1,10 @@
 /**
  * Collection Settings tab (M2-E, spec §7): group ownership,
- * `externally_writable`, retention & GC knobs (readable/writable for the
- * first time since migration 003), and ADR 0009's `archived` state.
- *
- * Honesty rule: retention/GC/archived are DECLARATIVE until M2-F's jobs land
- * — the copy says so. The counted dry-run preview before a first retention
- * apply arrives with M2-F (spec §5.3), where deletion actually starts.
+ * `externally_writable`, retention & GC knobs (enforced by M2-F's sweeps,
+ * ADR 0011), ADR 0009's `archived` state, and the link-level OGC serving
+ * toggle (titiler-pgstac / tipg — docs/serving.md; effectively public until
+ * I-1, the copy says so). Deletion-starting saves go through the counted
+ * dry-run warn-and-proceed dialog (M2-F, spec §5.3).
  */
 import { useEffect, useState } from "react";
 import {
@@ -34,7 +33,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Archive, Save, Settings2, TriangleAlert } from "lucide-react";
+import {
+  Archive,
+  ExternalLink,
+  Globe,
+  Save,
+  Settings2,
+  TriangleAlert,
+} from "lucide-react";
 import { toast } from "sonner";
 import { useAuthMe } from "@/lib/query/auth";
 import {
@@ -43,6 +49,12 @@ import {
 } from "@/lib/collections/settings-client";
 
 const UNOWNED = "__unowned__";
+
+// Local OGC serving services (docker compose; docs/serving.md). Link-level
+// exposure only — the toggle controls whether this page advertises them.
+const TITILER_URL =
+  import.meta.env.PUBLIC_TITILER_URL ?? "http://localhost:8084";
+const TIPG_URL = import.meta.env.PUBLIC_TIPG_URL ?? "http://localhost:8085";
 
 export function SettingsTab({ collectionId }: { collectionId: string }) {
   const { data: auth } = useAuthMe();
@@ -62,6 +74,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
   const [retentionDays, setRetentionDays] = useState<string>("");
   const [gcGraceDays, setGcGraceDays] = useState<string>("30");
   const [archived, setArchived] = useState(false);
+  const [servingEnabled, setServingEnabled] = useState(false);
   const [seeded, setSeeded] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [confirm, setConfirm] = useState<{
@@ -80,6 +93,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
       );
       setGcGraceDays(String(settings.gcGraceDays));
       setArchived(settings.archived);
+      setServingEnabled(settings.servingEnabled);
       setSeeded(true);
     }
   }, [settings, seeded]);
@@ -118,6 +132,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
         retention_days: retentionParsed,
         gc_grace_days: graceParsed,
         archived,
+        serving_enabled: servingEnabled,
       },
       {
         onSuccess: () => toast.success("Collection settings saved"),
@@ -235,9 +250,9 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
             disabled={!canAct}
           />
           <p className="text-xs text-muted-foreground">
-            Empty = keep forever. Once retention & GC lands (M2-F), items older
-            than this window are deleted from the catalog and their assets
-            collected after the grace period below.
+            Empty = keep forever. Items older than this window are deleted
+            from the catalog by the retention sweep and their assets collected
+            after the grace period below (M2-F, ADR 0011).
           </p>
           {retentionInvalid && (
             <p className="text-xs text-destructive">
@@ -271,9 +286,9 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
           <div>
             <Label htmlFor="settings-archived">Archived</Label>
             <p className="text-xs text-muted-foreground">
-              Mark this collection archived (ADR 0009). Enforcement — read-only
-              + assets scheduled for collection — arrives with retention & GC
-              (M2-F).
+              Mark this collection archived (ADR 0009): item writes and new
+              associations are refused, and the retention sweep expires every
+              item (assets collected after the grace window).
             </p>
           </div>
           <Switch
@@ -283,6 +298,63 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
             onCheckedChange={setArchived}
             disabled={!canAct}
           />
+        </div>
+
+        <div className="grid gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Label htmlFor="settings-serving" className="flex items-center gap-1.5">
+                <Globe className="h-4 w-4" />
+                OGC serving
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Advertise this collection's OGC API endpoints (raster tiles via
+                titiler-pgstac; vector features/tiles via tipg). Link-level
+                only: until per-collection read visibility lands (I-1), the
+                serving services are effectively public — enable this only for
+                collections whose data may be public.
+              </p>
+            </div>
+            <Switch
+              id="settings-serving"
+              data-testid="settings-serving"
+              checked={servingEnabled}
+              onCheckedChange={setServingEnabled}
+              disabled={!canAct}
+            />
+          </div>
+          {servingEnabled && (
+            <div
+              className="grid gap-1 rounded-md border p-3 text-sm"
+              data-testid="settings-serving-links"
+            >
+              <a
+                className="flex items-center gap-1.5 text-primary hover:underline"
+                href={`${TITILER_URL}/collections/${encodeURIComponent(collectionId)}/info`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Raster tiles — titiler-pgstac collection endpoints
+              </a>
+              <a
+                className="flex items-center gap-1.5 text-primary hover:underline"
+                href={`${TIPG_URL}/`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Vector features &amp; tiles — tipg (stack-wide OGC API landing
+                page; tipg serves database tables, not STAC collections)
+              </a>
+              <p className="text-xs text-muted-foreground">
+                Raster tiling reads asset hrefs from item JSON — platform
+                (`/api/assets/…`) hrefs are app-relative and not resolvable by
+                the tiler; reference-mode items with absolute URLs serve
+                directly (docs/serving.md).
+              </p>
+            </div>
+          )}
         </div>
 
         {canAct && (

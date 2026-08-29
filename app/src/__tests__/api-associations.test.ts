@@ -24,6 +24,7 @@ vi.mock("@/lib/collections/settings", () => ({
     retentionDays: null,
     gcGraceDays: 30,
     archived: false,
+    servingEnabled: false,
   }),
 }));
 vi.mock("@/lib/connections/storage", async (importOriginal) => {
@@ -42,6 +43,7 @@ import {
 } from "@/lib/associations/storage";
 import type { AssociationWithGroup } from "@/lib/associations/storage";
 import { getCollectionSettings } from "@/lib/collections/settings";
+import { makeCollectionSettings } from "./helpers/settings-fixtures";
 import { getConnection } from "@/lib/connections/storage";
 import type { ApiConnection } from "@/lib/connections/storage";
 import { DuplicateAssociationError } from "@/lib/associations/storage";
@@ -124,14 +126,7 @@ function call(
   } as never);
 }
 
-const unowned = {
-  collectionId: COLLECTION,
-  groupId: null,
-  externallyWritable: false,
-  retentionDays: null,
-  gcGraceDays: 30,
-  archived: false,
-};
+const unowned = makeCollectionSettings({ collectionId: COLLECTION });
 
 const ASSOC_IMPACT = {
   history: { ingest_files: 5, delivery_log: 2 },
