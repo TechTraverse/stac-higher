@@ -256,12 +256,20 @@ not relitigate): M5 precedes M3; Phase 7 precedes Phase 9 with a
 producer-parameterized finalize; slice 1 is `inline_python`-only on a
 platform-built image; a per-process run-rate ceiling is a requirement.
 
-- [ ] **P9-A · executor-backend investigation** (feeds ADR 0013, I-61).
+- [x] **P9-A · executor-backend investigation** (feeds ADR 0013, I-61).
       Establish concrete `Executor` backend candidates: locally, what
       docker-out-of-docker access the compose pipeline container can be
       granted (socket exposure hardening included); in cloud, ECS/Fargate
       task launch latency + GovCloud quotas vs. a K8s Job. Deliverable: a
       written comparison + recommended backend pair appended to ADR 0013.
+      **Done 2026-08-29** — hands-on local experiments (sibling launch via
+      raw Engine API 0.125s warm; HostConfig limits + NetworkMode first-
+      class; docker-socket-proxy least-privilege verified: create/run
+      allowed, exec/volumes 403) + cloud paper findings (Fargate-on-ECS in
+      GovCloud, ~30–45s task cold start, vCPU quotas; EKS present but
+      EKS-on-Fargate absent in GovCloud). Recommended pair appended to ADR
+      0013 "Investigation": local `DockerExecutor` via socket proxy (slice
+      1), cloud ECS/Fargate RunTask (Phase 8), K8s-Job-on-EKS fallback.
 - [ ] **P9-B · finalize seam check** (feeds ADR 0014; sequencing itself is
       settled — Phase 7 first). Verify Phase 7's finalize design is
       **producer-parameterized** (validate + checksum + move + rewrite +

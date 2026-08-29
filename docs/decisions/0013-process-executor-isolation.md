@@ -111,8 +111,64 @@ paper-investigated (P9-A, I-61) and built only in Phase 8.
   the design spec should decide whether test runs may use a warmer path
   (e.g. a pooled local executor) without weakening the boundary.
 
+## Investigation (P9-A, 2026-08-29 — I-61)
+
+### Local backend: docker-out-of-docker, measured
+
+Hands-on experiments against the dev machine's Docker (throwaway containers;
+the compose pipeline container itself confirmed to have neither
+`/var/run/docker.sock` nor a docker CLI today):
+
+- **Sibling-launch viability**: a container with the socket mounted launches
+  sibling containers without privilege beyond the socket itself. Warm-image
+  wall times: **0.66s** via the docker CLI, **0.125s** create→exit via the
+  raw Engine API over the unix socket (the docker-py-shaped path the Python
+  pipeline would use). Cold start is dominated by image pull — moot for
+  slice 1's pre-pulled platform-built executor image.
+- **Limits are first-class at create time**: `HostConfig.Memory`,
+  `NanoCpus`, and `NetworkMode` verified in one API call — including
+  `NetworkMode=none` (no network at all) and, for the egress-policy analog,
+  attachment to a dedicated restricted network instead.
+- **Socket exposure hardening**: `tecnativa/docker-socket-proxy` verified as
+  a least-privilege boundary: with `CONTAINERS=1 POST=1` and everything else
+  off, container create/start/wait/logs work while `exec` and `volumes`
+  return 403. The pipeline would get `DOCKER_HOST=tcp://socket-proxy:2375`
+  and never the raw socket — the proxy (an HAProxy allowlist) becomes the
+  auditable seam. Residual risk to document: create/start with arbitrary
+  `HostConfig` still permits bind-mounts and privileged flags, so the
+  EXECUTOR must be the only proxy client and the compose network must keep
+  the proxy unreachable from user-code networks.
+
+### Cloud backends: paper findings
+
+- **ECS/Fargate (GovCloud)**: ECS and Fargate-on-ECS are available in both
+  GovCloud (US) regions (Fargate since 2019). Task cold start is
+  **~30–45s typical, 20–60s unoptimized** (ENI attach + image pull dominate;
+  SOCI lazy loading cuts pull time ~50–60%). Quotas are vCPU-based
+  ("Fargate On-Demand vCPU"); new accounts start low (~6 vCPUs) and raise
+  via Service Quotas — a deployment-checklist item, not a blocker.
+- **EKS / K8s Job (GovCloud)**: EKS is available in GovCloud but
+  **EKS-on-Fargate is not** — a K8s Job backend there means managed EC2
+  node groups (capacity pre-provisioned; job start then measures in seconds,
+  at the cost of running nodes and a much larger operational surface).
+
+### Recommended backend pair
+
+`DockerExecutor` (Engine API via a least-privilege socket proxy, restricted
+egress network, per-run Memory/NanoCpus/timeout) for compose/dev — built in
+M5 slice 1; **ECS/Fargate RunTask** as the cloud backend candidate for
+Phase 8 (paper-only until then), with K8s-Job-on-EKS the fallback if a
+deployment already operates EKS. The interface consequence stands: test-run
+UX inherits Fargate's ~30–45s cold start in cloud, so the spec should keep
+interactive "test run" on a warmer path or set expectations in the UI.
+
+Sources: AWS re:Post on Fargate provisioning; AWS ECS task-launch
+optimization docs; AWS what's-new (Fargate in GovCloud, 2019; vCPU-based
+quotas, 2022); AWS re:Post on EKS-with-Fargate in GovCloud.
+
 ## Revisit
 
-Accept/revise this ADR in the Phase 9 design spec, after the I-61
-investigation (docker socket locally, Fargate quotas/latency in GovCloud)
-has produced concrete backend candidates for the executor interface.
+Accept/revise this ADR in the Phase 9 design spec. The I-61 investigation
+above has produced the concrete backend pair; remaining for the spec: the
+executor interface signature, the socket-proxy compose wiring, and the
+test-run warm-path question.
