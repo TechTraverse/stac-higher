@@ -9,7 +9,7 @@ applies to every agent.
 
 npm-workspaces monorepo:
 
-- `app/` — the Astro 6 (SSR) + React 19 STAC client
+- `app/` — the Astro 7 (SSR) + React 19 STAC client
 - `packages/shared/` — `@stac-higher/shared`: reusable components, hooks, types, stores, RJSF theme, and Storybook
 
 Facts:
@@ -297,10 +297,17 @@ when changing shared components.
 
 ## Gotchas
 
-- Full-project `npx astro check` currently OOMs (pre-existing Vite/rolldown
-  plugin type conflict between root and `app/node_modules`). The app-scoped
-  check (`npm run check` from `app/`) is fast and green — `npm run verify`
-  runs it first, matching CI. Never run the check from the repo root.
+- Full-project `npx astro check` from the repo root is meaningless (no
+  `src/pages` there; it reports only type-clash noise from
+  `app/node_modules/astro` internals — I-8; under Astro 6 it OOM'd outright).
+  The app-scoped check (`npm run check` from `app/`) is fast and green —
+  `npm run verify` runs it first, matching CI. Never run the check from the
+  repo root.
+- Astro 7 auto-daemonizes `astro dev` when it detects an AI-agent
+  environment (manage with `astro dev stop`/`status`/`logs`). Playwright's
+  webServer needs a foreground process — `playwright.config.ts` sets
+  `ASTRO_DEV_BACKGROUND` in the webServer env to disable the auto-detection;
+  keep it. Set the same env var if you need a foreground dev server yourself.
 - The Zod v4 → `zodResolver` type inference mismatch forces an `as any` cast on
   form resolvers — this is a known pattern, not a bug to fix.
 - `extensions.spec.ts` and `proxy.spec.ts` (e2e) require the Docker backend on

@@ -41,8 +41,15 @@ The `ftps-test` server (`fauria/vsftpd`) is amd64-only and crashes under Rosetta
 On a fresh DB the drain/health-sweep jobs log `UndefinedTable` each tick until the app's migration middleware creates `stac_higher.connections`/`connection_checks`. Harmless (they recover once tables exist) and correct per ADR 0001 (pipeline never creates tables), but noisy in a pipeline-first startup.
 - Tracked in: here. Workaround for local pipeline-only testing: apply migration 004 first.
 
-### I-8 · Full-project `npx astro check` OOMs 🟡
-A pre-existing Vite/rolldown plugin type conflict between the repo root and `app/node_modules` OOMs a full-project `astro check`. The app-scoped check (`npm run check` from `app/`) is unaffected — `npm run verify` runs it first (matching CI), and the scoped PostToolUse `astro check` hook covers edits. Never run the check from the repo root.
+### I-8 · Full-project `npx astro check` from the repo root is meaningless 🟡
+Under Astro 6 a root-level `astro check` OOM'd (Vite/rolldown plugin type
+conflict). Under Astro 7 (2026-08-29) it no longer OOMs but is still wrong to
+run: it finds no `src/pages` at the root and reports only type-clash noise
+from `app/node_modules/astro/components/*` (duplicate astro installs across
+node_modules trees). The app-scoped check (`npm run check` from `app/`) is
+the real gate — `npm run verify` runs it first (matching CI), and the scoped
+PostToolUse `astro check` hook covers edits. Never run the check from the
+repo root.
 - Tracked in: `AGENTS.md` "Gotchas".
 
 ---
@@ -293,15 +300,18 @@ deferred until such a deployment exists.
 
 ## CI/CD — GitHub Actions (2026-08-18)
 
-### I-57 · Astro 6.x high-severity advisories fixed only in Astro 7 🔴
-`npm audit` reports high-severity advisories against `astro@6.x` (XSS via
-spread attribute names / `transition:*` directives / view-transition animation
-properties — GHSA-f48w-9m4c-m7f5, GHSA-7pw4-f3q4-r2p2, GHSA-4g3v-8h47-v7g6)
-plus `sharp <0.35.0` (bundled-libvips CVEs) and `@astrojs/node <=11.0.1`, all
-fixed only in Astro 7 — a major upgrade. Non-breaking transitives were already
-fixed via `npm audit fix` when CI was introduced. The `security.yml` npm-audit
-gate therefore fails on **critical** only (prod deps); the full report stays
-visible in the job log. Closing this issue = the Astro 6 → 7 upgrade.
+### I-57 · Astro 6.x high-severity advisories fixed only in Astro 7 🟢 (resolved 2026-08-29)
+**Resolved by the Astro 6 → 7 upgrade** (astro 7.2.9, @astrojs/node 11.1.4,
+@astrojs/react 6.0.4): the 6.x XSS advisories (GHSA-f48w-9m4c-m7f5,
+GHSA-7pw4-f3q4-r2p2, GHSA-4g3v-8h47-v7g6), `sharp <0.35.0`, and
+`@astrojs/node <=11.0.1` are all cleared — `npm audit --omit dev` now reports
+a single low (esbuild dev-server, dev-only class). The `security.yml`
+npm-audit gate was tightened from critical to **high** (prod deps).
+Migration notes: the codebase needed no source changes (verify + full e2e
+green first run); the one behavioral catch was Astro 7 auto-daemonizing
+`astro dev` in AI-agent environments, fixed for e2e by `ASTRO_DEV_BACKGROUND`
+in the Playwright webServer env. I-8 amended (root check no longer OOMs but
+stays app-scoped-only).
 - Tracked in: `.github/workflows/security.yml` (npm-deps job).
 
 ---

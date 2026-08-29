@@ -36,11 +36,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Gate on critical in production deps; the full report stays visible
-      # below. Known high findings (Astro 6.x advisories fixed only in 7.x)
-      # are tracked in docs/ISSUES.md.
-      - name: npm audit (prod deps, fail on critical)
-        run: npm audit --omit=dev --audit-level=critical
+      # Gate on high in production deps (tightened from critical when the
+      # Astro 7 upgrade cleared the known 6.x high advisories — I-57); the
+      # full report stays visible below.
+      - name: npm audit (prod deps, fail on high)
+        run: npm audit --omit=dev --audit-level=high
       - name: npm audit full report (informational)
         if: always()
         run: npm audit || true
