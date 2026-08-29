@@ -327,6 +327,15 @@ platform-built image; a per-process run-rate ceiling is a requirement.
       evaluation (I-66); accepts or revises ADRs 0013/0014. Includes redoing
       the throughput arithmetic with process-generated items (§10 — M5
       precedes M3, so M3 scoping consumes this number).
+      **DRAFTED 2026-08-29, awaiting lead review** (the queue's stop point) —
+      `docs/superpowers/specs/2026-08-29-phase9-processes-design.md`.
+      Decisions proposed: I-63 per-source expectation; I-64 our-edges-only
+      DFS refusal + `process_rate_limited` ceiling backstop; I-62 `logs/runs/`
+      prefix, 10MB cap, history_retention leg (log object before row); I-66
+      facade worth claiming as a post-gate stretch slice; STS session-policy
+      run creds; M3 planning number = ~60 items/s total (process ≤ 1×
+      ingest). Slices M5-0…M5-G + stretch. On approval: mark this [x] and
+      flip ADRs 0013/0014 to accepted.
 
 ## Discovered follow-ups
 
