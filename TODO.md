@@ -270,28 +270,54 @@ platform-built image; a per-process run-rate ceiling is a requirement.
       EKS-on-Fargate absent in GovCloud). Recommended pair appended to ADR
       0013 "Investigation": local `DockerExecutor` via socket proxy (slice
       1), cloud ECS/Fargate RunTask (Phase 8), K8s-Job-on-EKS fallback.
-- [ ] **P9-B · finalize seam check** (feeds ADR 0014; sequencing itself is
+- [x] **P9-B · finalize seam check** (feeds ADR 0014; sequencing itself is
       settled — Phase 7 first). Verify Phase 7's finalize design is
       **producer-parameterized** (validate + checksum + move + rewrite +
       upsert with push-ingest as merely the first caller) so Phase 9 plugs
       in without a parallel path. Deliverable: the seam's interface sketch
       recorded for both the Phase 7 build and the Phase 9 design spec.
-- [ ] **P9-C · inline-editor dependency evaluation** (I-65). CodeMirror vs.
+      **Done 2026-08-29** — Phase 7 has no design doc yet, so the seam is
+      recorded as the OBLIGATION its design must satisfy: a
+      `FinalizeRequest{producer, staging_prefix, output_collections, items,
+      provenance}` interface with no producer branching inside the steps,
+      plus the review check criterion. In ADR 0014 ("Finalize seam sketch")
+      and the scoping notes
+      (`docs/superpowers/specs/2026-08-29-phase9-scoping-notes.md`).
+- [x] **P9-C · inline-editor dependency evaluation** (I-65). CodeMirror vs.
       Monaco for `/processes/[id]`: bundle size vs. the island pattern,
       shadcn/theming fit, maintenance posture, supply-chain review per the
       no-new-deps-without-need rule. Deliverable: a recommendation recorded
       for the design spec (and whether a plain textarea suffices for slice 1).
-- [ ] **P9-D · contract-fixture plan**. Enumerate the Phase 9 cross-runtime
+      **Done 2026-08-29** — measured: monaco-editor ~98MB unpacked (worker
+      architecture, bundler friction) vs CodeMirror 6's modular few-hundred-
+      KB bundle, clean island + CSS theming fit. Recommendation in the
+      scoping notes: slice 1 ships a plain textarea (dependency-free first
+      accreditation surface); CodeMirror 6 is the editor when UX justifies
+      the dep — Monaco never.
+- [x] **P9-D · contract-fixture plan**. Enumerate the Phase 9 cross-runtime
       shapes (trigger, runtime, env secret-ref envelope, alert kinds
       `process_failed`/`process_stalled`, `run_within_seconds` expectation)
       and specify their `tests/contract-fixtures/` entries — folding in the
       deferred `alert-kinds.json` fixture noted in the M2 hygiene follow-ups.
-- [ ] **P9-E · graph + lineage data design**. Shape `/api/monitoring/graph`
+      **Done 2026-08-29** — five fixtures specified in the scoping notes
+      (process-trigger / process-runtime / process-env /
+      process-expectation / alert-kinds) in the README's minimal/defaults/
+      cases format, incl. the slice-1 asymmetry (`container` runtime: app
+      reject, pipeline accept) and the full current kind enum
+      (MONITOR_KINDS + webhook_failed) for alert-kinds.json.
+- [x] **P9-E · graph + lineage data design**. Shape `/api/monitoring/graph`
       (nodes/edges from connections, `collection_connections`,
       `process_sources`/`process_outputs` + statuses, member+ scoped like
       `/api/monitoring/flows`) and the daily `flow_stats` history rollup the
       lineage panel's 30-day strip needs (a new requirement — decide table
       vs. derived).
+      **Done 2026-08-29** — node/edge payload shapes in the scoping notes
+      (typed ids, per-edge flow_stats + open_alert derived like the M2-D
+      flows hint; the cycle check shares the edge model). Rollup
+      recommendation: a `flow_stats_daily` TABLE (app DDL, daily pipeline
+      upsert job, ~400-day prune via history_retention) — deriving from the
+      ledgers thins under M2-G pruning and re-creates the unbounded-
+      aggregation shape M2-A removed.
 - [ ] **P9-F · Phase 9 design spec** (the M2 pattern —
       `docs/superpowers/specs/`). Consumes P9-A…P9-E; slices the milestone
       (slice 1: `inline_python` on a platform-built image, per ADR 0013);
