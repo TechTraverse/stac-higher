@@ -425,33 +425,43 @@ process-generated volume (ROADMAP §10), and M5 implementation stays within
 the singleton pre-M3 architecture (I-40 untouched).
 - Tracked in: ROADMAP §9 (steering order, M5 note), §10.
 
-### I-61 · Executor backend: local dev vs. GovCloud 🔴
+### I-61 · Executor backend: local dev vs. GovCloud 🟢 (settled 2026-08-29)
 ADR 0013's recommended container-per-run interface needs concrete backends:
 locally, docker-socket availability inside the compose pipeline container
 (and the hardening cost of granting it); in cloud, ECS/Fargate task quotas,
 launch latency (felt on interactive test runs), and GovCloud service
 availability vs. a K8s Job. A backend pair that keeps local dev a single
 `docker compose up` is a hard requirement (§1 locked decisions).
-- Tracked in: ADR 0013 "Revisit"; investigated by `TODO.md` P9-A.
+**Settled by P9-A + the approved Phase 9 spec**: local `DockerExecutor`
+(Engine API via a least-privilege socket proxy — sibling launch 0.125s warm,
+limits first-class), cloud ECS/Fargate RunTask in Phase 8 (available in
+GovCloud, ~30–45s cold start, vCPU quotas), K8s-Job-on-EKS fallback
+(EKS-on-Fargate absent in GovCloud). Details: ADR 0013 "Investigation".
+- Tracked in: ADR 0013 (accepted).
 
-### I-62 · Run-log storage & retention 🔴
-Run logs land in object storage under a `log_ref` (ADR 0013 invariant) —
-but under which prefix (a `logs/` sibling of `assets/`/`staging/` in §5.3?),
-with what size cap per run, and which sweep ages them out (a
-`history_retention` leg keyed to `process_runs` pruning? an `asset_gc`
-reason? a plain TTL like staging)? Log bytes from a chatty process are
-unbounded without a policy.
-- Tracked in: here; decided by P9-F.
+### I-62 · Run-log storage & retention 🟢 (settled 2026-08-29)
+**Settled by the approved Phase 9 spec (§9)**: `logs/runs/{process_id}/
+{run_id}.log` (a `logs/` sibling in the §5.3 layout), capture-time size cap
+(`PROCESS_LOG_MAX_BYTES`, default 10MB, truncation marker), aged out by the
+`history_retention` leg in lockstep with terminal `process_runs` rows — log
+object deleted before the row; no `asset_gc` involvement (platform bytes,
+not catalog assets).
+- Tracked in: the Phase 9 design spec §9.
 
-### I-63 · `process_stalled` expectation: per-source or per-process? 🔴
+### I-63 · `process_stalled` expectation: per-source or per-process? 🟢 (settled 2026-08-29)
 The `run_within_seconds` expectation could live on each `process_sources`
 row (mirroring per-association expectations — natural for cron triggers with
 different cadences) or once per process (simpler, matches how operators
 think about "is my process running"). Affects the alert dedup key and the
 `/monitoring` flows shape.
-- Tracked in: here; decided by P9-F with ADR 0010's dedup model in view.
+**Settled by the approved Phase 9 spec (§8): per `process_sources` row** —
+mirrors the per-association expectation model (cadences differ per source),
+reuses the M2-A editable-expectation UI shape, and slots the source id into
+the ADR 0010 dedup key's association position; the `/processes` dashboard
+aggregates per-source states into the process-level view.
+- Tracked in: the Phase 9 design spec §8.
 
-### I-64 · Cycle-detection scope for the output→source loop hazard 🔴
+### I-64 · Cycle-detection scope for the output→source loop hazard 🟢 (settled 2026-08-29)
 ADR 0014 refuses associations that close a feedback loop. Direct
 source/output edges are cheap to check at association time. But a loop can
 also close transitively through delivery→re-ingest edges (process output →
@@ -462,16 +472,27 @@ stop? **Backstop settled 2026-08-27:** regardless of detection scope, a
 per-process run-rate ceiling with an alert on breach is a design-spec
 requirement — it caps the blast radius of any loop the detector cannot see.
 The detection scope itself remains open.
-- Tracked in: ADR 0014 "Revisit", ROADMAP §10; scope decided by P9-F.
+**Scope settled by the approved Phase 9 spec (§8)**: write-time DFS refusal
+over OUR edges only ({ingest, deliver, process_source, process_output},
+shared with the `/api/monitoring/graph` edge model; 409 with the path).
+Paths through connections/external systems stay undecidable and out of
+scope — the per-process run-rate ceiling + `process_rate_limited` alert
+(spec §7) is the blast-radius backstop.
+- Tracked in: ADR 0014 (accepted), the Phase 9 design spec §7–8.
 
-### I-65 · Inline-editor dependency choice + supply-chain review 🔴
+### I-65 · Inline-editor dependency choice + supply-chain review 🟢 (settled 2026-08-29)
 `/processes/[id]` wants a code editor (CodeMirror vs. Monaco) — a
 significant new frontend dependency under the no-new-deps-without-need rule
 and the platform's compliance posture (supply-chain review before adoption).
 A plain textarea may be acceptable for a first slice.
-- Tracked in: ROADMAP §8 Phase 9 table; evaluated by `TODO.md` P9-C.
+**Settled by P9-C + the approved Phase 9 spec**: slice 1 ships a plain
+textarea (dependency-free first accreditation surface); when editor UX is
+justified, CodeMirror 6 (modular, island-friendly, CSS-themeable) — never
+Monaco (~98MB unpacked, worker architecture). Supply-chain review recorded
+in the adopting PR when that day comes.
+- Tracked in: the P9 scoping notes; the Phase 9 design spec §10.
 
-### I-66 · OGC API — Processes conformant facade: worth exposing? 🔴
+### I-66 · OGC API — Processes conformant facade: worth exposing? 🟢 (settled 2026-08-29)
 The Phase 9 capability is the domain of the OGC API — Processes standard
 (execute/jobs/results; Part 3 covers workflow chaining). Our internal design
 is deliberately richer (event triggers, revisions, group ownership) and must
@@ -484,7 +505,12 @@ and whether the facade is a Phase 9 slice or a later add-on. Related: the
 serving exposure work (titiler-pgstac / tipg, `TODO.md` "Pre-M5 hardening")
 covers OGC API Tiles/Features — together these make the platform's OGC
 story: Features (STAC API core), Tiles, and potentially Processes.
-- Tracked in: ROADMAP §9 Phase 9; decided by P9-F.
+**Settled by the approved Phase 9 spec (§11): worth claiming, as a
+post-gate stretch slice.** Read-only + async-execute mapping over
+`/processes` + `process_runs` (Part 1 async core; Core/JSON/Process
+Description/Job list conformance candidates); the internal model stays
+canonical and richer. Ships only after the native surface is rehearsed.
+- Tracked in: the Phase 9 design spec §11.
 
 ---
 

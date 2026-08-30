@@ -318,7 +318,7 @@ platform-built image; a per-process run-rate ceiling is a requirement.
       upsert job, ~400-day prune via history_retention) — deriving from the
       ledgers thins under M2-G pruning and re-creates the unbounded-
       aggregation shape M2-A removed.
-- [ ] **P9-F · Phase 9 design spec** (the M2 pattern —
+- [x] **P9-F · Phase 9 design spec** (the M2 pattern —
       `docs/superpowers/specs/`). Consumes P9-A…P9-E; slices the milestone
       (slice 1: `inline_python` on a platform-built image, per ADR 0013);
       settles the `process_stalled` expectation scope (I-63), cycle-detection
@@ -327,15 +327,16 @@ platform-built image; a per-process run-rate ceiling is a requirement.
       evaluation (I-66); accepts or revises ADRs 0013/0014. Includes redoing
       the throughput arithmetic with process-generated items (§10 — M5
       precedes M3, so M3 scoping consumes this number).
-      **DRAFTED 2026-08-29, awaiting lead review** (the queue's stop point) —
+      **Done 2026-08-29 — spec approved by the lead** (stop point cleared):
       `docs/superpowers/specs/2026-08-29-phase9-processes-design.md`.
+      ADRs 0013/0014 flipped to accepted.
       Decisions proposed: I-63 per-source expectation; I-64 our-edges-only
       DFS refusal + `process_rate_limited` ceiling backstop; I-62 `logs/runs/`
       prefix, 10MB cap, history_retention leg (log object before row); I-66
       facade worth claiming as a post-gate stretch slice; STS session-policy
       run creds; M3 planning number = ~60 items/s total (process ≤ 1×
-      ingest). Slices M5-0…M5-G + stretch. On approval: mark this [x] and
-      flip ADRs 0013/0014 to accepted.
+      ingest). Slices M5-0…M5-G + stretch; the M5 implementation queue is
+      seeded from §13 when M5 work begins.
 
 ## Discovered follow-ups
 

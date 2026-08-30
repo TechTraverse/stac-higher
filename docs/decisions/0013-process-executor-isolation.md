@@ -1,6 +1,6 @@
 # ADR 0013 — Process executor isolation
 
-**Status:** proposed (Phase 9 / M5 — not accepted; to be settled by the Phase 9 design spec)
+**Status:** accepted (2026-08-29, by the Phase 9 design spec — Option B, `DockerExecutor` locally per the P9-A investigation; cloud backends in Phase 8)
 
 ## Context
 

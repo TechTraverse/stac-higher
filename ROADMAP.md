@@ -784,7 +784,7 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
 | 7 — Direct interaction | ⬜ Not started | — |
 | 8 — Cloud, scale gate & viz | ⬜ Not started | — |
-| 9 — Processes | ⬜ Proposed (2026-08-27) | Planning only: this file's Phase 9 section, ADRs 0013/0014 (proposed), scoping queue in `TODO.md`. No design spec yet. |
+| 9 — Processes | ⬜ Scoped (design spec approved 2026-08-29) | Planning complete: `docs/superpowers/specs/2026-08-29-phase9-processes-design.md` (slices M5-0…M5-G), ADRs 0013/0014 accepted, scoping queue P9-A…F done. Implementation starts after Phase 7. |
 
 ### Named milestones (2026-07-24)
 
@@ -995,8 +995,10 @@ primitive alongside ingest and delivery associations. Derived from the NOAA
 Geospatial Data Platform mockups; requirements translated into this repo's
 terms. Planning artifacts: §5 `PROCESS_*` entities + §5.6 config shapes,
 §6.7 flow, the §8 Phase 9 UI table, [ADR 0013](docs/decisions/0013-process-executor-isolation.md)
-(executor isolation, proposed) and [ADR 0014](docs/decisions/0014-process-output-path.md)
-(output path, proposed), the `TODO.md` scoping queue, and ISSUES I-60…I-66.
+(executor isolation) and [ADR 0014](docs/decisions/0014-process-output-path.md)
+(output path) — **both accepted 2026-08-29 by the approved design spec**
+(`docs/superpowers/specs/2026-08-29-phase9-processes-design.md`, slices
+M5-0…M5-G) — the completed `TODO.md` scoping queue, and ISSUES I-60…I-66.
 Sequencing settled 2026-08-27: Phase 7 precedes 9; M5 precedes M3 (see the
 steering order above). Slice 1 is `inline_python`-only (ADR 0013); an OGC
 API — Processes conformant facade over `/processes` + runs is an open
