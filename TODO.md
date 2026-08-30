@@ -167,6 +167,19 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       with R2/R3 guards, `X-BFF-Auth` header — owns the file), new
       `app/src/lib/push/`, env plumbing, unit tests. **SEQUENTIAL** after B
       and C.
+      **Done 2026-08-30** (`ai/p7d-broker`, merged) — bearer callers forward
+      their own token (session path byte-identical, asserted); R1
+      preconditions first for every bearer write (fail-closed 503 on a
+      settings read error); staged pre-validation via `lib/push/prevalidate`
+      (whole-document `staging://` scan, pinned `PUSH_REJECTION_REASONS`
+      status mapping); `prior_item` snapshot with R2 first-write-wins
+      enforced IN SQL (`AND prior_item IS NULL`) + never-staged guard;
+      staged PATCH → 400; `X-BFF-Auth` stamped when the secret is set.
+      Interpretation calls (documented in code): bearer collection-create →
+      403 (ADR 0015 posture); staged pre-validation applies to session
+      callers too (protects finalize semantics — R1's "untouched" refers to
+      the precondition set); snapshot failure fail-closed. 28+2 new tests,
+      835 green. Follow-ups below.
 - [ ] **P7-E · finalize module + job + sweep + metrics** (spec §6, §9). New
       `pipeline/finalize/` (seam, steps, resolvers, recorders, repo —
       ADR 0014 check criterion applied literally at review),
@@ -284,3 +297,20 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
 - The flag-flip integration leg drives `collection_settings` via
   `docker compose exec … psql` (that suite deliberately doesn't require the
   app) — noted in tests README.
+
+### From P7-D
+
+- The overlay's `${CATALOG_BFF_SHARED_SECRET:?}` covers the PROXY side only —
+  the app is not a compose service, so its secret comes from the shell/.env
+  when running the dev server. P7-Z's enforced-stack run must export it for
+  BOTH; P7-I documents the operator step (docs/auth.md + push-ingest.md).
+- P7-E: the brokered path never binds `staged_uploads.item_id` (binding is
+  the push resolver's job); finalize must read `prior_item` for the §6.3
+  restore, and a bearer PATCH arriving via the direct path is un-snapshotted
+  by design.
+- P7-I: document bearer collection-create refused (403) on the brokered path
+  and collection-level PUT/DELETE held to the `externally_writable`/group
+  set; AGENTS route-table row for `/api/catalog/[...path]` gains the §4.3
+  note.
+- Optional (P7-Z): a live brokered-path leg (bearer token → BFF → enforced
+  proxy) — unit tests mock the proxy and ledger.
