@@ -7,10 +7,15 @@ interface SchemaCacheRow {
   schema: unknown;
 }
 
-export async function getCachedSchema(url: string): Promise<unknown | null> {
+export async function getCachedSchema(
+  url: string,
+  opts: { allowExpired?: boolean } = {},
+): Promise<unknown | null> {
   const result = await query<SchemaCacheRow>(
-    `SELECT schema FROM stac_higher.schema_cache
-     WHERE url = $1 AND expires_at > now()`,
+    opts.allowExpired
+      ? `SELECT schema FROM stac_higher.schema_cache WHERE url = $1`
+      : `SELECT schema FROM stac_higher.schema_cache
+         WHERE url = $1 AND expires_at > now()`,
     [url],
   );
   return result.rows[0]?.schema ?? null;
@@ -36,8 +41,19 @@ export async function getOrFetchSchema(url: string): Promise<unknown> {
   const cached = await getCachedSchema(url);
   if (cached !== null) return cached;
 
-  const result = await safeFetch(url);
+  let result;
+  try {
+    result = await safeFetch(url);
+  } catch (err) {
+    // Offline / unreachable upstream: serve a stale copy when we have one
+    // rather than breaking the edit form (I-67).
+    const stale = await getCachedSchema(url, { allowExpired: true });
+    if (stale !== null) return stale;
+    throw err;
+  }
   if (result.status < 200 || result.status >= 300) {
+    const stale = await getCachedSchema(url, { allowExpired: true });
+    if (stale !== null) return stale;
     throw new SafeFetchError(
       `Failed to fetch schema from ${url}: ${result.status}`,
       "upstream",
