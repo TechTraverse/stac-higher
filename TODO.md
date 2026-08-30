@@ -186,6 +186,22 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       `pipeline/stac/validate.py` lift, `jobs/finalize.py`, `metrics.py`,
       `storage/platform.py` `copy_object`, `jobs/staging_cleanup.py` ledger
       clock, pytest + fixture consumers. **SEQUENTIAL** after C.
+      **Done 2026-08-30** (`ai/p7e-finalize`, merged) — full `finalize/`
+      package (seam/steps/push resolver+recorder/repo/status/store/sweep);
+      ADR 0014 criterion pinned as BOTH a behavioral test (a `process_run`
+      request with a stand-in resolver drives the same steps end-to-end,
+      zero step changes) and a structural one (`inspect.getsource` asserts
+      the step module names no producer). `stac/validate.py` lift (itemize
+      re-exports); jobs `pipeline.finalize` + 5-min `finalize_sweep`; §9
+      counters; `copy_object`; staging-cleanup ledger clock (fail-safe:
+      unreadable ledger = skip). Job payload contract for P7-F:
+      `{upload_id, collection_id, item_id, event_op}` enqueued BEFORE
+      draining the event. Safety deviations (documented): staged originals
+      deleted post-upsert; insert-rejection GC-marks moved bytes first;
+      unclaimed rejections never stamp a foreign session's ledger row;
+      sweep-requeued runs (`event_op: None`) take the conservative
+      restore-or-leave branch, never delete. 575 pytest + 59 new, ruff
+      clean, verify green. Follow-ups below.
 - [ ] **P7-F · dispatcher staged-gating + delete-event GC mark** (spec §7).
       `pipeline/dispatcher/loop.py` + `repo.py`, `jobs/dispatch.py`,
       defer-on-mark-failure (I-38 path, not poison-drain), pytest.
@@ -314,3 +330,19 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
   note.
 - Optional (P7-Z): a live brokered-path leg (bearer token → BFF → enforced
   proxy) — unit tests mock the proxy and ledger.
+
+### From P7-E
+
+- P7-F: enqueue `pipeline.finalize` with `{upload_id (parsed from the first
+  staged href), collection_id, item_id, event_op: <outbox op>}` BEFORE
+  draining the staged event; `is_staged_href`/`parse_staged_href` ready in
+  `pipeline/storage/keys.py`.
+- P7-H: unclaimed-session rejections write no `rejected` ledger row, so the
+  `push_rejected` monitor won't see them — they surface only via
+  `pipeline_finalize_items_total` + warning log; decide whether the alert
+  condition should also watch that class.
+- Later (optional precision): persisting the claim-time `event_op` (a
+  pipeline-written column via an app migration) would let sweep-recovery
+  runs apply exact tier-2 semantics instead of the conservative branch.
+- P7-Z: `PgFinalizeRepo`/`PlatformObjectStore` SQL+boto paths are
+  `pragma: no cover` — exercised live at the gate.
