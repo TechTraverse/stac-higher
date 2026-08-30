@@ -111,6 +111,28 @@ export async function createStagedUpload(
   return toStagedUpload(result.rows[0]);
 }
 
+/**
+ * Record the §4.3 brokered-PUT snapshot on the session's ledger row — the
+ * §6.3 restore point. FIRST WRITE WINS by construction (`prior_item IS
+ * NULL` in the predicate): a second brokered PUT in the same session never
+ * overwrites an existing snapshot, so a rejection can never "restore" the
+ * first PUT's own staged document (review residual R2). Idempotently a
+ * no-op once a snapshot exists.
+ */
+export async function bindPriorItemSnapshot(
+  id: string,
+  item: unknown,
+): Promise<void> {
+  await runMigrations();
+  await query(
+    `UPDATE stac_higher.staged_uploads
+        SET prior_item = $2::jsonb
+      WHERE id = $1
+        AND prior_item IS NULL`,
+    [id, JSON.stringify(item)],
+  );
+}
+
 /** Read one ledger row (poll route). Null for an unknown id. */
 export async function getStagedUpload(
   id: string,
