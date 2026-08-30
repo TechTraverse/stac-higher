@@ -295,13 +295,12 @@ Residuals in [`ISSUES.md`](ISSUES.md): I-36, I-40 through I-43, I-46 through I-4
 
 ---
 
-## Phase 6 — Operable platform (M2) 🚧
+## Phase 6 — Operable platform (M2) ✅
 
 Scope + slices: `docs/superpowers/specs/2026-08-18-m2-operable-platform-design.md`.
-**All implementation slices (M2-0…M2-H) are code-complete and merged; the only
-remaining item is M2-I, the live demo rehearsal of the Phase 6 done-when on the
-auth-enforced stack (human-led — see `TODO.md`), which is why this phase is 🚧
-rather than ✅.**
+**All slices M2-0…M2-I complete. The M2-I rehearsal (2026-08-28) closed both
+done-when legs live on the auth-enforced stack — evidence under the M2
+milestone in ROADMAP §9 — and the phase promoted to `main`.**
 
 - **M2-0 · deliver pre-record durability** — INSERT-only `pre_record` ahead of
   everything fallible in the deliver job, failure recording for config/adapter
@@ -432,11 +431,31 @@ Residuals in [`ISSUES.md`](ISSUES.md): I-58 (M2-C notification semantics), I-59 
 | Feature | Status | Entry points |
 |---|---|---|
 | CI gate | ✅ | `.github/workflows/ci.yml` — app job (the same app-scoped `astro check` + build + vitest that root `npm run verify` runs locally; aligned 2026-08-21 after the M2 promotion exposed the gap), pipeline job (ruff + pytest incl. the pgstac DB integration tests), Storybook build, and a Playwright e2e job against the compose stack |
-| Security scanning | ✅ | `.github/workflows/security.yml` (npm audit — critical-only gate, see ISSUES I-57 — plus gitleaks), `codeql.yml`, Trivy in `containers.yml` |
+| Security scanning | ✅ | `.github/workflows/security.yml` (npm audit — high-severity gate on prod deps since the Astro 7 upgrade resolved I-57 — plus gitleaks), `codeql.yml`, Trivy in `containers.yml` |
 | Container images + releases | ✅ | `containers.yml` → GHCR images for the app and pipeline; `release.yml` |
+
+---
+
+## Cross-phase — Pre-M5 hardening (2026-08-29) ✅
+
+| Feature | Status | Entry points |
+|---|---|---|
+| Astro 6 → 7 migration | ✅ | astro 7.2.9 / @astrojs/node 11.1.4 / @astrojs/react 6.0.4; zero source changes (verify + full e2e green). Resolves ISSUES I-57 (6.x XSS/sharp/node advisories); the `security.yml` npm-audit gate tightened critical→high. Gotcha documented in `AGENTS.md`: Astro 7 auto-daemonizes `astro dev` under AI agents — `ASTRO_DEV_BACKGROUND` in `app/playwright.config.ts` keeps the e2e webServer foreground. I-8 amended (root check no longer OOMs, still app-scoped-only) |
+| OGC API serving (titiler-pgstac + tipg) | ✅ | `docs/serving.md`. Compose services `titiler` (:8084, per-collection raster tiles off pgstac) + `tipg` (:8085, vector Features/Tiles); migration `019` `collection_settings.serving_enabled`; Settings-tab toggle (operator+, audited) advertising the endpoints — link-level only until I-1 (ISSUES I-69); the tiler cannot resolve app-relative `/api/assets` hrefs (ISSUES I-68, Phase 8 decision). e2e: `collection-settings.spec.ts` serving-toggle spec |
+
+---
+
+## Phase 9 — Processes (M5) — scoped ⬜
+
+Design spec approved 2026-08-29
+(`docs/superpowers/specs/2026-08-29-phase9-processes-design.md`, slices
+M5-0…M5-G + an OGC API — Processes stretch); ADRs 0013/0014 accepted;
+I-60…I-66 settled. Implementation begins after Phase 7 (steering order,
+ROADMAP §9).
 
 ---
 
 ## Phases 7–8 — Not started ⬜
 
-Push-ingest, cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).
+Push-ingest (whose finalize must honor ADR 0014's producer-parameterized
+seam), then cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).
