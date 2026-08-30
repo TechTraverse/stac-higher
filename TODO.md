@@ -66,7 +66,7 @@ ROADMAP §9 M2).
 
 ## Phase 7 — design spec first
 
-- [ ] **P7-A · Phase 7 design spec** (the M2/M5 pattern —
+- [x] **P7-A · Phase 7 design spec** (the M2/M5 pattern —
       `docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md`).
       Consume ROADMAP §9 Phase 7 + §6.2 + §6.4 finalize gating + ADR 0014's
       seam sketch. Must settle, at minimum:
@@ -101,11 +101,81 @@ ROADMAP §9 M2).
       significant + hard-to-reverse, and **seed the implementation queue
       below** (replacing the placeholder) with worktree-sized tasks whose
       file footprints are marked parallel-safe or sequential.
+      **Done 2026-08-29 — PROVISIONALLY APPROVED** (standing decision; human
+      review pending on return). Spec:
+      `docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md` + ADR
+      **0015** (proxy write policy, proposed). Three rounds: draft → full
+      adversarial review (5 MUST-FIX incl. an unimplementable
+      update-rejection design, a source-verified `bulk_items` policy bypass,
+      a migration-021 CHECK defect, P9-spec numbering collision) → revision
+      (adopted the brokered-write hybrid: BFF route extended with bearer
+      forwarding + synchronous pre-validation; three-tier op-discriminated
+      rejection outcomes) → delta re-review (R1–R6 confined edits: bearer
+      writes on the BFF route enforce `externally_writable` for ALL bodies;
+      snapshot guards; staged PATCH rejected on brokered path) → verdict
+      provisionally-approvable, no further round. Both stac-auth-proxy
+      unknowns settled favorably from fetched 1.2.0 source. Queue below is
+      §14 verbatim.
 
-## Phase 7 — implementation (seeded by P7-A)
+## Phase 7 — implementation (seeded from spec §14)
 
-- [ ] **P7-B… · seeded by P7-A** — replace this placeholder with the sliced
-      implementation queue when the spec is provisionally approved.
+Dependency spine: **C → {D (also after B), E} → F → H → I**; B and G float in
+parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
+`ruff` when the pipeline is touched) only — no e2e/dev server/Docker.
+
+- [ ] **P7-B · bearer-token auth for `/api/*`** (spec §3). New
+      `app/src/lib/auth/bearer.ts` (+ `claims.ts` touch), `src/middleware.ts`
+      (owns it exclusively), `docs/auth.md`, keycloak realm dev push client,
+      `.env.example`, unit tests. **PARALLEL** with C and G.
+- [ ] **P7-C · staged-upload mint + ledger + poll route** (spec §4.1–4.2,
+      §11). Migration **020** (`staged_uploads`) in `migrate.ts`,
+      `app/src/pages/api/uploads/` (index + `[uploadId].ts`),
+      `storage/keys.ts` staged-href helpers, new `app/src/lib/uploads/`,
+      `authz/permissions.ts` rows, fixtures `staged-asset-href.json` +
+      `push-upload-status.json` + fixtures README extension + vitest
+      consumers. Uses the **route-local `runMigrations()`** pattern
+      (`gc/marks.ts:42`) — `middleware.ts` is P7-B's file. **PARALLEL** with
+      B and G.
+- [ ] **P7-D · brokered push write path on the BFF route** (spec §4.3).
+      `app/src/pages/api/catalog/[...path].ts` (bearer-caller forwarding,
+      pre-validation for ALL bearer writes per R1, `prior_item` snapshot
+      with R2/R3 guards, `X-BFF-Auth` header — owns the file), new
+      `app/src/lib/push/`, env plumbing, unit tests. **SEQUENTIAL** after B
+      and C.
+- [ ] **P7-E · finalize module + job + sweep + metrics** (spec §6, §9). New
+      `pipeline/finalize/` (seam, steps, resolvers, recorders, repo —
+      ADR 0014 check criterion applied literally at review),
+      `pipeline/stac/validate.py` lift, `jobs/finalize.py`, `metrics.py`,
+      `storage/platform.py` `copy_object`, `jobs/staging_cleanup.py` ledger
+      clock, pytest + fixture consumers. **SEQUENTIAL** after C.
+- [ ] **P7-F · dispatcher staged-gating + delete-event GC mark** (spec §7).
+      `pipeline/dispatcher/loop.py` + `repo.py`, `jobs/dispatch.py`,
+      defer-on-mark-failure (I-38 path, not poison-drain), pytest.
+      **SEQUENTIAL** after E.
+- [ ] **P7-G · proxy write policy** (spec §5, ADR 0015). New
+      `services/proxy-policy/` package + tests, `infra/proxy-policy/`
+      Dockerfile, `infra/compose.auth-enforced.yml` (factory config,
+      `ITEMS_FILTER_PATH` incl. `bulk_items`, mandatory secret),
+      `docker-compose.yml` image pins (auth-proxy + stac-fastapi-pgstac),
+      `tests/integration/` policy legs (bulk-deny, read-shape; update the
+      pinned member-can-write test), ADR 0015 acceptance edit. No app files;
+      integration legs skip without the enforced stack, go green at P7-Z.
+      **PARALLEL** with everything (fully disjoint files; no Docker RUN —
+      files only).
+- [ ] **P7-H · `push_rejected` alerting + ledger hygiene** (spec §8, §11).
+      Migration **021** (alerts `collection_id` anchor + CHECK fourth leg +
+      dedup index, `sync_alerts` ON CONFLICT in lockstep),
+      `pipeline/flow/monitor.py` + `flow/repo.py`, `history/sweep.py`
+      `staged_uploads` pruning + ADR 0012 amendment, `app/src/lib/alerts/`
+      collection anchor/scoping, monitoring UI kind label, fixture
+      `alert-kinds.json` + README enum style + both consumers.
+      **SEQUENTIAL** after E and C.
+- [ ] **P7-I · docs + cross-doc amendments** (spec §12, §13). New
+      `docs/push-ingest.md`; AGENTS route table; FEATURES; ISSUES entries
+      from §13 (incl. the direct-path audit gap and the I-15 amendment);
+      **Phase 9 spec amendment** (M5-0 renumber, alert-kinds → "append");
+      **ADR 0008 status-quo update**; ROADMAP §6.2 diagram note + phase row.
+      Docs only. **SEQUENTIAL** last, before the gate.
 
 ## Phase 7 gate
 
