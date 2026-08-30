@@ -1,9 +1,11 @@
-"""Staging TTL cleanup: the delete primitive, endpoint pinning, and the tick."""
+"""Staging TTL cleanup: the delete primitive, endpoint pinning, the tick, and
+the Phase 7 §4.1 ledger clock (live sessions are mtime-proof)."""
 
 from __future__ import annotations
 
 import datetime as dt
 
+from _finalize_fake import FakeFinalizeRepo, Session
 from pipeline.config import Settings
 from pipeline.connections.egress import EgressBlocked
 from pipeline.jobs import staging_cleanup as cleanup_mod
@@ -109,10 +111,59 @@ async def test_cleanup_tick_uses_ttl_cutoff(monkeypatch):
     )
     monkeypatch.setattr(cleanup_mod, "build_platform_client", lambda s: fake)
 
-    deleted = await cleanup_tick(settings, now_epoch)
+    deleted = await cleanup_tick(settings, now_epoch, repo=FakeFinalizeRepo())
 
     assert deleted == 1
     assert fake.deleted == ["staging/x/expired.tif"]
+
+
+async def test_cleanup_tick_skips_live_ledger_sessions(monkeypatch):
+    """§4.1 one governing clock: an old-mtime object whose ledger row is
+    non-terminal and younger than the TTL is protected; a terminal row's
+    leftovers keep the mtime rule."""
+    now_epoch = int(dt.datetime(2026, 7, 16, 12, 0, 0, tzinfo=UTC).timestamp())
+    settings = Settings.from_env(env={"STAGING_TTL_SECONDS": "3600"})
+    cutoff = dt.datetime(2026, 7, 16, 11, 0, 0, tzinfo=UTC)
+    old_mtime = cutoff - dt.timedelta(hours=2)
+    fake = FakeS3(
+        [
+            ("staging/live/slow-upload.tif", old_mtime),  # live pending session
+            ("staging/done/leftover.tif", old_mtime),  # finalized session debris
+            ("staging/norow/orphan.tif", old_mtime),  # no ledger row at all
+        ]
+    )
+    monkeypatch.setattr(cleanup_mod, "build_platform_client", lambda s: fake)
+    repo = FakeFinalizeRepo(
+        sessions={
+            "live": Session(id="live", collection_id="c"),
+            "done": Session(id="done", collection_id="c", status="finalized"),
+        }
+    )
+
+    deleted = await cleanup_tick(settings, now_epoch, repo=repo)
+
+    assert deleted == 2
+    assert set(fake.deleted) == {"staging/done/leftover.tif", "staging/norow/orphan.tif"}
+
+
+async def test_cleanup_tick_fails_safe_when_ledger_unreadable(monkeypatch):
+    """No ledger, no deletions: sweeping blind could kill a live session."""
+
+    class BrokenRepo(FakeFinalizeRepo):
+        async def list_active_upload_ids(self, ttl_seconds: int) -> set[str]:
+            raise RuntimeError("db down")
+
+    now_epoch = int(dt.datetime(2026, 7, 16, 12, 0, 0, tzinfo=UTC).timestamp())
+    settings = Settings.from_env(env={"STAGING_TTL_SECONDS": "3600"})
+    fake = FakeS3(
+        [("staging/x/ancient.tif", dt.datetime(2020, 1, 1, tzinfo=UTC))]
+    )
+    monkeypatch.setattr(cleanup_mod, "build_platform_client", lambda s: fake)
+
+    deleted = await cleanup_tick(settings, now_epoch, repo=BrokenRepo())
+
+    assert deleted == 0
+    assert fake.deleted == []
 
 
 async def test_register_swallows_egress_block(monkeypatch):
@@ -122,6 +173,7 @@ async def test_register_swallows_egress_block(monkeypatch):
         raise EgressBlocked("nope")
 
     monkeypatch.setattr(cleanup_mod, "build_platform_client", _blocked)
+    monkeypatch.setattr(cleanup_mod, "PgFinalizeRepo", lambda dsn: FakeFinalizeRepo())
 
     queue = InMemoryQueue()
     cleanup_mod.register(queue, Settings.from_env(env={}))

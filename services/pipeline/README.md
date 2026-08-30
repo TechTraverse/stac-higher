@@ -55,6 +55,7 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `CONNECTION_CHECKS_RETENTION_DAYS` | `30` | Age after which connection_checks rows are deleted by the hourly history sweep (M2-G). |
 | `HISTORY_RETENTION_DAYS` | `365` | Window for pruning delivery_log/ingest_files rows of soft-deleted associations (and itemless terminal deliveries). |
 | `GC_BATCH_ITEMS` | `500` | Max items one retention/collect sweep tick processes per collection (M2-F; backlogs drain across ticks). |
+| `FINALIZE_STALE_SECONDS` | `1800` | A `staged_uploads` row stranded `finalizing` this long is presumed crashed — the finalize sweep flips it back to `pending` and re-enqueues the job (Phase 7 §6.4). |
 | `WEBHOOK_MAX_ATTEMPTS` | `5` | Webhook notification attempts (including the first) before a `notification_deliveries` row dead-letters and raises a `webhook_failed` alert (M2-C, ADR 0010). |
 | `WEBHOOK_RETRY_SECONDS` | `60` | Cool-off before the notify sweep re-enqueues a `failed` webhook delivery. |
 | `WEBHOOK_TIMEOUT_SECONDS` | `10` | Per-POST webhook timeout. |
@@ -257,6 +258,47 @@ pending (a later lead-only task) — not yet claimed live-verified.
 Deferred to **Slice B-iii**: retry → dead-letter, per-connection concurrency
 caps, and live SFTP/FTP destination runs. See
 [`../../docs/ISSUES.md`](../../docs/ISSUES.md) I-43, I-45, I-47.
+
+## Finalize (Phase 7, P7-E)
+
+The ADR 0014 producer-parameterized staging→canonical seam
+(`src/pipeline/finalize/`): push-ingest is the first caller, Phase 9 process
+runs plug in without a parallel path.
+
+- **Seam** (`seam.py`) — `FinalizeRequest {producer, staging_prefix,
+  output_collections, items, provenance}` → `FinalizeResult {upserted,
+  rejected}`. The neutral steps (`steps.py`: platform pre-flight → rewrite →
+  validate → checksum → copy-verify move → upsert restricted to
+  `output_collections` → delete staged originals) contain **no producer
+  branching** — a source-level test pins it. Producer differences live in the
+  request plus a *resolver*/*recorder* pair registered per producer.
+- **Push producer layer** (`push.py`) — the resolver claims the
+  `staged_uploads` row (`pending → finalizing`, item-bound; concurrent
+  duplicates and already-terminal rows no-op with a `stale_claim`
+  metric/log) and enforces the §4.2 admission rules (single session both
+  directions, minted-for-this-collection, unbound-or-bound-here); the
+  recorder stamps the verdict and applies the §6.3 op-discriminated
+  rejection outcome: **insert → delete** (GC-marking the canonical prefix
+  first when bytes already moved — ADR 0011), **brokered update → restore**
+  the `prior_item` snapshot (`restored: true`), **direct update →
+  leave-broken**. A sweep-recovery run (no recorded op) takes the
+  conservative branch: restore if a snapshot exists, otherwise leave —
+  never delete.
+- **Validation** — `stac/validate.py`, the exact gate ITEMIZE uses (lifted
+  from `ingest/itemize.py`; §6.2 — pushed and polled items pass identically).
+- **Jobs** (`jobs/finalize.py`) — `pipeline.finalize` (payload
+  `{upload_id, collection_id, item_id, event_op}`, enqueued by the P7-F
+  dispatcher before draining the staged event) and the five-minute
+  `pipeline.finalize_sweep` (§6.4: expire `pending` past
+  `created_at + STAGING_TTL_SECONDS` — the §4.1 governing clock — and
+  requeue stale `finalizing` claims).
+- **Ledger clock** — `jobs/staging_cleanup.py` now skips `staging/` prefixes
+  whose ledger row is non-terminal and younger than the TTL (no-row prefixes
+  keep the mtime rule; an unreadable ledger skips the tick — never delete
+  blind).
+- **Metrics** (§9) — `pipeline_finalize_items_total{producer, outcome}` and
+  `pipeline_finalize_bytes_total{producer}`; the job/sweep get
+  run/duration/outcome from the central `instrument_handler` wrap.
 
 ## Develop
 

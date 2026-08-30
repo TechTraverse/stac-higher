@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +39,7 @@ from pipeline.ingest.repo import (
     LedgerEntry,
 )
 from pipeline.stac.pgstac_writer import CollectionMissing, PgstacWriter
+from pipeline.stac.validate import ItemValidationError, validate_item
 from pipeline.storage import platform
 from pipeline.storage.keys import canonical_asset_key
 
@@ -91,10 +92,6 @@ async def _build_collection_fallback(
     return {"geometry": bbox_to_polygon(bbox), "bbox": bbox, "source": "collection_extent"}
 
 
-class ItemValidationError(Exception):
-    """The built item fails stac-pydantic validation."""
-
-
 @dataclass
 class ItemizeOutcome:
     status: str  # "itemized" | "failed" | "skipped"
@@ -106,20 +103,10 @@ class ItemizeOutcome:
     latency_seconds: float | None = None
 
 
-def validate_item(item_dict: Mapping[str, Any]) -> None:
-    """stac-pydantic gate (offline, core-structural). Raises on invalid.
-
-    Uses the core ``stac_pydantic.Item`` (not ``stac_pydantic.api.Item``): the
-    API variant additionally requires a ``root`` link, which EXTRACT-built
-    items never carry (they are plain catalog items, not API page entries).
-    """
-    from pydantic import ValidationError
-    from stac_pydantic import Item
-
-    try:
-        Item.model_validate(dict(item_dict))
-    except ValidationError as exc:
-        raise ItemValidationError(str(exc)) from exc
+# The stac-pydantic gate now lives in ``pipeline/stac/validate.py`` (Phase 7
+# §6.2: one gate, shared verbatim with finalize). Re-exported here so existing
+# importers keep working.
+__all__ = ["ItemValidationError", "ItemizeOutcome", "run_itemize", "validate_item"]
 
 
 def _member(entry: LedgerEntry, collection_id: str, item_id: str) -> ExtractMember:

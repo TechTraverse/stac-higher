@@ -13,9 +13,11 @@ from typing import Any
 import pytest
 
 from pipeline.delivery.config import parse_delivery_config
+from pipeline.finalize.status import StatusContractError, validate_status_doc
 from pipeline.flow.expectation import parse_delivery_expectation, parse_ingest_expectation
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.notify.config import parse_webhook_config
+from pipeline.storage.keys import InvalidKeySegment, is_staged_href, parse_staged_href
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "contract-fixtures"
 
@@ -29,6 +31,8 @@ DELIVERY = _load("delivery-config.json")
 INGEST_EXPECTATION = _load("ingest-expectation.json")
 DELIVERY_EXPECTATION = _load("delivery-expectation.json")
 WEBHOOK = _load("webhook-channel-config.json")
+STAGED_HREF = _load("staged-asset-href.json")
+PUSH_STATUS = _load("push-upload-status.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -84,6 +88,43 @@ def test_delivery_expectation_matches_golden():
     golden = DELIVERY_EXPECTATION["defaults"]
     assert parse_delivery_expectation(minimal) == golden["deliver_within_seconds"]
     assert parse_delivery_expectation(None) is None
+
+
+@pytest.mark.parametrize("case", STAGED_HREF["cases"], ids=lambda c: c["name"])
+def test_staged_href_cases(case):
+    """The staging:// grammar (Phase 7 §4.2, grammar-cases style): `detected`
+    pins the dispatcher-style prefix check; `parse` pins the strict
+    upload_id/filename extraction (null = reject)."""
+    assert is_staged_href(case["href"]) == case["detected"]
+    if case["parse"] is None:
+        with pytest.raises(InvalidKeySegment):
+            parse_staged_href(case["href"])
+    else:
+        parts = parse_staged_href(case["href"])
+        assert parts.upload_id == case["parse"]["upload_id"]
+        assert parts.filename == case["parse"]["filename"]
+
+
+@pytest.mark.parametrize("case", PUSH_STATUS["cases"], ids=lambda c: c["name"])
+def test_push_upload_status_cases(case):
+    """The staged_uploads status contract (status-contract style): the
+    pipeline is the STRICT writer — `pipeline: accept` docs are within what
+    the recorder/sweeps may write; `reject` docs must fail the writer gate
+    (the app's Zod reader is the deliberately-lenient side)."""
+    if case["pipeline"] == "accept":
+        validate_status_doc(case["doc"])
+    else:
+        with pytest.raises(StatusContractError):
+            validate_status_doc(case["doc"])
+
+
+def test_push_status_enums_match_golden():
+    """The fixture's status/terminal/reason sets are the writer's, verbatim."""
+    from pipeline.finalize.status import REJECTION_REASONS, STATUSES, TERMINAL_STATUSES
+
+    assert set(PUSH_STATUS["statuses"]) == STATUSES
+    assert set(PUSH_STATUS["terminal"]) == TERMINAL_STATUSES
+    assert set(PUSH_STATUS["reasons"]) == REJECTION_REASONS
 
 
 def test_ingest_defaults_match_golden():
