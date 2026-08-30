@@ -19,6 +19,7 @@ from pipeline.jobs import (
     backfill,
     dispatch,
     drain,
+    finalize,
     gc,
     health_sweep,
     heartbeat,
@@ -61,6 +62,9 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # M2-G: §6 hygiene — hourly retention sweeps for the UNIQUE-keyed history
     # tables (partitioning covers item_events/audit_log — ADR 0012).
     history.register(queue, settings)
+    # Phase 7 (P7-E): push-ingest finalize — staged items move staging →
+    # canonical through the ADR 0014 seam; plus the §6.4 recovery sweep.
+    finalize.register(queue, settings)
     return queue
 
 

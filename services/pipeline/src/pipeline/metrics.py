@@ -40,6 +40,8 @@ __all__ = [
     "DELIVERIES",
     "DELIVERY_BYTES",
     "DELIVERY_SECONDS",
+    "FINALIZE_BYTES",
+    "FINALIZE_ITEMS",
     "INGEST_BYTES",
     "INGEST_EVENTS",
     "JOB_RUNS",
@@ -92,6 +94,24 @@ DELIVERY_BYTES = Counter(
 DELIVERY_SECONDS = Histogram(
     "pipeline_delivery_seconds",
     "Wall-clock duration of one item delivery (success path)",
+    registry=REGISTRY,
+)
+
+FINALIZE_ITEMS = Counter(
+    "pipeline_finalize_items_total",
+    "Finalize per-item terminal outcomes (Phase 7 §9). Labeled by producer so "
+    "Phase 9 process runs get their telemetry for free (the ADR 0014 seam).",
+    # outcome: upserted | rejected, plus the §6.3 no-op paths:
+    #   stale_claim  — claim on an already-terminal/claimed ledger row
+    #   superseded   — the item no longer references the claimed session
+    #   item_missing — the item vanished between the event and finalize
+    ["producer", "outcome"],
+    registry=REGISTRY,
+)
+FINALIZE_BYTES = Counter(
+    "pipeline_finalize_bytes_total",
+    "Bytes moved staging → canonical by finalize (Phase 7 §9)",
+    ["producer"],
     registry=REGISTRY,
 )
 

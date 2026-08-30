@@ -29,6 +29,7 @@ class S3Like(Protocol):
     def put_object(self, **kwargs: Any) -> Any: ...
     def get_object(self, **kwargs: Any) -> Any: ...
     def head_object(self, **kwargs: Any) -> Any: ...
+    def copy_object(self, **kwargs: Any) -> Any: ...
 
 
 def _pinned_endpoint_url(
@@ -120,17 +121,42 @@ def head_object(client: S3Like, bucket: str, key: str) -> tuple[str, int]:
     return (resp.get("ETag") or "").strip('"'), int(resp["ContentLength"])
 
 
+def copy_object(client: S3Like, bucket: str, src_key: str, dest_key: str) -> None:
+    """Same-bucket server-side ``CopyObject`` — finalize's staging→canonical
+    move primitive (Phase 7 §6.1 step 4). No bytes stream through the worker,
+    so the I-19 buffering ceiling does not apply to the move. Pure over an
+    injected client; synchronous boto3 — wrap in ``asyncio.to_thread``."""
+    client.copy_object(
+        Bucket=bucket,
+        Key=dest_key,
+        CopySource={"Bucket": bucket, "Key": src_key},
+    )
+
+
+def delete_object(client: S3Like, bucket: str, key: str) -> None:
+    """Delete ONE object — finalize's post-move staged-original removal (the
+    §6.4 named deletion call site: only ever invoked after the canonical copy
+    is checksum-verified and the item is upserted). Pure over an injected
+    client; synchronous boto3 — wrap in ``asyncio.to_thread``."""
+    client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": key}]})
+
+
 def cleanup_expired(
     client: S3Like,
     bucket: str,
     prefix: str,
     cutoff: dt.datetime,
+    *,
+    protected_prefixes: frozenset[str] = frozenset(),
 ) -> int:
     """Delete objects under ``prefix`` last modified before ``cutoff``.
 
     Pure over an injected client (no network in tests). Returns the number of
     objects deleted. ``cutoff`` must be timezone-aware (boto3 ``LastModified``
-    is tz-aware UTC).
+    is tz-aware UTC). ``protected_prefixes`` (Phase 7 §4.1 — the ledger clock):
+    keys under any of these prefixes are never deleted regardless of mtime —
+    the staged_uploads ledger row's age, not object mtime, governs a live
+    upload session's expiry.
     """
     deleted = 0
     paginator = client.get_paginator("list_objects_v2")
@@ -142,6 +168,7 @@ def cleanup_expired(
             {"Key": obj["Key"]}
             for obj in page.get("Contents", [])
             if obj["LastModified"] < cutoff
+            and not any(obj["Key"].startswith(p) for p in protected_prefixes)
         ]
         if batch:
             client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
