@@ -1,6 +1,6 @@
 import { defineMiddleware } from "astro:middleware";
 import { runMigrations } from "@/lib/db/migrate";
-import { resolveAuthContext } from "@/lib/auth/resolve";
+import { resolveRequestAuth } from "@/lib/auth/bearer";
 import { getAuthConfig } from "@/lib/auth/config";
 import { anonymous } from "@/lib/auth/types";
 import { applyApiGuard } from "@/lib/authz/guard";
@@ -19,11 +19,18 @@ export const onRequest = defineMiddleware(async (context, next) => {
     await runMigrations();
   }
 
-  // Resolve the canonical identity for every request (session cookie →
-  // claims mapping; refreshes the access token when it is near expiry).
+  // Resolve the canonical identity for every request: session cookie →
+  // claims mapping (refreshing the access token when it is near expiry);
+  // on /api/* in oidc mode an `Authorization: Bearer <JWT>` is tried when
+  // no session is present (Phase 7 §3 — session wins, bypass untouched).
   // Auth failures never break a page — they degrade to anonymous.
   try {
-    context.locals.auth = await resolveAuthContext(context.cookies);
+    const { auth, bearerToken } = await resolveRequestAuth(
+      context.cookies,
+      context.request,
+    );
+    context.locals.auth = auth;
+    if (bearerToken !== undefined) context.locals.bearerToken = bearerToken;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[auth] Auth resolution failed, treating as anonymous: ${msg}`);

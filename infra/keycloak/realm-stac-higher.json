@@ -96,6 +96,17 @@
         "admin"
       ],
       "groups": []
+    },
+    {
+      "username": "service-account-stac-higher-push",
+      "enabled": true,
+      "serviceAccountClientId": "stac-higher-push",
+      "realmRoles": [
+        "operator"
+      ],
+      "groups": [
+        "/earth-observation"
+      ]
     }
   ],
   "clients": [
@@ -214,6 +225,47 @@
             "id.token.claim": "true",
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "stac-higher-push",
+      "name": "STAC Higher push client (dev)",
+      "description": "LOCAL-ONLY confidential client with the client-credentials grant for the Phase 7 push-ingest flow (bearer tokens on /api/* — spec 2026-08-29 §3). Its service account is an operator in /earth-observation. Same caveat as the ADR 0002 test clients: never deploy; deployments create their own confidential client with the stac-higher audience mapper. NOTE: realm-file edits only take effect after `docker compose down -v` (import is skipped once the realm exists in the persisted volume).",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "stac-higher-push-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "claim.name": "groups",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "stac-higher-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "stac-higher",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
           }
         }
       ]
