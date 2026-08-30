@@ -67,6 +67,70 @@ export function stagingKey(uploadId: string, filename: string): string {
   return `${STAGING_PREFIX}/${uploadId}/${file}`;
 }
 
+// ---------------------------------------------------------------------------
+// Staged-asset hrefs (Phase 7 push ingest, spec §4.2).
+//
+//   staging://{upload_id}/{filename}
+//
+// The grammar is deliberately unmistakable: no real scheme collides with it,
+// the pipeline's dispatcher detects it with a prefix check, and finalize
+// parses upload_id/filename with the same segment validation as the key
+// builders above. Cross-runtime contract — golden fixture:
+// tests/contract-fixtures/staged-asset-href.json (grammar-cases style).
+// ---------------------------------------------------------------------------
+
+export const STAGED_HREF_SCHEME = "staging://";
+
+/**
+ * Build the `staged_href` the mint returns and a pushed item carries verbatim.
+ * `filename` is sanitized exactly as `stagingKey` sanitizes it, so the href
+ * always names the object the paired presigned PUT wrote.
+ */
+export function stagedHref(uploadId: string, filename: string): string {
+  assertSafeSegment(uploadId, "upload id");
+  const file = sanitizeFilename(filename);
+  return `${STAGED_HREF_SCHEME}${uploadId}/${file}`;
+}
+
+/** The dispatcher-style detection: a plain prefix check (case-sensitive). */
+export function isStagedHref(href: unknown): href is string {
+  return typeof href === "string" && href.startsWith(STAGED_HREF_SCHEME);
+}
+
+export interface StagedHrefParts {
+  uploadId: string;
+  filename: string;
+}
+
+/**
+ * Parse a staged href strictly. Throws `StorageKeyError` for anything a mint
+ * could never have produced: a non-`staging://` scheme, an empty or unsafe
+ * upload id, a missing filename, or a filename that does not round-trip
+ * through `sanitizeFilename` unchanged (traversal segments, directory
+ * separators, unsafe characters). The strictness is the point — the parsed
+ * parts feed `stagingKey`/`canonicalAssetKey` downstream.
+ */
+export function parseStagedHref(href: string): StagedHrefParts {
+  if (!isStagedHref(href)) {
+    throw new StorageKeyError(`not a staged href: ${JSON.stringify(href)}`);
+  }
+  const rest = href.slice(STAGED_HREF_SCHEME.length);
+  const slash = rest.indexOf("/");
+  if (slash === -1 || slash === 0 || slash === rest.length - 1) {
+    throw new StorageKeyError(
+      "staged href must be staging://{upload_id}/{filename}",
+    );
+  }
+  const uploadId = assertSafeSegment(rest.slice(0, slash), "upload id");
+  const filename = rest.slice(slash + 1);
+  if (filename !== sanitizeFilename(filename)) {
+    throw new StorageKeyError(
+      "staged href filename is not a single sanitized path segment",
+    );
+  }
+  return { uploadId, filename };
+}
+
 /** The `/api/assets/...` href stored in an item's asset (what resolves later). */
 export function assetHref(
   collection: string,

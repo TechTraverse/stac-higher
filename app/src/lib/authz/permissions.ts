@@ -175,7 +175,12 @@ export function matchGatedRoute(
   }
 
   // Phase 3: minting presigned upload URLs is a gated mutation (operator+),
-  // audited by the guard. The resource is the target collection, not a row id.
+  // audited by the guard. Phase 7 (P7-C): the same route's STAGED mode (body
+  // without `item`) is covered by this row too — its 200 body carries a
+  // top-level `id` (the upload session), so the guard's created-id extraction
+  // audits the minted session. `GET /api/uploads/[uploadId]` (the poll) is a
+  // READ: not gated here; the route requires auth + scopes visibility itself
+  // (admin | session group | creator), like the connections check poll.
   if (m === "POST" && path === "/api/uploads") {
     return { action: "create", resourceType: "upload", resourceId: null };
   }

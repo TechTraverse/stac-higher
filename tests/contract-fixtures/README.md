@@ -33,6 +33,42 @@ validated by `app/src/lib/notifications/schemas.ts` and
 - `cases[]` — `{ name, config, app, pipeline }` where `app`/`pipeline` is
   `"accept"` or `"reject"`.
 
+## Additional fixture styles (Phase 7)
+
+Not every cross-runtime contract is a config document; the Phase 7 spec (§10)
+adds fixtures whose files carry a top-level `"style"` marker instead of the
+`minimal`/`defaults`/`cases[]` config format:
+
+### `grammar-cases` — `staged-asset-href.json`
+
+A string grammar (`staging://{upload_id}/{filename}`), minted by the app and
+parsed by the pipeline (dispatcher detect + finalize resolve). Each case is
+`{ name, href, detected, parse }`:
+
+- `detected` — the outcome of the shared detection rule (a case-sensitive
+  `staging://` prefix check). An undetected href is simply *not staged* —
+  ordinary external asset hrefs pass through untouched, never an error.
+- `parse` — the expected `{ upload_id, filename }` from strict parsing, or
+  `null` when BOTH sides must reject (traversal segments, directory
+  separators, missing filename, unsafe characters). Consumers also assert
+  the round-trip: re-minting from a successful parse reproduces the href.
+
+### `status-contract` — `push-upload-status.json`
+
+The `staged_uploads.status` enum + `result` jsonb — the write-gate/lenient-
+reader asymmetry INVERTED: the **pipeline** is the strict writer (finalize
+recorder + sweeps), the **app** is the lenient Zod reader on the poll route
+(`GET /api/uploads/{uploadId}`). The file pins `statuses`, `terminal`, and the
+closed `reasons` string set; `cases[]` is `{ name, doc, app, pipeline }` where
+`doc` is `{status, result, error}` as served, `app: accept` means the reader
+parses it and `pipeline: accept` means the writer may produce it. Cases with
+`app: accept` / `pipeline: reject` encode the direction: the reader must
+survive a newer writer (unknown result keys, unknown future reason strings),
+while both sides reject broken shapes (unknown status, missing reason, wrong
+container types).
+
+(P7-H adds the third style, `pinned-enum`, with `alert-kinds.json`.)
+
 ## Why `app` and `pipeline` expectations can differ
 
 The contract is deliberately asymmetric. Zod is the **strict write gatekeeper**

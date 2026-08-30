@@ -1,0 +1,133 @@
+{
+  "style": "status-contract",
+  "contract": "staged_uploads.status + result jsonb (Phase 7 spec §10/§11)",
+  "writer": "pipeline — finalize recorder + sweeps (P7-E): the STRICT side, writes only the statuses/reasons below",
+  "reader": "app — pushUploadStatusSchema in app/src/lib/uploads/schemas.ts, applied on GET /api/uploads/{uploadId}: LENIENT on result contents (unknown keys stripped, unknown reason strings tolerated), STRICT on the status enum",
+  "statuses": ["pending", "finalizing", "finalized", "rejected", "expired"],
+  "terminal": ["finalized", "rejected", "expired"],
+  "reasons": [
+    "multi_session",
+    "session_terminal",
+    "unknown_session",
+    "wrong_collection",
+    "bound_to_other_item",
+    "gc_pending",
+    "collection_archived",
+    "missing_bytes",
+    "checksum_mismatch",
+    "invalid_item"
+  ],
+  "notes": [
+    "doc = {status, result, error} as the poll route serves the pipeline-written columns.",
+    "app: accept = the Zod reader parses the doc; pipeline: accept = the writer may legitimately produce it. app-accept/pipeline-reject cases encode the lenient-reader direction (the reader must survive a newer writer).",
+    "The reasons list is the closed set the pipeline writes today; the reader deliberately accepts strings outside it."
+  ],
+  "cases": [
+    {
+      "name": "pending, nothing written yet",
+      "doc": { "status": "pending", "result": null, "error": null },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "finalizing (claimed)",
+      "doc": { "status": "finalizing", "result": null, "error": null },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "finalized with upserted item and checksums",
+      "doc": {
+        "status": "finalized",
+        "result": {
+          "upserted": [{ "collection_id": "sentinel-pushed", "item_id": "S2A_001" }],
+          "checksums": { "B04.tif": "sha256:8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" }
+        },
+        "error": null
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "rejected with a closed-set reason",
+      "doc": {
+        "status": "rejected",
+        "result": { "rejected": [{ "reason": "missing_bytes" }] },
+        "error": "staged object B04.tif was never uploaded"
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "brokered update rejection with restore recorded",
+      "doc": {
+        "status": "rejected",
+        "result": {
+          "rejected": [{ "reason": "checksum_mismatch" }],
+          "restored": true
+        },
+        "error": null
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "expired (minted but never pushed)",
+      "doc": { "status": "expired", "result": null, "error": null },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown future reason string — reader tolerates, writer never emits",
+      "doc": {
+        "status": "rejected",
+        "result": { "rejected": [{ "reason": "quota_exceeded" }] },
+        "error": null
+      },
+      "app": "accept",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown extra result key — reader strips, writer never emits",
+      "doc": {
+        "status": "finalized",
+        "result": { "upserted": [], "finalize_duration_ms": 1234 },
+        "error": null
+      },
+      "app": "accept",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown status value",
+      "doc": { "status": "uploading", "result": null, "error": null },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "rejected entry missing its reason",
+      "doc": {
+        "status": "rejected",
+        "result": { "rejected": [{}] },
+        "error": null
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "result is the wrong container type",
+      "doc": { "status": "finalized", "result": [], "error": null },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "restored is the wrong type",
+      "doc": {
+        "status": "rejected",
+        "result": { "rejected": [{ "reason": "invalid_item" }], "restored": "yes" },
+        "error": null
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    }
+  ]
+}
