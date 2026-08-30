@@ -187,6 +187,20 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       integration legs skip without the enforced stack, go green at P7-Z.
       **PARALLEL** with everything (fully disjoint files; no Docker RUN —
       files only).
+      **Done 2026-08-30** (`ai/p7g-proxy`, merged) — `services/proxy-policy/`
+      uv package (`ExternallyWritableItemsFilter`: POST /search carve-out,
+      mandatory secret fail-fast/constant-time/never-logged, role floor from
+      `realm_access.roles`, 15s-TTL + stale-on-error + fail-closed
+      collection-set query, constant-false for empty set and headerless
+      `bulk_items`), 37 pytest green; derived image Dockerfile; enforced
+      overlay (`ITEMS_FILTER_CLS`/`ITEMS_FILTER_PATH` incl. bulk_items,
+      `${CATALOG_BFF_SHARED_SECRET:?}`); pins auth-proxy **v1.2.0** +
+      stac-fastapi-pgstac **6.3.1**; 8 new integration legs (all skip
+      cleanly sans stack) + narrowed ADR 0002 pinned test; ADR 0015 →
+      accepted. Deviations (documented): set query excludes `archived`
+      (ADR 0011 consistency); wrong secret falls through to normal policy
+      (no oracle); `.dockerignore` re-include for the build context.
+      Follow-ups below.
 - [ ] **P7-H · `push_rejected` alerting + ledger hygiene** (spec §8, §11).
       Migration **021** (alerts `collection_id` anchor + CHECK fourth leg +
       dedup index, `sync_alerts` ON CONFLICT in lockstep),
@@ -254,3 +268,19 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
   yet (by design).
 - P7-I: AGENTS.md route table needs the `GET /api/uploads/[uploadId]` row and
   the uploads row's staged-mode note (assigned to the docs slice by the spec).
+
+### From P7-G
+
+- P7-Z live confirms: the bulk-deny rejection SHAPE (the leg accepts any 4xx
+  and prints the actual status; fallback is the PRIVATE_ENDPOINTS scope
+  trick), and that the Dockerfile's `pip install` layer coexists with the
+  upstream image's uv-synced site-packages.
+- Direct-push item bodies MUST include `"collection"` — upstream cql2
+  `matches()` raises on a missing property, so omission rejects 500-shaped,
+  not 403 (pinned by unit test). Belongs in `docs/push-ingest.md` (P7-I).
+- Enforced-stack start command changed: needs
+  `export CATALOG_BFF_SHARED_SECRET=…` and `--build` — AGENTS.md backend
+  section + docs/auth.md catch-up is P7-I's.
+- The flag-flip integration leg drives `collection_settings` via
+  `docker compose exec … psql` (that suite deliberately doesn't require the
+  app) — noted in tests README.
