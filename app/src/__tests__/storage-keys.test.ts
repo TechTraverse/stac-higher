@@ -7,6 +7,9 @@ import {
   assetHref,
   sanitizeFilename,
   assertSafeSegment,
+  stagedHref,
+  parseStagedHref,
+  isStagedHref,
   StorageKeyError,
 } from "@/lib/storage/keys";
 
@@ -46,6 +49,47 @@ describe("stagingKey (Phase 7 seam)", () => {
   });
   it("rejects an unsafe upload id", () => {
     expect(() => stagingKey("../x", "a.tif")).toThrow(StorageKeyError);
+  });
+});
+
+describe("staged hrefs (Phase 7 §4.2 grammar — full case table lives in the golden fixture)", () => {
+  const UPLOAD_ID = "0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060";
+
+  it("stagedHref mints staging://{upload_id}/{filename} with the filename sanitized", () => {
+    expect(stagedHref(UPLOAD_ID, "my file (1).tif")).toBe(
+      `staging://${UPLOAD_ID}/my_file__1_.tif`,
+    );
+  });
+
+  it("stagedHref rejects an unsafe upload id", () => {
+    expect(() => stagedHref("../x", "a.tif")).toThrow(StorageKeyError);
+  });
+
+  it("stagedHref names exactly the object stagingKey addresses", () => {
+    const href = stagedHref(UPLOAD_ID, "B04.tif");
+    const { uploadId, filename } = parseStagedHref(href);
+    expect(stagingKey(uploadId, filename)).toBe(`staging/${UPLOAD_ID}/B04.tif`);
+  });
+
+  it("parseStagedHref round-trips a minted href", () => {
+    expect(parseStagedHref(stagedHref(UPLOAD_ID, "B04.tif"))).toEqual({
+      uploadId: UPLOAD_ID,
+      filename: "B04.tif",
+    });
+  });
+
+  it("parseStagedHref rejects what a mint could never produce", () => {
+    expect(() => parseStagedHref("https://x/B04.tif")).toThrow(StorageKeyError);
+    expect(() => parseStagedHref(`staging://${UPLOAD_ID}`)).toThrow(StorageKeyError);
+    expect(() => parseStagedHref(`staging://${UPLOAD_ID}/a/../b.tif`)).toThrow(
+      StorageKeyError,
+    );
+  });
+
+  it("isStagedHref is a plain case-sensitive prefix check", () => {
+    expect(isStagedHref(`staging://${UPLOAD_ID}/B04.tif`)).toBe(true);
+    expect(isStagedHref("/api/assets/c/i/B04.tif")).toBe(false);
+    expect(isStagedHref(42)).toBe(false);
   });
 });
 

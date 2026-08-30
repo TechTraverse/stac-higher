@@ -894,6 +894,46 @@ const MIGRATIONS = [
         ADD COLUMN IF NOT EXISTS serving_enabled boolean NOT NULL DEFAULT false;
     `,
   },
+  {
+    // P7-C (Phase 7 push-ingest spec §4.1/§11): the staged-upload ledger.
+    // One row per mint of `POST /api/uploads` in staged mode — the
+    // authorization binding finalize checks (staged refs are only honored
+    // for the collection their session was minted for) AND where a push
+    // client polls the async verdict (`GET /api/uploads/{uploadId}`).
+    //
+    // Ownership split mirrors ingest_files: the APP inserts (`pending`) and
+    // reads; the PIPELINE writes status/result/claimed_at/finalized_at
+    // (finalize recorder + sweeps) and never DDL (ADR 0001). `id` doubles as
+    // the `upload_id` in `staging://{upload_id}/{filename}` hrefs and the
+    // `staging/{upload_id}/` key prefix. `prior_item` is the §4.3 brokered-PUT
+    // snapshot (P7-D writes it; §6.3's restore point). Hygiene: NOT
+    // partitioned (poll-verb target, terminal-row pruning via the
+    // history_retention sweep — P7-H; ADR 0012 criteria).
+    name: "020_staged_uploads",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.staged_uploads (
+        id            uuid PRIMARY KEY,
+        collection_id text NOT NULL,
+        item_id       text,
+        created_by    text NOT NULL,
+        group_id      text,
+        filenames     jsonb NOT NULL,
+        status        text NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending','finalizing','finalized','rejected','expired')),
+        result        jsonb,
+        prior_item    jsonb,
+        error         text,
+        created_at    timestamptz NOT NULL DEFAULT now(),
+        claimed_at    timestamptz,
+        finalized_at  timestamptz
+      );
+
+      CREATE INDEX IF NOT EXISTS staged_uploads_collection_status_idx
+        ON stac_higher.staged_uploads (collection_id, status);
+      CREATE INDEX IF NOT EXISTS staged_uploads_status_created_idx
+        ON stac_higher.staged_uploads (status, created_at);
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

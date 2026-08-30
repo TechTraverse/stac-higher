@@ -17,6 +17,18 @@ import {
   ingestExpectationSchema,
 } from "@/lib/associations/schemas";
 import { webhookChannelConfigSchema } from "@/lib/notifications/schemas";
+import {
+  isStagedHref,
+  parseStagedHref,
+  stagedHref,
+  StorageKeyError,
+} from "@/lib/storage/keys";
+import {
+  PUSH_REJECTION_REASONS,
+  pushUploadStatusSchema,
+  STAGED_UPLOAD_STATUSES,
+  TERMINAL_STAGED_UPLOAD_STATUSES,
+} from "@/lib/uploads/schemas";
 
 interface FixtureCase {
   name: string;
@@ -68,4 +80,86 @@ describe("delivery expectation contract (tests/contract-fixtures/delivery-expect
 
 describe("webhook channel config contract (tests/contract-fixtures/webhook-channel-config.json)", () => {
   describeDirection("webhook-channel-config.json", webhookChannelConfigSchema);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 7 fixtures (spec §10) — non-config styles; formats documented in
+// tests/contract-fixtures/README.md ("Additional fixture styles").
+// ---------------------------------------------------------------------------
+
+interface GrammarCase {
+  name: string;
+  href: string;
+  detected: boolean;
+  parse: { upload_id: string; filename: string } | null;
+}
+
+describe("staged asset href grammar (tests/contract-fixtures/staged-asset-href.json)", () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../../tests/contract-fixtures/staged-asset-href.json",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ),
+  ) as { cases: GrammarCase[] };
+
+  it.each(fixture.cases)("detect — $name", ({ href, detected }) => {
+    expect(isStagedHref(href)).toBe(detected);
+  });
+
+  it.each(fixture.cases)("parse — $name", ({ href, parse }) => {
+    if (parse === null) {
+      expect(() => parseStagedHref(href)).toThrow(StorageKeyError);
+    } else {
+      expect(parseStagedHref(href)).toEqual({
+        uploadId: parse.upload_id,
+        filename: parse.filename,
+      });
+      // Round-trip: re-minting from the parsed parts reproduces the href.
+      expect(stagedHref(parse.upload_id, parse.filename)).toBe(href);
+    }
+  });
+});
+
+interface StatusCase {
+  name: string;
+  doc: unknown;
+  app: "accept" | "reject";
+  pipeline: "accept" | "reject";
+}
+
+describe("push upload status contract (tests/contract-fixtures/push-upload-status.json)", () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../../tests/contract-fixtures/push-upload-status.json",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ),
+  ) as {
+    statuses: string[];
+    terminal: string[];
+    reasons: string[];
+    cases: StatusCase[];
+  };
+
+  it("pins the status enum on both sides", () => {
+    expect(fixture.statuses).toEqual([...STAGED_UPLOAD_STATUSES]);
+    expect(fixture.terminal).toEqual([...TERMINAL_STAGED_UPLOAD_STATUSES]);
+  });
+
+  it("pins the closed rejection-reason set", () => {
+    expect(fixture.reasons).toEqual([...PUSH_REJECTION_REASONS]);
+  });
+
+  it.each(fixture.cases)("$app: $name", ({ doc, app }) => {
+    expect(pushUploadStatusSchema.safeParse(doc).success).toBe(app === "accept");
+  });
 });

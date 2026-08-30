@@ -1,0 +1,97 @@
+{
+  "style": "grammar-cases",
+  "contract": "staging://{upload_id}/{filename}",
+  "app": "app/src/lib/storage/keys.ts — stagedHref (mint) / isStagedHref (detect) / parseStagedHref (parse)",
+  "pipeline": "dispatcher staged-detect (P7-F) + finalize resolve (P7-E)",
+  "notes": [
+    "detected = the prefix check both the app and the dispatcher use: startswith('staging://'), case-sensitive. An undetected href is NOT staged (passes through as an ordinary external asset href) — never an error.",
+    "parse = the strict upload_id/filename extraction (null = both sides reject). upload_id must be a single safe path segment; filename must be a single sanitized segment exactly as minted (no traversal, no separators, no unsafe characters).",
+    "Minted hrefs always contain the app's uuid upload_id and sanitized filename, so any parse rejection here is a href no mint could have produced."
+  ],
+  "cases": [
+    {
+      "name": "valid single-segment href",
+      "href": "staging://0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060/B04.tif",
+      "detected": true,
+      "parse": {
+        "upload_id": "0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060",
+        "filename": "B04.tif"
+      }
+    },
+    {
+      "name": "valid href with dots and dashes in the filename",
+      "href": "staging://0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060/scene-2026_08.metadata.json",
+      "detected": true,
+      "parse": {
+        "upload_id": "0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060",
+        "filename": "scene-2026_08.metadata.json"
+      }
+    },
+    {
+      "name": "traversal upload id",
+      "href": "staging://../B04.tif",
+      "detected": true,
+      "parse": null
+    },
+    {
+      "name": "traversal filename",
+      "href": "staging://0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060/../other/B04.tif",
+      "detected": true,
+      "parse": null
+    },
+    {
+      "name": "directory separator in filename",
+      "href": "staging://0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060/dir/B04.tif",
+      "detected": true,
+      "parse": null
+    },
+    {
+      "name": "missing filename (trailing slash)",
+      "href": "staging://0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060/",
+      "detected": true,
+      "parse": null
+    },
+    {
+      "name": "missing filename (no separator)",
+      "href": "staging://0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060",
+      "detected": true,
+      "parse": null
+    },
+    {
+      "name": "empty upload id",
+      "href": "staging:///B04.tif",
+      "detected": true,
+      "parse": null
+    },
+    {
+      "name": "unsafe characters in filename",
+      "href": "staging://0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060/B04 (copy).tif",
+      "detected": true,
+      "parse": null
+    },
+    {
+      "name": "ordinary https href is not staged",
+      "href": "https://example.com/scenes/B04.tif",
+      "detected": false,
+      "parse": null
+    },
+    {
+      "name": "s3 href is not staged",
+      "href": "s3://some-bucket/scenes/B04.tif",
+      "detected": false,
+      "parse": null
+    },
+    {
+      "name": "platform asset href is not staged",
+      "href": "/api/assets/sentinel-pushed/S2A_001/B04.tif",
+      "detected": false,
+      "parse": null
+    },
+    {
+      "name": "scheme is case-sensitive",
+      "href": "STAGING://0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060/B04.tif",
+      "detected": false,
+      "parse": null
+    }
+  ]
+}
