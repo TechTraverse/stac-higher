@@ -20,6 +20,7 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0012](0012-table-hygiene.md) | High-volume table hygiene: partition two, sweep three | accepted | 6 (M2-G) |
 | [0013](0013-process-executor-isolation.md) | Process executor isolation | accepted (2026-08-29) | 9 (M5) |
 | [0014](0014-process-output-path.md) | Process output path: staging + platform finalize | accepted (2026-08-29) | 9 (M5) |
+| [0015](0015-proxy-write-policy.md) | Proxy write policy: custom filter factory enforcing `externally_writable` | proposed (2026-08-29) | 7 |
 
 Proposed ADRs establish no invariants until accepted (via the Phase 9 design
 spec); their draft invariants live inside the documents.
