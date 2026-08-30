@@ -199,9 +199,22 @@ ships **both**, with distinct jobs:
    `/api/catalog/collections/{id}/items[/{itemId}]` — which P7-D extends for
    bearer callers: when `locals.auth` came from a bearer token (§3), the
    route forwards the **caller's own** bearer token instead of a session
-   token (the proxy remains the token-enforcement point either way). Before
-   forwarding a body containing `staging://` hrefs, the route
-   **pre-validates synchronously**:
+   token (the proxy remains the token-enforcement point either way).
+
+   **Every bearer-identity write on this route** — item POST/PUT/PATCH/
+   DELETE, staged hrefs or not — is first held to the §4.1 precondition set:
+   `externally_writable = true` (missing settings row = `false`), not
+   `archived`, and the ADR 0003/M2-E group rule. Without this, the
+   `X-BFF-Auth` exemption (§5.2) would let any bearer operator push
+   metadata-only items or deletes into *any* collection through the
+   brokered route — inverting `externally_writable` on the documented
+   default path (review residual R1). **Session-cookie callers are
+   untouched**: the browser UI keeps writing to every collection it manages,
+   preserving ADR 0008's obligation. The split is on how the identity
+   arrived (§3's precedence makes that unambiguous), not on who it is.
+
+   Before forwarding a body containing `staging://` hrefs, the route
+   additionally **pre-validates synchronously**:
    - staged-href grammar, single-session rule, session exists / not
      terminal / minted for this collection / not bound to another item
      (the §4.2 rules — a DB lookup, cheap and decisive);
@@ -215,10 +228,20 @@ ships **both**, with distinct jobs:
    Additionally, on a **PUT to an existing item**, the route snapshots the
    current stored item into the session's ledger row
    (`staged_uploads.prior_item`, migration 020) — the restore point §6.3
-   uses. Brokered writes inherit the BFF's guard, audit rows, and
-   archived-409 for free (this closes most of the push audit gap — §13).
-   The route stays thin in ADR 0008's sense: pre-validation + snapshot +
-   forwarding; STAC semantics still live in the catalog plane and finalize.
+   uses — under two guards (review residual R2): **first write wins** (a
+   second brokered PUT in the same session never overwrites an existing
+   snapshot, so a rejection cannot "restore" the first PUT's own staged
+   document), and **a document containing `staging://` hrefs is never
+   snapshotted** (a staged-href document is by definition not a restorable
+   good version). A **PATCH whose merge would involve `staging://` hrefs is
+   rejected on the brokered path — staged-asset updates require PUT**
+   (residual R3: PATCH merge semantics would make both the snapshot and the
+   finalize target ambiguous); metadata-only PATCHes pass through with the
+   precondition set above, nothing more. Brokered writes inherit the BFF's
+   guard, audit rows, and archived-409 for free (this closes most of the
+   push audit gap — §13). The route stays thin in ADR 0008's sense:
+   preconditions + pre-validation + snapshot + forwarding; STAC semantics
+   still live in the catalog plane and finalize.
 2. **Direct path (supported, discouraged).** POSTing straight to the proxy
    (`:8081`) with a valid token remains possible — ROADMAP §6.2's original
    picture — and is what the §5 policy exists to gate. Direct writes get no
@@ -367,7 +390,7 @@ FinalizeRequest:
   staging_prefix:      str      # push: staging/{upload_id}/ ; P9: staging/runs/{run_id}/
   output_collections:  [str]    # the ONLY collections upsert may touch
   items:               [ItemRef]
-  provenance:          dict     # producer-specific ledger key: {upload_id} | {run_id}
+  provenance:          dict     # producer-specific: {upload_id, event_op} | {run_id}
 
 ItemRef (ref kind, orthogonal to producer):
   {kind: "pgstac", collection_id, item_id}   # item already in the catalog (push)
@@ -437,7 +460,10 @@ Flow in detail, for push (resolver and recorder bracket the neutral steps):
    (§7).
 - **Record (push recorder)** — stamps the ledger row and, on rejection,
   applies the §6.3 outcome (delete / restore / leave-broken by op and
-  snapshot).
+  snapshot). The triggering event's `op` reaches the recorder **inside
+  `provenance`** (`{upload_id, event_op}` — producer-specific by design,
+  residual R5): the Tier-2 discrimination needs no step-level parameter,
+  and the seam's step signatures stay producer-free.
 
 ### 6.2 Validation library: stac-pydantic vs stac-validator
 
@@ -512,11 +538,14 @@ required last step of a push. A push client's 201/200 from the write is
 **No zombie loop** (finding 1's second half): each staged event is consumed
 exactly once — enqueue-finalize-then-drain (§6.4). Later events for a
 terminal-`rejected` session (e.g. the client PUTs again reusing the dead
-session) route to finalize, whose claim sees the terminal row and rejects
-via the resolver's admission check (reason `session_terminal`) without
-re-enqueueing anything — under the brokered path that same check already
-400s synchronously. A broken direct-path item is therefore alerted, ledgered,
-and inert — never silently retried forever.
+session) route to finalize, whose **claim on the already-terminal row fails
+and the job no-ops** — a structured log line and a
+`pipeline_finalize_items_total{outcome="stale_claim"}`-style count, not a
+fresh rejection stamp (the row's verdict is already written and stays
+untouched) — and nothing is re-enqueued. On the brokered path the same
+condition never gets that far: the resolver's admission rule 400s
+synchronously with reason `session_terminal`. A broken direct-path item is
+therefore alerted, ledgered, and inert — never silently retried forever.
 
 **Tier 3 — an alert** — `push_rejected` (§8), so operators see rejections
 without polling.
@@ -761,15 +790,18 @@ New doc, linked from `docs/README.md` and AGENTS.md; contents:
 
 AGENTS.md route table gains the `GET /api/uploads/[uploadId]` row, the
 uploads row's staged-mode note, and the catalog BFF row's push note;
-`docs/auth.md` gains the bearer section (P7-B). P7-I also carries two
+`docs/auth.md` gains the bearer section (P7-B). P7-I also carries three
 cross-doc amendments the review demanded: the **approved Phase 9 spec**
 (`2026-08-29-phase9-processes-design.md`, slice M5-0) claims migrations
 020–021 and `alert-kinds.json` — renumber M5-0's migrations and change its
 fixture task to "append `process_failed`/`process_stalled`" (Phase 7 lands
-first and takes both, correctly — but the P9 spec must say so); and a
-**ROADMAP §6.2 diagram note** — the diagram shows the href rewrite going
-back through stac-fastapi, while finalize upserts via pypgstac (the ITEMIZE
-precedent).
+first and takes both, correctly — but the P9 spec must say so); an
+**ADR 0008 status-quo update** — its "the BFF is for browser sessions only /
+external clients present their tokens directly to the proxy" text is
+superseded by §4.3's brokered push path (exactly what its own revisit note
+anticipated); and a **ROADMAP §6.2 diagram note** — the diagram shows the
+href rewrite going back through stac-fastapi, while finalize upserts via
+pypgstac (the ITEMIZE precedent).
 
 ## 13. Deferred, and logged as such (new ISSUES entries at merge)
 
@@ -828,7 +860,7 @@ dev server, or Docker in teammate slices (P7-Z is the lead's live pass).
 | P7-F | Dispatcher staged-gating + delete-event GC mark (defer-on-failure) | §7 | `pipeline/dispatcher/loop.py` + `repo.py`, `pipeline/jobs/dispatch.py`, pytest | **SEQUENTIAL** after E (enqueues the finalize job) |
 | P7-G | Proxy write policy: derived image, pins, factory, overlay, integration legs | §5 | `services/proxy-policy/` (new package + tests), `infra/proxy-policy/Dockerfile`, `infra/compose.auth-enforced.yml` (factory config, `ITEMS_FILTER_PATH` incl. `bulk_items`, mandatory secret), `docker-compose.yml` (image pins for auth-proxy + stac-fastapi-pgstac), `tests/integration/` (policy legs incl. bulk-deny + read-shape legs; updates the pinned member-can-write test), ADR 0015 acceptance edit. No app files — the header lives in P7-D | **PARALLEL** with B/C/D/E/F (fully disjoint files; its integration legs skip without the enforced stack and go green at P7-Z) |
 | P7-H | `push_rejected` alerting + ledger hygiene | §8, §11 (021) | migration 021 in `migrate.ts` (anchor + CHECK + dedup index), `pipeline/flow/monitor.py` + `flow/repo.py`, `pipeline/history/sweep.py` (`staged_uploads` pruning), `docs/decisions/0012-table-hygiene.md` (amendment), `app/src/lib/alerts/` (collection anchor + scoping), monitoring UI kind label, fixture `alert-kinds.json` + `tests/contract-fixtures/README.md` (enum style) + both consumers | **SEQUENTIAL** after E (observes the ledger) and after C (migration numbering: C=020, H=021) |
-| P7-I | `docs/push-ingest.md` + doc catch-up: AGENTS route table, FEATURES, ISSUES entries from §13 (incl. the audit-gap entry and the I-15 amendment), **Phase 9 spec amendment** (M5-0 renumber + alert-kinds "append"), ROADMAP §6.2 diagram note + phase row | §12, §13 | docs only | **SEQUENTIAL** last, before the gate |
+| P7-I | `docs/push-ingest.md` + doc catch-up: AGENTS route table, FEATURES, ISSUES entries from §13 (incl. the audit-gap entry and the I-15 amendment), **Phase 9 spec amendment** (M5-0 renumber + alert-kinds "append"), **ADR 0008 status-quo update** (§4.3 supersedes its browser-only BFF scope), ROADMAP §6.2 diagram note + phase row | §12, §13 | docs only | **SEQUENTIAL** last, before the gate |
 | P7-Z | **Live gate check — the existing task in `TODO.md`; referenced, not redefined here** | §1 | lead only | last |
 
 Dependency spine: C → {D (also after B), E} → F → H → I; B and G float in

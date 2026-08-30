@@ -50,7 +50,13 @@ deliberate bump. Per request the factory returns CQL2:
   1. requests carrying the BFF shared-secret header (`X-BFF-Auth`, env
      `CATALOG_BFF_SHARED_SECRET` on app and proxy) are unrestricted —
      app-mediated writes are RBAC-gated and audited app-side (ADR 0008) and
-     must reach every collection. The secret is **mandatory in the enforced
+     browser-session writes must reach every collection. This exemption is
+     sound **only because the app holds bearer-identity writes on the BFF
+     route to the same `externally_writable`/archived/group precondition
+     set** (spec §4.3): the flag is enforced app-side for external callers
+     brokered through the BFF, and proxy-side for callers going direct — no
+     path skips it. Weakening the app-side check would turn this exemption
+     into a bypass; the two are one decision. The secret is **mandatory in the enforced
      overlay**: both sides fail fast at startup when unset, the comparison
      is constant-time, and the header value is never logged — optional
      ("when configured") semantics would silently break every UI write to
