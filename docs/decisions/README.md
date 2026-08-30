@@ -18,8 +18,8 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0010](0010-alerting-notifications.md) | Alerting & notification model | accepted | 6 (M2-B/C) |
 | [0011](0011-retention-gc.md) | Retention & GC: one marked-then-collected queue | accepted | 6 (M2-F) |
 | [0012](0012-table-hygiene.md) | High-volume table hygiene: partition two, sweep three | accepted | 6 (M2-G) |
-| [0013](0013-process-executor-isolation.md) | Process executor isolation | **proposed** | 9 (M5) |
-| [0014](0014-process-output-path.md) | Process output path: staging + platform finalize | **proposed** | 9 (M5) |
+| [0013](0013-process-executor-isolation.md) | Process executor isolation | accepted (2026-08-29) | 9 (M5) |
+| [0014](0014-process-output-path.md) | Process output path: staging + platform finalize | accepted (2026-08-29) | 9 (M5) |
 
 Proposed ADRs establish no invariants until accepted (via the Phase 9 design
 spec); their draft invariants live inside the documents.

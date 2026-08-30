@@ -1,6 +1,6 @@
 # ADR 0014 — Process output path
 
-**Status:** proposed (Phase 9 / M5 — not accepted; to be settled by the Phase 9 design spec)
+**Status:** accepted (2026-08-29, by the Phase 9 design spec — staged-then-finalized via the P9-B seam; STS session-policy run-scoped credentials)
 
 ## Context
 

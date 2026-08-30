@@ -1,8 +1,7 @@
 # Phase 9 — Processes (M5) design
 
-**Status: DRAFT — pending lead review** (the P9-F stop point). Accepting this
-spec also flips ADRs 0013/0014 from proposed to accepted, with the decisions
-recorded here.
+**Status: approved 2026-08-29** (lead review at the P9-F stop point). ADRs
+0013/0014 are accepted with the decisions recorded here.
 
 Sources: ROADMAP §5 `PROCESS_*` + §5.6 + §6.7 + §8 Phase 9 table + §9/§10;
 ADR 0013 (+ the P9-A investigation appendix), ADR 0014 (+ the P9-B seam
