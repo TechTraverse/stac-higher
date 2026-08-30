@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { withTheme } from "@rjsf/core";
 import type { IChangeEvent } from "@rjsf/core";
-import type { RJSFSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import {
   shadcnTheme,
@@ -12,14 +11,22 @@ import {
   CardTitle,
 } from "@stac-higher/shared";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import {
+  prepareExtensionSchema,
+  RAW_JSON_FIELD,
+  type PreparedExtensionSchema,
+} from "@/lib/extensions/ref-resolve";
+import { RawJsonField } from "./RawJsonField";
 
 const ThemedForm = withTheme(shadcnTheme);
+
+const RJSF_FIELDS = { [RAW_JSON_FIELD]: RawJsonField };
 
 const UI_SCHEMA = {
   "ui:submitButtonOptions": { norender: true },
 };
 
-async function fetchSchema(url: string): Promise<RJSFSchema> {
+async function fetchSchema(url: string): Promise<unknown> {
   const res = await fetch("/api/extensions/resolve-schema", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -33,9 +40,11 @@ async function fetchSchema(url: string): Promise<RJSFSchema> {
 }
 
 function useExtensionSchema(url: string) {
-  return useQuery({
+  return useQuery<PreparedExtensionSchema>({
     queryKey: ["extension-schema", url],
-    queryFn: () => fetchSchema(url),
+    // Remote $refs inside the schema (e.g. the projection extension's GeoJSON
+    // geometry, I-67) are inlined or degraded before RJSF ever sees them.
+    queryFn: async () => prepareExtensionSchema(await fetchSchema(url), fetchSchema),
     staleTime: 5 * 60 * 1000,
     retry: 1,
   });
@@ -48,7 +57,9 @@ interface ExtensionFieldProps {
 }
 
 function ExtensionFieldPanel({ schemaUrl, value, onChange }: ExtensionFieldProps) {
-  const { data: schema, isLoading, error } = useExtensionSchema(schemaUrl);
+  const { data: prepared, isLoading, error } = useExtensionSchema(schemaUrl);
+  const schema = prepared?.schema;
+
   const [open, setOpen] = useState(true);
 
   const title =
@@ -81,14 +92,27 @@ function ExtensionFieldPanel({ schemaUrl, value, onChange }: ExtensionFieldProps
               {error instanceof Error ? error.message : "Unknown error"}
             </p>
           ) : schema ? (
-            <ThemedForm
-              schema={schema}
-              uiSchema={UI_SCHEMA}
-              formData={value}
-              validator={validator}
-              onChange={(e: IChangeEvent) => onChange(e.formData ?? {})}
-              liveValidate={false}
-            />
+            <>
+              {prepared && prepared.unresolved.length > 0 && (
+                <p className="text-xs text-muted-foreground mb-3">
+                  Some referenced schemas could not be loaded; affected fields
+                  fall back to raw JSON editing.
+                </p>
+              )}
+              <ThemedForm
+                // The RHF page form is the only <form> element — RJSF renders
+                // into a div to avoid invalid nested forms (submit is handled
+                // by the outer form; this one only reports onChange).
+                tagName="div"
+                schema={schema}
+                uiSchema={{ ...UI_SCHEMA, ...prepared?.uiSchema }}
+                fields={RJSF_FIELDS}
+                formData={value}
+                validator={validator}
+                onChange={(e: IChangeEvent) => onChange(e.formData ?? {})}
+                liveValidate={false}
+              />
+            </>
           ) : null}
         </CardContent>
       )}

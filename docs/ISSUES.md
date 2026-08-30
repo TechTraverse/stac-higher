@@ -364,20 +364,25 @@ Accepted M2-F simplifications (ADR 0011 "Consequences"):
 - Tracked in: `pipeline/gc/*`, `app/src/lib/gc/marks.ts`,
   [ADR 0011](decisions/0011-retention-gc.md).
 
-### I-67 · Item edit form crashes on pipeline-ingested items (remote GeoJSON $ref) 🔴
-Found by the M2-I rehearsal (2026-08-28): `/collections/[id]/items/[itemId]/edit`
-crashes with "Could not find a definition for https://geojson.org/schema/Geometry.json"
-for any item carrying the projection extension's `proj:geometry` — RJSF cannot
-resolve the remote GeoJSON schema `$ref` (console also shows repeated
-`MissingRefError: can't resolve reference __rjsf_rootSchema#/definitions/assetfields`).
-Every `raster_auto`-ingested item includes `proj:geometry`, so the edit-form
-surface is effectively broken for pipeline-produced items; UI edits fall back
-to nothing (the page error-boundaries out). Candidate fixes: pre-resolve/cache
-the GeoJSON schema through `/api/extensions/resolve-schema`, strip or inline
-remote `$ref`s before handing the schema to RJSF, or register the GeoJSON
-definitions statically. Workaround: the audited BFF `PUT /api/catalog/...`
-(used by the rehearsal to backdate an item).
-- Tracked in: here; found in `TODO.md` "From M2-I".
+### I-67 · Item edit form crashes on pipeline-ingested items (remote GeoJSON $ref) 🟢 (resolved 2026-08-29, P7-X)
+**Resolved by a schema-preparation layer in front of RJSF**
+(`app/src/lib/extensions/ref-resolve.ts`): extension schemas now have their
+STAC-template `definitions.fields` hoisted to the root (killing the
+`__rjsf_rootSchema#/definitions/...` MissingRefError class along the way) and
+every remote `$ref` inlined before RJSF sees them — bundled GeoJSON schemas
+first (`geojson-schemas.ts`, offline, no fetch), anything else pre-resolved
+through the `/api/extensions/resolve-schema` seam (which now also serves a
+stale cache row when the upstream host is unreachable); a `$ref` that
+genuinely can't be resolved (e.g. `proj:projjson`'s PROJJSON document, whose
+internal refs can't be rebased) degrades that ONE field to a raw-JSON editor
+(`RawJsonField`) instead of taking down the form. The nested-`<form>`
+hydration warning was fixed in the same pass — RJSF renders with
+`tagName="div"` inside the RHF page form; submit/merge-into-`item.properties`
+behavior is unchanged (onChange-only wiring).
+- Tracked in: `app/src/lib/extensions/ref-resolve.ts`,
+  `app/src/components/extensions/ExtensionFields.tsx`; tests:
+  `extension-ref-resolve.test.ts`, `extension-fields.test.tsx`,
+  `schema-cache.test.ts`.
 
 ---
 
