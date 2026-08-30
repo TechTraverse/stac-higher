@@ -36,7 +36,7 @@ ROADMAP §9 M2).
 
 ## Independent bug workstream (parallel-safe — disjoint from Phase 7 files)
 
-- [ ] **P7-X · I-67 item edit form fix** (ISSUES **I-67** 🔴, + the Astro-7
+- [x] **P7-X · I-67 item edit form fix** (ISSUES **I-67** 🔴, + the Astro-7
       follow-up). `/collections/[id]/items/[itemId]/edit` crashes with "Could
       not find a definition for https://geojson.org/schema/Geometry.json" —
       RJSF cannot resolve the remote GeoJSON `$ref` that rides in with the
@@ -51,6 +51,18 @@ ROADMAP §9 M2).
       `<form>` tag / use its `tagName` option). Unit-test the resolution path
       with a fixture item carrying `proj:geometry`; e2e is the lead's if the
       flow is covered. Update ISSUES I-67 on close.
+      **Done 2026-08-29** (`ai/p7x-i67`, merged) — schema-preparation layer
+      `lib/extensions/ref-resolve.ts` (`prepareExtensionSchema`): hoists the
+      STAC extension envelope's `definitions.fields` to the form root,
+      resolves `proj:geometry` against BUNDLED geojson.org schemas (offline,
+      zero fetches for the common case), inlines other remote refs through
+      the existing `/api/extensions/resolve-schema` seam (cache now serves
+      stale on upstream failure), and degrades any unresolvable ref to a
+      contained raw-JSON field editor — no remote ref ever reaches RJSF.
+      Nested-form warning: `tagName="div"` on the repo's single RJSF
+      instantiation (fixes ItemForm AND CollectionForm); submit stays with
+      the RHF form, merge-into-properties asserted by test. 24 new tests.
+      I-67 flipped 🟢. Follow-ups below.
 
 ## Phase 7 — design spec first
 
@@ -109,3 +121,19 @@ ROADMAP §9 M2).
 ## Discovered follow-ups
 
 (append here during iterations)
+
+### From P7-X (I-67 fix)
+
+- The item edit flow may be covered by e2e — the lead's next e2e run (P7-Z at
+  the latest) doubles as the live regression check for this fix.
+- `proj:geometry` now renders as the full GeoJSON oneOf (nested coordinate
+  array editors) — functional but heavy. A map-backed or raw-JSON uiSchema
+  default for geometry-typed extension fields would be nicer UX.
+- Fully-offline FIRST render of an extension still needs one successful fetch
+  of the extension schema itself ever (the stale-cache fallback covers it
+  afterward); bundling common STAC extension schemas would close that.
+- `proj:projjson` always degrades to the raw-JSON editor (its schema's
+  internal refs can't be rebased) — deliberate, arguably the right editor for
+  PROJJSON; noting so nobody "fixes" it blind.
+- Shell gotcha: `npm run verify 2>&1 | tail` masks the exit code (the pipe
+  returns tail's status) — same class as the BuildKit exit-0 note.
