@@ -26,6 +26,7 @@ dev, unit tests, and e2e working with zero IdP setup.
 | `AUTH_CLAIMS_MAPPING_FILE` | — | Path to a JSON claims-mapping config |
 | `DEV_AUTH_IDENTITY` | — | JSON partial identity for bypass mode, e.g. `{"name":"Weather Admin","groups":["weather"],"roles":["admin"]}` |
 | `AUTH_BYPASS_FORCE` | — | `true` allows bypass in production builds. Dangerous; loudly logged. |
+| `AUTH_BEARER_AUDIENCES` | `stac-higher` | Comma-separated `aud` values accepted on `Authorization: Bearer` JWTs hitting `/api/*` (see below). Mirrors the proxy's `ALLOWED_JWT_AUDIENCES`. |
 
 Local OIDC login against the compose Keycloak needs only:
 
@@ -44,13 +45,16 @@ mapped output. Config fields (all optional; Keycloak defaults shown):
 {
   "sub": "sub",
   "email": "email",
-  "name": ["name", "preferred_username", "email"], // first match wins
+  "name": ["name", "preferred_username", "email", "azp"], // first match wins
   "groups": "groups",                    // dot paths: "realm_access.roles"
   "roles": "realm_access.roles",
   "groupMap": { "<raw>": "<canonical>" }, // e.g. Entra GUIDs → names
   "roleMap": { "<raw>": "member|operator|admin" }
 }
 ```
+
+(`azp` is the last-resort display name for client-credentials tokens —
+service accounts carry no profile claims, but `azp` names the OAuth client.)
 
 After `roleMap`, anything outside `member`/`operator`/`admin` is dropped.
 Examples: Cognito → `{"groups":"cognito:groups","roles":"cognito:groups","roleMap":{"stac-operators":"operator"}}`;
@@ -64,6 +68,51 @@ Encrypted+authenticated JWE cookie (`sh_session`, httpOnly, SameSite=Lax,
 access token through the claims mapper; the middleware refreshes the access
 token when it expires within 60 s and re-seals the cookie. Refresh failure
 degrades to anonymous, never to an error page.
+
+## Bearer tokens on `/api/*` (Phase 7 push ingest)
+
+External push clients are not browsers — no PKCE login, no session cookie —
+but the push flow requires them to call the app (`POST /api/uploads` is the
+only presign mint, ADR 0005). In `oidc` mode the middleware therefore also
+accepts `Authorization: Bearer <JWT>` on `/api/*` requests
+(`app/src/lib/auth/bearer.ts`):
+
+- **Verification**: signature against the issuer JWKS (`jose`, JWKS URI from
+  the same cached OIDC discovery the session path uses — never re-discovered
+  per request), standard `exp` and `iss` checks (`iss` may be either
+  `OIDC_ISSUER` or `OIDC_ISSUER_INTERNAL` — which one a server-to-server
+  client sees depends on where it fetched its token), and `aud` must contain
+  one of `AUTH_BEARER_AUDIENCES` (default `stac-higher`, mirroring the
+  proxy's `ALLOWED_JWT_AUDIENCES`).
+- **Claims mapping**: verified claims run through the same claims mapper as
+  session identities, so `locals.auth` is a normal `CanonicalIdentity` —
+  the permission guard, group scoping, and audit rows (`actor` = token
+  `sub`) work unchanged.
+- **Precedence**: a valid session cookie wins; the bearer path is tried only
+  when no session identity resolved. Bypass mode is untouched (everything is
+  already the static dev identity; bearer headers are ignored).
+- **Degrade semantics**: an invalid/expired/wrong-audience bearer token
+  degrades to **anonymous** — exactly the posture of a failed session
+  refresh (warn in the log, never an error page). A gated route then 401s
+  normally with `{ error, code: "unauthenticated" }`.
+- When `locals.auth` came from a bearer token, the middleware also sets
+  `locals.bearerToken` (the raw token) — the ADR 0008 BFF catalog route
+  forwards it for bearer callers instead of a session token (Phase 7 §4.3).
+
+Tokens come from the IdP's **client-credentials grant on a confidential
+client** with the `stac-higher` audience mapper — deployments create their
+own (see `docs/push-ingest.md` once P7-I lands). For local dev the realm file
+ships a `stac-higher-push` client (secret `stac-higher-push-secret`; its
+service account is an operator in `earth-observation`) — a dev-only artifact
+with the same never-deploy caveat as the ADR 0002 test clients. Realm-file
+edits only take effect after `docker compose down -v`:
+
+```
+curl -s http://localhost:8180/realms/stac-higher/protocol/openid-connect/token \
+  -d grant_type=client_credentials \
+  -d client_id=stac-higher-push \
+  -d client_secret=stac-higher-push-secret
+```
 
 ## Routes & request context
 

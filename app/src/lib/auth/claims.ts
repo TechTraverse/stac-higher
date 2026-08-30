@@ -29,7 +29,8 @@ export interface ClaimsMappingConfig {
   sub?: ClaimPath;
   /** Path(s) to the email. Default `"email"`. */
   email?: ClaimPath;
-  /** Path(s) to the display name. Default `["name","preferred_username","email"]`. */
+  /** Path(s) to the display name. Default
+   * `["name","preferred_username","email","azp"]`. */
   name?: ClaimPath;
   /** Path(s) to the group list (array of strings, or a single string). */
   groups?: ClaimPath;
@@ -49,7 +50,10 @@ export interface ClaimsMappingConfig {
 export const DEFAULT_CLAIMS_MAPPING: ClaimsMappingConfig = {
   sub: "sub",
   email: "email",
-  name: ["name", "preferred_username", "email"],
+  // `azp` is the last-resort display name for bearer identities (spec §3):
+  // client-credentials service-account tokens carry no profile claims, but
+  // `azp` names the OAuth client that the token was minted for.
+  name: ["name", "preferred_username", "email", "azp"],
   groups: "groups",
   roles: "realm_access.roles",
 };
