@@ -5,7 +5,7 @@
 //
 // Preconditions (see tests/integration/README.md):
 //   docker compose down -v          # once, so the realm re-imports test users
-//   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --wait
+//   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait
 //
 // Run (repo root):
 //   npm run test:integration        # = node --test "tests/integration/**/*.test.mjs"
@@ -110,11 +110,11 @@ let skip = false;
 
 const kcStatus = await probe(`${KEYCLOAK_URL}/realms/${REALM}/.well-known/openid-configuration`);
 if (kcStatus !== 200) {
-  skip = `Keycloak realm "${REALM}" not reachable at ${KEYCLOAK_URL} (status: ${kcStatus}) — start the stack: docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --wait`;
+  skip = `Keycloak realm "${REALM}" not reachable at ${KEYCLOAK_URL} (status: ${kcStatus}) — start the stack: docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait`;
 } else {
   const proxyStatus = await probe(`${PROXY_URL}/`);
   if (proxyStatus !== 200) {
-    skip = `stac-auth-proxy not reachable at ${PROXY_URL} (status: ${proxyStatus}) — start the stack: docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --wait`;
+    skip = `stac-auth-proxy not reachable at ${PROXY_URL} (status: ${proxyStatus}) — start the stack: docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait`;
   } else {
     // Enforcement probe with a deliberately INVALID body so nothing is ever
     // created: pass-through forwards it to stac-fastapi (400/422 validation
@@ -122,7 +122,7 @@ if (kcStatus !== 200) {
     // upstream ever sees the request.
     const res = await proxyFetch("/collections", { method: "POST", body: {} });
     if (![401, 403].includes(res.status)) {
-      skip = `auth enforcement is OFF (anonymous POST /collections → ${res.status}, expected 401/403) — restart with: docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --wait`;
+      skip = `auth enforcement is OFF (anonymous POST /collections → ${res.status}, expected 401/403) — restart with: docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait`;
     }
   }
 }
@@ -193,11 +193,15 @@ test("authenticated operator (alice) can POST, PUT, and DELETE a collection", { 
   assert.equal(gone.status, 404, `GET after DELETE expected 404, got ${gone.status}`);
 });
 
-test("member (bob) can also write — role gating is NOT yet enforced (ADR 0002 known limitation)", { skip }, async (t) => {
-  // Route-level protection only checks for a valid JWT; Keycloak realm roles
-  // (member vs operator) are not expressible as scope requirements via
-  // config alone. This test pins the CURRENT behavior so the suite starts
-  // failing loudly the day role gating lands and this expectation flips.
+test("member (bob) can still write COLLECTIONS — collection-level transactions stay JWT-only (ADR 0002/0015)", { skip }, async (t) => {
+  // ADR 0002 originally pinned "any valid token can write anywhere" as a
+  // documented limitation. ADR 0015's write-policy factory closed it for
+  // ITEM transactions (role floor + externally_writable — see
+  // proxy-policy.test.mjs), but deliberately left collection-level
+  // transactions PRIVATE_ENDPOINTS-token-gated: external clients do not
+  // create collections, and role-gating them can ride the same factory
+  // later. This test pins that REMAINING behavior so the suite fails loudly
+  // the day collection-level role gating lands and this expectation flips.
   const id = `itest-proxy-bob-${Date.now()}`;
   t.after(() => deleteCollection(id));
   const token = await userToken(BOB);
@@ -209,7 +213,7 @@ test("member (bob) can also write — role gating is NOT yet enforced (ADR 0002 
   });
   assert.ok(
     [200, 201].includes(created.status),
-    `POST expected 200/201 (documented limitation), got ${created.status}: ${await created.text()}`,
+    `POST expected 200/201 (documented remaining limitation), got ${created.status}: ${await created.text()}`,
   );
 });
 

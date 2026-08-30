@@ -9,7 +9,7 @@
 // lands an audit_log row.
 //
 // Preconditions (see tests/integration/README.md):
-//   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --wait
+//   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait
 //   # plus the Astro app in OIDC mode (from app/):
 //   AUTH_MODE=oidc SESSION_SECRET=<anything long> npm run dev
 //

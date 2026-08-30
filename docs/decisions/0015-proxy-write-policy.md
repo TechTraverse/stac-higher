@@ -1,8 +1,10 @@
 # ADR 0015 — Proxy write policy: custom filter factory enforcing `externally_writable`
 
-- **Status:** proposed (2026-08-29, by the Phase 7 design spec
-  `docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md` §5;
-  accept/revise with that spec's review)
+- **Status:** accepted (2026-08-30 — implemented by slice P7-G: factory
+  package `services/proxy-policy/`, derived image, image pins, enforced
+  overlay, integration legs; proposed 2026-08-29 by the Phase 7 design spec
+  `docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md` §5.
+  The one-line live confirm on the pinned images remains P7-Z's)
 - **Owners:** proxy policy (`services/proxy-policy/`, new) + auth-enforced
   overlay (`infra/compose.auth-enforced.yml`) + BFF route (app)
 - **Related:** ADR 0002 (enforcement scope; "what config alone cannot do"),
