@@ -6,9 +6,18 @@
 # read behavior — anonymous catalog reads keep working (DEFAULT_PUBLIC stays
 # true this phase; see docs/decisions/0002-auth-proxy-enforcement.md).
 #
-# Usage (from the repo root):
+# Since Phase 7 (ADR 0015) this overlay ALSO enables the proxy write policy:
+# the auth-proxy service is rebuilt as a derived image carrying the
+# services/proxy-policy items-filter factory, which enforces
+# `collection_settings.externally_writable` (+ an operator/admin role floor)
+# on direct item writes, denies `bulk_items`, and exempts app-mediated (BFF)
+# writes via the X-BFF-Auth shared secret.
 #
-#   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --wait
+# Usage (from the repo root; the secret is MANDATORY — compose fails fast
+# without it, and so do the app and the factory):
+#
+#   export CATALOG_BFF_SHARED_SECRET=$(openssl rand -hex 32)   # or put it in .env
+#   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait
 #
 # NOTE: the realm file (infra/keycloak/realm-stac-higher.json) only re-imports
 # into a fresh Keycloak volume. If Keycloak has run before, do
@@ -21,6 +30,19 @@
 
 services:
   auth-proxy:
+    # ADR 0015: run the derived image (pinned upstream + psycopg + the
+    # services/proxy-policy factory). Context is the repo root — relative
+    # paths in an override file resolve against the FIRST -f file's directory
+    # — so the build can COPY services/proxy-policy; the base image tag is
+    # pinned inside the Dockerfile in lockstep with docker-compose.yml's
+    # auth-proxy pin.
+    build:
+      context: .
+      dockerfile: infra/proxy-policy/Dockerfile
+    image: stac-higher-proxy-policy
+    depends_on:
+      database:
+        condition: service_healthy
     environment:
       # Reads stay public this phase. Visibility filtering is additive and is
       # NOT enabled by default — see the commented COLLECTIONS_FILTER_* block
@@ -40,6 +62,32 @@ services:
       # oidc-audience-mapper on the app + test clients in the realm file).
       # Rejects validly-signed tokens minted for other consumers.
       - ALLOWED_JWT_AUDIENCES=stac-higher
+
+      # --- ADR 0015: proxy write policy (items filter factory) --------------
+      # The factory (services/proxy-policy) returns CQL2 per request: reads
+      # unrestricted (incl. POST /search), item writes require the BFF header
+      # OR operator/admin + collection in the externally-writable set,
+      # bulk_items constant-false without the BFF header.
+      - ITEMS_FILTER_CLS=stac_higher_proxy_policy:ExternallyWritableItemsFilter
+
+      # Override the proxy's default items filter path to ALSO route
+      # bulk_items through the factory — the upstream default regex skips it,
+      # and the validate middleware passes requests through when no filter was
+      # built, which would let any valid-audience member token bulk-insert
+      # anywhere (source-verified against v1.2.0, ADR 0015).
+      - ITEMS_FILTER_PATH=^(/collections/([^/]+)/(items|bulk_items)(/[^/]+)?$$|/search$$)
+
+      # Read-only source of the externally-writable set (~15 s TTL cache in
+      # the factory). Local dev reuses the compose superuser; cloud provisions
+      # a read-only role (ADR 0015 consequences).
+      - POLICY_DATABASE_URL=postgresql://username:password@database:5432/postgis
+
+      # MANDATORY shared secret for the BFF exemption (X-BFF-Auth). No
+      # default on purpose: compose fails here when unset, and both the app
+      # (P7-D) and the factory fail fast at startup — "when configured"
+      # semantics would silently break UI writes to non-externally-writable
+      # collections. Never logged; constant-time compare.
+      - CATALOG_BFF_SHARED_SECRET=${CATALOG_BFF_SHARED_SECRET:?required in auth-enforced mode (ADR 0015) - export it or add it to .env, see this file's header}
 
       # --- NOT ENABLED: collection read-visibility filtering ----------------
       # stac-auth-proxy can filter collection reads (and validate writes)
