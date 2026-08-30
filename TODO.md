@@ -123,10 +123,21 @@ Dependency spine: **C → {D (also after B), E} → F → H → I**; B and G flo
 parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
 `ruff` when the pipeline is touched) only — no e2e/dev server/Docker.
 
-- [ ] **P7-B · bearer-token auth for `/api/*`** (spec §3). New
+- [x] **P7-B · bearer-token auth for `/api/*`** (spec §3). New
       `app/src/lib/auth/bearer.ts` (+ `claims.ts` touch), `src/middleware.ts`
       (owns it exclusively), `docs/auth.md`, keycloak realm dev push client,
       `.env.example`, unit tests. **PARALLEL** with C and G.
+      **Done 2026-08-30** (`ai/p7b-bearer`, merged) — `resolveRequestAuth`
+      with the §3 precedence (session first; bearer only for anonymous
+      `/api/*` in oidc mode; every failure degrades to anonymous, never
+      throws); jose/JWKS via the existing `discover()` cache; claims through
+      the existing mapper. `locals.bearerToken` set for bearer-derived
+      identities — the seam P7-D's forwarding consumes. Keycloak
+      `stac-higher-push` confidential client (client-credentials, local-only
+      secret; realm edits need `down -v`). Deviations (documented): `iss`
+      accepts OIDC_ISSUER or OIDC_ISSUER_INTERNAL (compose split);
+      `AUTH_BEARER_AUDIENCES` knob (default `stac-higher`); `azp` as
+      last-resort display name. 11 new tests, 727 green. Follow-ups below.
 - [ ] **P7-C · staged-upload mint + ledger + poll route** (spec §4.1–4.2,
       §11). Migration **020** (`staged_uploads`) in `migrate.ts`,
       `app/src/pages/api/uploads/` (index + `[uploadId].ts`),
@@ -207,3 +218,14 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
   PROJJSON; noting so nobody "fixes" it blind.
 - Shell gotcha: `npm run verify 2>&1 | tail` masks the exit code (the pipe
   returns tail's status) — same class as the BuildKit exit-0 note.
+
+### From P7-B
+
+- P7-D: consume `locals.bearerToken` on the BFF route — set only for
+  bearer-derived identities, so §4.3's "how the identity arrived" split is
+  unambiguous.
+- P7-I: `docs/push-ingest.md` should reference the dev `stac-higher-push`
+  client and the token-mint curl already sketched in `docs/auth.md`.
+- Optional (P7-Z or later): a live bearer-path integration leg against the
+  auth-enforced stack — unit tests cover the logic, not a live
+  Keycloak-minted token end-to-end.
