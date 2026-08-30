@@ -147,6 +147,20 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       consumers. Uses the **route-local `runMigrations()`** pattern
       (`gc/marks.ts:42`) — `middleware.ts` is P7-B's file. **PARALLEL** with
       B and G.
+      **Done 2026-08-30** (`ai/p7c-staged`, merged) — migration 020
+      (§11 verbatim + IF NOT EXISTS idempotency); staged mint (no-`item`
+      body selects staged mode; §4.1 precondition order; ledger clock
+      `expires_at`; canonical mode byte-identical and still DB-free — the
+      api-assets lesson, asserted by test); poll route with
+      admin|session-group|creator visibility (non-visible = 404); grammar
+      helpers + new `lib/uploads/` module; fixtures `staged-asset-href.json`
+      (13 grammar cases) + `push-upload-status.json` (12 status cases,
+      inverted direction) + README styles + vitest consumers. Deviations
+      (additive): top-level `id` mirror for the audit guard; 400 on
+      post-sanitize filename collisions; closed the §12 reason list with the
+      three §4.2 admission reasons (`unknown_session`, `wrong_collection`,
+      `bound_to_other_item`) pinned in `PUSH_REJECTION_REASONS` + fixture.
+      788 tests green. Follow-ups below.
 - [ ] **P7-D · brokered push write path on the BFF route** (spec §4.3).
       `app/src/pages/api/catalog/[...path].ts` (bearer-caller forwarding,
       pre-validation for ALL bearer writes per R1, `prior_item` snapshot
@@ -229,3 +243,14 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
 - Optional (P7-Z or later): a live bearer-path integration leg against the
   auth-enforced stack — unit tests cover the logic, not a live
   Keycloak-minted token end-to-end.
+
+### From P7-C
+
+- P7-E/P7-F must implement detect/parse/status-write against the two new
+  fixtures and add the pytest consumers (`test_contract_fixtures.py` loads
+  by name — nothing consumes them pipeline-side yet).
+- P7-D: reuse `parseStagedHref` + `getStagedUpload` + `PUSH_REJECTION_REASONS`
+  for pre-validation; the `prior_item` column exists but nothing writes it
+  yet (by design).
+- P7-I: AGENTS.md route table needs the `GET /api/uploads/[uploadId]` row and
+  the uploads row's staged-mode note (assigned to the docs slice by the spec).
