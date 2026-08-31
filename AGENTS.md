@@ -85,6 +85,13 @@ docker-compose runs the full local platform stack:
 - **pipeline service** (`services/pipeline`, Python) — queue worker +
   scheduler with `/health` on :8083. See
   `docs/decisions/0001-migration-ownership.md` for schema ownership.
+- **docker-socket-proxy** (Phase 9 M5-B, ADR 0013) — the least-privilege
+  seam through which the pipeline launches process-run containers
+  (`CONTAINERS=1 POST=1`, everything else 403). The pipeline never holds
+  `/var/run/docker.sock`; `DOCKER_HOST` must be the proxy or the executor
+  refuses to start. Runs attach to the internal `process-runs` network (or
+  `none`, the default) and execute the platform image built from
+  `services/process-runtime/`.
 - **OGC serving**: **titiler-pgstac** at :8084 (OGC API Tiles for rasters,
   per STAC collection off pgstac) and **tipg** at :8085 (OGC API
   Features/Tiles for vector tables in the shared PostGIS). LINK-LEVEL

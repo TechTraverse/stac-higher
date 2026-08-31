@@ -19,6 +19,11 @@ from urllib.parse import quote
 
 CANONICAL_PREFIX = "assets"
 STAGING_PREFIX = "staging"
+#: Phase 9 §9 — a `logs/` sibling of assets/ and staging/ in the §5.3 layout.
+#: Run logs are PLATFORM bytes, not catalog assets: they are pruned by the
+#: history_retention sweep (object first, then the row) and asset_gc is
+#: deliberately not involved.
+LOGS_PREFIX = "logs"
 
 
 class InvalidKeySegment(ValueError):
@@ -96,6 +101,28 @@ def staging_prefix(upload_id: str) -> str:
     if not _SAFE_IDENTITY.match(upload_id):
         raise InvalidKeySegment(f"upload id is not a safe path segment: {upload_id!r}")
     return f"{STAGING_PREFIX}/{upload_id}/"
+
+
+def run_staging_prefix(run_id: str) -> str:
+    """``staging/runs/{run_id}/`` — the ONLY place a process run may write
+    (ADR 0014). The run-scoped STS credentials are restricted to exactly this
+    prefix, so the boundary is enforced by the credential, not by convention.
+
+    It nests under ``staging/`` deliberately: the existing TTL sweep already
+    ages abandoned staging bytes out, so an aborted run needs no cleaner of
+    its own."""
+    if not _SAFE_IDENTITY.match(run_id):
+        raise InvalidKeySegment(f"run id is not a safe path segment: {run_id!r}")
+    return f"{STAGING_PREFIX}/runs/{run_id}/"
+
+
+def run_log_key(process_id: str, run_id: str) -> str:
+    """``logs/runs/{process_id}/{run_id}.log`` — the captured run log (§9,
+    I-62), referenced from ``process_runs.log_ref``."""
+    for field, value in (("process id", process_id), ("run id", run_id)):
+        if not _SAFE_IDENTITY.match(value):
+            raise InvalidKeySegment(f"{field} is not a safe path segment: {value!r}")
+    return f"{LOGS_PREFIX}/runs/{process_id}/{run_id}.log"
 
 
 def is_staged_href(href: object) -> bool:

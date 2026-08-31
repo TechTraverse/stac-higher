@@ -186,6 +186,54 @@ services:
 
   # Data plane (ROADMAP §3). Source lives in services/pipeline (separate
   # workstream); this entry assumes services/pipeline/Dockerfile.
+  # --- Process executor boundary (Phase 9 / M5-B, ADR 0013) ---------------
+  # The pipeline launches process runs as SIBLING containers. It must never
+  # hold /var/run/docker.sock itself: that is unrestricted control of the host
+  # daemon, and the pipeline is the process that also holds the DB URL and the
+  # credentials master key. This HAProxy allowlist is the auditable seam —
+  # container create/start/wait/logs/remove are permitted, everything else
+  # (exec, volumes, images, networks, swarm, the daemon socket's write API)
+  # returns 403. P9-A verified exactly this configuration.
+  #
+  # RESIDUAL RISK, documented rather than hidden (ADR 0013): create/start with
+  # arbitrary HostConfig can still request bind mounts and privileged flags.
+  # Two things contain it — the EXECUTOR is the only client of this proxy (it
+  # is not published and not on the run network), and our executor never asks
+  # for a mount (the revision's code travels in the environment instead).
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    environment:
+      # Least privilege: containers only, and POST so create/start/kill work.
+      - CONTAINERS=1
+      - POST=1
+      # Everything else stays off explicitly. Listing them is deliberate —
+      # an upstream default flipping to 1 must be a visible diff here, not a
+      # silent widening of a security boundary.
+      - EXEC=0
+      - VOLUMES=0
+      - IMAGES=0
+      - NETWORKS=0
+      - SERVICES=0
+      - TASKS=0
+      - SECRETS=0
+      - CONFIGS=0
+      - NODES=0
+      - SWARM=0
+      - SYSTEM=0
+      - INFO=0
+      - PLUGINS=0
+      - BUILD=0
+      - COMMIT=0
+      - DISTRIBUTION=0
+      - AUTH=0
+    volumes:
+      # Read-only: the proxy needs the socket, and nothing needs to write to
+      # the mount itself.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # NOT published to the host, and NOT on process-runs — reachable only from
+    # the default compose network, i.e. from the pipeline.
+    restart: unless-stopped
+
   pipeline:
     build: ./services/pipeline
     image: stac-higher-pipeline
@@ -208,6 +256,23 @@ services:
       - STAGING_S3_SECRET_ACCESS_KEY=${STAGING_S3_SECRET_ACCESS_KEY:-minioadmin}
       - STAGING_BUCKET=${STAGING_BUCKET:-stac-higher}
       - STAGING_TTL_SECONDS=${STAGING_TTL_SECONDS:-86400}
+      # Process executor (M5-B, ADR 0013). DOCKER_HOST must be the socket
+      # proxy: the executor's startup self-check REFUSES a unix:// host, so a
+      # deployment that mounts the raw socket "just for now" fails loudly
+      # instead of quietly working.
+      - DOCKER_HOST=${DOCKER_HOST:-tcp://docker-socket-proxy:2375}
+      - PROCESS_RUNTIME_IMAGE=${PROCESS_RUNTIME_IMAGE:-stac-higher-process-runtime:local}
+      # Runs attach to this network. The default is `none` — no network at
+      # all — because a process that needs egress should be an explicit
+      # deployment decision, not something it inherits. Set it to
+      # `stac-higher_process-runs` (the internal network declared below) for
+      # runs that must reach MinIO directly.
+      - PROCESS_NETWORK=${PROCESS_NETWORK:-none}
+      - PROCESS_LOG_MAX_BYTES=${PROCESS_LOG_MAX_BYTES:-10485760}
+      - PROCESS_STS_ROLE_ARN=${PROCESS_STS_ROLE_ARN:-arn:aws:iam::000000000000:role/stac-higher-process-run}
+      # The run reaches storage on its OWN network, where the pipeline's
+      # endpoint hostname may not resolve; separate knob, same default here.
+      - PROCESS_RUN_S3_ENDPOINT=${PROCESS_RUN_S3_ENDPOINT:-http://minio:9000}
     ports:
       - "8083:8083"
     depends_on:
@@ -217,6 +282,8 @@ services:
         condition: service_completed_successfully
       minio:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     healthcheck:
       test:
         - CMD-SHELL
@@ -306,6 +373,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+networks:
+  # Dedicated network for process-run containers (ADR 0013: the egress-policy
+  # analog at the executor's network boundary). `internal: true` means no
+  # route off the docker host — a run on this network can reach the compose
+  # services attached to it and nothing on the internet.
+  #
+  # It is NOT the default network on purpose: PROCESS_NETWORK defaults to
+  # `none`, so a run gets no network unless a deployment opts in. The socket
+  # proxy is deliberately absent from this network — a run must never be able
+  # to reach the thing that launches runs.
+  process-runs:
+    internal: true
 
 volumes:
   pgdata:

@@ -53,7 +53,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
       `/processes/[id]` islands with the **plain-textarea** editor (P9-C:
       no editor dep in slice 1), test-run request rows (ADR 0004 bridge).
       After M5-0.
-- [ ] **M5-B · executor** (spec §5, ADR 0013). docker-socket-proxy compose
+- [x] **M5-B · executor** (spec §5, ADR 0013). docker-socket-proxy compose
       service (least-privilege config as verified in P9-A), platform
       executor image, `DockerExecutor` (launch/limits/timeout/logs/reap),
       STS run-scoped creds, log capture + capped storage (I-62: `logs/runs/`
@@ -154,5 +154,26 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
   the deploy route all carry `env` (and it round-trips), but the UI deploys
   `env: []` — the secret-ref picker needs the `secret_ref` target question
   settled first (see the entry above).
+
+- **The revision's code travels in the ENVIRONMENT, not a bind mount** —
+  a deliberate departure from ADR 0013's sketch, and worth knowing before
+  M5-C wires the ledger. Under docker-out-of-docker a bind path is resolved
+  by the DAEMON on the host, so mounting a path from inside the pipeline
+  container would be wrong or dangerous. Base64 in
+  `STAC_HIGHER_PROCESS_CODE_B64`, scrubbed by the entrypoint before user code
+  runs. The upside is that the socket proxy never needs to permit mounts, so
+  ADR 0013's documented residual risk (arbitrary `HostConfig` on create) has
+  one fewer way to bite. **Consequence for a future `container` runtime**:
+  a user image will not have our entrypoint, so it needs its own code-delivery
+  answer — do not assume this one generalises.
+- **`process_runs.log_ref` has no writer until M5-C.** `store_run_log` returns
+  the key and `execute_run` returns it in the outcome, but nothing persists it
+  yet. M5-C must write the object BEFORE the row (I-62) — the retention leg
+  deletes in the opposite order, so that ordering is what keeps a row from
+  ever pointing at bytes that do not exist.
+- **Nothing prunes orphaned run containers.** `reap` runs in a `finally` and
+  a failed start self-reaps, but a worker killed between launch and reap
+  leaves a container behind. The `stac-higher.run-id` label exists so a sweep
+  can find them; M5-C's stall sweep is the natural home.
 
 (append here during iterations)
