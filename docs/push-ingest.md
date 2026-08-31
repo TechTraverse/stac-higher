@@ -127,8 +127,31 @@ the required last step of every push that referenced staged assets.
 curl -s http://localhost:4321/api/uploads/$UPLOAD_ID -H "Authorization: Bearer $TOKEN"
 ```
 
-`status` walks `pending → finalizing → finalized | rejected | expired`;
-`result` carries `{upserted, rejected[{reason}], restored?, checksums}`.
+The response nests everything under `upload` — there are no top-level
+`status`/`result` fields:
+
+```jsonc
+{
+  "upload": {
+    "id": "0d9c…",
+    "collection_id": "sentinel-pushed",
+    "item_id": "S2A_001",                     // null until the item write binds it
+    "filenames": ["B04.tif"],
+    "status": "finalized",                    // see below
+    "result": {                               // null until finalize records one
+      "upserted": [{ "collection_id": "sentinel-pushed", "item_id": "S2A_001" }],
+      "checksums": { "B04.tif": "sha256:8f4343…" }
+    },
+    "error": null,                            // operator-facing detail on rejection
+    "created_at": "2026-08-30T12:00:00.000Z",
+    "expires_at": "2026-08-30T13:00:00.000Z",
+    "finalized_at": "2026-08-30T12:00:41.000Z"
+  }
+}
+```
+
+`upload.status` walks `pending → finalizing → finalized | rejected | expired`;
+`upload.result` carries `{upserted, rejected[{reason}], restored?, checksums}`.
 Visibility: admin, a member of the session's group, or the session's creator
 (covers unowned collections); anyone else gets a 404.
 

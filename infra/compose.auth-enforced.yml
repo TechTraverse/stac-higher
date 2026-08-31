@@ -13,8 +13,11 @@
 # on direct item writes, denies `bulk_items`, and exempts app-mediated (BFF)
 # writes via the X-BFF-Auth shared secret.
 #
-# Usage (from the repo root; the secret is MANDATORY — compose fails fast
-# without it, and so do the app and the factory):
+# Usage (from the repo root; the secret is MANDATORY — compose's
+# required-variable interpolation below fails fast without it, and so does
+# the proxy-policy factory. The app runs outside compose and reads the same
+# secret from the shell/.env; it does NOT fail fast — export it before
+# `npm run dev` or UI writes lose their exemption):
 #
 #   export CATALOG_BFF_SHARED_SECRET=$(openssl rand -hex 32)   # or put it in .env
 #   docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait
@@ -83,10 +86,14 @@ services:
       - POLICY_DATABASE_URL=postgresql://username:password@database:5432/postgis
 
       # MANDATORY shared secret for the BFF exemption (X-BFF-Auth). No
-      # default on purpose: compose fails here when unset, and both the app
-      # (P7-D) and the factory fail fast at startup — "when configured"
-      # semantics would silently break UI writes to non-externally-writable
-      # collections. Never logged; constant-time compare.
+      # default on purpose: this required-variable interpolation IS the
+      # fail-fast, and the factory refuses to start without it too. The app
+      # (P7-D) runs outside compose and does NOT fail fast — it cannot
+      # distinguish dev from enforced mode, so it emits the header only when
+      # the secret is configured (app/src/lib/push/config.ts). Give the app
+      # process the SAME value from the shell/.env, or its writes to
+      # non-externally-writable collections are denied by this policy.
+      # Never logged; constant-time compare.
       - CATALOG_BFF_SHARED_SECRET=${CATALOG_BFF_SHARED_SECRET:?required in auth-enforced mode (ADR 0015) - export it or add it to .env, see this file's header}
 
       # --- NOT ENABLED: collection read-visibility filtering ----------------

@@ -6,7 +6,8 @@ What's built, grouped by delivery phase. Status legend: ✅ done · 🚧 in prog
 
 ## STAC client application (baseline)
 
-The Astro 6 (SSR) + React 19 STAC client that predates the platform phases.
+The Astro (SSR) + React 19 STAC client that predates the platform phases
+(Astro 6 at the time; migrated to Astro 7 — see "Pre-M5 hardening" below).
 
 | Feature | Status | Entry points |
 |---|---|---|
