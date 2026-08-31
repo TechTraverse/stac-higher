@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 from pipeline.delivery.matcher import DeliverAssociation
-from pipeline.dispatcher.repo import DispatchRepo, ItemEvent
+from pipeline.dispatcher.repo import DEFAULT_GC_GRACE_DAYS, DispatchRepo, ItemEvent
 
 
 @dataclass
@@ -25,6 +25,8 @@ class FakeDispatchRepo(DispatchRepo):
     deferred: set[int] = field(default_factory=set)
     #: (event_ids, retry_delay_seconds) per release_for_retry call.
     released: list[tuple[list[int], int]] = field(default_factory=list)
+    #: per-collection gc_grace_days override (default mirrors the app's 30).
+    grace_days: dict[str, int] = field(default_factory=dict)
 
     async def claim_pending_events(self, limit: int) -> list[ItemEvent]:
         pending = [
@@ -64,3 +66,6 @@ class FakeDispatchRepo(DispatchRepo):
 
     async def get_item(self, collection_id: str, item_id: str) -> dict | None:
         return self.items.get((collection_id, item_id))
+
+    async def get_gc_grace_days(self, collection_id: str) -> int:
+        return self.grace_days.get(collection_id, DEFAULT_GC_GRACE_DAYS)

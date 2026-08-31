@@ -331,3 +331,61 @@ async def test_deliver_sftp_destination_runs_serial(monkeypatch):
         ],
     )
     assert order == ["start:i1", "end:i1", "start:i2", "end:i2"]
+
+
+# --------------------------------------------------------------------------- #
+# P7-F: dispatch drain wiring — staged gate + delete-event GC mark (spec §7)
+# --------------------------------------------------------------------------- #
+
+
+async def test_dispatch_drain_routes_staged_and_delete_events(monkeypatch):
+    """build_dispatch_drain wires the loop's finalize/GC seams for real: a
+    staged event lands on the pipeline.finalize queue with the P7-E payload
+    contract, and a delete event marks asset_gc via PgGcRepo with the gc
+    sweep's item prefix, reason item_delete, and the collection's grace."""
+    from _dispatch_fake import FakeDispatchRepo
+    from pipeline.dispatcher.repo import ItemEvent
+    from pipeline.jobs import finalize as finalize_jobs
+    from pipeline.jobs.dispatch import REASON_ITEM_DELETE
+
+    queue = InMemoryQueue()
+    settings = Settings.from_env(env={})
+    finalize_jobs.register(queue, settings)  # makes JOB_FINALIZE enqueueable
+
+    repo = FakeDispatchRepo(
+        events=[
+            ItemEvent(id=1, collection_id="c", item_id="i1", op="insert"),
+            ItemEvent(id=2, collection_id="c", item_id="gone", op="delete"),
+        ],
+        items={
+            ("c", "i1"): {
+                "id": "i1",
+                "collection": "c",
+                "properties": {},
+                "assets": {"data": {"href": "staging://up1/scene.tif"}},
+            }
+        },
+        grace_days={"c": 7},
+    )
+    marks: list[tuple] = []
+
+    class _GcRepo:
+        def __init__(self, _url): ...
+
+        async def mark_asset_prefix(self, prefix, collection_id, item_id, reason, grace_days):
+            marks.append((prefix, collection_id, item_id, reason, grace_days))
+            return True
+
+    monkeypatch.setattr(dispatch, "PgDispatchRepo", lambda _url: repo)
+    monkeypatch.setattr(dispatch, "PgGcRepo", _GcRepo)
+    run = dispatch.build_dispatch_drain(queue, settings)
+    await run("poll")
+
+    finalize_payloads = [
+        job.payload for job in queue.jobs if job.name == finalize_jobs.JOB_FINALIZE
+    ]
+    assert finalize_payloads == [
+        {"upload_id": "up1", "collection_id": "c", "item_id": "i1", "event_op": "insert"}
+    ]
+    assert marks == [("assets/c/gone/", "c", "gone", REASON_ITEM_DELETE, 7)]
+    assert sorted(repo.processed) == [1, 2]

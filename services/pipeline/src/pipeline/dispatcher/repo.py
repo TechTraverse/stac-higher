@@ -6,7 +6,10 @@ methods open a short-lived AsyncConnection and are ``# pragma: no cover`` — th
 SQL is exercised by the live dispatch verification (Task 9), not unit tests.
 
 Ownership (ADR 0001/0007): reads stac_higher.item_events + collection_connections
-and pgstac items; UPDATEs only item_events.claimed_at/processed_at. Never runs DDL.
++ collection_settings (gc_grace_days, for the §7.3 delete-event GC mark) and
+pgstac items; UPDATEs only item_events.claimed_at/processed_at. Never runs DDL.
+(The asset_gc INSERT itself goes through gc.repo.PgGcRepo — wired in
+jobs/dispatch.py — so the mark SQL lives in exactly one place.)
 """
 
 from __future__ import annotations
@@ -39,6 +42,10 @@ class ItemEvent:
 #: lost.
 STALE_CLAIM_SECONDS = 600
 
+#: mirror of the app's collection_settings default (migrate.ts: DEFAULT 30) —
+#: used when a collection has no settings row.
+DEFAULT_GC_GRACE_DAYS = 30
+
 
 class DispatchRepo(abc.ABC):
     @abc.abstractmethod
@@ -67,6 +74,12 @@ class DispatchRepo(abc.ABC):
     @abc.abstractmethod
     async def get_item(self, collection_id: str, item_id: str) -> dict[str, Any] | None:
         """The full STAC item from pgstac, or None if not (yet) present."""
+
+    @abc.abstractmethod
+    async def get_gc_grace_days(self, collection_id: str) -> int:
+        """The collection's ``gc_grace_days`` from collection_settings, or
+        :data:`DEFAULT_GC_GRACE_DAYS` when no settings row exists (feeds the
+        §7.3 delete-event GC mark's ``collect_after``)."""
 
 
 @dataclass
@@ -169,3 +182,13 @@ class PgDispatchRepo(DispatchRepo):
             )
             row = await cur.fetchone()
         return dict(row[0]) if row and row[0] else None
+
+    async def get_gc_grace_days(self, collection_id: str) -> int:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT gc_grace_days FROM stac_higher.collection_settings"
+                " WHERE collection_id = %s",
+                (collection_id,),
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else DEFAULT_GC_GRACE_DAYS
