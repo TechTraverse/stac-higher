@@ -34,8 +34,8 @@ import { ALERT_KIND_LABEL } from "@/components/monitoring/shared";
 import {
   processEnvSchema,
   processExpectationSchema,
+  processRuntimeReadSchema,
   processRuntimeSchema,
-  processRuntimeWriteSchema,
   processTriggerSchema,
 } from "@/lib/processes/schemas";
 
@@ -112,18 +112,28 @@ interface UnionFixture {
   cases: FixtureCase[];
 }
 
-function describeUnion(file: string, schema: ZodType) {
+/**
+ * One minimal/defaults pair per union arm, then the shared cases.
+ * `defaultsSchema` differs from `caseSchema` only where a write gate refuses
+ * an arm the shape itself admits (process runtime's `container`) — the
+ * defaults still have to round-trip through the full shape.
+ */
+function describeUnion(
+  file: string,
+  caseSchema: ZodType,
+  defaultsSchema: ZodType = caseSchema,
+) {
   const fixture = loadFixture(file) as unknown as UnionFixture;
 
   it.each(Object.entries(fixture.variants))(
     "writes exactly the golden defaults for the minimal %s document",
     (_arm, variant) => {
-      expect(schema.parse(variant.minimal)).toEqual(variant.defaults);
+      expect(defaultsSchema.parse(variant.minimal)).toEqual(variant.defaults);
     },
   );
 
   it.each(fixture.cases)("$app: $name", ({ config, app }) => {
-    expect(schema.safeParse(config).success).toBe(app === "accept");
+    expect(caseSchema.safeParse(config).success).toBe(app === "accept");
   });
 }
 
@@ -134,32 +144,21 @@ describe("process trigger contract (tests/contract-fixtures/process-trigger.json
 describe("process runtime contract (tests/contract-fixtures/process-runtime.json)", () => {
   // The fixture's `app` column is the WRITE gate: slice 1 refuses `container`
   // (spec §4), so every container case is app: reject / pipeline: accept.
-  // Defaults are asserted against the READ schema, which parses both arms —
-  // the write gate only adds the refusal on top.
-  const fixture = loadFixture("process-runtime.json") as unknown as UnionFixture;
-
-  it.each(Object.entries(fixture.variants))(
-    "writes exactly the golden defaults for the minimal %s document",
-    (_arm, variant) => {
-      expect(processRuntimeSchema.parse(variant.minimal)).toEqual(
-        variant.defaults,
-      );
-    },
+  describeUnion(
+    "process-runtime.json",
+    processRuntimeSchema,
+    processRuntimeReadSchema,
   );
 
-  it.each(fixture.cases)("$app: $name", ({ config, app }) => {
-    expect(processRuntimeWriteSchema.safeParse(config).success).toBe(
-      app === "accept",
-    );
-  });
-
   it("the container arm is refused by the write gate, not by the shape", () => {
-    const container = fixture.variants.container.minimal;
+    const container = (
+      loadFixture("process-runtime.json") as unknown as UnionFixture
+    ).variants.container.minimal;
     // The asymmetry the fixture encodes: the contract carries `container` (so
     // the pipeline reader and any future slice can parse it) while this
     // slice's write path refuses it.
-    expect(processRuntimeSchema.safeParse(container).success).toBe(true);
-    expect(processRuntimeWriteSchema.safeParse(container).success).toBe(false);
+    expect(processRuntimeReadSchema.safeParse(container).success).toBe(true);
+    expect(processRuntimeSchema.safeParse(container).success).toBe(false);
   });
 });
 
@@ -258,12 +257,19 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
       ),
       "utf8",
     ),
-  ) as { kinds: string[]; monitor_kinds: string[]; notify_kinds: string[] };
+  ) as {
+    kinds: string[];
+    monitor_kinds: string[];
+    notify_kinds: string[];
+    declared_kinds: string[];
+  };
 
   it("the writer lists partition the full enum exactly", () => {
-    expect([...fixture.monitor_kinds, ...fixture.notify_kinds]).toEqual(
-      fixture.kinds,
-    );
+    expect([
+      ...fixture.monitor_kinds,
+      ...fixture.declared_kinds,
+      ...fixture.notify_kinds,
+    ]).toEqual(fixture.kinds);
     expect(new Set(fixture.kinds).size).toBe(fixture.kinds.length);
   });
 
@@ -278,15 +284,19 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
     expect(fixture.monitor_kinds).toContain("push_rejected");
   });
 
-  it("the three process kinds are monitor-owned (Phase 9 §8)", () => {
-    // Declared in M5-0 so the enum, labels and ownership land with the
-    // contract; the conditions that RAISE them arrive in M5-E.
+  it("the three process kinds are declared but unowned (Phase 9 §8)", () => {
+    // M5-0 declares them so the enum and labels land with the contract, and
+    // deliberately assigns no writer: list membership grants auto-resolve
+    // authority, so M5-E has to claim each kind for the writer that actually
+    // raises it. This assertion is what fails if a kind is declared and left
+    // in limbo, or claimed without moving it out of the waiting room.
     for (const kind of [
       "process_stalled",
       "process_failed",
       "process_rate_limited",
     ]) {
-      expect(fixture.monitor_kinds, kind).toContain(kind);
+      expect(fixture.declared_kinds, kind).toContain(kind);
+      expect(fixture.monitor_kinds, kind).not.toContain(kind);
     }
   });
 

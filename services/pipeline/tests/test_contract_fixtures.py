@@ -151,7 +151,9 @@ def test_alert_kinds_match_golden():
     assert ALERT_KINDS["monitor_kinds"] == list(MONITOR_KINDS)
     assert ALERT_KINDS["notify_kinds"] == [WEBHOOK_FAILED_KIND]
     assert ALERT_KINDS["kinds"] == (
-        ALERT_KINDS["monitor_kinds"] + ALERT_KINDS["notify_kinds"]
+        ALERT_KINDS["monitor_kinds"]
+        + ALERT_KINDS["declared_kinds"]
+        + ALERT_KINDS["notify_kinds"]
     )
     assert len(set(ALERT_KINDS["kinds"])) == len(ALERT_KINDS["kinds"])
 
@@ -263,11 +265,15 @@ def test_process_expectation_defaults_match_golden():
     assert parse_process_expectation(None) is None
 
 
-def test_process_alert_kinds_are_monitor_owned():
-    """M5-0 declares the three process kinds and assigns them to the monitor;
-    the conditions that raise them land in M5-E."""
+def test_process_alert_kinds_are_declared_but_unowned():
+    """M5-0 declares the three process kinds without a writer. Ownership is not
+    a formality: MONITOR_KINDS membership grants sync_alerts auto-resolve
+    authority over a kind, so claiming one before its evaluator exists would
+    silently close alerts another writer raised. M5-E claims each kind for its
+    real writer and moves it out of `declared_kinds`."""
     from pipeline.flow.monitor import MONITOR_KINDS
 
     for kind in ("process_stalled", "process_failed", "process_rate_limited"):
-        assert kind in MONITOR_KINDS
+        assert kind in ALERT_KINDS["declared_kinds"]
+        assert kind not in MONITOR_KINDS
 

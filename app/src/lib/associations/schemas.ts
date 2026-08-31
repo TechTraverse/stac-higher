@@ -13,6 +13,7 @@
  * a minimal UI form produces a complete, pipeline-ready config.
  */
 import { z } from "zod";
+import { nonBlank, retrySpecSchema } from "@/lib/schema-helpers";
 
 /** Directions the DB admits. */
 export const ASSOCIATION_DIRECTIONS = ["ingest", "deliver"] as const;
@@ -26,15 +27,6 @@ export type StorageMode = (typeof STORAGE_MODES)[number];
 // ---------------------------------------------------------------------------
 
 const globList = z.array(z.string().min(1)).default([]);
-
-/** Non-blank string — the pipeline's parsers `.strip()` required paths, so a
- * whitespace-only value must not pass the write gate either (contract fixtures
- * pin this: `tests/contract-fixtures/`). */
-const nonBlank = (message: string) =>
-  z
-    .string()
-    .min(1, message)
-    .refine((s) => s.trim().length > 0, message);
 
 export const groupingSchema = z
   .object({
@@ -153,12 +145,7 @@ const payloadSchema = z
   })
   .strict();
 
-const retrySchema = z
-  .object({
-    max_attempts: z.number().int().min(1).default(5),
-    backoff: z.enum(["exponential", "fixed"]).default("exponential"),
-  })
-  .strict();
+const retrySchema = retrySpecSchema(5);
 
 export const deliveryConfigSchema = z
   .object({

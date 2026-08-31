@@ -12,18 +12,19 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
+import {
+  migrationEntry,
+  migrationSource,
+  normalizeSql,
+} from "./helpers/migration-source";
 
 function read(rel: string): string {
   return readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 }
 
-/** Collapse quoting/whitespace so TS template SQL and Python string-literal
- * SQL normalize to the same text. */
-function normalize(source: string): string {
-  return source.replace(/["\s]+/g, " ");
-}
+const normalize = normalizeSql;
 
-const migrate = read("../lib/db/migrate.ts");
+const migrate = migrationSource;
 const flowRepo = normalize(
   read("../../../services/pipeline/src/pipeline/flow/repo.py"),
 );
@@ -37,16 +38,6 @@ const DEDUP_LEGS =
   " coalesce(association_id::text, '')," +
   " coalesce(channel_id::text, '')," +
   " coalesce(collection_id, '')";
-
-/** The text of ONE migration entry: from its name to the start of the next
- * entry (or the end of the array). Slicing to the end of MIGRATIONS instead
- * would silently widen these pins over every migration added after it. */
-function migrationEntry(name: string): string {
-  const start = migrate.indexOf(`"${name}"`);
-  const next = migrate.slice(start).search(/\n\s*name: "\d{3}_/);
-  const end = next === -1 ? migrate.indexOf("];", start) : start + next;
-  return migrate.slice(start, end);
-}
 
 describe("migration 021 (alerts collection anchor)", () => {
   const start = migrate.indexOf('"021_alerts_collection_anchor"');

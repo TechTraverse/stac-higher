@@ -7,22 +7,10 @@
  * an FK into pgstac, or the §7 coalescing rule surviving only as a comment.
  * Read as text, like the migration-021 pins.
  */
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
+import { migrationEntry, migrationSource } from "./helpers/migration-source";
 
-const migrate = readFileSync(
-  fileURLToPath(new URL("../lib/db/migrate.ts", import.meta.url)),
-  "utf8",
-);
-
-/** One migration entry: from its name to the start of the next. */
-function migrationEntry(name: string): string {
-  const start = migrate.indexOf(`"${name}"`);
-  const next = migrate.slice(start).search(/\n\s*name: "\d{3}_/);
-  const end = next === -1 ? migrate.indexOf("];", start) : start + next;
-  return migrate.slice(start, end);
-}
+const migrate = migrationSource;
 
 describe("migration 022 (processes)", () => {
   const sql = migrationEntry("022_processes");
@@ -47,8 +35,8 @@ describe("migration 022 (processes)", () => {
   });
 
   it("carries the §7 rate ceiling with a floor of 1", () => {
-    expect(sql).toMatch(/max_runs_per_hour integer NOT NULL DEFAULT 60/);
-    expect(sql).toMatch(/CHECK \(max_runs_per_hour >= 1\)/);
+    expect(sql).toContain("max_runs_per_hour integer NOT NULL DEFAULT 60");
+    expect(sql).toContain("CHECK (max_runs_per_hour >= 1)");
   });
 
   it("leaves process_runs unpartitioned (ADR 0012 criteria, spec §3)", () => {
@@ -61,24 +49,18 @@ describe("migration 022 (processes)", () => {
   it("enforces at most one deferred run per source (§7 coalescing)", () => {
     // Coalescing is the requirement; a UNIQUE index is what makes it true
     // under concurrent dispatch rather than merely intended.
-    const deferred = sql.slice(sql.indexOf("process_runs_deferred_source_idx"));
-    expect(sql).toContain(
-      "CREATE UNIQUE INDEX IF NOT EXISTS process_runs_deferred_source_idx",
+    expect(sql).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS process_runs_deferred_source_idx[\s\S]*?rate_deferred_until IS NOT NULL/,
     );
-    expect(deferred).toMatch(/rate_deferred_until IS NOT NULL/);
   });
 
   it("references collections as bare text — pgstac owns them, no FK", () => {
-    for (const line of sql.split("\n")) {
-      if (/^\s*collection_id text/.test(line)) {
-        expect(line, line.trim()).not.toMatch(/REFERENCES/);
-      }
-    }
-    expect(sql).toMatch(/collection_id text NOT NULL,/);
+    expect(sql).toContain("collection_id text NOT NULL,");
+    expect(sql).not.toMatch(/collection_id text[^,\n]*REFERENCES/);
   });
 
   it("soft-deletes processes only; history never cascades (ADR 0009)", () => {
-    expect(sql).toMatch(/deleted_at timestamptz/);
+    expect(sql).toContain("deleted_at timestamptz");
     // Every FK into a process/revision is RESTRICT so a delete can never
     // take run history with it.
     expect(sql).not.toMatch(/ON DELETE CASCADE/);
