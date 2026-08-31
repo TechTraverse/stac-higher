@@ -29,6 +29,8 @@ import {
   STAGED_UPLOAD_STATUSES,
   TERMINAL_STAGED_UPLOAD_STATUSES,
 } from "@/lib/uploads/schemas";
+import { EXPECTATION_BREACH_KIND } from "@/lib/monitoring/api";
+import { ALERT_KIND_LABEL } from "@/components/monitoring/shared";
 
 interface FixtureCase {
   name: string;
@@ -161,5 +163,45 @@ describe("push upload status contract (tests/contract-fixtures/push-upload-statu
 
   it.each(fixture.cases)("$app: $name", ({ doc, app }) => {
     expect(pushUploadStatusSchema.safeParse(doc).success).toBe(app === "accept");
+  });
+});
+
+describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
+  // pinned-enum style (P7-H): the pipeline suite pins its writer constants
+  // (MONITOR_KINDS, WEBHOOK_FAILED_KIND) against the same lists.
+  const fixture = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../../tests/contract-fixtures/alert-kinds.json",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ),
+  ) as { kinds: string[]; monitor_kinds: string[]; notify_kinds: string[] };
+
+  it("the writer lists partition the full enum exactly", () => {
+    expect([...fixture.monitor_kinds, ...fixture.notify_kinds]).toEqual(
+      fixture.kinds,
+    );
+    expect(new Set(fixture.kinds).size).toBe(fixture.kinds.length);
+  });
+
+  it("pins the app's expectation-breach kind literals", () => {
+    expect(EXPECTATION_BREACH_KIND.ingest).toBe("ingest_inactivity");
+    expect(EXPECTATION_BREACH_KIND.deliver).toBe("delivery_slo");
+    expect(fixture.monitor_kinds).toContain(EXPECTATION_BREACH_KIND.ingest);
+    expect(fixture.monitor_kinds).toContain(EXPECTATION_BREACH_KIND.deliver);
+  });
+
+  it("push_rejected is a monitor-owned kind (Phase 7 §8)", () => {
+    expect(fixture.monitor_kinds).toContain("push_rejected");
+  });
+
+  it("the monitoring UI labels every kind in the enum", () => {
+    for (const kind of fixture.kinds) {
+      expect(ALERT_KIND_LABEL[kind], `label for ${kind}`).toBeTruthy();
+    }
   });
 });

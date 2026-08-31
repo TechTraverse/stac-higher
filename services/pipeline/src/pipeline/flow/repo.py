@@ -6,9 +6,10 @@ depends on (unit-tested against ``FakeMonitorRepo``) plus a psycopg
 ``# pragma: no cover`` — exercised by the M2-I rehearsal / DB integration.
 
 Ownership (ADR 0001): reads ``collection_connections`` / ``connections`` /
-``delivery_log`` / ``ingest_files`` / ``delivery_backfills``; INSERT/UPDATEs
-only ``stac_higher.alerts`` (raise, ``last_seen`` bump, auto-resolve). The
-app owns the DDL (migration 014) and the ack/resolve verbs. Never runs DDL.
+``delivery_log`` / ``ingest_files`` / ``delivery_backfills`` /
+``staged_uploads`` (P7-H); INSERT/UPDATEs only ``stac_higher.alerts`` (raise,
+``last_seen`` bump, auto-resolve). The app owns the DDL (migrations 014/021)
+and the ack/resolve verbs. Never runs DDL.
 """
 
 from __future__ import annotations
@@ -45,16 +46,20 @@ class ErrorConnection:
 @dataclass(frozen=True)
 class AlertCondition:
     """One currently-true alerting condition. ``(source, kind, connection_id,
-    association_id, channel_id)`` is the dedup identity (spec §3.3; M2-C added
-    the channel leg for webhook-failure alerts)."""
+    association_id, channel_id, collection_id)`` is the dedup identity (spec
+    §3.3; M2-C added the channel leg for webhook-failure alerts, P7-H the
+    collection leg for push rejections)."""
 
     source: str  # "flow" | "health" | "job_failure"
     kind: str
     connection_id: str | None = None
     association_id: str | None = None
-    #: Channel-anchored alerts (M2-C ``webhook_failed``); always None for the
+    #: Channel-anchored alerts (M2-C ``webhook_failed``); None for the
     #: monitor's own kinds.
     channel_id: str | None = None
+    #: Collection-anchored alerts (P7-H ``push_rejected`` — push has no
+    #: connection/association/channel); None for every other kind.
+    collection_id: str | None = None
     message: str = ""
 
 
@@ -98,6 +103,23 @@ class FlowMonitorRepo(abc.ABC):
     async def list_failed_backfills(self) -> list[tuple[str, str, str | None]]:
         """``(association_id, backfill_id, error)`` where the association's
         MOST RECENT backfill failed. A newer successful backfill clears it."""
+
+    @abc.abstractmethod
+    async def list_recent_push_rejections(
+        self, lookback_seconds: int
+    ) -> list[tuple[str, dt.datetime]]:
+        """``(collection_id, finalized_at)`` for every ``staged_uploads`` row
+        with ``status = 'rejected'`` whose verdict landed inside the lookback
+        window (Phase 7 §8). The resolved-at floor is applied MONITOR-side
+        (:func:`pipeline.flow.monitor.evaluate_push_rejections`) so the
+        semantics stay unit-testable."""
+
+    @abc.abstractmethod
+    async def latest_push_rejected_resolved_at(self) -> dict[str, dt.datetime]:
+        """Per collection, the most recent ``resolved_at`` among RESOLVED
+        ``push_rejected`` alerts — the §8 floor. Rejected ledger rows are
+        terminal, so without it a manual resolve would re-fire on the next
+        tick for the remainder of the lookback."""
 
     @abc.abstractmethod
     async def sync_alerts(
@@ -225,26 +247,58 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
             rows = await cur.fetchall()
         return [(str(r[0]), str(r[1]), r[2]) for r in rows]
 
+    async def list_recent_push_rejections(  # pragma: no cover
+        self, lookback_seconds: int
+    ) -> list[tuple[str, dt.datetime]]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT collection_id, finalized_at"
+                " FROM stac_higher.staged_uploads"
+                " WHERE status = 'rejected'"
+                " AND finalized_at > now() - make_interval(secs => %s)",
+                (lookback_seconds,),
+            )
+            rows = await cur.fetchall()
+        return [(str(r[0]), r[1]) for r in rows]
+
+    async def latest_push_rejected_resolved_at(  # pragma: no cover
+        self,
+    ) -> dict[str, dt.datetime]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT collection_id, max(resolved_at)"
+                " FROM stac_higher.alerts"
+                " WHERE source = 'job_failure' AND kind = 'push_rejected'"
+                " AND state = 'resolved' AND collection_id IS NOT NULL"
+                " AND resolved_at IS NOT NULL"
+                " GROUP BY collection_id"
+            )
+            rows = await cur.fetchall()
+        return {str(r[0]): r[1] for r in rows}
+
     async def sync_alerts(  # pragma: no cover
         self, conditions: list[AlertCondition], owned_kinds: tuple[str, ...]
     ) -> tuple[int, int]:
         raised = 0
         async with await self._connect() as conn:
             for c in conditions:
-                # The partial unique index (migrations 014/015) is the
+                # The partial unique index (migrations 014/015/021) is the
                 # arbiter: a re-observed condition bumps last_seen + message
                 # on the open row (firing OR acknowledged — ack suppresses
                 # notification, not detection). xmax = 0 marks a fresh row.
                 # The conflict target must match the index expressions
-                # EXACTLY, including the M2-C channel leg.
+                # EXACTLY, including the M2-C channel leg and the P7-H
+                # collection leg (text column — no cast).
                 cur = await conn.execute(
                     "INSERT INTO stac_higher.alerts"
-                    " (source, kind, connection_id, association_id, channel_id, message)"
-                    " VALUES (%s, %s, %s, %s, %s, %s)"
+                    " (source, kind, connection_id, association_id, channel_id,"
+                    "  collection_id, message)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s)"
                     " ON CONFLICT (source, kind,"
                     "   coalesce(connection_id::text, ''),"
                     "   coalesce(association_id::text, ''),"
-                    "   coalesce(channel_id::text, ''))"
+                    "   coalesce(channel_id::text, ''),"
+                    "   coalesce(collection_id, ''))"
                     " WHERE state <> 'resolved'"
                     " DO UPDATE SET last_seen = now(), message = EXCLUDED.message"
                     " RETURNING (xmax = 0)",
@@ -254,6 +308,7 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
                         c.connection_id,
                         c.association_id,
                         c.channel_id,
+                        c.collection_id,
                         c.message,
                     ),
                 )
@@ -268,12 +323,14 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
                 " WHERE a.state <> 'resolved' AND a.kind = ANY(%s)"
                 " AND NOT EXISTS ("
                 "   SELECT 1 FROM unnest("
-                "     %s::text[], %s::text[], %s::text[], %s::text[], %s::text[])"
-                "     AS c(source, kind, conn, assoc, chan)"
+                "     %s::text[], %s::text[], %s::text[], %s::text[], %s::text[],"
+                "     %s::text[])"
+                "     AS c(source, kind, conn, assoc, chan, coll)"
                 "   WHERE c.source = a.source AND c.kind = a.kind"
                 "   AND c.conn = coalesce(a.connection_id::text, '')"
                 "   AND c.assoc = coalesce(a.association_id::text, '')"
-                "   AND c.chan = coalesce(a.channel_id::text, ''))",
+                "   AND c.chan = coalesce(a.channel_id::text, '')"
+                "   AND c.coll = coalesce(a.collection_id, ''))",
                 (
                     list(owned_kinds),
                     [c.source for c in conditions],
@@ -281,6 +338,7 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
                     [c.connection_id or "" for c in conditions],
                     [c.association_id or "" for c in conditions],
                     [c.channel_id or "" for c in conditions],
+                    [c.collection_id or "" for c in conditions],
                 ),
             )
             resolved = cur.rowcount or 0

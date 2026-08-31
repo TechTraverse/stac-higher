@@ -1,6 +1,7 @@
-"""History retention job wiring (M2-G, ADR 0012): the hourly hygiene sweep
-for the three UNIQUE-keyed history tables (see pipeline/history/sweep.py for
-the exact — deliberately conservative — rules)."""
+"""History retention job wiring (M2-G, ADR 0012; P7-H adds staged_uploads):
+the hourly hygiene sweep for the unpartitioned history tables (see
+pipeline/history/sweep.py for the exact — deliberately conservative —
+rules)."""
 
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             or result.checks_failed_stranded
             or result.ingest_files_deleted
             or result.delivery_log_deleted
+            or result.staged_uploads_deleted
         ):
             logger.info(
                 "history retention sweep",
@@ -37,6 +39,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     "checks_failed_stranded": result.checks_failed_stranded,
                     "ingest_files_deleted": result.ingest_files_deleted,
                     "delivery_log_deleted": result.delivery_log_deleted,
+                    "staged_uploads_deleted": result.staged_uploads_deleted,
                     "scheduled_timestamp": timestamp,
                 },
             )

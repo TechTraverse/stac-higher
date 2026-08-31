@@ -35,9 +35,10 @@ class NotifiableAlert:
     source: str
     kind: str
     message: str
-    #: Derived: alert → connection (direct or via association) → group, or the
-    #: channel's group for channel-anchored alerts. None when the anchor row
-    #: is gone — nothing to notify.
+    #: Derived: alert → connection (direct or via association) → group, the
+    #: channel's group for channel-anchored alerts, or the collection's
+    #: settings group for collection-anchored alerts (P7-H). None when the
+    #: anchor row is gone or the collection is unowned — nothing to notify.
     group_id: str | None
     connection_id: str | None = None
     association_id: str | None = None
@@ -145,12 +146,15 @@ class PgNotifyRepo(NotifyRepo):
         " LEFT JOIN stac_higher.connections c"
         "   ON c.id = COALESCE(a.connection_id, cc.connection_id)"
         " LEFT JOIN stac_higher.notification_channels nch ON nch.id = a.channel_id"
+        " LEFT JOIN stac_higher.collection_settings cs"
+        "   ON cs.collection_id = a.collection_id"
     )
     _ALERT_COLUMNS = (
         "SELECT a.id, a.source, a.kind, a.message,"
-        " COALESCE(c.group_id, nch.group_id),"
+        " COALESCE(c.group_id, nch.group_id, cs.group_id),"
         " a.connection_id, a.association_id, a.channel_id,"
-        " c.name, cc.collection_id, a.first_seen, a.last_seen"
+        " c.name, COALESCE(a.collection_id, cc.collection_id),"
+        " a.first_seen, a.last_seen"
     )
 
     @staticmethod
@@ -327,14 +331,18 @@ class PgNotifyRepo(NotifyRepo):
 
     async def raise_alert(self, condition: AlertCondition) -> None:  # pragma: no cover
         async with await self._connect() as conn:
+            # The conflict target must match the migration-021 open-dedup
+            # index expressions EXACTLY (lockstep with flow/repo.py).
             await conn.execute(
                 "INSERT INTO stac_higher.alerts"
-                " (source, kind, connection_id, association_id, channel_id, message)"
-                " VALUES (%s, %s, %s, %s, %s, %s)"
+                " (source, kind, connection_id, association_id, channel_id,"
+                "  collection_id, message)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)"
                 " ON CONFLICT (source, kind,"
                 "   coalesce(connection_id::text, ''),"
                 "   coalesce(association_id::text, ''),"
-                "   coalesce(channel_id::text, ''))"
+                "   coalesce(channel_id::text, ''),"
+                "   coalesce(collection_id, ''))"
                 " WHERE state <> 'resolved'"
                 " DO UPDATE SET last_seen = now(), message = EXCLUDED.message",
                 (
@@ -343,6 +351,7 @@ class PgNotifyRepo(NotifyRepo):
                     condition.connection_id,
                     condition.association_id,
                     condition.channel_id,
+                    condition.collection_id,
                     condition.message,
                 ),
             )

@@ -1,0 +1,24 @@
+{
+  "style": "pinned-enum",
+  "description": "The closed alert `kind` enum (Phase 7 §10, pulled forward from the P9-D plan). `kinds` is the full enum every consumer must recognize; the per-writer lists partition it by single-writer ownership: the flow monitor raises AND auto-resolves `monitor_kinds` (pipeline/flow/monitor.py MONITOR_KINDS), the notify module owns `notify_kinds` (pipeline/notify/repo.py WEBHOOK_FAILED_KIND). The app's EXPECTATION_BREACH_KIND branch and the monitoring UI's kind labels pin against the same lists. Phase 9 appends its kinds here.",
+  "kinds": [
+    "ingest_inactivity",
+    "delivery_slo",
+    "connection_error",
+    "delivery_dead",
+    "ingest_failed",
+    "backfill_failed",
+    "push_rejected",
+    "webhook_failed"
+  ],
+  "monitor_kinds": [
+    "ingest_inactivity",
+    "delivery_slo",
+    "connection_error",
+    "delivery_dead",
+    "ingest_failed",
+    "backfill_failed",
+    "push_rejected"
+  ],
+  "notify_kinds": ["webhook_failed"]
+}

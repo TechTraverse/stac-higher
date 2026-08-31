@@ -42,6 +42,26 @@ export const ALERT_STATE_VARIANT: Record<
   resolved: "outline",
 };
 
+/** Human-readable labels for the closed alert-kind enum. The enum itself is
+ * a cross-runtime contract (tests/contract-fixtures/alert-kinds.json) —
+ * pipeline MONITOR_KINDS + notify's webhook_failed — and the fixture's
+ * vitest consumer asserts this map covers every kind, so a new kind cannot
+ * land unlabeled. Unknown kinds fall back to the raw string. */
+export const ALERT_KIND_LABEL: Record<string, string> = {
+  ingest_inactivity: "ingest inactivity",
+  delivery_slo: "delivery SLO breach",
+  connection_error: "connection error",
+  delivery_dead: "dead-lettered deliveries",
+  ingest_failed: "ingest failures",
+  backfill_failed: "backfill failed",
+  push_rejected: "push items rejected",
+  webhook_failed: "webhook delivery failed",
+};
+
+export function alertKindLabel(kind: string): string {
+  return ALERT_KIND_LABEL[kind] ?? kind;
+}
+
 /** Best-effort read of the pipeline-written flow_stats jsonb. */
 export interface FlowStatsView {
   files: number;

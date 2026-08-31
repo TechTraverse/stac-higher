@@ -13,7 +13,19 @@ raises / re-fires / auto-resolves in one transaction:
   state each tick; the dedup key makes that equivalent to alerting on the
   ok→error transition, and error→ok auto-resolves.
 - ``job_failure`` — dead-lettered deliveries, ingest ledger rows failed at the
-  retry cap, and a latest-backfill-failed association.
+  retry cap, a latest-backfill-failed association, and (P7-H, Phase 7 §8)
+  push items rejected at finalize: ``staged_uploads`` rows ``rejected``
+  inside the lookback window, collection-anchored because push has no
+  connection/association/channel. Finalize itself writes no alert rows — it
+  writes the ledger; this monitor observes state (the ``ingest_failed``
+  division). NOTE the deliberate blind spot: a rejection that never claims a
+  ledger row (unknown session, session bound to another item, session minted
+  for a different collection — ``claimed=False`` in
+  ``pipeline/finalize/push.py``) stamps no ``rejected`` verdict and is
+  therefore INVISIBLE to this condition; it surfaces only through
+  ``pipeline_finalize_items_total{outcome="rejected"}`` and the structured
+  warning log. Widening it would need new persistent state (there is no row
+  to observe), which §8 deliberately does not add.
 
 The monitor is the single writer for :data:`MONITOR_KINDS`; auto-resolve is
 scoped to those kinds so other alert writers (M2-C webhook failures) are never
@@ -42,6 +54,7 @@ MONITOR_KINDS = (
     "delivery_dead",
     "ingest_failed",
     "backfill_failed",
+    "push_rejected",
 )
 
 
@@ -102,10 +115,44 @@ def evaluate_delivery_slo(
     )
 
 
+def evaluate_push_rejections(
+    rejections: list[tuple[str, dt.datetime]],
+    resolved_floors: dict[str, dt.datetime],
+    lookback_seconds: int,
+) -> list[AlertCondition]:
+    """The §8 push-rejection condition, per collection: rejected
+    ``staged_uploads`` rows inside the lookback AND newer than the dedup
+    key's most recent ``resolved_at``. Rejected ledger rows are terminal, so
+    the floor is what makes a manual resolve stick — without it the same
+    rows would re-fire (and re-notify) on the very next tick for the rest of
+    the lookback. Auto-resolve falls out of absence: once every rejection
+    ages past the lookback (or sits under the floor) the condition vanishes
+    and ``sync_alerts`` resolves the open row."""
+    counts: dict[str, int] = {}
+    for collection_id, finalized_at in rejections:
+        floor = resolved_floors.get(collection_id)
+        if floor is not None and finalized_at <= floor:
+            continue
+        counts[collection_id] = counts.get(collection_id, 0) + 1
+    return [
+        AlertCondition(
+            source="job_failure",
+            kind="push_rejected",
+            collection_id=collection_id,
+            message=(
+                f"{count} push {'item' if count == 1 else 'items'} rejected at "
+                f"finalize in the last {lookback_seconds}s"
+            ),
+        )
+        for collection_id, count in sorted(counts.items())
+    ]
+
+
 async def monitor_tick(
     repo: FlowMonitorRepo,
     *,
     ingest_max_retries: int,
+    push_lookback_seconds: int,
     now: dt.datetime | None = None,
 ) -> tuple[int, int]:
     """One evaluation pass. Returns ``(newly_raised, auto_resolved)``."""
@@ -172,6 +219,14 @@ async def monitor_tick(
                 association_id=association_id,
                 message=f"backfill {backfill_id} failed: {error or 'unknown error'}",
             )
+        )
+
+    # -- job_failure: push items rejected at finalize (P7-H, Phase 7 §8) -----
+    rejections = await repo.list_recent_push_rejections(push_lookback_seconds)
+    if rejections:
+        floors = await repo.latest_push_rejected_resolved_at()
+        conditions.extend(
+            evaluate_push_rejections(rejections, floors, push_lookback_seconds)
         )
 
     return await repo.sync_alerts(conditions, MONITOR_KINDS)

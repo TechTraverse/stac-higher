@@ -82,6 +82,12 @@ DEFAULT_GC_BATCH_ITEMS = 500
 # finalize sweep flips it back to pending and re-enqueues the job.
 DEFAULT_FINALIZE_STALE_SECONDS = 1800  # 30 min
 
+# Push-rejection alerting (Phase 7, §8 — P7-H). The flow monitor fires a
+# collection-anchored `push_rejected` alert while rejected staged_uploads
+# rows exist inside this window (and newer than the dedup key's last
+# resolved_at); the alert auto-resolves once rejections age out of it.
+DEFAULT_PUSH_ALERT_LOOKBACK_SECONDS = 86400  # 24 h
+
 # Webhook notification dispatch (M2-C). Attempts include the first; failed
 # rows retry after the cool-off until the cap, then dead-letter (which raises
 # a `webhook_failed` alert). A claim stranded `delivering` past the stall
@@ -132,6 +138,9 @@ class Settings:
     delivery_stall_seconds: int = DEFAULT_DELIVERY_STALL_SECONDS
     #: Finalize crash recovery (Phase 7 §6.4) — see DEFAULT_FINALIZE_STALE_SECONDS.
     finalize_stale_seconds: int = DEFAULT_FINALIZE_STALE_SECONDS
+    #: Push-rejection alert window (Phase 7 §8) — see
+    #: DEFAULT_PUSH_ALERT_LOOKBACK_SECONDS.
+    push_alert_lookback_seconds: int = DEFAULT_PUSH_ALERT_LOOKBACK_SECONDS
     #: Retention & GC sweep batch size (M2-F).
     gc_batch_items: int = DEFAULT_GC_BATCH_ITEMS
     #: History-table retention windows (M2-G).
@@ -195,6 +204,12 @@ class Settings:
                 env.get(
                     "FINALIZE_STALE_SECONDS",
                     str(DEFAULT_FINALIZE_STALE_SECONDS),
+                )
+            ),
+            push_alert_lookback_seconds=int(
+                env.get(
+                    "PUSH_ALERT_LOOKBACK_SECONDS",
+                    str(DEFAULT_PUSH_ALERT_LOOKBACK_SECONDS),
                 )
             ),
             ingest_stored_stall_seconds=int(
