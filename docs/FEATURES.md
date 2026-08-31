@@ -455,7 +455,37 @@ ROADMAP §9).
 
 ---
 
-## Phases 7–8 — Not started ⬜
+## Phase 7 — Direct interaction (push ingest) 🚧 implemented, gate pending
 
-Push-ingest (whose finalize must honor ADR 0014's producer-parameterized
-seam), then cloud/scale. See [`../ROADMAP.md`](../ROADMAP.md).
+All implementation slices P7-B…P7-I merged (2026-08-30); the **P7-Z live
+gate check** (auth-enforced stack: real token → presigned PUT → external
+item POST → finalize → delivery; finalize-failure alert; full e2e) and the
+promotion PR remain. Design spec:
+`docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md` (provisionally
+approved; human review pending). Client docs: [`push-ingest.md`](push-ingest.md).
+
+| Feature | Status | Entry points |
+|---|---|---|
+| Bearer-token auth on `/api/*` (P7-B) | ✅ | `app/src/lib/auth/bearer.ts` + `src/middleware.ts` (`resolveRequestAuth`: session wins, bearer only for anonymous `/api/*` in oidc mode, degrade-to-anonymous); JWKS via the cached discovery; same claims mapper → normal `CanonicalIdentity`; `locals.bearerToken` set for bearer identities. Dev realm client `stac-higher-push` (client-credentials). [`auth.md`](auth.md) "Bearer tokens" |
+| Staged-upload mint + ledger + poll (P7-C) | ✅ | Migration **020** `stac_higher.staged_uploads`; `POST /api/uploads` staged mode (body without `item` → presigns into `staging/{upload_id}/`, `staging://` hrefs, `expires_at` = the single ledger clock); `GET /api/uploads/[uploadId]` (admin/group/creator; else 404); `app/src/lib/uploads/`; fixtures `staged-asset-href.json` + `push-upload-status.json` (incl. the pinned `PUSH_REJECTION_REASONS` set) |
+| Brokered push write path (P7-D) | ✅ | `app/src/pages/api/catalog/[...path].ts` — bearer callers forward their own token; §4.1 precondition set on EVERY bearer write; synchronous staged pre-validation (`app/src/lib/push/prevalidate.ts` — Tier 0 4xxs before pgstac); `prior_item` snapshot on PUT (first-write-wins in SQL, never a staged doc); staged PATCH → 400; bearer collection-create → 403; `X-BFF-Auth` when `CATALOG_BFF_SHARED_SECRET` is set (`lib/push/config.ts`). Session callers byte-identical |
+| Finalize (P7-E, ADR 0014 seam) | ✅ | `services/pipeline/src/pipeline/finalize/` (seam/steps/push resolver+recorder/repo/status/store/sweep) — validate (stac-pydantic via the lifted `pipeline/stac/validate.py`, the ITEMIZE gate) → checksum → server-side `copy_object` staging→canonical → rewrite hrefs → pypgstac upsert, **no producer branching in the steps** (pinned by behavioral + structural tests); jobs `pipeline.finalize` + 5-min `finalize_sweep` (stale claims, TTL expiry); §6.3 tiered rejection outcomes (insert-delete / brokered-restore / direct-leave-broken); `pipeline_finalize_items_total{producer,outcome}` + bytes counter |
+| Dispatcher staged-gating + delete GC (P7-F) | ✅ | `pipeline/dispatcher/loop.py`: staged-href items enqueue finalize (before drain) and never match delivery — no double-fire on the rewrite; delete events mark `asset_gc` before draining (direct-path deletes join ADR 0011; transient mark failures take the I-38 defer path) |
+| Proxy write policy (P7-G, ADR 0015) | ✅ | `services/proxy-policy/` (`ExternallyWritableItemsFilter`: role floor, `externally_writable` IN-set w/ 15s TTL cache, `POST /search` carve-out, `bulk_items` denied, `X-BFF-Auth` exemption — mandatory constant-time secret); derived image `infra/proxy-policy/Dockerfile`; enforced overlay only; pins auth-proxy v1.2.0 + stac-fastapi-pgstac 6.3.1; integration policy legs in `tests/integration/` (skip without the stack) |
+| `push_rejected` alerting + hygiene (P7-H) | ✅ | Migration **021** (`alerts.collection_id` anchor + CHECK fourth leg + widened dedup index, both pipeline ON CONFLICT sites in lockstep); `MONITOR_KINDS` gains `push_rejected` (`evaluate_push_rejections`, `PUSH_ALERT_LOOKBACK_SECONDS` default 24 h, resolved-at floor); group via `collection_settings.group_id`; `history_retention` prunes terminal `staged_uploads`; fixture `alert-kinds.json` (both suites) |
+| Client docs (P7-I) | ✅ | [`push-ingest.md`](push-ingest.md) — flow, brokered-vs-direct, rejection reasons, snapshot/lost-update semantics, limits |
+
+No UI surface beyond the already-shipped Settings toggle. Decisions:
+[ADR 0014 — process output path / finalize seam](decisions/0014-process-output-path.md)
+(the P9-B obligation Phase 7's finalize satisfies),
+[ADR 0015 — proxy write policy](decisions/0015-proxy-write-policy.md),
+[ADR 0008 — BFF catalog writes](decisions/0008-bff-catalog-writes.md)
+(amended: bearer brokering). Residuals in [`ISSUES.md`](ISSUES.md):
+I-70 through I-79 (+ the I-13/I-14/I-15 amendments).
+
+---
+
+## Phase 8 — Not started ⬜
+
+Cloud deployment, scale gate & visualization. See
+[`../ROADMAP.md`](../ROADMAP.md).

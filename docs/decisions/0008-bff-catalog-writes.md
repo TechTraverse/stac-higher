@@ -2,7 +2,9 @@
 
 - **Status:** accepted; **implemented** (2026-07-25 — `/api/catalog/[...path]`,
   `stacFetch` routing branch, guard registration, and the
-  `tests/integration/bff-catalog-writes.test.mjs` UI-path leg)
+  `tests/integration/bff-catalog-writes.test.mjs` UI-path leg);
+  **amended 2026-08-30** (Phase 7 — see "Amendment" below: the route now also
+  brokers bearer-caller push writes)
 - **Owners:** app control plane (`app/src/lib/stac-api/`, `app/src/pages/api/`,
   `app/src/middleware.ts`)
 - **Related:** ADR 0002 (auth-proxy enforcement scope), ROADMAP §7 (enforcement
@@ -106,3 +108,20 @@ enforcement point). The proxy continues to enforce all non-browser traffic.
 - Phase 7: external push clients may want the staging/finalize flow's
   presigned-upload brokering under the same route family; keep the route
   naming generic enough to grow.
+
+## Amendment (2026-08-30 — superseded scope, Phase 7 §4.3)
+
+Decision point 3 ("External API clients are unaffected… the BFF is for
+browser sessions only") is **superseded** — exactly what the second Revisit
+bullet anticipated. The Phase 7 design spec (§4.3,
+`docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md`) extends
+this same route into the **documented default write path for external push
+clients**: when `locals.auth` came from a bearer token, the route forwards
+the **caller's own** token instead of a session token (the proxy remains the
+token-enforcement point either way), holds every bearer write to the
+`externally_writable`/archived/group precondition set, pre-validates staged
+bodies synchronously, and snapshots `prior_item` on updates. The direct
+path to the proxy remains possible (and is what ADR 0015's write policy
+gates) but is documented as discouraged. Session-caller behavior — this
+ADR's original scope — is byte-identical. Client contract:
+`docs/push-ingest.md`.

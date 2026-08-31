@@ -101,7 +101,7 @@ accepts `Authorization: Bearer <JWT>` on `/api/*` requests
 
 Tokens come from the IdP's **client-credentials grant on a confidential
 client** with the `stac-higher` audience mapper — deployments create their
-own (see `docs/push-ingest.md` once P7-I lands). For local dev the realm file
+own (full push client contract: [`push-ingest.md`](push-ingest.md)). For local dev the realm file
 ships a `stac-higher-push` client (secret `stac-higher-push-secret`; its
 service account is an operator in `earth-observation`) — a dev-only artifact
 with the same never-deploy caveat as the ADR 0002 test clients. Realm-file
@@ -145,7 +145,26 @@ mode there is no token and none is attached — the pass-through proxy accepts
 the write, so both postures share one code path. These routes are gated
 (operator+) and audited like every other mutation. `stacFetch` routes
 built-in-catalog writes here unconditionally; reads and external catalogs are
-untouched.
+untouched. Since Phase 7 the route also brokers **bearer-caller** writes
+(forwarding the caller's own token — the push path, `push-ingest.md`); the
+ADR 0008 session behavior above is unchanged.
+
+**Enforced-stack operator step (Phase 7, ADR 0015):** the auth-enforced
+overlay's proxy write policy exempts app-mediated writes via the
+`X-BFF-Auth` header, so `CATALOG_BFF_SHARED_SECRET` must be set on **both
+sides**. The overlay's `${CATALOG_BFF_SHARED_SECRET:?}` interpolation covers
+only the **proxy** — the app is not a compose service, so its copy comes
+from the shell/`.env` where the dev server (or app container) runs:
+
+```
+export CATALOG_BFF_SHARED_SECRET=$(openssl rand -hex 32)   # or put it in .env
+docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait
+```
+
+An app running against the enforced stack **without** the secret silently
+loses UI writes to non-externally-writable collections (the proxy treats
+them as external) — export it for both before starting either. Pass-through
+mode ignores it entirely.
 
 ## RBAC & audit (ROADMAP §7, §5.5)
 
