@@ -1,7 +1,10 @@
 """Delivery dispatch wiring (Slice B-i core; B-iii retry; Slice C NOTIFY wake).
 
 The outbox drains through ``dispatch_until_empty``, which groups matches per
-association and enqueues a batched ``pipeline.deliver`` job. Two wake paths
+association and enqueues a batched ``pipeline.deliver`` job (Phase 7 §7:
+staged items route to ``pipeline.finalize`` instead, and delete events mark
+``asset_gc`` — reason ``item_delete``, grace from collection_settings —
+before draining). Two wake paths
 share that drain (overlap is safe — the outbox claim is atomic, I-40):
 ``build_notify_listener`` returns the LISTEN-woken primary loop (run by
 main.py alongside the worker), and ``dispatch_poll`` keeps the minute cron as
@@ -36,7 +39,10 @@ from pipeline.delivery.worker import deliver_item, retry_delay_seconds
 from pipeline.dispatcher.listener import run_dispatch_listener
 from pipeline.dispatcher.loop import dispatch_until_empty
 from pipeline.dispatcher.repo import PgDispatchRepo
+from pipeline.gc.repo import PgGcRepo
+from pipeline.gc.sweep import item_prefix
 from pipeline.jobs._common import load_key_or_skip
+from pipeline.jobs.finalize import JOB_FINALIZE
 from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.storage.platform import build_platform_client
 
@@ -53,6 +59,10 @@ RETRY_SWEEP_BATCH = 500
 #: otherwise lose the delivery — the outbox row is already claimed and the
 #: retry sweep has nothing to re-drive.
 DELIVER_RETRY = RetrySpec(max_attempts=4, wait_seconds=60)
+#: asset_gc reason for the §7.3 delete-event mark (migration-017 CHECK value —
+#: the same reason the app's BFF item delete writes; the open-key unique index
+#: makes the two idempotent against each other).
+REASON_ITEM_DELETE = "item_delete"
 
 
 def _entry_asset_keys(
@@ -81,11 +91,34 @@ def build_dispatch_drain(
 
     async def run_dispatch(wake_path: str) -> None:
         repo = PgDispatchRepo(settings.database_url)
+        gc_repo = PgGcRepo(settings.database_url)
 
         async def _enqueue(batches: list[dict[str, Any]]) -> None:
             await queue.enqueue_batch(JOB_DELIVER, batches)
 
-        matches = await dispatch_until_empty(repo, _enqueue)
+        async def _enqueue_finalize(payloads: list[dict[str, Any]]) -> None:
+            # Staged gate (spec §7.1): one pipeline.finalize job per staged
+            # event, P7-E payload contract, batched per claim.
+            await queue.enqueue_batch(JOB_FINALIZE, payloads)
+
+        async def _mark_delete_gc(collection_id: str, item_id: str) -> None:
+            # §7.3: the mark SQL is PgGcRepo's (one place); grace comes from
+            # the collection's settings row (the app's default when absent).
+            grace = await repo.get_gc_grace_days(collection_id)
+            await gc_repo.mark_asset_prefix(
+                item_prefix(collection_id, item_id),
+                collection_id,
+                item_id,
+                REASON_ITEM_DELETE,
+                grace,
+            )
+
+        matches = await dispatch_until_empty(
+            repo,
+            _enqueue,
+            enqueue_finalize=_enqueue_finalize,
+            mark_delete_gc=_mark_delete_gc,
+        )
         if matches:
             logger.info(
                 "dispatch enqueued delivery batches",
