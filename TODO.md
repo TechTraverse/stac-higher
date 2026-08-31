@@ -81,7 +81,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
       scoped), `/metrics` counters per the M2-H central pattern. After M5-C;
       parallel-safe with M5-D if footprints stay disjoint (check the shared
       edge module — coordinate if both touch it).
-- [ ] **M5-F · UI completion** (spec §7, §9). `/graph` pipeline view,
+- [x] **M5-F · UI completion** (spec §7, §9). `/graph` pipeline view,
       collection lineage panel (30-day strip off `flow_stats_daily`),
       overview rollup, run log viewer, dashboard sparklines; e2e coverage.
       After M5-D and M5-E.
@@ -235,5 +235,26 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
 - **Edges are filtered to those whose BOTH endpoints are visible.** A half-edge
   would draw an arrow to a node the caller cannot see, leaking another group's
   wiring through the picture.
+
+- **The strip ends at YESTERDAY, and that is load-bearing.** The daily rollup
+  writes complete days only, so including today would show every flow as newly
+  dead each morning. `FlowStrip` builds its own calendar and a test pins that
+  today is absent. If a future "today, live from flow_stats" cell is added, it
+  has to be visually distinct from a finished day.
+- **A missing day and a quiet day are drawn differently** (hatched vs. empty).
+  A gap means the rollup did not run; collapsing the two would hide a broken
+  job behind a plausible-looking strip.
+- **The `/processes` sparkline shows the FIRST source only.** `flow_stats_daily`
+  is keyed per source; summing several would hide a dead source behind a busy
+  sibling. If multi-source processes become common, the dashboard needs a
+  worst-of rollup rather than a sum.
+- **`.env` is gitignored, so worktrees do not have one.** `data-flow.spec.ts`
+  needs `CREDENTIALS_MASTER_KEY` from the REPO-ROOT `.env`; the run-e2e skill's
+  `source ../.env` assumes you are in the main checkout. From a worktree,
+  source the main repo's path explicitly. Cost me one false failure.
+- **A process OUTPUT edge has no history strip.** Telemetry lives on the SOURCE
+  that triggered the run, so `flow_stats_daily` has no row keyed by an output.
+  The lineage panel renders those edges without a strip rather than showing an
+  always-empty one.
 
 (append here during iterations)

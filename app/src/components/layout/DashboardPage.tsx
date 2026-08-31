@@ -14,6 +14,7 @@ import {
 import { Badge } from "@stac-higher/shared";
 import { Button } from "@stac-higher/shared";
 import { Skeleton } from "@stac-higher/shared";
+import { PlatformRollup } from "./PlatformRollup";
 import {
   Layers,
   Search,
@@ -67,6 +68,10 @@ function DashboardContent() {
           {catalog?.name ?? "No catalog selected"}
         </p>
       </div>
+
+      {/* Platform overview (M5-F): what is wired and whether it is healthy.
+          Renders nothing when there is no platform surface to report on. */}
+      <PlatformRollup />
 
       <div className="grid gap-4 md:grid-cols-3 mb-8">
         <Card>

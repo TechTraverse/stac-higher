@@ -28,6 +28,11 @@ description: Run the Playwright e2e suite for the STAC Higher app, or debug a fa
    the repo-root `.env` (docker-compose's env file), which Astro does NOT load
    — source it before running: `set -a && source ../.env && set +a` (from
    `app/`), or export the var before starting a dev server manually.
+   **From a worktree, `../.env` does not exist**: `.env` is gitignored, so
+   only the main checkout has one. Source it by absolute path
+   (`set -a && source /path/to/stac-higher/.env && set +a`) or
+   `data-flow.spec.ts` fails in `beforeAll` with an unhelpful
+   `expect(conn.ok())` false that looks like a regression.
 
 ## Run
 

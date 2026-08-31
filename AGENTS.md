@@ -145,6 +145,8 @@ Astro server routes:
 | `/api/alerts/read` | POST | Advance the caller's own read watermark (member+; deliberately NOT operator-gated/audited — personal UI state) — M2-C |
 | `/api/channels` | GET, POST | List (member+: own groups; admin: all) / create (operator+) per-group notification channels (`in_app` \| `webhook`); webhook signing secret is write-only (`has_secret`) — M2-C, ADR 0010 |
 | `/api/channels/[id]` | GET, PUT, DELETE | Get / replace-config / delete a channel (group-owned; PUT replaces `config` wholesale, kind+group immutable) |
+| `/api/monitoring/history` | GET | Daily flow-stats strip from `flow_stats_daily` (`?subject_kind=association\|process&subject_id&days`, window clamped server-side); member+ via the subject's owner — M5-F |
+| `/api/processes/[id]/runs/[runId]/log` | GET | Authorize → 302 to a short-lived presigned URL for the run log (member+ of the OWNING GROUP — stricter than the asset route, since a run log is arbitrary operator output). A run with no `log_ref` is a 404 — M5-F |
 | `/api/monitoring/graph` | GET | The pipeline graph: typed nodes (connection / collection / process) + edges (ingest, deliver, process_source, process_output), member+ scoped. Shares `lib/graph/*` with the M5-D cycle check, so the picture and the write gate cannot disagree — M5-E |
 | `/api/monitoring/flows` | GET | Cross-collection association list with `flow_stats` + expectation (member+: own groups; admin: all) — feeds `/monitoring` (M2-D) |
 | `/api/processes` | GET, POST | List (member+: own groups; admin: all) / create (operator+, audited) group-owned processes — Phase 9 M5-A |

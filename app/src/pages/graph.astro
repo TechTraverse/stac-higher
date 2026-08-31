@@ -1,0 +1,8 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { PipelineGraphPage } from "../components/monitoring/PipelineGraph";
+---
+
+<Layout title="Pipeline">
+  <PipelineGraphPage client:only="react" />
+</Layout>
