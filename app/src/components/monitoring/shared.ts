@@ -55,6 +55,9 @@ export const ALERT_KIND_LABEL: Record<string, string> = {
   ingest_failed: "ingest failures",
   backfill_failed: "backfill failed",
   push_rejected: "push items rejected",
+  process_stalled: "process not running",
+  process_failed: "process runs dead-lettered",
+  process_rate_limited: "process rate ceiling hit",
   webhook_failed: "webhook delivery failed",
 };
 

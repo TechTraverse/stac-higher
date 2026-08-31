@@ -55,6 +55,14 @@ MONITOR_KINDS = (
     "ingest_failed",
     "backfill_failed",
     "push_rejected",
+    # Phase 9 (M5-0) declared the three process kinds and assigned them to
+    # this monitor; the CONDITIONS that raise them land in M5-E. Listing them
+    # now is deliberate and inert: sync_alerts only auto-resolves open rows of
+    # an owned kind, and nothing writes a process alert yet, so the reconcile
+    # is a no-op for these three until their evaluators exist.
+    "process_stalled",
+    "process_failed",
+    "process_rate_limited",
 )
 
 

@@ -81,8 +81,48 @@ the alert `kind` enum since the fixture was deferred in M2). The file pins:
   (`MONITOR_KINDS`, `WEBHOOK_FAILED_KIND`) is asserted equal to its list, and
   the lists must partition `kinds` exactly: adding a kind on either side
   without updating the fixture (or claiming a kind in two writers) fails a
-  suite. Growing the enum (Phase 9 appends its kinds) means appending here
-  and to the owning writer's list in the same change.
+  suite. Growing the enum means appending here and to the owning writer's list
+  in the same change — as Phase 9 (M5-0) did for `process_stalled`,
+  `process_failed` and `process_rate_limited`, all three monitor-owned. Note
+  that a kind can be declared and owned before anything raises it: M5-0
+  appended the three, M5-E adds the conditions.
+
+## Additional fixture styles (Phase 9)
+
+### `discriminated-union` — `process-trigger.json`, `process-runtime.json`
+
+The §5.6 `trigger` and `runtime` shapes are unions on a `kind` discriminator,
+so a single `minimal`/`defaults` pair cannot describe them. These files replace
+that pair with:
+
+- `discriminator` — the field the union switches on (`kind`).
+- `variants` — one `{ minimal, defaults }` pair **per arm**, keyed by the
+  discriminator value. Both suites assert each arm's `minimal` parses to
+  exactly its `defaults`.
+
+`cases[]` keeps the ordinary `{ name, config, app, pipeline }` format across
+both arms.
+
+**`process-runtime.json` carries the M5 slice-1 asymmetry**, and it is a
+decision rather than an oversight: the `container` arm is part of the contract
+(the pipeline reader parses it, so nothing is foreclosed) while the app's
+**write gate** refuses it — user-supplied images are a supply-chain review
+surface deferred past the first accreditation scope (design spec §4, ADR 0013).
+Every `container` case is therefore `app: "reject"` / `pipeline: "accept"`,
+and the vitest consumer runs the `cases[]` through `processRuntimeWriteSchema`
+while asserting `defaults` against the read schema `processRuntimeSchema`. A
+`container` document that is *also* malformed (no image) stays `reject`/
+`reject` — broken is not the same as gated.
+
+### `process-env.json` and `process-expectation.json`
+
+Ordinary `minimal`/`defaults`/`cases[]` documents. `env` is an ARRAY envelope
+(`[{name, value} | {name, secret_ref}]`); a `secret_ref` is
+`{connection_id, key}`, a pointer into the §5.2 encrypted-credentials envelope
+resolved pipeline-side at launch and injected only into the run container's
+environment. A `value` + `secret_ref` collision is `reject`/`reject` on both
+sides rather than a precedence rule, because a plaintext secret sitting beside
+a reference is a leak a precedence rule would quietly preserve.
 
 ## Why `app` and `pipeline` expectations can differ
 

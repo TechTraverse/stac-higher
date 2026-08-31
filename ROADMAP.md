@@ -793,7 +793,7 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
 | 7 — Direct interaction | ✅ Done (gate met 2026-08-30) | All slices P7-B…P7-I merged (bearer auth, staged uploads, brokered BFF push path, finalize on the ADR 0014 seam, dispatcher gating, ADR 0015 proxy write policy, `push_rejected` alerting, `docs/push-ingest.md`); **P7-Z rehearsal closed the done-when live** (evidence under the Phase 7 entry below; two gate findings fixed — I-80). Open: the promotion PR (human) + human review of the provisionally-approved spec. [FEATURES §Phase 7](docs/FEATURES.md). |
 | 8 — Cloud, scale gate & viz | ⬜ Not started | — |
-| 9 — Processes | ⬜ Scoped (design spec approved 2026-08-29) | Planning complete: `docs/superpowers/specs/2026-08-29-phase9-processes-design.md` (slices M5-0…M5-G), ADRs 0013/0014 accepted, scoping queue P9-A…F done. Implementation starts after Phase 7. |
+| 9 — Processes | 🚧 In progress (started 2026-08-30) | Planning complete: `docs/superpowers/specs/2026-08-29-phase9-processes-design.md` (slices M5-0…M5-G), ADRs 0013/0014 accepted, scoping queue P9-A…F done. **M5-0 done** (migrations 022/023, the four §5.6 contract fixtures + the `alert-kinds.json` append, Zod ↔ pipeline readers); M5-A/M5-B next. |
 
 ### Named milestones (2026-07-24)
 

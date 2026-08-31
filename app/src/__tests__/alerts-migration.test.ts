@@ -38,9 +38,19 @@ const DEDUP_LEGS =
   " coalesce(channel_id::text, '')," +
   " coalesce(collection_id, '')";
 
+/** The text of ONE migration entry: from its name to the start of the next
+ * entry (or the end of the array). Slicing to the end of MIGRATIONS instead
+ * would silently widen these pins over every migration added after it. */
+function migrationEntry(name: string): string {
+  const start = migrate.indexOf(`"${name}"`);
+  const next = migrate.slice(start).search(/\n\s*name: "\d{3}_/);
+  const end = next === -1 ? migrate.indexOf("];", start) : start + next;
+  return migrate.slice(start, end);
+}
+
 describe("migration 021 (alerts collection anchor)", () => {
   const start = migrate.indexOf('"021_alerts_collection_anchor"');
-  const sql = migrate.slice(start, migrate.indexOf("];"));
+  const sql = migrationEntry("021_alerts_collection_anchor");
 
   it("exists, after 020", () => {
     expect(start).toBeGreaterThan(migrate.indexOf('"020_staged_uploads"'));

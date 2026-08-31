@@ -985,6 +985,278 @@ const MIGRATIONS = [
         ON stac_higher.alerts (collection_id);
     `,
   },
+  {
+    // M5-0 (Phase 9 Processes spec §3; ROADMAP §5 PROCESS_* ER shapes): the
+    // process entities. App owns this DDL (ADR 0001); the app writes
+    // processes/revisions/sources/outputs and INSERTS process_runs' queued
+    // rows only where the spec says so, while the PIPELINE writes run state
+    // (status/attempts/output_items/log_ref/timestamps), source flow_stats,
+    // and drains process_checks — never DDL. The split mirrors
+    // collection_connections/ingest_files exactly.
+    //
+    // collection_id is TEXT with no FK throughout (pgstac collections are
+    // created out of band — same stance as collection_settings and
+    // collection_connections). Soft-delete per ADR 0009 lives on `processes`
+    // only: sources/outputs/revisions are children of a process and die with
+    // it; runs are history and never cascade (ADR 0009's
+    // nothing-cascades-into-history stance), so process_runs' FKs are
+    // RESTRICT like delivery_log's.
+    //
+    // Hygiene (§3, confirmed against ADR 0012's criteria): process_runs is
+    // deliberately NOT partitioned — runs are verb targets (the audited
+    // `rerun`), the delivery_log argument verbatim. Terminal rows age out
+    // through the hourly history_retention sweep
+    // (PROCESS_RUN_RETENTION_DAYS, default 90), which deletes the log object
+    // BEFORE the row (§9) so no orphaned bytes are left behind.
+    name: "022_processes",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.processes (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        name text NOT NULL,
+        description text NOT NULL DEFAULT '',
+        group_id text NOT NULL,
+        -- Set by "deploy" (create a revision, then point here). Nullable
+        -- because a process exists before its first revision; the FK is
+        -- added after process_revisions below.
+        current_revision uuid,
+        enabled boolean NOT NULL DEFAULT true,
+        -- §7 run-rate ceiling, enforced at enqueue. Operator-editable; the
+        -- floor of 1 keeps "pause by ceiling" expressible without a zero
+        -- that would read as "unlimited".
+        max_runs_per_hour integer NOT NULL DEFAULT 60
+          CHECK (max_runs_per_hour >= 1),
+        created_by text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        deleted_at timestamptz
+      );
+
+      CREATE INDEX IF NOT EXISTS processes_group_id_idx
+        ON stac_higher.processes (group_id);
+      -- Names are unique per owning group among LIVE processes only, so a
+      -- soft-deleted process never blocks re-creating one by the same name
+      -- (the collection_connections_live_unique_idx precedent, migration 010).
+      CREATE UNIQUE INDEX IF NOT EXISTS processes_live_name_idx
+        ON stac_higher.processes (group_id, name)
+        WHERE deleted_at IS NULL;
+
+      -- Immutable snapshots: "deploy" = INSERT a revision + repoint
+      -- processes.current_revision. Every run pins the revision that
+      -- executed it, so revisions are never updated or deleted while a run
+      -- references them.
+      --
+      -- env is the §5.6 array envelope ([{name, value} | {name,
+      -- secret_ref}]) — plaintext secrets never land here; secret_ref is a
+      -- pointer into the §5.2 encrypted-credentials envelope, resolved
+      -- pipeline-side at launch and only into the RUN's environment
+      -- (ADR 0013's isolation invariant).
+      CREATE TABLE IF NOT EXISTS stac_higher.process_revisions (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        process_id uuid NOT NULL
+          REFERENCES stac_higher.processes(id) ON DELETE RESTRICT,
+        runtime jsonb NOT NULL DEFAULT '{}'::jsonb,
+        code text,
+        env jsonb NOT NULL DEFAULT '[]'::jsonb,
+        created_by text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS process_revisions_process_idx
+        ON stac_higher.process_revisions (process_id, created_at DESC);
+
+      ALTER TABLE stac_higher.processes
+        DROP CONSTRAINT IF EXISTS processes_current_revision_fkey;
+      ALTER TABLE stac_higher.processes
+        ADD CONSTRAINT processes_current_revision_fkey
+          FOREIGN KEY (current_revision)
+          REFERENCES stac_higher.process_revisions(id) ON DELETE RESTRICT;
+
+      -- What triggers the process. trigger is the §5.6 shape
+      -- (item_event | cron); expectation is {run_within_seconds} and lives
+      -- PER SOURCE (I-63 decided in the spec §8), mirroring the association
+      -- expectation model — the source id takes the association position in
+      -- the ADR 0010 dedup key. flow_stats is PIPELINE-written telemetry
+      -- (runs/output items/last_run_at/last_error_at/last_duration), read by
+      -- the UI and never written app-side, exactly like
+      -- collection_connections.flow_stats.
+      CREATE TABLE IF NOT EXISTS stac_higher.process_sources (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        process_id uuid NOT NULL
+          REFERENCES stac_higher.processes(id) ON DELETE RESTRICT,
+        collection_id text NOT NULL,
+        trigger jsonb NOT NULL DEFAULT '{}'::jsonb,
+        expectation jsonb,
+        flow_stats jsonb NOT NULL DEFAULT '{}'::jsonb,
+        enabled boolean NOT NULL DEFAULT true,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        -- One source row per (process, collection): a second trigger on the
+        -- same collection is an edit, not a new row — which keeps the
+        -- cycle-check edge model (M5-D) a simple set of collection→process
+        -- edges.
+        UNIQUE (process_id, collection_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS process_sources_process_idx
+        ON stac_higher.process_sources (process_id);
+      -- The dispatcher's item_event leg matches landing items against
+      -- enabled sources by collection.
+      CREATE INDEX IF NOT EXISTS process_sources_collection_enabled_idx
+        ON stac_higher.process_sources (collection_id)
+        WHERE enabled;
+
+      CREATE TABLE IF NOT EXISTS stac_higher.process_outputs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        process_id uuid NOT NULL
+          REFERENCES stac_higher.processes(id) ON DELETE RESTRICT,
+        collection_id text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (process_id, collection_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS process_outputs_process_idx
+        ON stac_higher.process_outputs (process_id);
+      CREATE INDEX IF NOT EXISTS process_outputs_collection_idx
+        ON stac_higher.process_outputs (collection_id);
+
+      -- The run ledger (§6). queued -> running -> succeeded | failed -> dead
+      -- on the runtime's RetrySpec budget, with a stall sweep for rows a
+      -- crashed worker/executor stranded in 'running'
+      -- (PROCESS_RUN_STALL_SECONDS, the M2-0 sweep pattern).
+      --
+      -- revision_id is pinned at enqueue and NEVER repointed — a re-run of a
+      -- dead row re-executes the revision that failed, not whatever is
+      -- current. source_id is nullable so a UI test run (process_checks) and
+      -- a manual re-run can exist without a trigger source.
+      CREATE TABLE IF NOT EXISTS stac_higher.process_runs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        process_id uuid NOT NULL
+          REFERENCES stac_higher.processes(id) ON DELETE RESTRICT,
+        revision_id uuid NOT NULL
+          REFERENCES stac_higher.process_revisions(id) ON DELETE RESTRICT,
+        source_id uuid
+          REFERENCES stac_higher.process_sources(id) ON DELETE SET NULL,
+        status text NOT NULL DEFAULT 'queued'
+          CHECK (status IN ('queued','running','succeeded','failed','dead')),
+        attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        -- One run = N trigger items (§6.7). Empty array for cron/test runs.
+        input_items jsonb NOT NULL DEFAULT '[]'::jsonb,
+        -- Authoritative record of what finalize upserted (ADR 0014).
+        output_items jsonb NOT NULL DEFAULT '[]'::jsonb,
+        -- logs/runs/{process_id}/{run_id}.log in the §5.3 layout — a logs/
+        -- sibling of assets/ and staging/. Deleted BEFORE this row when the
+        -- retention leg prunes it (§9): no orphaned bytes, and asset_gc is
+        -- deliberately not involved (logs are platform bytes, not catalog
+        -- assets).
+        log_ref text,
+        error text,
+        -- §7: set when the ceiling defers this run. A deferred item_event run
+        -- COALESCES — new matches are absorbed into input_items rather than
+        -- queueing more runs — so the partial index below is the enqueue
+        -- path's lookup.
+        rate_deferred_until timestamptz,
+        -- Test runs (the process_checks bridge) are ordinary runs, flagged so
+        -- the UI and the rate ceiling can treat them apart from triggered work.
+        is_test boolean NOT NULL DEFAULT false,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        started_at timestamptz,
+        finished_at timestamptz
+      );
+
+      CREATE INDEX IF NOT EXISTS process_runs_process_created_idx
+        ON stac_higher.process_runs (process_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS process_runs_source_created_idx
+        ON stac_higher.process_runs (source_id, created_at DESC);
+      -- The rate window (§7) counts recent runs per process.
+      CREATE INDEX IF NOT EXISTS process_runs_rate_window_idx
+        ON stac_higher.process_runs (process_id, created_at);
+      -- The stall sweep scans rows stuck in 'running'.
+      CREATE INDEX IF NOT EXISTS process_runs_running_idx
+        ON stac_higher.process_runs (started_at)
+        WHERE status = 'running';
+      -- At most ONE deferred run per source at a time: coalescing is the
+      -- §7 requirement, and a unique index is what makes it true under
+      -- concurrent dispatch rather than merely intended.
+      CREATE UNIQUE INDEX IF NOT EXISTS process_runs_deferred_source_idx
+        ON stac_higher.process_runs (source_id)
+        WHERE rate_deferred_until IS NOT NULL AND status = 'queued'
+          AND source_id IS NOT NULL;
+      -- The retention leg prunes terminal rows by age.
+      CREATE INDEX IF NOT EXISTS process_runs_terminal_age_idx
+        ON stac_higher.process_runs (finished_at)
+        WHERE status IN ('succeeded','dead');
+
+      -- The ADR 0004 request-table bridge for UI test runs, shaped exactly
+      -- like connection_checks: the app INSERTs 'pending', the pipeline
+      -- claims it (FOR UPDATE SKIP LOCKED), turns it into a flagged run, and
+      -- writes the result columns back. run_id links to the run it produced.
+      CREATE TABLE IF NOT EXISTS stac_higher.process_checks (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        process_id uuid NOT NULL
+          REFERENCES stac_higher.processes(id) ON DELETE RESTRICT,
+        revision_id uuid NOT NULL
+          REFERENCES stac_higher.process_revisions(id) ON DELETE RESTRICT,
+        requested_by text NOT NULL,
+        requested_at timestamptz NOT NULL DEFAULT now(),
+        status text NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending','running','done','failed')),
+        run_id uuid REFERENCES stac_higher.process_runs(id) ON DELETE SET NULL,
+        result jsonb,
+        finished_at timestamptz
+      );
+
+      CREATE INDEX IF NOT EXISTS process_checks_process_idx
+        ON stac_higher.process_checks (process_id, requested_at DESC);
+      CREATE INDEX IF NOT EXISTS process_checks_pending_idx
+        ON stac_higher.process_checks (requested_at)
+        WHERE status = 'pending';
+    `,
+  },
+  {
+    // M5-0 (Phase 9 spec §10, P9-E decided): the daily flow-stats history
+    // that backs the lineage panel's 30-day strip and the /processes
+    // sparklines. A TABLE rather than a live GROUP BY because (a) M2-G's
+    // history_retention prunes the ledgers those aggregates would read, so
+    // derived history silently thins, and (b) at M3 rates a 30-day GROUP BY
+    // per page view is the unbounded-aggregation shape M2-A removed from
+    // listDeliveries.
+    //
+    // App owns the DDL; the PIPELINE's daily job UPSERTs one row per subject
+    // per day (M5-E), and the hourly history_retention sweep prunes beyond
+    // ~400 days — a bounded DELETE, no partitioning (the row count is
+    // subjects x days). TODAY's partial bucket is derived live from
+    // flow_stats and is deliberately NOT written here, so a mid-day read
+    // never shows a half-filled row as final.
+    //
+    // subject_kind keeps associations and processes in ONE table so the
+    // lineage strip is uniform (the P9-E open question, answered yes).
+    // Columns are the union of both subjects' counters; a subject leaves the
+    // ones it does not produce at zero/NULL.
+    name: "023_flow_stats_daily",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.flow_stats_daily (
+        subject_kind text NOT NULL CHECK (subject_kind IN ('association','process')),
+        subject_id uuid NOT NULL,
+        day date NOT NULL,
+        files integer NOT NULL DEFAULT 0,
+        items integer NOT NULL DEFAULT 0,
+        bytes bigint NOT NULL DEFAULT 0,
+        delivered integer NOT NULL DEFAULT 0,
+        failed integer NOT NULL DEFAULT 0,
+        dead integer NOT NULL DEFAULT 0,
+        runs integer NOT NULL DEFAULT 0,
+        latency_p50_seconds real,
+        latency_max_seconds real,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (subject_kind, subject_id, day)
+      );
+
+      -- The lineage strip reads one subject's trailing window; the retention
+      -- sweep deletes by day across subjects.
+      CREATE INDEX IF NOT EXISTS flow_stats_daily_day_idx
+        ON stac_higher.flow_stats_daily (day);
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

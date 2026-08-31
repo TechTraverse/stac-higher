@@ -1,0 +1,172 @@
+{
+  "style": "discriminated-union",
+  "$comment": "Golden fixture for the §5.6 process `runtime` shape (Phase 9 / M5-0), stored in stac_higher.process_revisions.runtime. Consumed by app/src/__tests__/contract-fixtures.test.ts (processRuntimeSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_process_runtime). THE SLICE-1 ASYMMETRY IS DELIBERATE AND PINNED HERE: the shape CARRIES the `container` arm so nothing is foreclosed, and the pipeline reader accepts it, while the app's write gate REJECTS it — user-supplied images are a supply-chain review surface that stays out of the first accreditation scope (spec §4). Every `container` case below is therefore app: reject / pipeline: accept. `memory_mb` and `timeout_seconds` become the executor's per-run HostConfig limits and wall-clock kill (ADR 0013); `retry` reuses the queue RetrySpec shape from §5.1's delivery config verbatim.",
+  "discriminator": "kind",
+  "variants": {
+    "inline_python": {
+      "minimal": { "kind": "inline_python" },
+      "defaults": {
+        "kind": "inline_python",
+        "image": null,
+        "memory_mb": 512,
+        "timeout_seconds": 900,
+        "retry": { "max_attempts": 3, "backoff": "exponential" }
+      }
+    },
+    "container": {
+      "minimal": { "kind": "container", "image": "ghcr.io/example/proc:1.2.3" },
+      "defaults": {
+        "kind": "container",
+        "image": "ghcr.io/example/proc:1.2.3",
+        "memory_mb": 512,
+        "timeout_seconds": 900,
+        "retry": { "max_attempts": 3, "backoff": "exponential" }
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "inline_python with every knob set",
+      "config": {
+        "kind": "inline_python",
+        "image": null,
+        "memory_mb": 2048,
+        "timeout_seconds": 60,
+        "retry": { "max_attempts": 1, "backoff": "fixed" }
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "inline_python at the memory floor",
+      "config": { "kind": "inline_python", "memory_mb": 128 },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "memory below the floor (a run needs room for the interpreter)",
+      "config": { "kind": "inline_python", "memory_mb": 127 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "zero memory",
+      "config": { "kind": "inline_python", "memory_mb": 0 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "fractional memory (writer requires an int; reader truncates)",
+      "config": { "kind": "inline_python", "memory_mb": 512.5 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "timeout at the one-second floor",
+      "config": { "kind": "inline_python", "timeout_seconds": 1 },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "timeout above the ceiling (a run is not a service)",
+      "config": { "kind": "inline_python", "timeout_seconds": 86401 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "zero timeout",
+      "config": { "kind": "inline_python", "timeout_seconds": 0 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "non-numeric timeout",
+      "config": { "kind": "inline_python", "timeout_seconds": "15m" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "boolean memory",
+      "config": { "kind": "inline_python", "memory_mb": true },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "retry with an unknown backoff",
+      "config": { "kind": "inline_python", "retry": { "backoff": "fibonacci" } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "retry with zero attempts (a run must be attempted once)",
+      "config": { "kind": "inline_python", "retry": { "max_attempts": 0 } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "retry as the wrong container type",
+      "config": { "kind": "inline_python", "retry": [] },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "inline_python carrying an image (nothing to run it in)",
+      "config": { "kind": "inline_python", "image": "ghcr.io/example/proc:1.2.3" },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "container with an image — SLICE-1 ASYMMETRY: shape valid, app gate refuses",
+      "config": { "kind": "container", "image": "ghcr.io/example/proc:1.2.3" },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "container with limits — still refused app-side this slice",
+      "config": {
+        "kind": "container",
+        "image": "ghcr.io/example/proc:1.2.3",
+        "memory_mb": 1024,
+        "timeout_seconds": 300
+      },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "container without an image (broken on BOTH sides, not just gated)",
+      "config": { "kind": "container" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "container with a blank image",
+      "config": { "kind": "container", "image": "   " },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown key alongside a valid runtime",
+      "config": { "kind": "inline_python", "gpu": true },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown runtime kind",
+      "config": { "kind": "wasm" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "missing kind",
+      "config": { "memory_mb": 512 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "empty object",
+      "config": {},
+      "app": "reject",
+      "pipeline": "reject"
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+{
+  "style": "discriminated-union",
+  "$comment": "Golden fixture for the §5.6 process `trigger` shape (Phase 9 / M5-0), stored in stac_higher.process_sources.trigger. Consumed by app/src/__tests__/contract-fixtures.test.ts (processTriggerSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_process_trigger). Zod is the strict write gatekeeper; the Python parser is a lenient reader that ignores unknown keys. `item_filter` is CQL2 text and is NOT validated on either side this slice — same non-validation caveat as the delivery config's item_filter (ISSUES I-41).",
+  "discriminator": "kind",
+  "variants": {
+    "item_event": {
+      "minimal": { "kind": "item_event" },
+      "defaults": { "kind": "item_event", "item_filter": null }
+    },
+    "cron": {
+      "minimal": { "kind": "cron", "schedule": "*/15 * * * *" },
+      "defaults": { "kind": "cron", "schedule": "*/15 * * * *" }
+    }
+  },
+  "cases": [
+    {
+      "name": "item_event with an explicit CQL2 subset",
+      "config": { "kind": "item_event", "item_filter": "properties.eo:cloud_cover < 20" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "item_event with an explicit null filter",
+      "config": { "kind": "item_event", "item_filter": null },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "item_event with a blank filter (a filter must filter)",
+      "config": { "kind": "item_event", "item_filter": "" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "item_event with a whitespace-only filter",
+      "config": { "kind": "item_event", "item_filter": "   " },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "item_event with a non-string filter",
+      "config": { "kind": "item_event", "item_filter": 7 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "cron with a five-field schedule",
+      "config": { "kind": "cron", "schedule": "0 3 * * *" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "cron with a step/range/list schedule",
+      "config": { "kind": "cron", "schedule": "*/5 1-6 1,15 * 1-5" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "cron with surrounding whitespace (both sides strip)",
+      "config": { "kind": "cron", "schedule": "  0 3 * * *  " },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "cron missing its schedule",
+      "config": { "kind": "cron" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "cron with a six-field (seconds) schedule — the scheduler is minute-granular",
+      "config": { "kind": "cron", "schedule": "0 0 3 * * *" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "cron with a non-cron schedule string",
+      "config": { "kind": "cron", "schedule": "every 15 minutes" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "cron with an empty schedule",
+      "config": { "kind": "cron", "schedule": "" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "item_filter on a cron trigger (wrong arm's key)",
+      "config": { "kind": "cron", "schedule": "0 3 * * *", "item_filter": "true" },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "schedule on an item_event trigger (wrong arm's key)",
+      "config": { "kind": "item_event", "schedule": "0 3 * * *" },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown key alongside a valid trigger",
+      "config": { "kind": "item_event", "extra": 1 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown trigger kind",
+      "config": { "kind": "webhook" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "missing kind",
+      "config": { "item_filter": null },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "empty object",
+      "config": {},
+      "app": "reject",
+      "pipeline": "reject"
+    }
+  ]
+}
