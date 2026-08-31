@@ -60,7 +60,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
       prefix, 10MB cap, log object before row). Startup self-check refuses a
       raw-socket `DOCKER_HOST`. After M5-0; parallel-safe with M5-A
       (pipeline+infra vs app files).
-- [ ] **M5-C · triggers & runs** (spec §6). Dispatcher leg (item_event
+- [x] **M5-C · triggers & runs** (spec §6). Dispatcher leg (item_event
       batching + CQL2 filter), cron leg via the scheduler, run ledger +
       RetrySpec + stall sweep (the repo's ledger+sweep shape), **rate
       ceiling + deferral** (`process_rate_limited` backstop), Re-run verb.
@@ -175,5 +175,24 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
   a failed start self-reaps, but a worker killed between launch and reap
   leaves a container behind. The `stac-higher.run-id` label exists so a sweep
   can find them; M5-C's stall sweep is the natural home.
+
+- **`process_rate_limited` is logged, not raised.** M5-C defers and coalesces
+  correctly and logs the numbers, but the ALERT is M5-E's (the kind sits in the
+  fixture's `declared_kinds` with no writer). Until then a ceiling breach is
+  visible in the run list's "rate limited" badge and the worker log, not the
+  bell.
+- **`output_items` is still always empty.** The column, the API field and the
+  UI counter all exist and round-trip; M5-D's `finalize(process_run)` is what
+  will populate it.
+- **Cron uses our own matcher, deliberately.** Sources are user data created
+  and edited at runtime, while the queue backend's periodic registry is fixed
+  at worker startup — so a per-source periodic job is not expressible. The
+  minute tick asks the database "who is due". The last-run guard is what makes
+  it idempotent; if the tick ever moves off a 1-minute cadence, that guard's
+  window has to move with it.
+- **A re-run does not re-resolve the revision.** It re-executes the pinned one,
+  so an operator who deploys a fix must deploy AND then trigger, not re-run an
+  old dead row expecting the new code. Worth a line in the UI copy if operators
+  trip on it.
 
 (append here during iterations)

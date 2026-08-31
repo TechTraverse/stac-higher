@@ -35,6 +35,7 @@ from typing import Any
 
 from pipeline.delivery.matcher import DeliverAssociation, Match, match_item
 from pipeline.dispatcher.repo import DispatchRepo
+from pipeline.process.matcher import ProcessSource, match_process_sources
 from pipeline.storage.keys import is_staged_href, parse_staged_href
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,11 @@ EnqueueFinalizes = Callable[[list[dict[str, Any]]], Awaitable[None]]
 #: GC-mark callback for delete events: ``(collection_id, item_id)`` → mark the
 #: item's canonical prefix in ``asset_gc`` (idempotent; reason ``item_delete``).
 MarkDeleteGc = Callable[[str, str], Awaitable[None]]
+
+#: Phase 9 §6: enqueue one process run per matched SOURCE per tick. Each entry
+#: is ``{source_id, process_id, items: [{item_id}]}`` — one run = N trigger
+#: items, so a bulk upsert into a watched collection produces one run, not N.
+EnqueueProcessRuns = Callable[[list[dict[str, Any]]], Awaitable[None]]
 
 #: I-38 bounded visibility retry: an event whose item is not yet visible is
 #: released (cool-off below) up to this many times before it drains for good.
@@ -71,6 +77,8 @@ class DispatchResult:
     matches: list[Match] = field(default_factory=list)
     #: staged events routed to finalize this pass (spec §7.1).
     finalizes: int = 0
+    #: process-source batches enqueued this pass (Phase 9 §6).
+    process_runs: int = 0
 
 
 def _first_staged_href(item: dict[str, Any]) -> str | None:
@@ -89,6 +97,7 @@ async def dispatch_once(
     *,
     enqueue_finalize: EnqueueFinalizes,
     mark_delete_gc: MarkDeleteGc,
+    enqueue_process_runs: EnqueueProcessRuns | None = None,
     batch_size: int = 100,
 ) -> DispatchResult:
     """Claim a batch of outbox rows, route staged items to finalize and mark
@@ -107,6 +116,11 @@ async def dispatch_once(
     # Cache deliver associations per collection for this batch (a bulk upsert of
     # N items into one collection shares collection_id → one lookup, not N).
     assoc_cache: dict[str, list[DeliverAssociation]] = {}
+    # Same per-collection caching for process sources, for the same reason.
+    source_cache: dict[str, list[ProcessSource]] = {}
+    # source_id → batch payload; §6 batches matches into ONE run per source
+    # per tick rather than one run per item.
+    process_batches: dict[str, dict[str, Any]] = {}
     matches: list[Match] = []
     # association_id → batch payload (preserves association + item order).
     batches: dict[str, dict[str, Any]] = {}
@@ -230,6 +244,26 @@ async def dispatch_once(
                     },
                 )
                 continue
+            # Phase 9 §6: the same landing item may also trigger processes.
+            # This runs BEFORE delivery matching and independently of it — a
+            # collection can have process sources and no delivery
+            # associations, or both, and neither should gate the other.
+            if enqueue_process_runs is not None:
+                if event.collection_id not in source_cache:
+                    source_cache[event.collection_id] = (
+                        await repo.list_process_sources(event.collection_id)
+                    )
+                for pm in match_process_sources(item, source_cache[event.collection_id]):
+                    batch = process_batches.setdefault(
+                        pm.source_id,
+                        {
+                            "source_id": pm.source_id,
+                            "process_id": pm.process_id,
+                            "items": [],
+                        },
+                    )
+                    batch["items"].append({"item_id": pm.item_id})
+
             if event.collection_id not in assoc_cache:
                 assoc_cache[event.collection_id] = await repo.list_deliver_associations(
                     event.collection_id
@@ -264,13 +298,18 @@ async def dispatch_once(
     # and delivery's delivery_log absorbing the duplicates.
     if finalizes:
         await enqueue_finalize(finalizes)
+    if process_batches and enqueue_process_runs is not None:
+        await enqueue_process_runs(list(process_batches.values()))
     if batches:
         await enqueue(list(batches.values()))
     await repo.mark_processed([e.id for e in events if e.id not in deferred])
     if deferred:
         await repo.release_for_retry(sorted(deferred), VISIBILITY_RETRY_SECONDS)
     return DispatchResult(
-        claimed=len(events), matches=matches, finalizes=len(finalizes)
+        claimed=len(events),
+        matches=matches,
+        finalizes=len(finalizes),
+        process_runs=len(process_batches),
     )
 
 
@@ -280,6 +319,7 @@ async def dispatch_until_empty(
     *,
     enqueue_finalize: EnqueueFinalizes,
     mark_delete_gc: MarkDeleteGc,
+    enqueue_process_runs: EnqueueProcessRuns | None = None,
     batch_size: int = 100,
     max_batches: int = 1000,
 ) -> int:
@@ -298,6 +338,7 @@ async def dispatch_until_empty(
             enqueue,
             enqueue_finalize=enqueue_finalize,
             mark_delete_gc=mark_delete_gc,
+            enqueue_process_runs=enqueue_process_runs,
             batch_size=batch_size,
         )
         if not result.claimed:

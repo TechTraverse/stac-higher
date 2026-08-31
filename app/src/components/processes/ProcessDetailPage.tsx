@@ -16,7 +16,7 @@ import {
   Switch,
   Textarea,
 } from "@stac-higher/shared";
-import { Loader2, Play, Rocket, Trash2 } from "lucide-react";
+import { Loader2, Play, RotateCcw, Rocket, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthMe } from "@/lib/query/auth";
 import { getTestRun, requestTestRun } from "@/lib/processes/api";
@@ -28,11 +28,13 @@ import {
   useDeployRevision,
   useOutputs,
   useProcess,
+  useRerunRun,
   useRevisions,
+  useRuns,
   useSources,
   useUpdateProcess,
 } from "@/lib/processes/queries";
-import type { ProcessCheck } from "@/lib/processes/types";
+import type { ProcessCheck, ProcessRun } from "@/lib/processes/types";
 
 /**
  * `/processes/[id]` — the M5-A editor (spec §10).
@@ -599,6 +601,112 @@ function TestRunCard({
 }
 
 // ---------------------------------------------------------------------------
+// runs
+// ---------------------------------------------------------------------------
+
+const RUN_STATUS_VARIANT: Record<
+  ProcessRun["status"],
+  "default" | "secondary" | "destructive" | "outline"
+> = {
+  queued: "secondary",
+  running: "secondary",
+  succeeded: "default",
+  failed: "outline",
+  dead: "destructive",
+};
+
+function RunRow({
+  run,
+  processId,
+  canMutate,
+}: {
+  run: ProcessRun;
+  processId: string;
+  canMutate: boolean;
+}) {
+  const rerunMutation = useRerunRun();
+
+  const rerun = async () => {
+    try {
+      await rerunMutation.mutateAsync({ id: processId, runId: run.id });
+      toast.success("Re-run queued");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not re-run");
+    }
+  };
+
+  return (
+    <div className="flex items-start justify-between gap-4 rounded-md border border-border p-3">
+      <div className="min-w-0 space-y-1">
+        <div className="flex items-center gap-2">
+          <Badge variant={RUN_STATUS_VARIANT[run.status]}>{run.status}</Badge>
+          {run.is_test && <Badge variant="outline">test</Badge>}
+          {run.rate_deferred_until && (
+            // The §7 ceiling is holding this run back. Saying so beats a
+            // run that silently sits in `queued` looking stuck.
+            <Badge variant="outline">rate limited</Badge>
+          )}
+          <span className="text-sm text-muted-foreground">
+            {new Date(run.created_at).toLocaleString()}
+          </span>
+        </div>
+        <div className="text-sm text-muted-foreground">
+          {run.input_items.length} input item
+          {run.input_items.length === 1 ? "" : "s"} · attempt {run.attempts}
+          {run.output_items.length > 0 &&
+            ` · ${run.output_items.length} published`}
+        </div>
+        {run.error && (
+          <p className="text-sm text-destructive break-words">{run.error}</p>
+        )}
+      </div>
+      {canMutate && run.status === "dead" && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={rerun}
+          disabled={rerunMutation.isPending}
+        >
+          {rerunMutation.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RotateCcw className="h-4 w-4" />
+          )}
+          Re-run
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function RunsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
+  const { data: runs, isLoading } = useRuns(id);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Recent runs</CardTitle>
+        <CardDescription>
+          Each run pins the revision that executed it. A dead run can be
+          re-run — it re-executes that same revision, not whatever is current.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        {isLoading && <LoadingState message="Loading runs…" />}
+        {runs?.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            No runs yet. Attach a source, or use the test run below.
+          </p>
+        )}
+        {runs?.map((run) => (
+          <RunRow key={run.id} run={run} processId={id} canMutate={canMutate} />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 
 function ProcessDetailContent({ id }: { id: string }) {
   const { data: process, isLoading, error, refetch } = useProcess(id);
@@ -658,6 +766,7 @@ function ProcessDetailContent({ id }: { id: string }) {
         hasRevision={process.current_revision !== null}
         canMutate={canMutate}
       />
+      <RunsCard id={process.id} canMutate={canMutate} />
     </div>
   );
 }

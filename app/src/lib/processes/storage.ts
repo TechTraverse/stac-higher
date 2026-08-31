@@ -604,6 +604,138 @@ export async function deleteOutput(
 }
 
 // ---------------------------------------------------------------------------
+// process_runs — READ + the re-run verb (M5-C)
+//
+// The pipeline owns run STATE: it claims, executes, and writes the outcome.
+// The app reads the ledger for the UI and has exactly one write — the audited
+// re-run, which flips a dead row back into the retry path (the `redeliver`
+// analog). It deliberately does NOT execute anything itself.
+// ---------------------------------------------------------------------------
+
+const RUN_COLUMNS = `
+  id, process_id, revision_id, source_id, status, attempts,
+  input_items, output_items, log_ref, error, rate_deferred_until,
+  is_test, created_at, started_at, finished_at
+`;
+
+interface RunRow {
+  id: string;
+  process_id: string;
+  revision_id: string;
+  source_id: string | null;
+  status: "queued" | "running" | "succeeded" | "failed" | "dead";
+  attempts: number;
+  input_items: unknown;
+  output_items: unknown;
+  log_ref: string | null;
+  error: string | null;
+  rate_deferred_until: Date | string | null;
+  is_test: boolean;
+  created_at: Date | string;
+  started_at: Date | string | null;
+  finished_at: Date | string | null;
+}
+
+export interface ApiProcessRun {
+  id: string;
+  process_id: string;
+  revision_id: string;
+  source_id: string | null;
+  status: RunRow["status"];
+  attempts: number;
+  /** Trigger items — one run = N items (§6.7). */
+  input_items: unknown[];
+  /** What finalize published (M5-D writes this; empty until then). */
+  output_items: unknown[];
+  log_ref: string | null;
+  error: string | null;
+  /** Set while the §7 ceiling is holding this run back. */
+  rate_deferred_until: string | null;
+  is_test: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+function toApiRun(row: RunRow): ApiProcessRun {
+  return {
+    id: row.id,
+    process_id: row.process_id,
+    revision_id: row.revision_id,
+    source_id: row.source_id,
+    status: row.status,
+    attempts: row.attempts,
+    input_items: Array.isArray(row.input_items) ? row.input_items : [],
+    output_items: Array.isArray(row.output_items) ? row.output_items : [],
+    log_ref: row.log_ref,
+    error: row.error,
+    rate_deferred_until: iso(row.rate_deferred_until),
+    is_test: row.is_test,
+    created_at: iso(row.created_at) as string,
+    started_at: iso(row.started_at),
+    finished_at: iso(row.finished_at),
+  };
+}
+
+export async function listRuns(
+  processId: string,
+  limit = 50,
+): Promise<ApiProcessRun[]> {
+  await runMigrations();
+  const result = await query<RunRow>(
+    `SELECT ${RUN_COLUMNS} FROM stac_higher.process_runs
+      WHERE process_id = $1
+      ORDER BY created_at DESC
+      LIMIT $2`,
+    [processId, Math.min(Math.max(limit, 1), 200)],
+  );
+  return result.rows.map(toApiRun);
+}
+
+export async function getRun(
+  processId: string,
+  runId: string,
+): Promise<ApiProcessRun | null> {
+  await runMigrations();
+  const result = await query<RunRow>(
+    `SELECT ${RUN_COLUMNS} FROM stac_higher.process_runs
+      WHERE id = $1 AND process_id = $2`,
+    [runId, processId],
+  );
+  return result.rows[0] ? toApiRun(result.rows[0]) : null;
+}
+
+/**
+ * Re-run a DEAD run (the `redeliver` analog, spec §6).
+ *
+ * Resets the row to `queued` with a fresh attempt budget so the pipeline's
+ * next run tick claims it. Two deliberate constraints:
+ *
+ * - Only `dead` rows. A queued/running row is already owed work, and
+ *   re-running a succeeded one would re-publish its outputs.
+ * - The pinned `revision_id` is NOT touched. A re-run re-executes the
+ *   revision that failed, not whatever is current — otherwise "re-run" would
+ *   silently mean "run something else", and the ledger would misattribute the
+ *   result.
+ */
+export async function rerunRun(
+  processId: string,
+  runId: string,
+): Promise<ApiProcessRun | null> {
+  await runMigrations();
+  const result = await query<RunRow>(
+    `UPDATE stac_higher.process_runs
+        SET status = 'queued', attempts = 0, error = NULL,
+            started_at = NULL, finished_at = NULL,
+            rate_deferred_until = NULL
+      WHERE id = $1 AND process_id = $2 AND status = 'dead'
+      RETURNING ${RUN_COLUMNS}`,
+    [runId, processId],
+  );
+  return result.rows[0] ? toApiRun(result.rows[0]) : null;
+}
+
+// ---------------------------------------------------------------------------
 // process_checks — the app half of the ADR 0004 bridge (UI test runs)
 // ---------------------------------------------------------------------------
 

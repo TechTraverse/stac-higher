@@ -82,12 +82,19 @@ describe("matchGatedRoute — /api/processes (M5-A)", () => {
     });
   });
 
+  it("gates the re-run verb as its own audited action", () => {
+    expect(
+      matchGatedRoute("POST", `/api/processes/${P}/runs/${CHILD}/rerun`),
+    ).toEqual({ action: "rerun", resourceType: "process", resourceId: P });
+  });
+
   it("leaves every read ungated (auth + group scoping in-route)", () => {
     expect(matchGatedRoute("GET", "/api/processes")).toBeNull();
     expect(matchGatedRoute("GET", `/api/processes/${P}`)).toBeNull();
     expect(matchGatedRoute("GET", `/api/processes/${P}/revisions`)).toBeNull();
     expect(matchGatedRoute("GET", `/api/processes/${P}/sources`)).toBeNull();
     expect(matchGatedRoute("GET", `/api/processes/${P}/outputs`)).toBeNull();
+    expect(matchGatedRoute("GET", `/api/processes/${P}/runs`)).toBeNull();
     // The test-run poll is a read, like the connection-check poll.
     expect(
       matchGatedRoute("GET", `/api/processes/${P}/checks/${CHILD}`),

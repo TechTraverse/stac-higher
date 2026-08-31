@@ -67,6 +67,7 @@ export const processKeys = {
   revisions: (id: string) => [...processKeys.detail(id), "revisions"] as const,
   sources: (id: string) => [...processKeys.detail(id), "sources"] as const,
   outputs: (id: string) => [...processKeys.detail(id), "outputs"] as const,
+  runs: (id: string) => [...processKeys.detail(id), "runs"] as const,
 } as const;
 
 export const stacKeys = {

@@ -27,6 +27,7 @@ from pipeline.jobs import (
     ingest,
     monitor,
     notify,
+    process,
     staging_cleanup,
 )
 from pipeline.log import configure_logging
@@ -65,6 +66,10 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # Phase 7 (P7-E): push-ingest finalize — staged items move staging →
     # canonical through the ADR 0014 seam; plus the §6.4 recovery sweep.
     finalize.register(queue, settings)
+    # Phase 9 (M5-C): process triggers + the run ledger — the dispatcher's
+    # item_event leg and the cron tick queue runs through the §7 rate
+    # ceiling; the run tick executes them behind the ADR 0013 executor.
+    process.register(queue, settings)
     return queue
 
 
