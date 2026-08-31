@@ -3,6 +3,12 @@
 **Status: approved 2026-08-29** (lead review at the P9-F stop point). ADRs
 0013/0014 are accepted with the decisions recorded here.
 
+**Amended 2026-08-30 (P7-I, per the Phase 7 spec §12):** Phase 7 landed
+first and took migrations **020** (`staged_uploads`) and **021** (the
+`alerts.collection_id` anchor) plus the `alert-kinds.json` fixture — M5's
+migrations are renumbered 022/023 below, and M5-0's fixture task becomes
+*append the process kinds to the existing fixture* rather than create it.
+
 Sources: ROADMAP §5 `PROCESS_*` + §5.6 + §6.7 + §8 Phase 9 table + §9/§10;
 ADR 0013 (+ the P9-A investigation appendix), ADR 0014 (+ the P9-B seam
 sketch); the P9 scoping notes
@@ -50,9 +56,10 @@ binds Phase 7's design). M5 adds exactly two genuinely new mechanisms: the
 
 ## 3. Data model (ROADMAP §5 `PROCESS_*`, confirmed)
 
-Migrations (app-owned DDL, ADR 0001; numbering continues from 019):
+Migrations (app-owned DDL, ADR 0001; numbering continues from **021** —
+Phase 7 took 020/021, so M5 starts at 022):
 
-- **020**: `processes`, `process_revisions`, `process_sources`,
+- **022**: `processes`, `process_revisions`, `process_sources`,
   `process_outputs`, `process_runs` exactly as §5's ER shapes, plus:
   - `processes.max_runs_per_hour int NOT NULL DEFAULT 60` — the run-rate
     ceiling (§7).
@@ -69,12 +76,14 @@ Migrations (app-owned DDL, ADR 0001; numbering continues from 019):
   gains a leg: terminal runs older than `PROCESS_RUN_RETENTION_DAYS`
   (default 90) are pruned, **log object deleted before the row** (§9).
 
-Cross-runtime contracts land WITH the DDL slice: the five P9-D fixtures
+Cross-runtime contracts land WITH the DDL slice: the four new P9-D fixtures
 (`process-trigger`, `process-runtime`, `process-env`,
-`process-expectation`, `alert-kinds`) in the established
-minimal/defaults/cases format, including the slice-1 asymmetry (`container`
-runtime: app **reject**, pipeline **accept**) and the full alert-kind enum
-(§8). `alert-kinds.json` retires the deferred M2 hygiene follow-up.
+`process-expectation`) in the established minimal/defaults/cases format,
+including the slice-1 asymmetry (`container` runtime: app **reject**,
+pipeline **accept**) — plus **appending the process kinds
+(`process_stalled`, `process_failed`, `process_rate_limited`, §8) to the
+existing `alert-kinds.json`**, which Phase 7 (P7-H) already created in the
+pinned-enum style (retiring the deferred M2 hygiene follow-up).
 
 ## 4. Execution — ADR 0013 accepted as Option B
 
@@ -228,7 +237,7 @@ the asset route (member+ of the owning group).
 - **Collection lineage panel** (Data-flow tab) + **overview rollup** — fed
   by the graph endpoint and **`flow_stats_daily`** (P9-E decided: a table,
   `(subject_kind, subject_id, day)` PK, daily pipeline upsert job, ~400-day
-  prune; today's bucket derived live). Migration 021.
+  prune; today's bucket derived live). Migration 023.
 - RBAC: processes are group-owned; member views, operator+
   creates/deploys/re-runs; every create/update/deploy/rerun/delete audited
   through the existing guard (`process`, `process_revision` resource
@@ -266,7 +275,7 @@ stays an M3-scoping task; this spec contributes the 2× item-rate input.
 
 | Slice | Contents | Depends on |
 |---|---|---|
-| **M5-0** | Migrations 020–021, the five contract fixtures + `alert-kinds.json`, Zod schemas ↔ pipeline readers | — |
+| **M5-0** | Migrations 022–023, the four new contract fixtures + the `alert-kinds.json` append (§3), Zod schemas ↔ pipeline readers | — |
 | **M5-A** | App CRUD: `/api/processes*` (+revisions, sources, outputs, audited verbs), `/processes` + `/processes/[id]` islands (textarea editor), test-run request rows | M5-0 |
 | **M5-B** | Executor: socket-proxy compose service, platform executor image, `DockerExecutor` (launch/limits/timeout/logs/reap), STS run-scoped creds, log capture + capped storage | M5-0 |
 | **M5-C** | Triggers & runs: dispatcher leg (item_event batching + CQL2 filter), cron leg, run ledger + RetrySpec + stall sweep, rate ceiling + deferral, Re-run verb | M5-A/B |

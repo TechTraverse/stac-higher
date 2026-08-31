@@ -65,9 +65,14 @@ docker-compose runs the full local platform stack:
 - **stac-auth-proxy** at `http://localhost:8081` in front of stac-fastapi —
   pass-through by default (`DEFAULT_PUBLIC=true`, no login needed). Opt-in
   enforcement (authenticated transactions + audience check, reads still
-  public) via `docker compose -f docker-compose.yml -f
-  infra/compose.auth-enforced.yml up -d --wait` — see
-  `docs/decisions/0002-auth-proxy-enforcement.md`.
+  public, plus — since Phase 7 — the ADR 0015 per-collection
+  `externally_writable` write policy via a derived proxy image) via
+  `export CATALOG_BFF_SHARED_SECRET=$(openssl rand -hex 32)` (or `.env`;
+  mandatory — and the app process needs it too, from the shell/`.env`) then
+  `docker compose -f docker-compose.yml -f
+  infra/compose.auth-enforced.yml up -d --build --wait` — see
+  `docs/decisions/0002-auth-proxy-enforcement.md` and
+  `docs/decisions/0015-proxy-write-policy.md`.
   The client's **built-in catalog** points here
   (`PUBLIC_BUILTIN_CATALOG_URL`, default `http://localhost:8081`) and is
   seeded as an undeletable entry in the `/catalogs` page.
@@ -115,7 +120,8 @@ Astro server routes:
 | `/api/connections/[id]/test` | POST | Request a connectivity test (inserts a `connection_checks` row the pipeline drains — ADR 0004) |
 | `/api/connections/[id]/checks/[checkId]` | GET | Poll a test request |
 | `/api/connections/[id]/host-key/reset` | POST | Clear the TOFU host-key pin so the next test re-pins (ssh/sftp) |
-| `/api/uploads` | POST | Mint presigned PUT URLs for asset uploads (operator+); returns the `/api/assets/...` hrefs to persist (ADR 0005) |
+| `/api/uploads` | POST | Mint presigned PUT URLs for asset uploads (operator+). Body **with** `item` = canonical mode (trusted UI, ADR 0005 — returns `/api/assets/...` hrefs); body **without** `item` = staged push mode (Phase 7 §4.1 — presigns into `staging/`, inserts a `staged_uploads` ledger row, returns `staging://` hrefs; requires `externally_writable`, not `archived`, owning-group membership) |
+| `/api/uploads/[uploadId]` | GET | Poll a staged-upload session (`pending → finalizing → finalized \| rejected \| expired` + `result`) — the API-visible outcome of a push. Authenticated; admin, session group, or creator; others 404 — Phase 7 |
 | `/api/assets/[collection]/[item]/[asset]` | GET | Authorize → 302 to a short-lived presigned URL for the canonical asset object (`{asset}` = filename) |
 | `/api/collections/[id]/settings` | GET, PUT | Collection platform settings (ownership, `externally_writable`, retention/GC knobs, `archived`): GET member+, PUT operator+ audited (`collection_settings`) with the ADR 0003 group rules — M2-E |
 | `/api/collections/[id]/settings/impact` | GET | Counted dry-run for the Settings warn-and-proceed dialog (`?retention_days=N` \| `?archived=true` → total/expired item counts; null counts when pgstac is absent) — M2-F, ADR 0011 |
@@ -133,7 +139,7 @@ Astro server routes:
 | `/api/channels` | GET, POST | List (member+: own groups; admin: all) / create (operator+) per-group notification channels (`in_app` \| `webhook`); webhook signing secret is write-only (`has_secret`) — M2-C, ADR 0010 |
 | `/api/channels/[id]` | GET, PUT, DELETE | Get / replace-config / delete a channel (group-owned; PUT replaces `config` wholesale, kind+group immutable) |
 | `/api/monitoring/flows` | GET | Cross-collection association list with `flow_stats` + expectation (member+: own groups; admin: all) — feeds `/monitoring` (M2-D) |
-| `/api/catalog/[...path]` | POST, PUT, PATCH, DELETE | BFF for built-in-catalog browser writes (ADR 0008): transaction endpoints only; injects the session access token server-side; operator+, audited. Reads stay direct |
+| `/api/catalog/[...path]` | POST, PUT, PATCH, DELETE | BFF for built-in-catalog writes (ADR 0008): transaction endpoints only; operator+, audited. Session callers get the session access token injected server-side; **bearer callers get their own token forwarded — the Phase 7 §4.3 brokered push path** (precondition set on every bearer write, synchronous staged pre-validation, `prior_item` snapshot on PUT, staged PATCH → 400, bearer collection-create → 403; `X-BFF-Auth` stamped when `CATALOG_BFF_SHARED_SECRET` is set). Reads stay direct. Client docs: `docs/push-ingest.md` |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
 (static identity, default in dev — unit tests/e2e need no IdP). Middleware
@@ -184,7 +190,8 @@ tab on built-in-catalog collection pages.
 
 **Alerting & notifications (M2-B/M2-C, ADR 0010)**: the pipeline's
 `flow_monitor` reconciles `stac_higher.alerts` each minute (raise / re-fire /
-auto-resolve, deduped per `(source, kind, connection, association, channel)`);
+auto-resolve, deduped per `(source, kind, connection, association, channel,
+collection)` — the collection anchor joined in Phase 7's migration 021);
 the app owns the DDL (migrations 014/015) plus the audited `ack`/`resolve`
 verbs. Per-group `notification_channels` (`in_app` | `webhook`) are CRUD'd at
 `/api/channels*`; in-app delivery is the alerts row + the per-user
@@ -207,7 +214,11 @@ five-minute `retention_gc` sweep expires items per `collection_settings`
 never propagate to destinations) and `asset_collect` deletes due prefixes
 from the platform bucket after the grace window. The app marks on BFF
 item/collection deletes (closes I-51's GC half) and enforces `archived`
-(no item writes, no new associations; the sweep expires everything).
+(no item writes, no new associations; the sweep expires everything). Since
+Phase 7 the dispatcher ALSO marks on claiming a `delete` outbox event —
+covering direct-to-proxy deletes — so an item delete can be marked twice
+(app BFF + pipeline dispatcher); the open-key unique index makes the dual
+`item_delete` markers idempotent by design.
 Reference-mode association delete now removes its reference-backed items
 (ADR 0009 question settled). Nothing is deleted on an unconfigured platform.
 
@@ -220,6 +231,26 @@ conservatively (checks by age; ledger rows only for soft-deleted
 associations or itemless terminal deliveries; stranded running checks on
 deleted connections flipped to failed). Audit rows die only by partition
 DETACH+DROP.
+
+**Push ingest (Phase 7)**: external clients with a bearer token (client-
+credentials JWT accepted on `/api/*` — `docs/auth.md`) push items into
+collections flagged `externally_writable`: staged mint (`POST /api/uploads`
+without `item` → presigned PUTs into `staging/` + a `stac_higher.
+staged_uploads` ledger row, migration 020) → item POST/PUT with
+`staging://{upload_id}/{filename}` hrefs via the **brokered BFF route** (the
+documented default; direct-to-proxy is supported but discouraged) → the
+dispatcher routes staged-item events to the pipeline's **finalize**
+(`pipeline/finalize/` — the ADR 0014 producer-parameterized seam: validate →
+checksum → move staging→canonical → rewrite hrefs → pypgstac upsert; no
+producer branching in the steps) → the client polls
+`GET /api/uploads/[uploadId]`. Enforcement floor: the ADR 0015 proxy write
+policy (`services/proxy-policy/`, enforced overlay only) gates direct writes
+by role + the `externally_writable` set, exempting app writes via
+`X-BFF-Auth` (`CATALOG_BFF_SHARED_SECRET`). Rejections land in the ledger
+with pinned `PUSH_REJECTION_REASONS` strings (contract fixtures
+`staged-asset-href.json` / `push-upload-status.json` / `alert-kinds.json`)
+and raise the collection-anchored `push_rejected` alert (migration 021).
+Client contract + failure semantics: **`docs/push-ingest.md`**.
 
 **Service telemetry (M2-H)**: Prometheus exposition at `GET :8083/metrics`
 (`pipeline/metrics.py`): per-job run/duration/outcome (wrapped centrally at

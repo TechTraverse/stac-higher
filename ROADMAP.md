@@ -570,6 +570,15 @@ sequenceDiagram
     W->>S: rewrite asset hrefs → /api/assets/...
 ```
 
+**As-built note (Phase 7, 2026-08-30):** two deltas from the diagram. The
+final leg's href rewrite does **not** go back through stac-fastapi —
+finalize upserts the rewritten item via **pypgstac** (`pgstac_writer`, the
+ITEMIZE precedent; the upsert's outbox event drives delivery). And the
+item POST's documented default is the app's **brokered BFF route**
+(`/api/catalog/...`, spec §4.3 — synchronous pre-validation, snapshot,
+audit), with the direct-to-proxy leg shown above supported but discouraged.
+Client contract: `docs/push-ingest.md`.
+
 ### 6.3 Ingest C — manual (UI)
 
 Item create/edit forms gain asset upload using the same presigned-upload path
@@ -782,7 +791,7 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 4 — Ingest pipeline | ✅ Done (live-verified end-to-end 2026-07-20) | Slices A, B1–B5, C (`reference` mode). Done-when met: dropped file → catalogued item through the real scheduler, copy and reference both. [FEATURES §Phase 4](docs/FEATURES.md). |
 | 5 — Delivery pipeline | ✅ Done (Slices A→D live/e2e-verified by 2026-07-25) | Outbox + NOTIFY dispatcher, delivery worker + payloads/policies, retry → dead-letter → redeliver, backfill bridge, Data-flow delivery UI. [FEATURES §Phase 5](docs/FEATURES.md). |
 | 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
-| 7 — Direct interaction | ⬜ Not started | — |
+| 7 — Direct interaction | 🚧 Implemented, gate pending | All slices P7-B…P7-I merged 2026-08-30 (bearer auth, staged uploads, brokered BFF push path, finalize on the ADR 0014 seam, dispatcher gating, ADR 0015 proxy write policy, `push_rejected` alerting, `docs/push-ingest.md`). Remaining: the **P7-Z live gate check** (auth-enforced rehearsal) + the promotion PR. [FEATURES §Phase 7](docs/FEATURES.md). |
 | 8 — Cloud, scale gate & viz | ⬜ Not started | — |
 | 9 — Processes | ⬜ Scoped (design spec approved 2026-08-29) | Planning complete: `docs/superpowers/specs/2026-08-29-phase9-processes-design.md` (slices M5-0…M5-G), ADRs 0013/0014 accepted, scoping queue P9-A…F done. Implementation starts after Phase 7. |
 
@@ -960,14 +969,27 @@ channels (email deferred), Prometheus metrics + structured logging.
   **Met — proven live by the M2-I rehearsal 2026-08-28** (evidence under the
   M2 milestone in §9).
 
-### Phase 7 — Direct interaction (push ingest) ⬜ **Not started**
-- Externally-writable flag per collection; stac-auth-proxy write policies.
-- Finalize step per §6.2: validate staged assets (stac-pydantic /
-  stac-validator), checksum, move to canonical, rewrite hrefs.
-- API client docs (how to authenticate, upload, POST items).
+### Phase 7 — Direct interaction (push ingest) 🚧 **Implemented, gate pending (2026-08-30)**
+
+All implementation slices merged (design spec
+`docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md`,
+provisionally approved; human review of spec + code pending):
+
+- Externally-writable flag per collection — **now enforced** (ADR 0015:
+  the `services/proxy-policy/` items-filter factory in the auth-enforced
+  overlay; `bulk_items` denied; the BFF exempted via a shared secret) after
+  sitting dormant since migration 003.
+- Finalize step per §6.2 (as amended above): stac-pydantic validate →
+  checksum → move to canonical → rewrite hrefs → **pypgstac** upsert, on
+  ADR 0014's producer-parameterized seam (stac-validator extension
+  validation stays deferred — ISSUES I-73).
+- API client docs: `docs/push-ingest.md` (bearer auth, staged uploads, the
+  brokered-default/direct-discouraged split, rejection semantics).
 - **Done when:** an external client with a token can upload a file and POST
   an item, the item finalizes into canonical storage, and delivery fires
-  from it like any other item.
+  from it like any other item. **Not yet claimed** — the P7-Z live gate
+  check (auth-enforced stack rehearsal + full e2e, evidence recorded here
+  M-gate style) and the promotion PR remain.
 
 ### Phase 8 — Cloud deployment, scale gate & visualization ⬜ **Not started**
 - AWS stack via eoapi-cdk extended: RDS (pgstac), S3, KMS, ECS/Fargate (app,

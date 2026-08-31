@@ -70,16 +70,16 @@ Migration 018 time-partitions `audit_log` monthly (attach-don't-copy; append-onl
 ## Phase 3 — asset service
 
 ### I-13 · Asset-read authorization is authentication-only 🟡
-`GET /api/assets/...` requires an authenticated identity (unauthenticated → 403) but does **not** yet scope reads to the caller's groups / the collection's visibility — that is the same capability deferred as I-1 (read-visibility). Until it lands, any authenticated user can mint a download URL for any asset. In dev-bypass the static operator satisfies the check, so local flows work.
-- Tracked in: [ADR 0005](decisions/0005-asset-service.md); depends on I-1 / [ADR 0002](decisions/0002-auth-proxy-enforcement.md).
+`GET /api/assets/...` requires an authenticated identity (unauthenticated → 403) but does **not** yet scope reads to the caller's groups / the collection's visibility — that is the same capability deferred as I-1 (read-visibility). Until it lands, any authenticated user can mint a download URL for any asset. In dev-bypass the static operator satisfies the check, so local flows work. **Phase 7 amendment (2026-08-30): unchanged by push ingest** — bearer-authenticated push clients are "any authenticated user" too, so they can read any asset. Still I-1's problem.
+- Tracked in: [ADR 0005](decisions/0005-asset-service.md); depends on I-1 / [ADR 0002](decisions/0002-auth-proxy-enforcement.md); [`push-ingest.md`](push-ingest.md) "Limits".
 
 ### I-14 · Manual uploads go direct-to-canonical; no server-side validation ⚪
-Item-form uploads presign straight into canonical storage (trusted RBAC'd writer, ADR 0005) — there is **no finalize step** validating/checksumming the bytes, and no staging quarantine. The untrusted external push path (staging → validate → move to canonical) is Phase 7; `stagingKey` + the TTL sweep already exist as its seam.
+Item-form uploads presign straight into canonical storage (trusted RBAC'd writer, ADR 0005) — there is **no finalize step** validating/checksumming the bytes, and no staging quarantine. **Phase 7 amendment (2026-08-30): the untrusted external push path (staging → validate → move to canonical) now exists** ([`push-ingest.md`](push-ingest.md)), but manual UI uploads deliberately stay direct-to-canonical — ADR 0005's revisit stands; Phase 7 does not force the UI through staging.
 - Tracked in: [ADR 0005](decisions/0005-asset-service.md); ROADMAP §6.2.
 
-### I-15 · Presign endpoint must be browser-reachable 🟡
-The app signs URLs offline, so `S3_ENDPOINT` must be reachable by the **browser** that uses them. On the host, `http://localhost:9000` works. If the app is ever run **inside compose**, `S3_ENDPOINT` must be set to a browser-reachable host — never `http://minio:9000`, which the browser can't resolve. Defaults assume the host-run dev server.
-- Tracked in: header comment in `app/src/lib/storage/config.ts`; `.env.example`.
+### I-15 · Presign endpoint must be client-reachable (escalated by Phase 7) 🟡
+The app signs URLs offline, so `S3_ENDPOINT` must be reachable by whatever **uses** them. Originally that meant the browser; **Phase 7 amendment (2026-08-30): staged-upload presigned PUTs are handed to external push clients, so `S3_ENDPOINT` must now be reachable from push clients' networks — a superset of the browser-reachable requirement.** On the host, `http://localhost:9000` works for host-local clients only. If the app is ever run **inside compose**, `S3_ENDPOINT` must be set to a client-reachable host — never `http://minio:9000`, which no external client can resolve. Defaults assume the host-run dev server and host-local clients.
+- Tracked in: header comment in `app/src/lib/storage/config.ts`; `.env.example`; [`push-ingest.md`](push-ingest.md) "Prerequisites".
 
 ### I-16 · Endpoint-pinning logic duplicated app-side vs. pipeline ⚪
 The egress IP-pinning for a custom http (MinIO) endpoint exists twice: `S3Adapter._pinned_endpoint` (per-connection) and `storage/platform._pinned_endpoint_url` (platform bucket). Parallel, small, and independently tested; a shared helper is a possible future refactor, not a bug.
@@ -408,6 +408,106 @@ services answer for the collection. Real gating needs the per-collection
 read-visibility layer (I-1) applied at/in front of the serving services. The
 UI copy says so. Revisit when I-1 lands.
 - Tracked in: `docs/serving.md`, migration 019; depends on I-1.
+
+---
+
+## Phase 7 — push ingest (2026-08-30)
+
+Deferred scope and residual risk from the Phase 7 design spec §13 (plus two
+implementation-time additions), logged at the P7-I docs slice. Reference:
+[`push-ingest.md`](push-ingest.md).
+
+### I-70 · Direct-path push writes are unaudited 🟡
+ROADMAP §5.5 promises every mutation audited, but external writes straight to
+the proxy (`:8081`) land no `audit_log` row — only the staged-upload mint and
+poll are audited app-side — and finalize's own catalog actions (rejection
+delete, snapshot restore) run pipeline-side, where no audit writer exists.
+The brokered path (spec §4.3) closes the gap for cooperative clients — its
+writes go through the guard like any BFF write — and is the honest
+mitigation; `docs/push-ingest.md` documents brokered as the default for
+exactly this reason. The deferred remainder: proxy-side audit, or a
+pipeline-side audit writer.
+- Tracked in: here; [`push-ingest.md`](push-ingest.md); ROADMAP §5.5.
+
+### I-71 · No rate limiting or per-group quota on push ⚪
+An external client can fill staging or hammer finalize; the TTL sweep bounds
+storage but not churn. The Phase 9 run-rate-ceiling requirement is the
+analogous control — push gets one when either demands it.
+- Tracked in: here; [`push-ingest.md`](push-ingest.md) "Limits".
+
+### I-72 · No multipart upload — single presigned PUT caps file size ⚪
+Staged uploads mint one presigned PUT per file, capping practical asset size.
+Large-asset push waits for a real need — same class as ingest streaming
+(I-19/I-26).
+- Tracked in: here; [`push-ingest.md`](push-ingest.md) "Limits".
+
+### I-73 · Extension-schema validation deferred (both ingest paths) ⚪
+Finalize reuses the exact ITEMIZE gate (stac-pydantic core `Item` — offline,
+pinned, no egress), so pushed and polled items pass the identical validator.
+The cost: no `stac_extensions` schema validation on either path — ROADMAP
+§6.2's "+ stac-validator on demand" remains an aspiration (spec §6.2:
+stac-validator fetches remote schemas per item, the exact egress hole §5.5
+exists to avoid). Anything stricter for push than for polled ingest would be
+indefensible; if extension validation lands, it lands for both.
+- Tracked in: here; `services/pipeline/src/pipeline/stac/validate.py`.
+
+### I-74 · Asset filename orphans on update pushes ⚪
+Replacing an item's assets with *different filenames* leaves the old
+canonical files in place until item delete/retention — the ADR 0011 prefix
+mark covers them then. Same class as re-ingest replacement; no unbounded
+growth, just stale bytes under the item prefix.
+- Tracked in: here; [ADR 0011](decisions/0011-retention-gc.md).
+
+### I-75 · Enforced-mode proxy policy reads the app DB 🟡
+The ADR 0015 filter factory gives the auth-proxy a read-only Postgres
+connection to one table (`collection_settings`, ~15 s TTL cache) — a new
+runtime coupling that exists only in the auth-enforced overlay. Acceptable
+locally; the cloud deployment must grant the proxy a genuinely read-only
+role (Phase 8 IaC note in ADR 0015).
+- Tracked in: [ADR 0015](decisions/0015-proxy-write-policy.md);
+  `services/proxy-policy/`.
+
+### I-76 · `bulk_items` push unsupported (denied in enforced mode) ⚪
+The factory returns constant-false for `bulk_items` requests without the BFF
+header — deny, not validate (the factory never parses the bulk body shape),
+closing the source-verified member-bulk-insert bypass. The denial is
+500-shaped, not 4xx (upstream validate-middleware behavior; the integration
+leg accepts any rejection). Supporting bulk push means teaching the factory
+and finalize the bulk body shape — deferred until someone needs it.
+- Tracked in: [ADR 0015](decisions/0015-proxy-write-policy.md);
+  `tests/integration/` bulk-deny leg.
+
+### I-77 · Claims mapping duplicated at the proxy policy ⚪
+The factory maps roles from a raw claim path
+(`POLICY_ROLES_CLAIM`, default `realm_access.roles`) independently of the
+app's claims-mapper config; a deployment with exotic claims must configure
+both. Logged; convergence is an OPA-era problem.
+- Tracked in: `services/proxy-policy/src/stac_higher_proxy_policy/factory.py`;
+  [ADR 0015](decisions/0015-proxy-write-policy.md).
+
+### I-78 · Unclaimed-session push rejections are alert-invisible 🟡
+A direct-path push whose staged hrefs name a session that does not exist (or
+belongs to another tenant) is rejected by finalize **without** writing a
+`rejected` ledger row — the resolver never stamps a foreign or non-existent
+session's row, so the `push_rejected` monitor (which observes the ledger)
+cannot see the class. Deliberate (P7-H decision: corrupting the ledger or a
+new table were worse); the signal is `pipeline_finalize_items_total` +
+warning logs only, documented in the monitor docstring. On the brokered path
+the same condition 400s synchronously (`unknown_session`), so the blind spot
+is direct-path-only. Revisit if Phase 9's staged-item path makes these
+rejections ledger-backed.
+- Tracked in: `services/pipeline/src/pipeline/flow/monitor.py` (docstring);
+  `pipeline/finalize/`.
+
+### I-79 · A delete event draining at the retry cap orphans bytes 🟡
+Dispatcher-side GC marking for direct-path deletes (spec §7.3) routes mark
+failures through the I-38 defer path, so a transient DB error retries rather
+than draining unmarked. But the bounded-attempts cap still drains the event
+with only a loud log — a delete whose mark never commits within the budget
+knowingly orphans the item's bytes. An alert kind for this class (alongside
+the I-78 question) is the candidate fix if it ever fires in practice.
+- Tracked in: `services/pipeline/src/pipeline/dispatcher/loop.py`; found in
+  the P7-F review.
 
 ---
 

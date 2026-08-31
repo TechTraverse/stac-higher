@@ -36,19 +36,22 @@ reconciled each minute by the pipeline's `flow_monitor`
 `sync_alerts` raises new rows, bumps `last_seen` on re-observation, and
 auto-resolves its own kinds when the condition clears — one transaction per
 tick, deduped by a partial unique index on
-`(source, kind, connection_id, association_id, channel_id)` over open rows.
+`(source, kind, connection_id, association_id, channel_id, collection_id)`
+over open rows (the `collection_id` anchor joined in Phase 7's migration 021).
 
 | Source | Raised when | Kinds |
 |---|---|---|
 | `flow` | A declared §5.1 expectation is breached against `flow_stats` | `ingest_inactivity`, `delivery_slo` |
 | `health` | A connection sits in `status='error'` (state-observed per tick; deleted connections filtered) | `connection_error` |
 | `job_failure` | Dead deliveries, retry-cap ingest failures, latest-backfill-failed | per failure class |
+| `job_failure` (Phase 7) | Recent `rejected` `staged_uploads` rows for a collection (`PUSH_ALERT_LOOKBACK_SECONDS`, default 24 h; a resolved-at floor keeps a manual resolve stuck until a NEW rejection) — collection-anchored; group via `collection_settings.group_id` (unowned → admin-only) | `push_rejected` |
 | (notify) | A channel's webhook dead-letters — written by the notify sweep, outside `MONITOR_KINDS`, so the monitor never clobbers it | `webhook_failed` (channel-anchored; auto-resolved by the next successful delivery) |
 
 Lifecycle: `firing → acknowledged → resolved`. **Ack suppresses notification,
 not detection** — the monitor keeps bumping `last_seen`. A manual resolve with
 the condition still true re-fires as a NEW row, which is what re-notifies.
-Group scoping is derived (alert → connection → group), never stored.
+Group scoping is derived (alert → connection | channel | collection →
+group, coalesced in that order since Phase 7), never stored.
 
 Routes: `GET /api/alerts` (member+, own groups; admin all;
 `?state=firing|acknowledged|resolved|open`, `?limit`); operator+ audited
