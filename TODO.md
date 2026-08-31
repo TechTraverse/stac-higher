@@ -29,7 +29,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
 
 ## Warm-up — small Phase 7 residuals (one worktree, one iteration)
 
-- [ ] **M5-W · gate-finding paper cuts.** (1) `docs/push-ingest.md`'s poll
+- [x] **M5-W · gate-finding paper cuts.** (1) `docs/push-ingest.md`'s poll
       example shows a flat response; the route nests under `upload` — fix the
       doc (or flatten the route if that was the intent; doc fix is cheaper).
       (2) `.env.example`'s `CATALOG_BFF_SHARED_SECRET` block and the
