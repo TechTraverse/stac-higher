@@ -232,7 +232,7 @@
     {
       "clientId": "stac-higher-push",
       "name": "STAC Higher push client (dev)",
-      "description": "LOCAL-ONLY confidential client with the client-credentials grant for the Phase 7 push-ingest flow (bearer tokens on /api/* — spec 2026-08-29 §3). Its service account is an operator in /earth-observation. Same caveat as the ADR 0002 test clients: never deploy; deployments create their own confidential client with the stac-higher audience mapper. NOTE: realm-file edits only take effect after `docker compose down -v` (import is skipped once the realm exists in the persisted volume).",
+      "description": "LOCAL-ONLY Phase 7 push client (client-credentials; service account is an operator in earth-observation). Never deploy: known secret. Realm edits need 'docker compose down -v' to re-import. See docs/push-ingest.md.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
