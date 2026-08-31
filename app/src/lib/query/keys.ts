@@ -70,6 +70,13 @@ export const processKeys = {
   runs: (id: string) => [...processKeys.detail(id), "runs"] as const,
 } as const;
 
+export const graphKeys = {
+  all: () => ["graph"] as const,
+  graph: () => [...graphKeys.all(), "pipeline"] as const,
+  history: (kind: string, id: string, days: number) =>
+    [...graphKeys.all(), "history", kind, id, days] as const,
+} as const;
+
 export const stacKeys = {
   all: (endpointUrl: string) => ["stac", endpointUrl] as const,
 

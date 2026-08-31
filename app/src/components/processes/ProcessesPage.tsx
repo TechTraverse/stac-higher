@@ -26,6 +26,9 @@ import {
 import { Cpu, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthMe } from "@/lib/query/auth";
+import { FlowStrip } from "@/components/monitoring/FlowStrip";
+import { useFlowHistory } from "@/lib/monitoring/graph-queries";
+import { useSources } from "@/lib/processes/queries";
 import {
   useCreateProcess,
   useDeleteProcess,
@@ -82,11 +85,46 @@ function ProcessCard({
           )}
         </div>
       </CardHeader>
-      <CardContent className="text-sm text-muted-foreground flex flex-wrap gap-x-6 gap-y-1">
-        <span>Group: {process.group_id}</span>
-        <span>Ceiling: {process.max_runs_per_hour} runs/hour</span>
+      <CardContent className="space-y-3">
+        <div className="text-sm text-muted-foreground flex flex-wrap gap-x-6 gap-y-1">
+          <span>Group: {process.group_id}</span>
+          <span>Ceiling: {process.max_runs_per_hour} runs/hour</span>
+        </div>
+        <ProcessSparkline processId={process.id} />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * A 30-day run strip for the process's FIRST source.
+ *
+ * `flow_stats_daily` is keyed per source, and a process usually has one. With
+ * several, showing the first is honest at dashboard altitude — the detail
+ * page is where per-source telemetry belongs — and summing them would hide a
+ * dead source behind a busy sibling, which is the opposite of what a health
+ * strip is for.
+ */
+function ProcessSparkline({ processId }: { processId: string }) {
+  const { data: sources } = useSources(processId);
+  const first = sources?.[0]?.id ?? null;
+  const { data: history } = useFlowHistory("process", first);
+
+  if (!sources || sources.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No source attached — this process never triggers.
+      </p>
+    );
+  }
+  return (
+    <div className="flex items-center gap-3">
+      <FlowStrip days={history ?? []} metric="runs" label="run history" />
+      <span className="text-xs text-muted-foreground">
+        30 days
+        {sources.length > 1 ? ` · ${sources[0].collection_id}` : ""}
+      </span>
+    </div>
   );
 }
 

@@ -14,6 +14,7 @@ import { useConnections } from "@/lib/connections/queries";
 import { useAssociations } from "@/lib/associations/queries";
 import { DeliverySection } from "./DeliverySection";
 import { IngestSection } from "./IngestSection";
+import { LineagePanel } from "./LineagePanel";
 
 interface DataFlowTabProps {
   collectionId: string;
@@ -48,6 +49,10 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
 
   return (
     <div className="space-y-8">
+      {/* Lineage first: "what is this collection wired to" before "how do I
+          wire it", which is the question an operator arrives with. */}
+      <LineagePanel collectionId={collectionId} />
+
       <IngestSection
         collectionId={collectionId}
         associations={ingest}

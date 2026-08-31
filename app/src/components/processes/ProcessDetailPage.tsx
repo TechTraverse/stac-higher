@@ -16,7 +16,7 @@ import {
   Switch,
   Textarea,
 } from "@stac-higher/shared";
-import { Loader2, Play, RotateCcw, Rocket, Trash2 } from "lucide-react";
+import { FileText, Loader2, Play, RotateCcw, Rocket, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthMe } from "@/lib/query/auth";
 import { getTestRun, requestTestRun } from "@/lib/processes/api";
@@ -660,6 +660,22 @@ function RunRow({
           <p className="text-sm text-destructive break-words">{run.error}</p>
         )}
       </div>
+      <div className="flex shrink-0 items-center gap-2">
+        {run.log_ref && (
+          // A plain link, not a fetch: the route 302s to a short-lived
+          // presigned URL and the log can be 10 MB, so the browser downloads
+          // it directly rather than through the app.
+          <Button variant="ghost" size="sm" asChild>
+            <a
+              href={`/api/processes/${processId}/runs/${run.id}/log`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <FileText className="h-4 w-4" />
+              Log
+            </a>
+          </Button>
+        )}
       {canMutate && run.status === "dead" && (
         <Button
           variant="outline"
@@ -675,6 +691,7 @@ function RunRow({
           Re-run
         </Button>
       )}
+      </div>
     </div>
   );
 }
