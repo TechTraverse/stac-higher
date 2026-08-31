@@ -206,6 +206,16 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       `pipeline/dispatcher/loop.py` + `repo.py`, `jobs/dispatch.py`,
       defer-on-mark-failure (I-38 path, not poison-drain), pytest.
       **SEQUENTIAL** after E.
+      **Done 2026-08-30** (`ai/p7f-dispatch`, merged) — §7.1 staged gate at
+      the marked seam (enqueue `pipeline.finalize` with the P7-E payload
+      BEFORE `mark_processed`; never matches delivery associations); §7.2
+      no-double-fire pair pinned by test; §7.3 delete events mark `asset_gc`
+      (reusing `PgGcRepo.mark_asset_prefix`, grace from
+      `collection_settings.gc_grace_days`) with transient mark failures on
+      the I-38 defer path (shared attempts budget, drain-at-cap with loud
+      log). Deviations (documented): malformed staged href poison-drains
+      (retry can't fix it); no dispatcher metrics (§9 names none). 10+1 new
+      tests; 585 pytest, ruff clean, verify green. Follow-ups below.
 - [ ] **P7-G · proxy write policy** (spec §5, ADR 0015). New
       `services/proxy-policy/` package + tests, `infra/proxy-policy/`
       Dockerfile, `infra/compose.auth-enforced.yml` (factory config,
@@ -346,3 +356,15 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
   runs apply exact tier-2 semantics instead of the conservative branch.
 - P7-Z: `PgFinalizeRepo`/`PlatformObjectStore` SQL+boto paths are
   `pragma: no cover` — exercised live at the gate.
+
+### From P7-F
+
+- P7-Z: `PgDispatchRepo.get_gc_grace_days` is `pragma: no cover` — confirm
+  live, plus the end-to-end external-DELETE → mark → `asset_collect` path.
+- A delete event that drains at the retry cap knowingly orphans bytes (loud
+  log only) — consider an alert kind for that class alongside the P7-E
+  unclaimed-rejection question (M2 alerting scope; log in ISSUES via P7-I if
+  deferred).
+- P7-I docs: note the dual idempotent `item_delete` markers (app BFF delete +
+  pipeline outbox delete) and that dispatcher-side marking now covers proxy
+  deletes.
