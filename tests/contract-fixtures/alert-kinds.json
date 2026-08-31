@@ -1,6 +1,6 @@
 {
   "style": "pinned-enum",
-  "description": "The closed alert `kind` enum (Phase 7 §10, pulled forward from the P9-D plan). `kinds` is the full enum every consumer must recognize; the per-writer lists partition it by single-writer ownership: the flow monitor raises AND auto-resolves `monitor_kinds` (pipeline/flow/monitor.py MONITOR_KINDS), the notify module owns `notify_kinds` (pipeline/notify/repo.py WEBHOOK_FAILED_KIND). The app's EXPECTATION_BREACH_KIND branch and the monitoring UI's kind labels pin against the same lists. Phase 9 appends its kinds here.",
+  "description": "The closed alert `kind` enum (Phase 7 \u00a710, pulled forward from the P9-D plan). `kinds` is the full enum every consumer must recognize; the per-writer lists partition it by single-writer ownership: the flow monitor raises AND auto-resolves `monitor_kinds` (pipeline/flow/monitor.py MONITOR_KINDS), the notify module owns `notify_kinds` (pipeline/notify/repo.py WEBHOOK_FAILED_KIND). The app's EXPECTATION_BREACH_KIND branch and the monitoring UI's kind labels pin against the same lists. Phase 9 (M5-0) appended the three process kinds; the monitor owns all three, and the conditions that RAISE them land in M5-E \u2014 until then they are declared, labelled and owned, but never written.",
   "kinds": [
     "ingest_inactivity",
     "delivery_slo",
@@ -9,6 +9,9 @@
     "ingest_failed",
     "backfill_failed",
     "push_rejected",
+    "process_stalled",
+    "process_failed",
+    "process_rate_limited",
     "webhook_failed"
   ],
   "monitor_kinds": [
@@ -18,7 +21,12 @@
     "delivery_dead",
     "ingest_failed",
     "backfill_failed",
-    "push_rejected"
+    "push_rejected",
+    "process_stalled",
+    "process_failed",
+    "process_rate_limited"
   ],
-  "notify_kinds": ["webhook_failed"]
+  "notify_kinds": [
+    "webhook_failed"
+  ]
 }

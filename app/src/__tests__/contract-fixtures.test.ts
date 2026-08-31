@@ -31,6 +31,13 @@ import {
 } from "@/lib/uploads/schemas";
 import { EXPECTATION_BREACH_KIND } from "@/lib/monitoring/api";
 import { ALERT_KIND_LABEL } from "@/components/monitoring/shared";
+import {
+  processEnvSchema,
+  processExpectationSchema,
+  processRuntimeSchema,
+  processRuntimeWriteSchema,
+  processTriggerSchema,
+} from "@/lib/processes/schemas";
 
 interface FixtureCase {
   name: string;
@@ -82,6 +89,78 @@ describe("delivery expectation contract (tests/contract-fixtures/delivery-expect
 
 describe("webhook channel config contract (tests/contract-fixtures/webhook-channel-config.json)", () => {
   describeDirection("webhook-channel-config.json", webhookChannelConfigSchema);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 / M5-0 fixtures (design spec §3) — the process shapes. `env` and
+// `expectation` are ordinary minimal/defaults/cases documents; `trigger` and
+// `runtime` are the discriminated-union style (one minimal/defaults pair per
+// arm), documented in tests/contract-fixtures/README.md.
+// ---------------------------------------------------------------------------
+
+describe("process expectation contract (tests/contract-fixtures/process-expectation.json)", () => {
+  describeDirection("process-expectation.json", processExpectationSchema);
+});
+
+describe("process env contract (tests/contract-fixtures/process-env.json)", () => {
+  describeDirection("process-env.json", processEnvSchema);
+});
+
+interface UnionFixture {
+  discriminator: string;
+  variants: Record<string, { minimal: unknown; defaults: unknown }>;
+  cases: FixtureCase[];
+}
+
+function describeUnion(file: string, schema: ZodType) {
+  const fixture = loadFixture(file) as unknown as UnionFixture;
+
+  it.each(Object.entries(fixture.variants))(
+    "writes exactly the golden defaults for the minimal %s document",
+    (_arm, variant) => {
+      expect(schema.parse(variant.minimal)).toEqual(variant.defaults);
+    },
+  );
+
+  it.each(fixture.cases)("$app: $name", ({ config, app }) => {
+    expect(schema.safeParse(config).success).toBe(app === "accept");
+  });
+}
+
+describe("process trigger contract (tests/contract-fixtures/process-trigger.json)", () => {
+  describeUnion("process-trigger.json", processTriggerSchema);
+});
+
+describe("process runtime contract (tests/contract-fixtures/process-runtime.json)", () => {
+  // The fixture's `app` column is the WRITE gate: slice 1 refuses `container`
+  // (spec §4), so every container case is app: reject / pipeline: accept.
+  // Defaults are asserted against the READ schema, which parses both arms —
+  // the write gate only adds the refusal on top.
+  const fixture = loadFixture("process-runtime.json") as unknown as UnionFixture;
+
+  it.each(Object.entries(fixture.variants))(
+    "writes exactly the golden defaults for the minimal %s document",
+    (_arm, variant) => {
+      expect(processRuntimeSchema.parse(variant.minimal)).toEqual(
+        variant.defaults,
+      );
+    },
+  );
+
+  it.each(fixture.cases)("$app: $name", ({ config, app }) => {
+    expect(processRuntimeWriteSchema.safeParse(config).success).toBe(
+      app === "accept",
+    );
+  });
+
+  it("the container arm is refused by the write gate, not by the shape", () => {
+    const container = fixture.variants.container.minimal;
+    // The asymmetry the fixture encodes: the contract carries `container` (so
+    // the pipeline reader and any future slice can parse it) while this
+    // slice's write path refuses it.
+    expect(processRuntimeSchema.safeParse(container).success).toBe(true);
+    expect(processRuntimeWriteSchema.safeParse(container).success).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -197,6 +276,18 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
 
   it("push_rejected is a monitor-owned kind (Phase 7 §8)", () => {
     expect(fixture.monitor_kinds).toContain("push_rejected");
+  });
+
+  it("the three process kinds are monitor-owned (Phase 9 §8)", () => {
+    // Declared in M5-0 so the enum, labels and ownership land with the
+    // contract; the conditions that RAISE them arrive in M5-E.
+    for (const kind of [
+      "process_stalled",
+      "process_failed",
+      "process_rate_limited",
+    ]) {
+      expect(fixture.monitor_kinds, kind).toContain(kind);
+    }
   });
 
   it("the monitoring UI labels every kind in the enum", () => {

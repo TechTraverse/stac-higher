@@ -17,6 +17,15 @@ from pipeline.finalize.status import StatusContractError, validate_status_doc
 from pipeline.flow.expectation import parse_delivery_expectation, parse_ingest_expectation
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.notify.config import parse_webhook_config
+from pipeline.process.config import (
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MEMORY_MB,
+    DEFAULT_TIMEOUT_SECONDS,
+    parse_process_env,
+    parse_process_expectation,
+    parse_process_runtime,
+    parse_process_trigger,
+)
 from pipeline.storage.keys import InvalidKeySegment, is_staged_href, parse_staged_href
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "contract-fixtures"
@@ -34,6 +43,10 @@ WEBHOOK = _load("webhook-channel-config.json")
 STAGED_HREF = _load("staged-asset-href.json")
 PUSH_STATUS = _load("push-upload-status.json")
 ALERT_KINDS = _load("alert-kinds.json")
+PROCESS_TRIGGER = _load("process-trigger.json")
+PROCESS_RUNTIME = _load("process-runtime.json")
+PROCESS_ENV = _load("process-env.json")
+PROCESS_EXPECTATION = _load("process-expectation.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -169,3 +182,92 @@ def test_delivery_defaults_match_golden():
     assert cfg.max_attempts == golden["retry"]["max_attempts"]
     assert cfg.backoff == golden["retry"]["backoff"]
     assert cfg.max_concurrent_transfers == golden["max_concurrent_transfers"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 / M5-0 — the process shapes (design spec §3, ROADMAP §5.6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", PROCESS_TRIGGER["cases"], ids=lambda c: c["name"])
+def test_process_trigger_cases(case):
+    _check(parse_process_trigger, case)
+
+
+@pytest.mark.parametrize("case", PROCESS_RUNTIME["cases"], ids=lambda c: c["name"])
+def test_process_runtime_cases(case):
+    """Note the deliberate asymmetry the fixture encodes: every `container`
+    case is `pipeline: accept` / `app: reject`. The contract carries the arm so
+    nothing is foreclosed; slice 1's refusal lives at the app's write gate
+    (design spec §4), NOT here."""
+    _check(parse_process_runtime, case)
+
+
+@pytest.mark.parametrize("case", PROCESS_ENV["cases"], ids=lambda c: c["name"])
+def test_process_env_cases(case):
+    _check(parse_process_env, case)
+
+
+@pytest.mark.parametrize("case", PROCESS_EXPECTATION["cases"], ids=lambda c: c["name"])
+def test_process_expectation_cases(case):
+    _check(parse_process_expectation, case)
+
+
+def test_process_trigger_defaults_match_golden():
+    """One minimal/defaults pair per union arm (the discriminated-union fixture
+    style) — each field this reader defaults must equal the app's."""
+    variants = PROCESS_TRIGGER["variants"]
+
+    item_event = parse_process_trigger(variants["item_event"]["minimal"])
+    assert item_event.kind == variants["item_event"]["defaults"]["kind"]
+    assert item_event.item_filter == variants["item_event"]["defaults"]["item_filter"]
+
+    cron = parse_process_trigger(variants["cron"]["minimal"])
+    assert cron.kind == variants["cron"]["defaults"]["kind"]
+    assert cron.schedule == variants["cron"]["defaults"]["schedule"]
+
+
+def test_process_runtime_defaults_match_golden():
+    for arm, variant in PROCESS_RUNTIME["variants"].items():
+        golden = variant["defaults"]
+        runtime = parse_process_runtime(variant["minimal"])
+        assert runtime.kind == arm == golden["kind"]
+        assert runtime.image == golden.get("image")
+        assert runtime.memory_mb == golden["memory_mb"]
+        assert runtime.timeout_seconds == golden["timeout_seconds"]
+        assert runtime.max_attempts == golden["retry"]["max_attempts"]
+        assert runtime.backoff == golden["retry"]["backoff"]
+
+    # The module constants ARE those defaults — a drift here would let the
+    # dataclass and the fixture disagree without any case failing.
+    inline = PROCESS_RUNTIME["variants"]["inline_python"]["defaults"]
+    assert inline["memory_mb"] == DEFAULT_MEMORY_MB
+    assert inline["timeout_seconds"] == DEFAULT_TIMEOUT_SECONDS
+    assert inline["retry"]["max_attempts"] == DEFAULT_MAX_ATTEMPTS
+
+
+def test_process_env_defaults_match_golden():
+    assert parse_process_env(PROCESS_ENV["minimal"]) == ()
+    assert PROCESS_ENV["defaults"] == []
+    # A null column (a revision that declared no env at all) reads as empty,
+    # not as a contract violation.
+    assert parse_process_env(None) == ()
+
+
+def test_process_expectation_defaults_match_golden():
+    golden = PROCESS_EXPECTATION["defaults"]
+    assert parse_process_expectation(PROCESS_EXPECTATION["minimal"]) == golden[
+        "run_within_seconds"
+    ]
+    # No expectation declared = no alerting, never a parse failure.
+    assert parse_process_expectation(None) is None
+
+
+def test_process_alert_kinds_are_monitor_owned():
+    """M5-0 declares the three process kinds and assigns them to the monitor;
+    the conditions that raise them land in M5-E."""
+    from pipeline.flow.monitor import MONITOR_KINDS
+
+    for kind in ("process_stalled", "process_failed", "process_rate_limited"):
+        assert kind in MONITOR_KINDS
+

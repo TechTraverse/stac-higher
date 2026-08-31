@@ -446,13 +446,26 @@ Residuals in [`ISSUES.md`](ISSUES.md): I-58 (M2-C notification semantics), I-59 
 
 ---
 
-## Phase 9 — Processes (M5) — scoped ⬜
+## Phase 9 — Processes (M5) — in progress 🚧
 
 Design spec approved 2026-08-29
 (`docs/superpowers/specs/2026-08-29-phase9-processes-design.md`, slices
 M5-0…M5-G + an OGC API — Processes stretch); ADRs 0013/0014 accepted;
-I-60…I-66 settled. Implementation begins after Phase 7 (steering order,
-ROADMAP §9).
+I-60…I-66 settled. Implementation started 2026-08-30, after Phase 7's gate
+(steering order, ROADMAP §9).
+
+| Feature | Status | Entry points |
+|---|---|---|
+| Process data model (migrations 022/023) | ✅ | `app/src/lib/db/migrate.ts` — `processes`, `process_revisions`, `process_sources`, `process_outputs`, `process_runs`, `process_checks` (022) + `flow_stats_daily` (023). App-owned DDL (ADR 0001); the pipeline writes run state, source `flow_stats` and the daily rollup, never DDL. `process_runs` deliberately unpartitioned (ADR 0012 criteria — runs are `rerun` targets, the `delivery_log` argument); shape pinned by `app/src/__tests__/processes-migration.test.ts` |
+| §5.6 cross-runtime shapes | ✅ | Zod write gate `app/src/lib/processes/schemas.ts` ↔ lenient reader `services/pipeline/src/pipeline/process/config.py`; golden fixtures `tests/contract-fixtures/process-{trigger,runtime,env,expectation}.json`, both suites consuming |
+| `container` runtime refusal (slice 1) | ✅ | `processRuntimeWriteSchema` — the contract CARRIES the arm (pipeline parses it) while the app's write gate refuses it; user-supplied images stay out of the first accreditation scope (spec §4, ADR 0013). Pinned as `app: reject` / `pipeline: accept` in the runtime fixture |
+| Process alert kinds declared | ✅ | `process_stalled` / `process_failed` / `process_rate_limited` appended to `tests/contract-fixtures/alert-kinds.json`, `MONITOR_KINDS` and `ALERT_KIND_LABEL`. Declared, owned and labelled in M5-0; the conditions that RAISE them land in M5-E |
+| App CRUD + editor UI (M5-A) | ⬜ | — |
+| Executor + run-scoped creds (M5-B) | ⬜ | — |
+| Triggers, runs, rate ceiling (M5-C) | ⬜ | — |
+| Output path via finalize (M5-D) | ⬜ | — |
+| Monitoring + graph (M5-E) | ⬜ | — |
+| UI completion (M5-F) | ⬜ | — |
 
 ---
 

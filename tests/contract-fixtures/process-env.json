@@ -1,0 +1,195 @@
+{
+  "$comment": "Golden fixture for the §5.6 process `env` envelope (Phase 9 / M5-0), stored in stac_higher.process_revisions.env. Consumed by app/src/__tests__/contract-fixtures.test.ts (processEnvSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_process_env). The document is an ARRAY of entries, each EITHER a literal `{name, value}` or a reference `{name, secret_ref}` — never both, never neither. A secret_ref is a pointer into the §5.2 encrypted-credentials envelope (`{connection_id, key}`: a key inside that connection's write-only credentials blob), resolved PIPELINE-SIDE at launch and injected only into the run container's environment — never into the platform worker's own process (ADR 0013's isolation invariant) and never echoed back through the API. PLAINTEXT SECRETS NEVER LIVE HERE: `value` is for non-secret configuration, which is why a `secret_ref` + `value` collision is a hard reject on both sides rather than a precedence rule.",
+  "minimal": [],
+  "defaults": [],
+  "cases": [
+    {
+      "name": "empty env",
+      "config": [],
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "one literal value",
+      "config": [{ "name": "TILE_SIZE", "value": "512" }],
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "an empty-string literal is a legitimate value",
+      "config": [{ "name": "PREFIX", "value": "" }],
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "one secret reference",
+      "config": [
+        {
+          "name": "SOURCE_TOKEN",
+          "secret_ref": {
+            "connection_id": "6b8f4c0e-2a1d-4f3b-9c7e-5d2a1b3c4d5e",
+            "key": "password"
+          }
+        }
+      ],
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "literals and references side by side",
+      "config": [
+        { "name": "TILE_SIZE", "value": "512" },
+        {
+          "name": "SOURCE_TOKEN",
+          "secret_ref": {
+            "connection_id": "6b8f4c0e-2a1d-4f3b-9c7e-5d2a1b3c4d5e",
+            "key": "secret_access_key"
+          }
+        }
+      ],
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "underscore-leading name",
+      "config": [{ "name": "_INTERNAL", "value": "1" }],
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "both value and secret_ref (never a precedence rule — always broken)",
+      "config": [
+        {
+          "name": "SOURCE_TOKEN",
+          "value": "hunter2",
+          "secret_ref": {
+            "connection_id": "6b8f4c0e-2a1d-4f3b-9c7e-5d2a1b3c4d5e",
+            "key": "password"
+          }
+        }
+      ],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "neither value nor secret_ref",
+      "config": [{ "name": "SOURCE_TOKEN" }],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "duplicate names (the resolved environment would be ambiguous)",
+      "config": [
+        { "name": "TILE_SIZE", "value": "512" },
+        { "name": "TILE_SIZE", "value": "1024" }
+      ],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "name that is not a POSIX env identifier",
+      "config": [{ "name": "tile-size", "value": "512" }],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "digit-leading name",
+      "config": [{ "name": "2FA", "value": "on" }],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "empty name",
+      "config": [{ "name": "", "value": "512" }],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "missing name",
+      "config": [{ "value": "512" }],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "non-string value (the environment is strings)",
+      "config": [{ "name": "TILE_SIZE", "value": 512 }],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "secret_ref with a non-uuid connection",
+      "config": [
+        { "name": "T", "secret_ref": { "connection_id": "not-a-uuid", "key": "password" } }
+      ],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "secret_ref missing its key",
+      "config": [
+        {
+          "name": "T",
+          "secret_ref": { "connection_id": "6b8f4c0e-2a1d-4f3b-9c7e-5d2a1b3c4d5e" }
+        }
+      ],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "secret_ref with a blank key",
+      "config": [
+        {
+          "name": "T",
+          "secret_ref": { "connection_id": "6b8f4c0e-2a1d-4f3b-9c7e-5d2a1b3c4d5e", "key": "  " }
+        }
+      ],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "secret_ref as a bare string instead of the envelope",
+      "config": [{ "name": "T", "secret_ref": "conn:password" }],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown key on an entry",
+      "config": [{ "name": "TILE_SIZE", "value": "512", "sensitive": true }],
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown key inside secret_ref",
+      "config": [
+        {
+          "name": "T",
+          "secret_ref": {
+            "connection_id": "6b8f4c0e-2a1d-4f3b-9c7e-5d2a1b3c4d5e",
+            "key": "password",
+            "version": 2
+          }
+        }
+      ],
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "an object instead of an array (the envelope is a list)",
+      "config": { "TILE_SIZE": "512" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "a non-object entry",
+      "config": ["TILE_SIZE=512"],
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "a null entry",
+      "config": [null],
+      "app": "reject",
+      "pipeline": "reject"
+    }
+  ]
+}

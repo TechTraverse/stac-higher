@@ -41,7 +41,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
 
 ## M5 implementation (spec §13 verbatim; dependency spine 0 → A/B → C → D/E → F → G)
 
-- [ ] **M5-0 · contracts + migrations** (spec §3). Migrations **022–023**;
+- [x] **M5-0 · contracts + migrations** (spec §3). Migrations **022–023**;
       the four new contract fixtures (process-trigger / process-runtime /
       process-env / process-expectation) + **append the three process kinds
       to the existing `alert-kinds.json`** (P7-I amendment — do not recreate
@@ -94,5 +94,27 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
       I-66) — only if the lead green-lights after M5-G.
 
 ## Discovered follow-ups
+
+- **`env` secret-refs point at connection credentials.** M5-0 had to pin what
+  a `secret_ref` actually references — the spec says "refs into the §5.2
+  envelope" without naming a target. The contract now says
+  `{connection_id, key}`: a named key inside a connection's write-only
+  credentials blob, which reuses the existing envelope with no new storage and
+  matches the §10 "secret-ref picker" UI. M5-B's launch-time resolver has to
+  decrypt through the connections credential path and must NOT widen it (the
+  worker decrypts, but only into the run container's environment — ADR 0013).
+  If a deployment ever needs process secrets that are not a connection's,
+  that is a new store and a new ref kind, not a reinterpretation of this one.
+- **`alerts` has no process anchor yet.** The three process kinds are declared
+  in M5-0, but `alerts` anchors on connection/association/channel/collection
+  (migrations 014/015/021). `process_stalled` and `process_rate_limited` are
+  per-SOURCE (I-63) and `process_failed` is per-process — none of which is an
+  existing anchor. **M5-E must add the anchor column in lockstep with the
+  CHECK, the open-dedup index and BOTH pipeline `ON CONFLICT` targets**, the
+  way migration 021 did; the migration-021 comment block is the checklist.
+- **`alerts-migration.test.ts` sliced to the end of `MIGRATIONS`**, so its
+  "no FK" pin silently widened over every migration added after 021 (M5-0's
+  022 tripped it). Fixed by slicing to the next entry. Worth remembering for
+  any future text-pinned migration test.
 
 (append here during iterations)

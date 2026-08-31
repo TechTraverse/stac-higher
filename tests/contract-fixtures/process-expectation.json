@@ -1,0 +1,67 @@
+{
+  "$comment": "Golden fixture for the §5.6 process expectation shape (Phase 9 / M5-0), stored in stac_higher.process_sources.expectation — PER SOURCE, not per process (I-63, decided in the design spec §8: different sources carry different cron cadences and arrival profiles, and the source id takes the association position in the ADR 0010 dedup key). Mirrors ingest-expectation.json field-for-field with its own key. Consumed by app/src/__tests__/contract-fixtures.test.ts (processExpectationSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_process_expectation). A breach raises `process_stalled` (spec §8); no expectation means no alerting, since a quiet source may be entirely normal.",
+  "minimal": { "run_within_seconds": 3600 },
+  "defaults": { "run_within_seconds": 3600 },
+  "cases": [
+    {
+      "name": "one-second floor is valid",
+      "config": { "run_within_seconds": 1 },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "a day-long window",
+      "config": { "run_within_seconds": 86400 },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "zero window",
+      "config": { "run_within_seconds": 0 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "negative window",
+      "config": { "run_within_seconds": -60 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "non-numeric window",
+      "config": { "run_within_seconds": "hourly" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "boolean window",
+      "config": { "run_within_seconds": true },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "fractional seconds (writer requires an int; reader truncates)",
+      "config": { "run_within_seconds": 3600.5 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown key alongside the window",
+      "config": { "run_within_seconds": 3600, "extra": 1 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "an association expectation key on a process source",
+      "config": { "expect_activity_within_seconds": 3600 },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "empty object (a declared expectation must declare a window)",
+      "config": {},
+      "app": "reject",
+      "pipeline": "accept"
+    }
+  ]
+}
