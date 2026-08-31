@@ -934,6 +934,57 @@ const MIGRATIONS = [
         ON stac_higher.staged_uploads (status, created_at);
     `,
   },
+  {
+    // P7-H (Phase 7 push-ingest spec §8/§11): the collection anchor for
+    // `push_rejected` alerts. Push has no connection / association / channel
+    // to anchor on, so alerts grow a fourth — nullable — anchor:
+    // `collection_id` as unconstrained text, NO FK, matching
+    // collection_settings (collections live in pgstac, out of band).
+    //
+    // Three things move in LOCKSTEP with the column (the M2-C channel-leg
+    // precedent, migration 015):
+    // - the anchor CHECK gains the fourth leg (as shipped it would reject
+    //   every push_rejected insert),
+    // - the open-dedup index gains the fourth coalesce leg (text — no cast),
+    // - the pipeline's INSERT conflict targets (flow/repo.py sync_alerts,
+    //   notify/repo.py raise_alert) match the index expressions EXACTLY.
+    // Recreating index + constraint is safe on a near-empty local table;
+    // ordering matters at scale (the M2-G "partition while near-empty"
+    // argument).
+    //
+    // Group scoping for collection-anchored alerts is DERIVED at read time
+    // via collection_settings.group_id (lib/alerts/storage.ts) — an unowned
+    // collection yields a null group, i.e. admin-only visibility.
+    name: "021_alerts_collection_anchor",
+    sql: `
+      ALTER TABLE stac_higher.alerts
+        ADD COLUMN IF NOT EXISTS collection_id text;
+
+      ALTER TABLE stac_higher.alerts
+        DROP CONSTRAINT IF EXISTS alerts_anchor_check;
+      ALTER TABLE stac_higher.alerts
+        ADD CONSTRAINT alerts_anchor_check CHECK (
+          connection_id IS NOT NULL
+          OR association_id IS NOT NULL
+          OR channel_id IS NOT NULL
+          OR collection_id IS NOT NULL
+        );
+
+      DROP INDEX IF EXISTS stac_higher.alerts_open_dedup_idx;
+      CREATE UNIQUE INDEX IF NOT EXISTS alerts_open_dedup_idx
+        ON stac_higher.alerts (
+          source, kind,
+          coalesce(connection_id::text, ''),
+          coalesce(association_id::text, ''),
+          coalesce(channel_id::text, ''),
+          coalesce(collection_id, '')
+        )
+        WHERE state <> 'resolved';
+
+      CREATE INDEX IF NOT EXISTS alerts_collection_idx
+        ON stac_higher.alerts (collection_id);
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

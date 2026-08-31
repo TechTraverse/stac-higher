@@ -25,7 +25,7 @@ import {
   useMarkAlertsRead,
   useResolveAlert,
 } from "@/lib/monitoring/queries";
-import { ALERT_STATE_VARIANT, timeAgo } from "./shared";
+import { ALERT_STATE_VARIANT, alertKindLabel, timeAgo } from "./shared";
 
 function AlertRow({ alert, canAct }: { alert: Alert; canAct: boolean }) {
   const ack = useAckAlert();
@@ -49,7 +49,7 @@ function AlertRow({ alert, canAct }: { alert: Alert; canAct: boolean }) {
           <Badge variant={ALERT_STATE_VARIANT[alert.state]}>{alert.state}</Badge>
           <Badge variant="outline">{alert.source}</Badge>
           <span className="text-xs font-medium text-muted-foreground">
-            {alert.kind}
+            {alertKindLabel(alert.kind)}
           </span>
         </div>
         <p className="mt-1 break-words text-sm">{alert.message}</p>

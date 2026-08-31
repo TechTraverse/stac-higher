@@ -1,9 +1,11 @@
-"""Retention sweeps for the three UNIQUE-keyed history tables (M2-G, ADR 0012).
+"""Retention sweeps for the unpartitioned history tables (M2-G, ADR 0012;
+``staged_uploads`` added by P7-H).
 
 ``delivery_log`` and ``ingest_files`` carry natural UNIQUE keys the upsert
-model depends on, and ``connection_checks`` is a short-lived request bridge —
-none of the three can be time-partitioned (spec §6), so they age out by sweep
-instead. The rules are deliberately conservative:
+model depends on, ``connection_checks`` is a short-lived request bridge, and
+``staged_uploads`` is a poll-verb target — none of them can (or should) be
+time-partitioned (spec §6; Phase 7 §11), so they age out by sweep instead.
+The rules are deliberately conservative:
 
 - ``connection_checks``: rows older than the window are deleted outright
   (ephemeral test requests). Separately, a check stranded ``running`` whose
@@ -17,6 +19,11 @@ instead. The rules are deliberately conservative:
   terminal rows (``delivered``/``dead``) past the window whose item no longer
   exists in pgstac (GC'd or manually deleted — the row is provenance for
   nothing). Non-terminal rows are live state and are never swept here.
+- ``staged_uploads`` (P7-H): TERMINAL rows only
+  (``finalized``/``rejected``/``expired``) past the window — long past any
+  client's poll and (for ``rejected``) far outside the push-rejection
+  monitor's lookback. ``pending``/``finalizing`` rows are live state owned
+  by the finalize sweep's TTL/stale clocks and are never touched here.
 
 Everything is a repo seam so the rules unit-test against a fake; the Pg
 methods are ``# pragma: no cover`` per repo convention.
@@ -34,6 +41,7 @@ class HistorySweepResult:
     checks_failed_stranded: int
     ingest_files_deleted: int
     delivery_log_deleted: int
+    staged_uploads_deleted: int
 
 
 class HistoryRepo(abc.ABC):
@@ -55,6 +63,11 @@ class HistoryRepo(abc.ABC):
         """Terminal rows past the window whose item is gone from pgstac.
         Returns 0 when pgstac is absent (unit/CI DBs)."""
 
+    @abc.abstractmethod
+    async def delete_terminal_staged_uploads(self, days: int) -> int:
+        """``finalized``/``rejected``/``expired`` staged-upload rows whose
+        verdict is older than the window (P7-H). Live rows are never swept."""
+
 
 async def history_tick(
     repo: HistoryRepo,
@@ -67,11 +80,13 @@ async def history_tick(
     ingest = await repo.delete_dead_association_ingest_files(history_days)
     deliveries = await repo.delete_dead_association_delivery_log(history_days)
     deliveries += await repo.delete_itemless_terminal_deliveries(history_days)
+    staged = await repo.delete_terminal_staged_uploads(history_days)
     return HistorySweepResult(
         checks_deleted=checks,
         checks_failed_stranded=stranded,
         ingest_files_deleted=ingest,
         delivery_log_deleted=deliveries,
+        staged_uploads_deleted=staged,
     )
 
 
@@ -157,3 +172,16 @@ class PgHistoryRepo(HistoryRepo):
                 await conn.rollback()
                 return 0  # pgstac absent — skip this prong
         return count
+
+    async def delete_terminal_staged_uploads(  # pragma: no cover
+        self, days: int
+    ) -> int:
+        # Every terminal transition stamps finalized_at; COALESCE to
+        # created_at guards hand-written rows so nothing lingers forever.
+        return await self._execute(
+            "DELETE FROM stac_higher.staged_uploads"
+            " WHERE status IN ('finalized','rejected','expired')"
+            " AND COALESCE(finalized_at, created_at)"
+            "     < now() - make_interval(days => %s)",
+            (days,),
+        )

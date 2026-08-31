@@ -32,6 +32,10 @@ class FakeHistoryRepo(HistoryRepo):
         self.calls.append(("delivery_itemless", days))
         return self.counts.get("delivery_itemless", 0)
 
+    async def delete_terminal_staged_uploads(self, days: int) -> int:
+        self.calls.append(("staged_uploads", days))
+        return self.counts.get("staged_uploads", 0)
+
 
 async def test_tick_applies_the_right_window_to_each_table():
     repo = FakeHistoryRepo(
@@ -41,6 +45,7 @@ async def test_tick_applies_the_right_window_to_each_table():
             "ingest": 3,
             "delivery_dead_assoc": 1,
             "delivery_itemless": 4,
+            "staged_uploads": 6,
         }
     )
     result = await history_tick(repo, checks_days=30, history_days=365)
@@ -49,11 +54,14 @@ async def test_tick_applies_the_right_window_to_each_table():
     assert ("ingest", 365) in repo.calls
     assert ("delivery_dead_assoc", 365) in repo.calls
     assert ("delivery_itemless", 365) in repo.calls
+    # staged_uploads (P7-H) shares the conservative history window.
+    assert ("staged_uploads", 365) in repo.calls
     assert result.checks_deleted == 5
     assert result.checks_failed_stranded == 2
     assert result.ingest_files_deleted == 3
     # Both delivery prongs are summed into one reported count.
     assert result.delivery_log_deleted == 5
+    assert result.staged_uploads_deleted == 6
 
 
 async def test_stranded_checks_are_failed_before_the_age_prune():

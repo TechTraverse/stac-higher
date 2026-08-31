@@ -1,6 +1,7 @@
 # ADR 0012 — High-volume table hygiene: partition two, sweep three
 
-**Status:** accepted (M2-G)
+**Status:** accepted (M2-G); amended P7-H — `staged_uploads` joins the swept
+tables (see the sweep list below)
 
 ## Context
 
@@ -56,6 +57,15 @@ against a real Postgres:
 - `delivery_log` additionally: terminal rows (`delivered`/`dead`) past the
   window whose **item no longer exists** in pgstac (GC'd — the row is
   provenance for nothing; ties the sweep to ADR 0011 as the spec intended).
+- `staged_uploads` (P7-H amendment, Phase 7 §11 — migration 020's ledger):
+  **terminal rows only** (`finalized`/`rejected`/`expired`) whose verdict
+  (`finalized_at`, falling back to `created_at`) is older than
+  `HISTORY_RETENTION_DAYS`. Not partitioned — it is the push client's poll
+  target (`GET /api/uploads/{uploadId}`) keyed by `id`. The window dwarfs
+  both the poll horizon and the `push_rejected` monitor's lookback
+  (`PUSH_ALERT_LOOKBACK_SECONDS`, default 24 h), so pruning never hides a
+  live alert condition. `pending`/`finalizing` rows belong to the finalize
+  sweep's TTL/stale-claim clocks and are never touched here.
 
 The rejected alternative — splitting `delivery_log` into current-state +
 partitioned `delivery_attempts` history — preserves the blanket promise but

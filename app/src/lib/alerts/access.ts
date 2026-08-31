@@ -2,7 +2,8 @@
  * Shared load-and-authorize step for the alert action routes (M2-B, §7).
  * Missing and out-of-group both come back as the same 404, so the routes
  * cannot leak another group's alert ids. An alert whose derived group is gone
- * (connection row hard-deleted) is admin-only.
+ * (connection row hard-deleted) or was never set (collection-anchored P7-H
+ * alerts on an unowned collection) is admin-only.
  */
 import type { CanonicalIdentity } from "@/lib/auth/types";
 import { isAdmin } from "@/lib/authz/permissions";

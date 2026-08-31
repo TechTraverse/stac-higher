@@ -33,6 +33,7 @@ DELIVERY_EXPECTATION = _load("delivery-expectation.json")
 WEBHOOK = _load("webhook-channel-config.json")
 STAGED_HREF = _load("staged-asset-href.json")
 PUSH_STATUS = _load("push-upload-status.json")
+ALERT_KINDS = _load("alert-kinds.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -125,6 +126,21 @@ def test_push_status_enums_match_golden():
     assert set(PUSH_STATUS["statuses"]) == STATUSES
     assert set(PUSH_STATUS["terminal"]) == TERMINAL_STATUSES
     assert set(PUSH_STATUS["reasons"]) == REJECTION_REASONS
+
+
+def test_alert_kinds_match_golden():
+    """The pinned-enum fixture (P7-H): each writer-side constant equals its
+    fixture list VERBATIM (order included — the fixture is canonical), and
+    the writer lists partition the full enum exactly."""
+    from pipeline.flow.monitor import MONITOR_KINDS
+    from pipeline.notify.repo import WEBHOOK_FAILED_KIND
+
+    assert ALERT_KINDS["monitor_kinds"] == list(MONITOR_KINDS)
+    assert ALERT_KINDS["notify_kinds"] == [WEBHOOK_FAILED_KIND]
+    assert ALERT_KINDS["kinds"] == (
+        ALERT_KINDS["monitor_kinds"] + ALERT_KINDS["notify_kinds"]
+    )
+    assert len(set(ALERT_KINDS["kinds"])) == len(ALERT_KINDS["kinds"])
 
 
 def test_ingest_defaults_match_golden():

@@ -67,7 +67,22 @@ survive a newer writer (unknown result keys, unknown future reason strings),
 while both sides reject broken shapes (unknown status, missing reason, wrong
 container types).
 
-(P7-H adds the third style, `pinned-enum`, with `alert-kinds.json`.)
+### `pinned-enum` — `alert-kinds.json`
+
+A bare closed enum with no document shape at all (P7-H — the first change to
+the alert `kind` enum since the fixture was deferred in M2). The file pins:
+
+- `kinds` — the full closed enum, in canonical order. Every consumer that
+  branches on or displays a kind must recognize all of them (the vitest
+  consumer asserts the monitoring UI's label map covers the whole enum, so a
+  new kind cannot land unlabeled).
+- one list per **writer** (`monitor_kinds`, `notify_kinds`) — the
+  single-writer ownership partition. Each writer-side constant
+  (`MONITOR_KINDS`, `WEBHOOK_FAILED_KIND`) is asserted equal to its list, and
+  the lists must partition `kinds` exactly: adding a kind on either side
+  without updating the fixture (or claiming a kind in two writers) fails a
+  suite. Growing the enum (Phase 9 appends its kinds) means appending here
+  and to the owning writer's list in the same change.
 
 ## Why `app` and `pipeline` expectations can differ
 

@@ -56,10 +56,14 @@ describe("listAlerts", () => {
 
     const [sql, params] = mockQuery.mock.calls[0];
     expect(sql).toMatch(
-      /COALESCE\(c\.group_id, nch\.group_id\) = ANY\(\$1::text\[\]\)/,
+      /COALESCE\(c\.group_id, nch\.group_id, cs\.group_id\) = ANY\(\$1::text\[\]\)/,
     );
     // Group derivation goes through the association's connection too.
     expect(sql).toMatch(/COALESCE\(a\.connection_id, cc\.connection_id\)/);
+    // Collection-anchored alerts (P7-H) derive their group from the
+    // collection's settings row; the display collection prefers the anchor.
+    expect(sql).toMatch(/collection_settings cs\s+ON cs\.collection_id = a\.collection_id/);
+    expect(sql).toMatch(/COALESCE\(a\.collection_id, cc\.collection_id\) AS collection_id/);
     expect(sql).toMatch(/ORDER BY \(a\.state = 'firing'\) DESC, a\.last_seen DESC/);
     expect(params).toEqual([["g1", "g2"], 50]);
   });
