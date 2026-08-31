@@ -94,6 +94,15 @@ class ProcessRepo(abc.ABC):
         """Enabled cron sources whose schedule is due."""
 
     @abc.abstractmethod
+    async def current_revision(self, process_id: str) -> str | None:
+        """The process's deployed revision, or None when nothing is deployed.
+
+        Read at TRIGGER time rather than carried on the dispatch payload, so a
+        deploy racing a dispatch pins the deployed revision rather than a
+        stale one.
+        """
+
+    @abc.abstractmethod
     async def rate_window(self, process_id: str, since: dt.datetime) -> RateWindow:
         """Runs started for this process since ``since``, plus the ceiling."""
 
@@ -246,6 +255,16 @@ class PgProcessRepo(ProcessRepo):
             )
             for r in rows
         ]
+
+    async def current_revision(self, process_id: str) -> str | None:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT current_revision FROM stac_higher.processes"
+                " WHERE id = %s AND deleted_at IS NULL AND enabled",
+                (process_id,),
+            )
+            row = await cur.fetchone()
+        return str(row[0]) if row and row[0] else None
 
     async def rate_window(  # pragma: no cover
         self, process_id: str, since: dt.datetime

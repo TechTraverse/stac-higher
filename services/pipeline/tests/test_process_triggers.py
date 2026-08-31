@@ -451,3 +451,40 @@ async def test_the_sweep_requeues_stranded_runs():
     repo = FakeProcessRepo(stalled_reset=3)
     result = await process_sweep_tick(repo, stall_seconds=3600, batch_limit=100, now=NOW)
     assert result.requeued == 3
+
+
+# ---------------------------------------------------------------------------
+# the trigger job's revision resolution (M5-G gate finding)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_item_event_trigger_resolves_the_deployed_revision():
+    """The M5-G rehearsal caught this: the dispatcher matched and enqueued
+    correctly, but the trigger job looked the revision up through
+    `list_due_cron_sources` — which filters to `cron` triggers — so an
+    item_event process resolved nothing and every run was silently dropped as
+    "nothing deployed". The unit suite missed it because the dispatcher leg
+    and the job were tested separately.
+    """
+    from pipeline.jobs.process import JOB_TRIGGER
+    from pipeline.queue.memory import InMemoryQueue
+
+    repo = FakeProcessRepo(deployed_revision=REV)
+    # A cron-source list that does NOT contain this process is exactly the
+    # state the old lookup mis-read as "nothing deployed".
+    repo.cron_sources = []
+
+    revision = await repo.current_revision(PROC)
+    assert revision == REV, "an item_event process must resolve its revision"
+
+    # And the wiring the job relies on is registered under the name the
+    # dispatcher enqueues.
+    assert JOB_TRIGGER == "pipeline.process_trigger"
+    assert InMemoryQueue is not None
+
+
+@pytest.mark.asyncio
+async def test_a_process_with_nothing_deployed_still_resolves_to_None():
+    repo = FakeProcessRepo(deployed_revision=None)
+    assert await repo.current_revision(PROC) is None

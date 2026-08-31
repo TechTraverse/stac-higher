@@ -119,11 +119,12 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             # The dispatcher matched on the source; the revision to pin is
             # whatever is CURRENT at trigger time, resolved here so a deploy
             # racing a dispatch pins the deployed one, not a stale read.
-            sources = await repo.list_due_cron_sources(now)
-            current = next(
-                (s.current_revision for s in sources if s.process_id == process_id), None
-            )
-            revision_id = current
+            #
+            # M5-G caught this reading through list_due_cron_sources, which
+            # filters to `cron` triggers — so an item_event trigger never
+            # resolved a revision and every run was silently dropped as
+            # "nothing deployed". A single-row read cannot make that mistake.
+            revision_id = await repo.current_revision(process_id)
         if not revision_id:
             logger.warning(
                 "process trigger skipped: nothing deployed",
