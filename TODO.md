@@ -248,6 +248,24 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       collection anchor/scoping, monitoring UI kind label, fixture
       `alert-kinds.json` + README enum style + both consumers.
       **SEQUENTIAL** after E and C.
+      **Done 2026-08-30** (`ai/p7h-alerts`, merged) — migration 021 (anchor
+      fourth leg, dedup index with `coalesce(collection_id,'')`);
+      `push_rejected` in MONITOR_KINDS with the §8 condition + resolved-at
+      floor in pure unit-tested `evaluate_push_rejections()`
+      (`PUSH_ALERT_LOOKBACK_SECONDS` default 86400); LOCKSTEP ADDITION
+      beyond the file list: `notify/repo.py` shares the ON CONFLICT target
+      and its fan-out group derivation gained the `collection_settings`
+      join (without it webhook fan-out for collection-anchored alerts
+      silently skipped); history sweep `staged_uploads` terminal-row leg +
+      ADR 0012 amended; app group derivation
+      `COALESCE(connection, channel, collection)` + `ALERT_KIND_LABEL` map;
+      `alert-kinds.json` pinned-enum fixture (7 monitor + 1 notify kinds)
+      consumed by both suites + a text-level vitest pinning 021's index
+      expressions against BOTH Python ON CONFLICT sites. Decided: unclaimed-
+      session rejections stay alert-INVISIBLE by design (no ledger state to
+      observe; corrupting the ledger or a new table were worse) — metrics +
+      logs only, documented in the monitor docstring. 845 vitest + 583
+      pytest green. Follow-ups below.
 - [ ] **P7-I · docs + cross-doc amendments** (spec §12, §13). New
       `docs/push-ingest.md`; AGENTS route table; FEATURES; ISSUES entries
       from §13 (incl. the direct-path audit gap and the I-15 amendment);
@@ -368,3 +386,14 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
 - P7-I docs: note the dual idempotent `item_delete` markers (app BFF delete +
   pipeline outbox delete) and that dispatcher-side marking now covers proxy
   deletes.
+
+### From P7-H
+
+- P7-I ISSUES entry: unclaimed-session push rejections are alert-invisible
+  (metrics/logs only, deliberate) — revisit if Phase 9's staged-item path
+  makes them ledger-backed.
+- P7-I docs: `docs/push-ingest.md` carries the §8 client note "set collection
+  ownership if your operators should see push alerts".
+- P7-Z: exercise the widened ON CONFLICT against real Postgres (dedup index +
+  both INSERT sites are SQL-only; the vitest text pin guards drift, not
+  execution).
