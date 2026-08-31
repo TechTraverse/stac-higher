@@ -793,7 +793,7 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
 | 7 — Direct interaction | ✅ Done (gate met 2026-08-30) | All slices P7-B…P7-I merged (bearer auth, staged uploads, brokered BFF push path, finalize on the ADR 0014 seam, dispatcher gating, ADR 0015 proxy write policy, `push_rejected` alerting, `docs/push-ingest.md`); **P7-Z rehearsal closed the done-when live** (evidence under the Phase 7 entry below; two gate findings fixed — I-80). Open: the promotion PR (human) + human review of the provisionally-approved spec. [FEATURES §Phase 7](docs/FEATURES.md). |
 | 8 — Cloud, scale gate & viz | ⬜ Not started | — |
-| 9 — Processes | 🚧 In progress (started 2026-08-30) | Planning complete: `docs/superpowers/specs/2026-08-29-phase9-processes-design.md` (slices M5-0…M5-G), ADRs 0013/0014 accepted, scoping queue P9-A…F done. **M5-0 done** (migrations 022/023, the four §5.6 contract fixtures + the `alert-kinds.json` append, Zod ↔ pipeline readers); M5-A/M5-B next. |
+| 9 — Processes | ✅ **Gate met 2026-08-31** (M5-G) | All slices M5-0…M5-F merged and the §1 done-when rehearsed live on the auth-enforced stack — evidence below. Two findings fixed during the rehearsal (item_event revision resolution; the run network could not reach object storage). Remaining human work: the promotion PR. |
 
 ### Named milestones (2026-07-24)
 
@@ -1058,7 +1058,7 @@ provisionally approved; human review of spec + code pending):
   credentials, S3 object storage, and a written load-test report against the
   envelope.
 
-### Phase 9 — Processes ⬜ **Proposed (M5, 2026-08-27)**
+### Phase 9 — Processes ✅ **Gate met (M5-G, 2026-08-31)**
 
 User-defined, group-owned transformations that consume items from **source
 collections** and publish items into **output collections** — the third flow
@@ -1121,6 +1121,73 @@ toggle (§8), not a connection.
   docs) before any accredited deployment.
 
 ---
+
+#### M5-G gate evidence (2026-08-31)
+
+Rehearsed against the **auth-enforced stack** (`docker-compose.yml` +
+`infra/compose.auth-enforced.yml`, `CATALOG_BFF_SHARED_SECRET` set) with the
+pipeline image rebuilt from `ai/main`, the platform runtime image built from
+`services/process-runtime/`, and the dev server on :4321. Fixture collections
+`m5g-source` / `m5g-output` were created directly against stac-fastapi —
+collection creation by a session caller needs a real OIDC login under
+enforcement, and it is fixture setup rather than a gate assertion.
+
+Each §1 criterion, and how it was observed:
+
+1. **Trigger → run.** An item landing in `m5g-source` produced a
+   `process_runs` row with the deployed revision pinned. The dispatcher's
+   process leg matched the source and enqueued `pipeline.process_trigger`.
+2. **Isolated execution + captured log.** The run executed as a sibling
+   container through the socket proxy (not in the worker), and its stdout /
+   traceback was captured to
+   `logs/runs/{process_id}/{run_id}.log` and referenced from `log_ref`.
+3. **Validated output item.** `m5g-output` gained
+   `m5g-out-c5ca3b8a` with asset href
+   `/api/assets/m5g-output/m5g-out-c5ca3b8a/mask.tif` — bytes moved
+   staging→canonical and hrefs rewritten by the Phase 7 finalize through the
+   ADR 0014 `process_run` hooks; `output_items` recorded on the run.
+4. **Onward delivery.** A deliver association on `m5g-output` (s3 → MinIO)
+   delivered the process's output items: `delivery_log` `delivered`, with the
+   bytes present at the templated destination path. Composition off the
+   finalize upsert's outbox event, with no process-specific delivery code.
+5. **Failure → dead → alert → Re-run.** A failing run exhausted its retry
+   budget to `dead`; the monitor raised **`process_failed`** (process-anchored,
+   group derived as `earth-observation`, visible through `/api/alerts` and
+   counted by the unread bell). `POST …/runs/{id}/rerun` returned 202, reset
+   the row to `queued` with a fresh budget, and wrote an audited `rerun` row.
+6. **Stall → alert → auto-resolve.** While the flow was stopped, the source's
+   `run_within_seconds: 60` expectation breached and raised
+   **`process_stalled`** (source-anchored, per I-63); it **auto-resolved** once
+   a run succeeded — which also exercises the M5-E auto-resolve fix, since the
+   comparison must include the process/source legs to clear the right row.
+
+Also exercised beyond the six:
+
+- **Cycle refusal (I-64).** Attaching `m5g-source` as an output of a process
+  that already sources from it returned 409 with the path
+  `proc:… → coll:m5g-source → proc:…`.
+- **Rate ceiling (§7).** With `max_runs_per_hour: 1`, three triggers produced
+  **one** deferred run carrying **three** items — coalescing proven under real
+  concurrent dispatch — and raised **`process_rate_limited`**.
+- **Stall sweep.** A run stranded `running` past the window was returned to
+  `queued` with `started_at` cleared and an explanatory error.
+
+**Two findings, both fixed and merged during the rehearsal:**
+
+- *`item_event` triggers never resolved their revision.* The trigger job read
+  the current revision by scanning `list_due_cron_sources`, which filters to
+  `cron` triggers — so every item_event run was dropped as "nothing deployed".
+  The dispatcher leg was correct; the drop happened one job later, which is
+  why a unit suite testing the two separately missed it. Replaced with a
+  single-row `current_revision()` read plus a regression test.
+- *A run could never reach object storage.* The `process-runs` network was
+  `internal: true` with **nothing attached**, and `PROCESS_NETWORK` defaulted
+  to `none` — so every publishing run died with `EndpointConnectionError`
+  against `minio:9000`, making the whole ADR 0014 output path unreachable in
+  the shipped stack. MinIO now joins that network and compose defaults to it;
+  the isolation that matters is preserved and is now deliberate: a run reaches
+  object storage and nothing else — not the database, not the catalog API, and
+  not the socket proxy that launches runs.
 
 ## 10. Risks & open questions
 
