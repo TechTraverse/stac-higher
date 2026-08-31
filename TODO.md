@@ -138,7 +138,7 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       accepts OIDC_ISSUER or OIDC_ISSUER_INTERNAL (compose split);
       `AUTH_BEARER_AUDIENCES` knob (default `stac-higher`); `azp` as
       last-resort display name. 11 new tests, 727 green. Follow-ups below.
-- [ ] **P7-C · staged-upload mint + ledger + poll route** (spec §4.1–4.2,
+- [x] **P7-C · staged-upload mint + ledger + poll route** (spec §4.1–4.2,
       §11). Migration **020** (`staged_uploads`) in `migrate.ts`,
       `app/src/pages/api/uploads/` (index + `[uploadId].ts`),
       `storage/keys.ts` staged-href helpers, new `app/src/lib/uploads/`,
@@ -161,7 +161,7 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       three §4.2 admission reasons (`unknown_session`, `wrong_collection`,
       `bound_to_other_item`) pinned in `PUSH_REJECTION_REASONS` + fixture.
       788 tests green. Follow-ups below.
-- [ ] **P7-D · brokered push write path on the BFF route** (spec §4.3).
+- [x] **P7-D · brokered push write path on the BFF route** (spec §4.3).
       `app/src/pages/api/catalog/[...path].ts` (bearer-caller forwarding,
       pre-validation for ALL bearer writes per R1, `prior_item` snapshot
       with R2/R3 guards, `X-BFF-Auth` header — owns the file), new
@@ -180,7 +180,7 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       callers too (protects finalize semantics — R1's "untouched" refers to
       the precondition set); snapshot failure fail-closed. 28+2 new tests,
       835 green. Follow-ups below.
-- [ ] **P7-E · finalize module + job + sweep + metrics** (spec §6, §9). New
+- [x] **P7-E · finalize module + job + sweep + metrics** (spec §6, §9). New
       `pipeline/finalize/` (seam, steps, resolvers, recorders, repo —
       ADR 0014 check criterion applied literally at review),
       `pipeline/stac/validate.py` lift, `jobs/finalize.py`, `metrics.py`,
@@ -202,7 +202,7 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       sweep-requeued runs (`event_op: None`) take the conservative
       restore-or-leave branch, never delete. 575 pytest + 59 new, ruff
       clean, verify green. Follow-ups below.
-- [ ] **P7-F · dispatcher staged-gating + delete-event GC mark** (spec §7).
+- [x] **P7-F · dispatcher staged-gating + delete-event GC mark** (spec §7).
       `pipeline/dispatcher/loop.py` + `repo.py`, `jobs/dispatch.py`,
       defer-on-mark-failure (I-38 path, not poison-drain), pytest.
       **SEQUENTIAL** after E.
@@ -216,7 +216,7 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       log). Deviations (documented): malformed staged href poison-drains
       (retry can't fix it); no dispatcher metrics (§9 names none). 10+1 new
       tests; 585 pytest, ruff clean, verify green. Follow-ups below.
-- [ ] **P7-G · proxy write policy** (spec §5, ADR 0015). New
+- [x] **P7-G · proxy write policy** (spec §5, ADR 0015). New
       `services/proxy-policy/` package + tests, `infra/proxy-policy/`
       Dockerfile, `infra/compose.auth-enforced.yml` (factory config,
       `ITEMS_FILTER_PATH` incl. `bulk_items`, mandatory secret),
@@ -240,7 +240,7 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       (ADR 0011 consistency); wrong secret falls through to normal policy
       (no oracle); `.dockerignore` re-include for the build context.
       Follow-ups below.
-- [ ] **P7-H · `push_rejected` alerting + ledger hygiene** (spec §8, §11).
+- [x] **P7-H · `push_rejected` alerting + ledger hygiene** (spec §8, §11).
       Migration **021** (alerts `collection_id` anchor + CHECK fourth leg +
       dedup index, `sync_alerts` ON CONFLICT in lockstep),
       `pipeline/flow/monitor.py` + `flow/repo.py`, `history/sweep.py`
@@ -266,12 +266,25 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       observe; corrupting the ledger or a new table were worse) — metrics +
       logs only, documented in the monitor docstring. 845 vitest + 583
       pytest green. Follow-ups below.
-- [ ] **P7-I · docs + cross-doc amendments** (spec §12, §13). New
+- [x] **P7-I · docs + cross-doc amendments** (spec §12, §13). New
       `docs/push-ingest.md`; AGENTS route table; FEATURES; ISSUES entries
       from §13 (incl. the direct-path audit gap and the I-15 amendment);
       **Phase 9 spec amendment** (M5-0 renumber, alert-kinds → "append");
       **ADR 0008 status-quo update**; ROADMAP §6.2 diagram note + phase row.
       Docs only. **SEQUENTIAL** last, before the gate.
+      **Done 2026-08-30** (`ai/p7i-docs`, merged) — `docs/push-ingest.md`
+      (280-line client guide, cross-checked against merged code); AGENTS
+      route table + enforced-stack command + push paragraph; auth.md secret
+      operator step; FEATURES Phase 7 section; ISSUES **I-70…I-79** new
+      (direct-path audit gap, no rate limit, no multipart, extension-schema
+      validation deferred, filename orphans, policy reads app DB,
+      bulk_items denied, claims duplication at policy, unclaimed rejections
+      alert-invisible, delete drain-at-cap orphans) + I-13/I-14/I-15
+      amended; Phase 9 spec renumbered (M5 → 022/023, fixture task →
+      append all three process kinds); ADR 0008 amendment section; ROADMAP
+      §6.2 as-built note + phase row; docs/monitoring.md ride-along
+      (stale after P7-H). Noticed: `.env.example`/overlay header overclaim
+      app-side fail-fast (docs state the true compose-side-only behavior).
 
 ## Phase 7 gate
 
