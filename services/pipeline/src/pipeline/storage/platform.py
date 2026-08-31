@@ -32,7 +32,7 @@ class S3Like(Protocol):
     def copy_object(self, **kwargs: Any) -> Any: ...
 
 
-def _pinned_endpoint_url(
+def pinned_endpoint_url(
     endpoint: str | None,
     region: str,
     allow_hosts: frozenset[str],
@@ -58,7 +58,7 @@ def _pinned_endpoint_url(
 
 def build_platform_client(settings: Settings) -> Any:
     """Construct a boto3 S3 client for the platform bucket (egress-pinned)."""
-    endpoint_url = _pinned_endpoint_url(
+    endpoint_url = pinned_endpoint_url(
         settings.staging_s3_endpoint,
         settings.staging_s3_region,
         settings.egress_allow_hosts,

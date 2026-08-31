@@ -97,6 +97,26 @@ DEFAULT_WEBHOOK_RETRY_SECONDS = 60
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10
 DEFAULT_WEBHOOK_STALL_SECONDS = 900  # 15 min
 
+# --- Process executor (Phase 9 / M5-B, ADR 0013) ---------------------------
+#: The least-privilege socket proxy, never the raw daemon socket — the
+#: executor's startup self-check refuses a unix:// host outright.
+DEFAULT_DOCKER_HOST = "tcp://docker-socket-proxy:2375"
+#: Platform-built runtime image (services/process-runtime). Slice 1 runs
+#: inline_python on this image only; user-supplied images are refused at the
+#: app's write gate (ADR 0013 slice-1 scope).
+DEFAULT_PROCESS_RUNTIME_IMAGE = "stac-higher-process-runtime:local"
+#: Dedicated network for run containers — the egress-policy analog at the
+#: executor boundary. `none` means no network at all, which is the right
+#: default: a process that needs egress is an explicit deployment decision.
+DEFAULT_PROCESS_NETWORK = "none"
+DEFAULT_PROCESS_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB (§9)
+#: Credential lifetime = run timeout + this, so a run using its full budget
+#: can still finish a last upload.
+DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS = 300
+#: STS role the run session is derived from. MinIO accepts any ARN here;
+#: AWS deployments set the real one.
+DEFAULT_PROCESS_STS_ROLE_ARN = "arn:aws:iam::000000000000:role/stac-higher-process-run"
+
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
     if raw is None:
@@ -151,6 +171,19 @@ class Settings:
     webhook_retry_seconds: int = DEFAULT_WEBHOOK_RETRY_SECONDS
     webhook_timeout_seconds: int = DEFAULT_WEBHOOK_TIMEOUT_SECONDS
     webhook_stall_seconds: int = DEFAULT_WEBHOOK_STALL_SECONDS
+    #: Process executor (M5-B, ADR 0013) — see the DEFAULT_PROCESS_* /
+    #: DEFAULT_DOCKER_HOST constants.
+    docker_host: str = DEFAULT_DOCKER_HOST
+    process_runtime_image: str = DEFAULT_PROCESS_RUNTIME_IMAGE
+    process_network: str = DEFAULT_PROCESS_NETWORK
+    process_log_max_bytes: int = DEFAULT_PROCESS_LOG_MAX_BYTES
+    process_credential_grace_seconds: int = DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS
+    process_sts_role_arn: str = DEFAULT_PROCESS_STS_ROLE_ARN
+    #: Endpoint the RUN uses to reach object storage. Usually the same as the
+    #: pipeline's, but it is separate because the two can differ: the run sits
+    #: on its own network, where the platform's endpoint hostname may not
+    #: resolve. None => fall back to the pipeline's staging endpoint.
+    process_run_s3_endpoint: str | None = None
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -240,4 +273,22 @@ class Settings:
             webhook_stall_seconds=int(
                 env.get("WEBHOOK_STALL_SECONDS", str(DEFAULT_WEBHOOK_STALL_SECONDS))
             ),
+            docker_host=env.get("DOCKER_HOST", DEFAULT_DOCKER_HOST),
+            process_runtime_image=env.get(
+                "PROCESS_RUNTIME_IMAGE", DEFAULT_PROCESS_RUNTIME_IMAGE
+            ),
+            process_network=env.get("PROCESS_NETWORK", DEFAULT_PROCESS_NETWORK),
+            process_log_max_bytes=int(
+                env.get("PROCESS_LOG_MAX_BYTES", str(DEFAULT_PROCESS_LOG_MAX_BYTES))
+            ),
+            process_credential_grace_seconds=int(
+                env.get(
+                    "PROCESS_CREDENTIAL_GRACE_SECONDS",
+                    str(DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS),
+                )
+            ),
+            process_sts_role_arn=env.get(
+                "PROCESS_STS_ROLE_ARN", DEFAULT_PROCESS_STS_ROLE_ARN
+            ),
+            process_run_s3_endpoint=env.get("PROCESS_RUN_S3_ENDPOINT") or None,
         )
