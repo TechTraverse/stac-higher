@@ -169,6 +169,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      # Reachable from process runs (M5-G): a run writes its outputs into
+      # staging/runs/{run_id}/, so object storage is the ONE platform service
+      # it must reach. Attaching minio to the restricted run network — rather
+      # than putting runs on the default network — keeps everything else (the
+      # database, the catalog API, the socket proxy that launches runs)
+      # unreachable from user code. Listing `default` is required: a service
+      # that declares `networks:` stops joining the default implicitly.
+      - default
+      - process-runs
 
   # One-shot bootstrap: creates the default bucket, then exits.
   minio-init:
@@ -267,7 +277,11 @@ services:
       # deployment decision, not something it inherits. Set it to
       # `stac-higher_process-runs` (the internal network declared below) for
       # runs that must reach MinIO directly.
-      - PROCESS_NETWORK=${PROCESS_NETWORK:-none}
+      # The compose network name is project-prefixed. `none` (the code-level
+      # default) means no network at all, which is right for a process that
+      # only transforms metadata — but a process that PUBLISHES must reach
+      # object storage, so the local default is the restricted run network.
+      - PROCESS_NETWORK=${PROCESS_NETWORK:-stac-higher_process-runs}
       - PROCESS_LOG_MAX_BYTES=${PROCESS_LOG_MAX_BYTES:-10485760}
       - PROCESS_STS_ROLE_ARN=${PROCESS_STS_ROLE_ARN:-arn:aws:iam::000000000000:role/stac-higher-process-run}
       # The run reaches storage on its OWN network, where the pipeline's
@@ -380,10 +394,15 @@ networks:
   # route off the docker host — a run on this network can reach the compose
   # services attached to it and nothing on the internet.
   #
-  # It is NOT the default network on purpose: PROCESS_NETWORK defaults to
-  # `none`, so a run gets no network unless a deployment opts in. The socket
-  # proxy is deliberately absent from this network — a run must never be able
-  # to reach the thing that launches runs.
+  # MinIO is attached to it (see that service) because a run must reach object
+  # storage to publish its outputs — that is the whole output path. Nothing
+  # else is: not the database, not the catalog API, and emphatically not the
+  # socket proxy, since a run must never reach the thing that launches runs.
+  #
+  # M5-G finding: the first cut left this network empty AND defaulted
+  # PROCESS_NETWORK to `none`, so every publishing run died with
+  # EndpointConnectionError against minio:9000. Isolation that makes the
+  # feature impossible is not isolation, it is a bug.
   process-runs:
     internal: true
 
