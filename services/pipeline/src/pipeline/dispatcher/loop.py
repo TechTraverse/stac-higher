@@ -130,7 +130,26 @@ async def dispatch_once(
             # transient-until-proven-otherwise: defer via the I-38 path (the
             # poison-drain would drain the event with no mark written).
             if event.op == "delete":
+                # I-46 guard: the transaction-API write path splits a client
+                # PUT into delete+insert events, so a delete event does NOT
+                # prove the item is gone. Marking on the delete leg of a
+                # replace pair would schedule a LIVE item's canonical bytes
+                # for collection. If the item exists right now, this delete
+                # was superseded — skip the mark and drain. (A true delete
+                # followed by an independent recreate before this claim also
+                # skips — the old version's bytes orphan, the I-74 class.)
                 try:
+                    if await repo.get_item(event.collection_id, event.item_id) is not None:
+                        logger.info(
+                            "dispatch: delete event for a live item (replace"
+                            " pair, I-46) — skipping gc mark",
+                            extra={
+                                "event_id": event.id,
+                                "collection_id": event.collection_id,
+                                "item_id": event.item_id,
+                            },
+                        )
+                        continue
                     await mark_delete_gc(event.collection_id, event.item_id)
                 except Exception:
                     if event.dispatch_attempts < MAX_VISIBILITY_ATTEMPTS:

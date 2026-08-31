@@ -61,6 +61,19 @@ class FinalizeRepo(PreflightChecks):
         """The ledger row for one upload session, or ``None``."""
 
     @abc.abstractmethod
+    async def item_predates(
+        self, collection_id: str, item_id: str, before: dt.datetime
+    ) -> bool:
+        """True when ``item_events`` holds any event for this item strictly
+        older than ``before`` — evidence the item existed before the push
+        session was minted. Needed because the transaction-API write path
+        splits a client PUT into delete+insert outbox events (ISSUES I-46),
+        so an ``insert`` op alone does not prove a true create. Residual:
+        events die by monthly partition DETACH+DROP (operator-manual, I-11),
+        so a long-dormant item could misread as a create — documented in
+        ISSUES."""
+
+    @abc.abstractmethod
     async def claim(self, upload_id: str, item_id: str) -> bool:
         """Atomically claim ``pending → finalizing`` and bind ``item_id``
         (§6.4 — the ADR 0004 drain idiom, so concurrent duplicates no-op).
@@ -151,6 +164,18 @@ class PgFinalizeRepo(FinalizeRepo):
         import psycopg
 
         return await psycopg.AsyncConnection.connect(self.database_url)
+
+    async def item_predates(  # pragma: no cover
+        self, collection_id: str, item_id: str, before: dt.datetime
+    ) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM stac_higher.item_events"
+                " WHERE collection_id = %s AND item_id = %s AND occurred_at < %s)",
+                (collection_id, item_id, before),
+            )
+            row = await cur.fetchone()
+        return bool(row and row[0])
 
     async def get_session(self, upload_id: str) -> StagedUploadRow | None:  # pragma: no cover
         async with await self._connect() as conn:

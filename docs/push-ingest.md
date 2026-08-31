@@ -174,7 +174,12 @@ Rules that surprise:
 ## Rejection outcomes — what happens to the catalog document
 
 When finalize rejects a push (`status: rejected`), the outcome depends on
-the triggering operation and the path the write took:
+the triggering operation and the path the write took. (Mechanically the
+discriminator is NOT the raw outbox op — the transaction-API write path
+splits a client PUT into delete+insert events (ISSUES I-46), so finalize
+trusts the `prior_item` snapshot first, and deletes only an item it can
+prove this push created — op says insert AND no `item_events` history
+predates the session. Same table, sound mechanics; ISSUES I-80.)
 
 | Case | Outcome |
 |---|---|
@@ -198,7 +203,7 @@ only at finalize time and always land in the ledger + alert.
 | Reason | Surfaces | Meaning |
 |---|---|---|
 | `multi_session` | sync 400 / ledger | item's staged hrefs reference more than one upload session |
-| `unknown_session` | sync 400 / — | staged href names no ledger row (direct path: metrics + logs only — ISSUES I-78) |
+| `unknown_session` | sync 400 / — | staged href names no ledger row (direct path: metrics + logs only — ISSUES I-78; the stored document is left as-is — with no mint-time anchor a delete could destroy a pre-existing item, I-80) |
 | `session_terminal` | sync 409 / ledger no-op | session already finalized/rejected/expired — mint a new one |
 | `wrong_collection` | sync 403 / ledger | session was minted for a different collection |
 | `bound_to_other_item` | sync 409 / ledger | session already bound to a different item id |

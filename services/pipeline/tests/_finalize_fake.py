@@ -55,6 +55,9 @@ class FakeFinalizeRepo(FinalizeRepo):
     archived: set[str] = field(default_factory=set)
     open_gc_marks: set[str] = field(default_factory=set)
     grace_days: dict[str, int] = field(default_factory=dict)
+    #: (collection_id, item_id) pairs with item_events history predating any
+    #: session — the I-46 guard's evidence of a pre-existing item.
+    predating_items: set[tuple[str, str]] = field(default_factory=set)
     #: calls recorded for assertions
     deleted_items: list[tuple[str, str]] = field(default_factory=list)
     marks: list[tuple[str, str, str | None, str, int]] = field(default_factory=list)
@@ -74,6 +77,9 @@ class FakeFinalizeRepo(FinalizeRepo):
             prior_item=s.prior_item,
             created_at=s.created_at,
         )
+
+    async def item_predates(self, collection_id: str, item_id: str, before) -> bool:
+        return (collection_id, item_id) in self.predating_items
 
     async def claim(self, upload_id: str, item_id: str) -> bool:
         s = self.sessions.get(upload_id)

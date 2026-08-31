@@ -163,16 +163,21 @@ async def test_multi_asset_single_session_is_fine():
 # -- §4.2 admission ----------------------------------------------------------
 
 
-async def test_unknown_session_rejects_and_deletes_insert_without_ledger_stamp():
+async def test_unknown_session_rejects_and_leaves_the_document():
+    """No ledger row means no mint-time anchor for the I-46 predates check —
+    an op=insert here could be the insert leg of a replace pair on a
+    PRE-EXISTING item (a direct PUT with a garbage staged href), so deleting
+    is unsafe. Leave the document; the operator cleans up a true typo'd
+    create by hand."""
     doc = _staged_doc("B04.tif")
     repo, store, writer, hooks = _fixture(doc=doc, with_session=False)
 
     result = await _run(repo, store, writer, hooks, event_op="insert")
 
     assert result.rejected[0].reason == "unknown_session"
-    # tier-2 insert outcome applied to the item…
-    assert repo.deleted_items == [(COLLECTION, ITEM)]
-    # …but there is no ledger row to stamp (and none was invented)
+    assert repo.deleted_items == []
+    assert repo.items[(COLLECTION, ITEM)] == doc
+    # there is no ledger row to stamp (and none was invented)
     assert repo.sessions == {}
 
 
@@ -400,6 +405,39 @@ async def test_collection_missing_in_catalog_rejects_as_wrong_collection():
 
 
 # -- §6.3 tier-2 op discrimination -------------------------------------------
+
+
+async def test_insert_op_with_snapshot_restores_not_deletes():
+    """I-46: the transaction-API path splits a brokered PUT into
+    delete+insert events, so the op says "insert" for a genuine update. The
+    §4.3 snapshot is the truth — restore it; never delete."""
+    prior = valid_item(ITEM, COLLECTION)
+    prior["properties"]["title"] = "the pre-push version"
+    doc = _staged_doc("B04.tif")
+    repo, store, writer, hooks = _fixture(doc=doc, prior_item=prior)
+
+    result = await _run(repo, store, writer, hooks, event_op="insert")
+
+    assert result.rejected[0].reason == "missing_bytes"
+    assert writer.upserted == [prior]
+    assert repo.deleted_items == []
+    assert repo.sessions[UPLOAD].result["restored"] is True
+
+
+async def test_insert_op_with_predating_history_leaves_the_document():
+    """I-46, direct path: op=insert but item_events shows the item existed
+    before the session was minted — a replace pair on a pre-existing item.
+    Deleting would destroy data this push did not create; leave it broken."""
+    doc = _staged_doc("B04.tif")
+    repo, store, writer, hooks = _fixture(doc=doc, prior_item=None)
+    repo.predating_items.add((COLLECTION, ITEM))
+
+    result = await _run(repo, store, writer, hooks, event_op="insert")
+
+    assert result.rejected[0].reason == "missing_bytes"
+    assert repo.deleted_items == []
+    assert repo.items[(COLLECTION, ITEM)] == doc
+    assert repo.sessions[UPLOAD].status == "rejected"
 
 
 async def test_update_rejection_with_snapshot_restores_it():

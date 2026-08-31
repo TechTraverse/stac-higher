@@ -509,6 +509,31 @@ the I-78 question) is the candidate fix if it ever fires in practice.
 - Tracked in: `services/pipeline/src/pipeline/dispatcher/loop.py`; found in
   the P7-F review.
 
+### I-80 · I-46 delete+insert pairs: residuals of the P7-Z gate fix 🟡
+The P7-Z rehearsal caught the transaction-API write path (BFF/proxy PUT)
+splitting a client update into **delete+insert** outbox events (I-46), which
+(a) made the dispatcher's §7.3 delete-marking GC-mark a LIVE item's canonical
+prefix on every update push, and (b) made finalize's §6.3 op-discriminated
+rejection tiers treat brokered updates as inserts — deleting the item instead
+of restoring the snapshot (observed live: a rejected update deleted the item
+and its rejection reason was the spurious mark's `gc_pending`). Fixed on
+`ai/main` (2026-08-30): the dispatcher skips the mark when the item still
+exists at claim time, and finalize discriminates by snapshot-presence first,
+deleting only a provable create (op=insert AND no `item_events` history
+predating the session; an unknown session — no mint anchor — now always
+leaves the document). Residual risk, accepted:
+- A true delete followed by an independent recreate before the dispatcher's
+  claim skips the mark — the OLD version's bytes orphan (the I-74 class;
+  logged).
+- The provable-create check reads `item_events`, whose partitions die by
+  operator-manual DETACH+DROP (I-11): a long-dormant pre-existing item whose
+  history was dropped could misclassify as a create and be deleted on a
+  rejected direct-path staged PUT. Requires manual partition drops plus a
+  staged PUT to a dormant item via the discouraged path.
+- Fixed in: `pipeline/dispatcher/loop.py`, `pipeline/finalize/push.py`,
+  `finalize/repo.py` (`item_predates`); tests in `test_dispatch_loop.py` /
+  `test_finalize_push.py`.
+
 ---
 
 ## Phase 9 — Processes (planning, 2026-08-27)

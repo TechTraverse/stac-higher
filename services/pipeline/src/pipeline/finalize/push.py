@@ -247,15 +247,34 @@ class PushRecorder(OutcomeRecorder):
             )
             return
 
-        # Rejection: tier-2 catalog outcome by op (§6.3), then the ledger stamp.
+        # Rejection: the §6.3 tier outcome, then the ledger stamp. The §4.3
+        # snapshot is the PRIMARY discriminator — the transaction-API write
+        # path splits a client PUT into delete+insert outbox events (ISSUES
+        # I-46), so ``event_op == "insert"`` does NOT prove the item never
+        # existed. Snapshot present ⇒ brokered update ⇒ restore, whatever the
+        # op says. Without a snapshot, delete only an op-says-insert item
+        # with no event history predating the session (a provable create);
+        # anything else leaves the stored document (never destroy what this
+        # push cannot be proven to have created).
         report = next(r for r in reports if r.outcome == "rejected")
         ref = report.ref
         restored = False
-        if event_op == "insert":
-            # The item did not exist before this push: delete restores the
-            # exact prior state — absence. Mark-first (ADR 0011) when the
-            # steps already moved bytes under the canonical prefix, so the
-            # partial move cannot orphan.
+        session = await self.repo.get_session(upload_id)
+        prior = session.prior_item if session else None
+        if prior is not None:
+            await self.writer.upsert_items([prior])
+            restored = True
+        elif (
+            event_op == "insert"
+            and session is not None
+            and session.created_at is not None
+            and not await self.repo.item_predates(
+                ref.collection_id, ref.item_id, session.created_at
+            )
+        ):
+            # A true create: delete restores the exact prior state — absence.
+            # Mark-first (ADR 0011) when the steps already moved bytes under
+            # the canonical prefix, so the partial move cannot orphan.
             if report.moved_any:
                 await self.repo.mark_asset_prefix(
                     item_canonical_prefix(ref.collection_id, ref.item_id),
@@ -265,16 +284,9 @@ class PushRecorder(OutcomeRecorder):
                     await self.repo.gc_grace_days(ref.collection_id),
                 )
             await self.repo.delete_item(ref.item_id, ref.collection_id)
-        else:
-            # update (brokered: restore the §4.3 snapshot; direct: leave the
-            # stored document as-is — deleting would destroy a pre-existing
-            # item). A sweep-recovery run with no recorded op takes the same
-            # conservative branch: never delete without knowing the op.
-            session = await self.repo.get_session(upload_id)
-            prior = session.prior_item if session else None
-            if prior is not None:
-                await self.writer.upsert_items([prior])
-                restored = True
+        # else: tier-3 leave-broken (direct-path update, an unprovable
+        # create, or a sweep-recovery run with no snapshot) — the distinct
+        # alert wording and docs/push-ingest.md cover the manual fix.
 
         reasons = [r.reason or REASON_INVALID_ITEM for r in reports if r.outcome == "rejected"]
         doc = rejected_result(reasons, restored=restored)

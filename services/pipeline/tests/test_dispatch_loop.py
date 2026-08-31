@@ -475,6 +475,29 @@ async def test_delete_event_marks_gc_and_drains_without_matching():
     assert repo.assoc_calls == 0
 
 
+async def test_delete_event_for_live_item_skips_mark():
+    """I-46: the transaction-API path splits a client PUT into delete+insert
+    events. The delete leg of that pair must NOT mark asset_gc — the item is
+    alive and marking would schedule its canonical bytes for collection. If
+    the item exists at claim time, skip the mark and drain."""
+    live = {"id": "alive", "collection": "c", "assets": {}}
+    repo = FakeDispatchRepo(
+        events=[ItemEvent(id=7, collection_id="c", item_id="alive", op="delete")],
+        items={("c", "alive"): live},
+    )
+    enqueue, captured = _collector()
+    enqueue_finalize, finalized = _finalize_collector()
+    mark, marked = _mark_collector()
+    result = await dispatch_once(
+        repo, enqueue, enqueue_finalize=enqueue_finalize, mark_delete_gc=mark
+    )
+    assert marked == []  # no mark for a live item
+    assert repo.processed == [7]  # drained, not deferred
+    assert result.matches == []
+    assert captured == []
+    assert finalized == []
+
+
 async def test_delete_gc_mark_failure_defers_not_drains():
     """A transient mark failure must NOT take the poison-drain (that would
     drain the event with no mark written — the I-51 orphan shape): the event
