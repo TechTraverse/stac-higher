@@ -66,11 +66,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# CQL2-text boolean literals; both parse and validate under cql2 (the same
-# engine the proxy embeds). Constant false is how "deny" is expressed — the
-# validate middleware's matches() then fails every body.
-CONSTANT_TRUE = "true"
-CONSTANT_FALSE = "false"
+# Constant-true/false as REAL CQL2 comparison expressions, not the bare
+# boolean literals: the proxy serializes the factory's expression onto reads
+# (`filter=<text>` on GET, cql2-json into POST /search bodies), and
+# stac-fastapi's pydantic models reject a bare `true` (`filter` must be a
+# dict in json form) — observed live at P7-Z. `1 = 1` / `1 <> 1` parse under
+# cql2, convert to valid cql2-json, and pgstac evaluates them.
+CONSTANT_TRUE = "1 = 1"
+CONSTANT_FALSE = "1 <> 1"
 
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 

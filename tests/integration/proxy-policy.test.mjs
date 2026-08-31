@@ -267,8 +267,9 @@ after(async () => {
 
 test("anonymous GET /collections/{id}/items keeps its shape (filter=true is invisible)", { skip }, async () => {
   const res = await proxyFetch(`/collections/${UNFLAGGED}/items`);
-  assert.equal(res.status, 200, `expected 200, got ${res.status}: ${await res.text()}`);
-  const json = await res.json();
+  const text = await res.text(); // read once — a template-literal await would eat the body
+  assert.equal(res.status, 200, `expected 200, got ${res.status}: ${text}`);
+  const json = JSON.parse(text);
   assert.equal(json.type, "FeatureCollection");
   assert.ok(Array.isArray(json.features), "response has a features array");
 });
@@ -278,8 +279,9 @@ test("anonymous POST /search still works — the read-served-by-POST carve-out",
     method: "POST",
     body: { collections: [UNFLAGGED], limit: 1 },
   });
-  assert.equal(res.status, 200, `expected 200, got ${res.status}: ${await res.text()}`);
-  const json = await res.json();
+  const text = await res.text();
+  assert.equal(res.status, 200, `expected 200, got ${res.status}: ${text}`);
+  const json = JSON.parse(text);
   assert.ok(Array.isArray(json.features), "search response has a features array");
 });
 
