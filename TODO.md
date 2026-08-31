@@ -20,6 +20,10 @@ association — and a failed run goes dead → alerts → manual re-run.
 The Phase 7 queue is closed — it lives in git history at `05912f8` (gate
 evidence: ROADMAP §9 Phase 7). Promoted to `main` 2026-08-30.
 
+**M5 is complete: the gate was met 2026-08-31** (evidence in ROADMAP §9
+Phase 9). Remaining human work: the promotion PR `ai/main → main`. The only
+open item below is the post-gate stretch.
+
 Settled — do not relitigate: slice 1 is `inline_python`-only on a
 platform-built image behind `DockerExecutor` + docker-socket-proxy (ADR 0013);
 outputs finalize through the Phase 7 `FinalizeRequest` seam with
@@ -85,7 +89,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
       collection lineage panel (30-day strip off `flow_stats_daily`),
       overview rollup, run log viewer, dashboard sparklines; e2e coverage.
       After M5-D and M5-E.
-- [ ] **M5-G · M5 gate rehearsal** (lead only: Docker + dev server + e2e,
+- [x] **M5-G · M5 gate rehearsal** (lead only: Docker + dev server + e2e,
       M2-I/P7-Z style). §1 done-when live on the auth-enforced stack:
       kill-mid-run recovery, stall sweep, rate-ceiling breach + alert,
       cycle refusal, every `pragma: no cover` SQL path. Record evidence in

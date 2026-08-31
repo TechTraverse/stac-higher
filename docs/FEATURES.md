@@ -446,13 +446,15 @@ Residuals in [`ISSUES.md`](ISSUES.md): I-58 (M2-C notification semantics), I-59 
 
 ---
 
-## Phase 9 — Processes (M5) — in progress 🚧
+## Phase 9 — Processes (M5) ✅ (gate met 2026-08-31)
 
 Design spec approved 2026-08-29
 (`docs/superpowers/specs/2026-08-29-phase9-processes-design.md`, slices
 M5-0…M5-G + an OGC API — Processes stretch); ADRs 0013/0014 accepted;
 I-60…I-66 settled. Implementation started 2026-08-30, after Phase 7's gate
-(steering order, ROADMAP §9).
+(steering order, ROADMAP §9); **M5-G gate met 2026-08-31** — the §1 done-when
+rehearsed live on the auth-enforced stack, evidence in ROADMAP §9 Phase 9.
+Process-author contract: [`processes.md`](processes.md).
 
 | Feature | Status | Entry points |
 |---|---|---|
