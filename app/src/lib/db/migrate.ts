@@ -1097,8 +1097,10 @@ const MIGRATIONS = [
         UNIQUE (process_id, collection_id)
       );
 
-      CREATE INDEX IF NOT EXISTS process_sources_process_idx
-        ON stac_higher.process_sources (process_id);
+      -- No standalone (process_id) index: UNIQUE (process_id, collection_id)
+      -- above already leads with it, and this table takes a write per source
+      -- edit. Same reasoning for process_outputs below.
+      --
       -- The dispatcher's item_event leg matches landing items against
       -- enabled sources by collection.
       CREATE INDEX IF NOT EXISTS process_sources_collection_enabled_idx
@@ -1114,8 +1116,6 @@ const MIGRATIONS = [
         UNIQUE (process_id, collection_id)
       );
 
-      CREATE INDEX IF NOT EXISTS process_outputs_process_idx
-        ON stac_higher.process_outputs (process_id);
       CREATE INDEX IF NOT EXISTS process_outputs_collection_idx
         ON stac_higher.process_outputs (collection_id);
 
@@ -1163,13 +1163,21 @@ const MIGRATIONS = [
         finished_at timestamptz
       );
 
+      -- Deliberately FIVE indexes, not eight. This is the highest-volume
+      -- table in the milestone — one row per dispatch plus a non-HOT UPDATE
+      -- per queued->running->terminal transition, since every indexed column
+      -- below is one the pipeline writes — so each index costs write
+      -- throughput at exactly the M3 rates §9 targets. Two candidates were
+      -- dropped rather than carried: a (process_id, created_at) index for the
+      -- §7 rate window, which the DESC index here already serves (a btree
+      -- scans either direction, and direction only matters for mixed-order
+      -- multi-column sorts), and a (source_id, created_at DESC) index, which
+      -- has no reader — per-source telemetry is the process_sources
+      -- flow_stats rollup, history is flow_stats_daily, and the coalescing
+      -- lookup has its own partial unique index below. Add either back with
+      -- the query that needs it, not before.
       CREATE INDEX IF NOT EXISTS process_runs_process_created_idx
         ON stac_higher.process_runs (process_id, created_at DESC);
-      CREATE INDEX IF NOT EXISTS process_runs_source_created_idx
-        ON stac_higher.process_runs (source_id, created_at DESC);
-      -- The rate window (§7) counts recent runs per process.
-      CREATE INDEX IF NOT EXISTS process_runs_rate_window_idx
-        ON stac_higher.process_runs (process_id, created_at);
       -- The stall sweep scans rows stuck in 'running'.
       CREATE INDEX IF NOT EXISTS process_runs_running_idx
         ON stac_higher.process_runs (started_at)
@@ -1341,18 +1349,22 @@ export async function runMigrations(): Promise<void> {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1)", [ADVISORY_KEY]);
 
+    // One round-trip for the whole applied set rather than one per migration:
+    // runMigrations() blocks the first API request while holding the advisory
+    // lock, and that per-migration SELECT grew with every migration added.
+    // The lock makes reading the set once equivalent to re-reading it.
+    const applied = await client.query<{ name: string }>(
+      `SELECT name FROM stac_higher.migrations`,
+    );
+    const done = new Set(applied.rows.map((row) => row.name));
+
     for (const migration of MIGRATIONS) {
-      const result = await client.query(
-        `SELECT 1 FROM stac_higher.migrations WHERE name = $1`,
+      if (done.has(migration.name)) continue;
+      await client.query(migration.sql);
+      await client.query(
+        `INSERT INTO stac_higher.migrations (name) VALUES ($1)`,
         [migration.name],
       );
-      if (result.rowCount === 0) {
-        await client.query(migration.sql);
-        await client.query(
-          `INSERT INTO stac_higher.migrations (name) VALUES ($1)`,
-          [migration.name],
-        );
-      }
     }
 
     // Runs every call (not tracked): (re)attaches the outbox trigger once

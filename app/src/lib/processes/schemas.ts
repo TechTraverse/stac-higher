@@ -14,6 +14,7 @@
  * coerced) so a newer writer never bricks a running pipeline.
  */
 import { z } from "zod";
+import { nonBlank, retrySpecSchema } from "@/lib/schema-helpers";
 
 // ---------------------------------------------------------------------------
 // trigger (process_sources.trigger — §5.6)
@@ -21,14 +22,6 @@ import { z } from "zod";
 
 export const PROCESS_TRIGGER_KINDS = ["item_event", "cron"] as const;
 export type ProcessTriggerKind = (typeof PROCESS_TRIGGER_KINDS)[number];
-
-/** Non-blank string — the pipeline's readers `.strip()`, so a whitespace-only
- * value must not pass the write gate either. */
-const nonBlank = (message: string) =>
-  z
-    .string()
-    .min(1, message)
-    .refine((s) => s.trim().length > 0, message);
 
 /**
  * One cron field: `*`, a number, a name (`mon`, `jan`), a range, a list, or
@@ -93,13 +86,8 @@ const MEMORY_MB_MIN = 128;
  * container slot. */
 const TIMEOUT_SECONDS_MAX = 86_400;
 
-/** Reuses the §5.1 delivery RetrySpec shape verbatim. */
-export const processRetrySchema = z
-  .object({
-    max_attempts: z.number().int().min(1).default(3),
-    backoff: z.enum(["exponential", "fixed"]).default("exponential"),
-  })
-  .strict();
+/** The §5.1 RetrySpec, with a process's smaller attempt budget. */
+export const processRetrySchema = retrySpecSchema(3);
 
 const runtimeLimits = {
   memory_mb: z.number().int().min(MEMORY_MB_MIN).default(512),
@@ -129,16 +117,21 @@ const containerRuntimeSchema = z
   .strict();
 
 /**
- * The full §5.6 runtime shape, BOTH arms. Use this to READ a stored runtime
- * (a pipeline-era or future revision may legitimately carry `container`).
- * Do NOT use it as the write gate — see `processRuntimeWriteSchema`.
+ * The full §5.6 runtime shape, BOTH arms — for READING a stored runtime, since
+ * a future revision may legitimately carry `container`.
+ *
+ * It deliberately does NOT get the short name: `processRuntimeSchema` below is
+ * the write gate, so reaching for the obvious import cannot accidentally store
+ * a runtime this slice refuses to run. (The sibling `connections/schemas.ts`
+ * makes the same call in the strongest form — it exports no response-side
+ * credential schema at all.)
  */
-export const processRuntimeSchema = z.discriminatedUnion("kind", [
+export const processRuntimeReadSchema = z.discriminatedUnion("kind", [
   inlinePythonRuntimeSchema,
   containerRuntimeSchema,
 ]);
 
-export type ProcessRuntime = z.infer<typeof processRuntimeSchema>;
+export type ProcessRuntime = z.infer<typeof processRuntimeReadSchema>;
 
 /** The slice-1 refusal message, pinned so the route and its tests agree. */
 export const CONTAINER_RUNTIME_REFUSAL =
@@ -147,22 +140,16 @@ export const CONTAINER_RUNTIME_REFUSAL =
   "review surface deferred past the first accreditation scope (ADR 0013).";
 
 /**
- * The WRITE gate (M5 slice 1, spec §4): the contract carries `container` so
- * nothing is foreclosed and the pipeline reader accepts it, but the app
- * refuses to store one. The golden fixture pins every `container` case as
- * `app: reject` / `pipeline: accept` — that asymmetry is the decision, not an
- * oversight.
+ * The WRITE gate (M5 slice 1, spec §4) — and the default name, so this is what
+ * a route author gets by reaching for the obvious import. The contract carries
+ * `container` so nothing is foreclosed and the pipeline reader accepts it, but
+ * the app refuses to store one. The golden fixture pins every `container` case
+ * as `app: reject` / `pipeline: accept` — that asymmetry is the decision, not
+ * an oversight.
  */
-export const processRuntimeWriteSchema = processRuntimeSchema.superRefine(
-  (runtime, ctx) => {
-    if (runtime.kind === "container") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["kind"],
-        message: CONTAINER_RUNTIME_REFUSAL,
-      });
-    }
-  },
+export const processRuntimeSchema = processRuntimeReadSchema.refine(
+  (runtime) => runtime.kind !== "container",
+  { path: ["kind"], message: CONTAINER_RUNTIME_REFUSAL },
 );
 
 // ---------------------------------------------------------------------------

@@ -112,6 +112,30 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
   existing anchor. **M5-E must add the anchor column in lockstep with the
   CHECK, the open-dedup index and BOTH pipeline `ON CONFLICT` targets**, the
   way migration 021 did; the migration-021 comment block is the checklist.
+- **The three process kinds are declared but UNOWNED** (fixture
+  `declared_kinds`). M5-E must claim each for the writer that actually raises
+  it. This is not bookkeeping: `MONITOR_KINDS` membership grants the flow
+  monitor auto-resolve authority, so a kind raised by the run path or the rate
+  limiter while listed as monitor-owned would be silently resolved within a
+  minute. `process_rate_limited` is an enqueue-time event — the same shape as
+  `webhook_failed`, which is deliberately notify-owned for that reason.
+- **`secret_ref`'s target namespace can't hold an arbitrary secret.** M5-0
+  pinned `{connection_id, key}`, but `connections/schemas.ts` credentials are
+  CLOSED per-protocol `.strict()` shapes (s3: access_key_id/secret_access_key/
+  session_token; ssh: username/password/private_key/passphrase; ftp:
+  username/password). So `key` can only ever name one of ~8 endpoint-credential
+  fields, and the first process needing a third-party API token would force an
+  operator to create a sham `ftp` connection with the token in `password` —
+  which then drags in that entity's machinery (health sweep flips it to
+  `error`, raises `connection_error`, TOFU/egress policy on an endpoint that
+  does not exist). **Decide in M5-B before building the resolver**: either a
+  per-group `secrets` table (name → envelope) reusing `connections/crypto.ts`'s
+  already-generic `sealEnvelope`/`openEnvelope` with `secret_ref = {secret_id}`,
+  or accept the connection-scoped limit and say so in the docs. Related and
+  unassigned: the ref's safety constraint — the referenced connection must
+  belong to the process's owning group — is not expressible in jsonb (no FK)
+  and the pipeline resolves at launch with no requester identity, so it can
+  only land as a per-route check.
 - **`alerts-migration.test.ts` sliced to the end of `MIGRATIONS`**, so its
   "no FK" pin silently widened over every migration added after 021 (M5-0's
   022 tripped it). Fixed by slicing to the next entry. Worth remembering for

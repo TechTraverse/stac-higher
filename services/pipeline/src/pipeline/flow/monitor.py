@@ -55,14 +55,14 @@ MONITOR_KINDS = (
     "ingest_failed",
     "backfill_failed",
     "push_rejected",
-    # Phase 9 (M5-0) declared the three process kinds and assigned them to
-    # this monitor; the CONDITIONS that raise them land in M5-E. Listing them
-    # now is deliberate and inert: sync_alerts only auto-resolves open rows of
-    # an owned kind, and nothing writes a process alert yet, so the reconcile
-    # is a no-op for these three until their evaluators exist.
-    "process_stalled",
-    "process_failed",
-    "process_rate_limited",
+    # Phase 9's three process kinds are NOT here yet, deliberately. Membership
+    # is not a declaration — it grants this monitor auto-resolve authority
+    # (sync_alerts closes open rows of an owned kind whose condition is absent
+    # from the current tick), so claiming a kind before its evaluator exists
+    # would silently resolve any alert another writer raised. They sit in the
+    # fixture's `declared_kinds` until M5-E decides which writer owns each:
+    # process_rate_limited in particular is an enqueue-time event, the same
+    # shape as the deliberately notify-owned webhook_failed.
 )
 
 

@@ -68,11 +68,19 @@ def _obj(raw: Any, what: str) -> dict[str, Any]:
     return raw
 
 
-def _kind(raw: dict[str, Any], allowed: Sequence[str], what: str) -> str:
-    kind = raw.get("kind")
-    if not isinstance(kind, str) or kind not in allowed:
-        raise ProcessConfigError(f"{what}.kind must be one of {allowed}, got {kind!r}")
-    return kind
+def _enum(
+    raw: Any, allowed: Sequence[str], field_name: str, default: str | None = None
+) -> str:
+    """Validate ``raw`` against ``allowed``; ``None`` yields ``default``, and a
+    field with no default is required. Same rule as the ingest/delivery
+    parsers' ``_enum`` — kept local until there is a shared reader module."""
+    if raw is None and default is not None:
+        return default
+    if not isinstance(raw, str) or raw not in allowed:
+        raise ProcessConfigError(
+            f"{field_name} must be one of {allowed}, got {raw!r}"
+        )
+    return raw
 
 
 def _int_in_range(
@@ -116,7 +124,7 @@ class ProcessTrigger:
 
 def parse_process_trigger(raw: Any) -> ProcessTrigger:
     doc = _obj(raw, "trigger")
-    kind = _kind(doc, TRIGGER_KINDS, "trigger")
+    kind = _enum(doc.get("kind"), TRIGGER_KINDS, "trigger.kind")
 
     if kind == "item_event":
         item_filter = doc.get("item_filter")
@@ -152,7 +160,7 @@ class ProcessRuntime:
 
 def parse_process_runtime(raw: Any) -> ProcessRuntime:
     doc = _obj(raw, "runtime")
-    kind = _kind(doc, RUNTIME_KINDS, "runtime")
+    kind = _enum(doc.get("kind"), RUNTIME_KINDS, "runtime.kind")
 
     image: str | None = None
     if kind == "container":
@@ -162,14 +170,6 @@ def parse_process_runtime(raw: Any) -> ProcessRuntime:
     if retry_raw is None:
         retry_raw = {}
     retry = _obj(retry_raw, "runtime.retry")
-
-    backoff = retry.get("backoff")
-    if backoff is None:
-        backoff = "exponential"
-    if not isinstance(backoff, str) or backoff not in BACKOFF:
-        raise ProcessConfigError(
-            f"runtime.retry.backoff must be one of {BACKOFF}, got {backoff!r}"
-        )
 
     return ProcessRuntime(
         kind=kind,
@@ -193,7 +193,9 @@ def parse_process_runtime(raw: Any) -> ProcessRuntime:
             default=DEFAULT_MAX_ATTEMPTS,
             minimum=1,
         ),
-        backoff=backoff,
+        backoff=_enum(
+            retry.get("backoff"), BACKOFF, "runtime.retry.backoff", default="exponential"
+        ),
     )
 
 
@@ -236,6 +238,32 @@ def _secret_ref(raw: Any) -> SecretRef:
     )
 
 
+def _env_entry(item: Any) -> EnvEntry:
+    """One entry: a POSIX name plus EXACTLY one of a literal value or a
+    secret_ref. Both is refused rather than resolved by precedence — a
+    plaintext secret beside a reference is a leak a precedence rule would
+    quietly preserve."""
+    doc = _obj(item, "env entry")
+    name = doc.get("name")
+    if not isinstance(name, str) or not _ENV_NAME_RE.match(name):
+        raise ProcessConfigError(
+            f"env entry name must be a POSIX environment-variable name, got {name!r}"
+        )
+
+    value = doc.get("value")
+    ref = doc.get("secret_ref")
+    if value is not None and ref is not None:
+        raise ProcessConfigError(f"env entry {name!r} carries both a value and a secret_ref")
+    if value is None and ref is None:
+        raise ProcessConfigError(f"env entry {name!r} needs either a value or a secret_ref")
+
+    if ref is not None:
+        return EnvEntry(name=name, secret_ref=_secret_ref(ref))
+    if not isinstance(value, str):
+        raise ProcessConfigError(f"env entry {name!r} value must be a string, got {value!r}")
+    return EnvEntry(name=name, value=value)
+
+
 def parse_process_env(raw: Any) -> tuple[EnvEntry, ...]:
     """Parse the §5.6 env envelope. Resolution of ``secret_ref`` entries is a
     LAUNCH-time concern (ADR 0013: only into the run container's environment,
@@ -248,38 +276,14 @@ def parse_process_env(raw: Any) -> tuple[EnvEntry, ...]:
     entries: list[EnvEntry] = []
     seen: set[str] = set()
     for item in raw:
-        doc = _obj(item, "env entry")
-        name = doc.get("name")
-        if not isinstance(name, str) or not _ENV_NAME_RE.match(name):
+        entry = _env_entry(item)
+        if entry.name in seen:
             raise ProcessConfigError(
-                f"env entry name must be a POSIX environment-variable name, got {name!r}"
+                f"duplicate env name {entry.name!r} — the resolved environment "
+                "would be ambiguous"
             )
-        if name in seen:
-            raise ProcessConfigError(
-                f"duplicate env name {name!r} — the resolved environment would be ambiguous"
-            )
-        seen.add(name)
-
-        has_value = "value" in doc and doc["value"] is not None
-        has_ref = "secret_ref" in doc and doc["secret_ref"] is not None
-        if has_value and has_ref:
-            raise ProcessConfigError(
-                f"env entry {name!r} carries both a value and a secret_ref"
-            )
-        if not has_value and not has_ref:
-            raise ProcessConfigError(
-                f"env entry {name!r} needs either a value or a secret_ref"
-            )
-
-        if has_value:
-            value = doc["value"]
-            if not isinstance(value, str):
-                raise ProcessConfigError(
-                    f"env entry {name!r} value must be a string, got {value!r}"
-                )
-            entries.append(EnvEntry(name=name, value=value))
-        else:
-            entries.append(EnvEntry(name=name, secret_ref=_secret_ref(doc["secret_ref"])))
+        seen.add(entry.name)
+        entries.append(entry)
 
     return tuple(entries)
 
@@ -297,14 +301,8 @@ def parse_process_expectation(raw: dict[str, Any] | None) -> int | None:
     if raw is None:
         return None
     doc = _obj(raw, "expectation")
-    value = doc.get("run_within_seconds")
-    if value is None:
+    if doc.get("run_within_seconds") is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ProcessConfigError(
-            f"run_within_seconds must be a number of seconds, got {value!r}"
-        )
-    seconds = int(value)
-    if seconds < 1:
-        raise ProcessConfigError(f"run_within_seconds must be >= 1, got {value!r}")
-    return seconds
+    return _int_in_range(
+        doc["run_within_seconds"], "run_within_seconds", default=0, minimum=1
+    )

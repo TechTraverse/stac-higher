@@ -116,13 +116,7 @@
       "pipeline": "accept"
     },
     {
-      "name": "container with an image — SLICE-1 ASYMMETRY: shape valid, app gate refuses",
-      "config": { "kind": "container", "image": "ghcr.io/example/proc:1.2.3" },
-      "app": "reject",
-      "pipeline": "accept"
-    },
-    {
-      "name": "container with limits — still refused app-side this slice",
+      "name": "container with limits — SLICE-1 ASYMMETRY: shape valid, app gate refuses",
       "config": {
         "kind": "container",
         "image": "ghcr.io/example/proc:1.2.3",

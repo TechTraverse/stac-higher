@@ -76,16 +76,22 @@ the alert `kind` enum since the fixture was deferred in M2). The file pins:
   branches on or displays a kind must recognize all of them (the vitest
   consumer asserts the monitoring UI's label map covers the whole enum, so a
   new kind cannot land unlabeled).
-- one list per **writer** (`monitor_kinds`, `notify_kinds`) — the
-  single-writer ownership partition. Each writer-side constant
+- one list per **writer** (`monitor_kinds`, `notify_kinds`) plus
+  `declared_kinds`, the waiting room for kinds that exist in the enum but have
+  no writer yet — the single-writer ownership partition. Each writer-side
+  constant
   (`MONITOR_KINDS`, `WEBHOOK_FAILED_KIND`) is asserted equal to its list, and
   the lists must partition `kinds` exactly: adding a kind on either side
   without updating the fixture (or claiming a kind in two writers) fails a
-  suite. Growing the enum means appending here and to the owning writer's list
-  in the same change — as Phase 9 (M5-0) did for `process_stalled`,
-  `process_failed` and `process_rate_limited`, all three monitor-owned. Note
-  that a kind can be declared and owned before anything raises it: M5-0
-  appended the three, M5-E adds the conditions.
+  suite. Growing the enum means appending here and to a list in the same
+  change — a writer's, or `declared_kinds` when the writer is not decided yet.
+  Phase 9 (M5-0) declared `process_stalled`, `process_failed` and
+  `process_rate_limited` that way. Ownership is deliberately not a formality:
+  `monitor_kinds` membership grants the flow monitor auto-resolve authority
+  over a kind, so claiming one before its evaluator exists would let the
+  monitor silently close alerts another writer raised. M5-E moves each process
+  kind to whichever writer actually raises it, and the partition test is what
+  makes that a decision rather than an accident.
 
 ## Additional fixture styles (Phase 9)
 
