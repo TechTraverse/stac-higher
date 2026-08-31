@@ -145,6 +145,7 @@ Astro server routes:
 | `/api/alerts/read` | POST | Advance the caller's own read watermark (member+; deliberately NOT operator-gated/audited — personal UI state) — M2-C |
 | `/api/channels` | GET, POST | List (member+: own groups; admin: all) / create (operator+) per-group notification channels (`in_app` \| `webhook`); webhook signing secret is write-only (`has_secret`) — M2-C, ADR 0010 |
 | `/api/channels/[id]` | GET, PUT, DELETE | Get / replace-config / delete a channel (group-owned; PUT replaces `config` wholesale, kind+group immutable) |
+| `/api/monitoring/graph` | GET | The pipeline graph: typed nodes (connection / collection / process) + edges (ingest, deliver, process_source, process_output), member+ scoped. Shares `lib/graph/*` with the M5-D cycle check, so the picture and the write gate cannot disagree — M5-E |
 | `/api/monitoring/flows` | GET | Cross-collection association list with `flow_stats` + expectation (member+: own groups; admin: all) — feeds `/monitoring` (M2-D) |
 | `/api/processes` | GET, POST | List (member+: own groups; admin: all) / create (operator+, audited) group-owned processes — Phase 9 M5-A |
 | `/api/processes/[id]` | GET, PUT, DELETE | Get / update / soft-delete a process. `current_revision` is NOT updatable — only a deploy moves it |
@@ -284,7 +285,13 @@ through the ADR 0014 `finalize(process_run)` producer hooks
 event for free. A per-process `max_runs_per_hour` ceiling defers-and-coalesces
 rather than dropping (§7), and write-time cycle refusal over
 collection↔process edges (`lib/graph/edges.ts`, I-64) blocks the loops that
-ARE decidable. Process-author contract: **`docs/processes.md`**.
+ARE decidable. Process-author contract: **`docs/processes.md`**. Alerting (M5-E): the flow
+monitor owns `process_stalled` (per SOURCE, I-63), `process_failed` and
+`process_rate_limited` (per process) — all three evaluated as observed
+conditions, anchored via migration 024's `alerts.process_id`/`source_id`.
+NOTE the four-place lockstep for that identity: the CHECK, the open-dedup
+index, both pipeline `ON CONFLICT` targets, AND `sync_alerts`' auto-resolve
+comparison.
 
 **Service telemetry (M2-H)**: Prometheus exposition at `GET :8083/metrics`
 (`pipeline/metrics.py`): per-job run/duration/outcome (wrapped centrally at

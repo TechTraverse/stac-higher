@@ -73,7 +73,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
       ISSUES **I-80**: the finalize tier logic is snapshot-first/
       provable-create — the process recorder must define its own rejection
       semantics against that, not copy push's. After M5-C.
-- [ ] **M5-E · monitoring** (spec §8). Three alert kinds
+- [x] **M5-E · monitoring** (spec §8). Three alert kinds
       (`process_failed`/`process_stalled`/`process_rate_limited`,
       per-source `run_within_seconds` expectations — I-63), process
       flow_stats, the **`flow_stats_daily`** table + daily upsert job +
@@ -214,5 +214,26 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
   already in flight. A run whose process has NO outputs logs and publishes
   nothing rather than failing — worth confirming in the M5-G rehearsal that
   this reads as intended and not as a silent drop.
+
+- **The alert dedup lockstep is FOUR places, not three.** Migration 021's
+  comment lists the CHECK, the index, and the two pipeline `ON CONFLICT`
+  targets. M5-E found a fourth: `sync_alerts`' auto-resolve `NOT EXISTS`
+  compares the same identity via `unnest`. With the process legs missing there,
+  every `process_stalled` condition matched every open `process_stalled` alert
+  (all four older anchors are empty on both sides), so one source recovering
+  would never clear its own alert while a sibling stayed stalled. The
+  migration-024 comment and `alerts-migration.test.ts` now name all four.
+- **`alerts.process_id`'s ON DELETE CASCADE is defensive only.** Verified live:
+  a hard `DELETE` of a process is blocked by the RESTRICT FKs from
+  `process_runs`/`process_revisions`, and processes are soft-deleted anyway
+  (ADR 0009). The cascade costs nothing and would matter only if a future
+  hard-delete path appears.
+- **`/graph` returns nodes for collections that EDGES touch, not the whole
+  catalog.** pgstac owns the collection list and a graph of every collection
+  would be noise. M5-F's view should not assume a collection node exists for a
+  collection with no wiring.
+- **Edges are filtered to those whose BOTH endpoints are visible.** A half-edge
+  would draw an arrow to a node the caller cannot see, leaking another group's
+  wiring through the picture.
 
 (append here during iterations)

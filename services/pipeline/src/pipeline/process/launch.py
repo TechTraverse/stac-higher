@@ -23,6 +23,7 @@ import logging
 from dataclasses import dataclass
 
 from pipeline.config import Settings
+from pipeline.metrics import PROCESS_RUN_SECONDS
 from pipeline.process.config import EnvEntry, ProcessRuntime
 from pipeline.process.credentials import RunCredentials, mint_run_credentials
 from pipeline.process.docker_executor import CODE_ENV_VAR, encode_code
@@ -139,12 +140,18 @@ def execute_run(
         credentials=credentials,
     )
 
+    import time
+
+    started = time.monotonic()
     handle = executor.launch(spec)
     try:
         status = executor.wait(handle, runtime.timeout_seconds)
         payload = executor.logs(handle, settings.process_log_max_bytes)
     finally:
         executor.reap(handle)
+        # Observed even on the failure path: a timing histogram that only ever
+        # sees successes would understate what runs actually cost.
+        PROCESS_RUN_SECONDS.observe(time.monotonic() - started)
 
     log_ref = store_run_log(
         storage_client,

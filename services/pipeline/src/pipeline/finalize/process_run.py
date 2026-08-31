@@ -45,6 +45,7 @@ from pipeline.finalize.seam import (
     StagedAsset,
 )
 from pipeline.finalize.store import ObjectStore
+from pipeline.metrics import PROCESS_OUTPUT_ITEMS
 from pipeline.process.repo import ProcessRepo
 from pipeline.storage.keys import run_staging_prefix, sanitize_filename
 
@@ -289,6 +290,7 @@ class ProcessRunRecorder(OutcomeRecorder):
             total = len(rejected) + len(upserted)
             error = f"{len(rejected)} of {total} output items were rejected"
 
+        PROCESS_OUTPUT_ITEMS.inc(len(upserted))
         await self.repo.finish_run(
             run_id,
             status=status,

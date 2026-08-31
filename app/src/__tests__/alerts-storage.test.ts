@@ -56,7 +56,7 @@ describe("listAlerts", () => {
 
     const [sql, params] = mockQuery.mock.calls[0];
     expect(sql).toMatch(
-      /COALESCE\(c\.group_id, nch\.group_id, cs\.group_id\) = ANY\(\$1::text\[\]\)/,
+      /COALESCE\(c\.group_id, nch\.group_id, cs\.group_id, pr\.group_id\) = ANY\(\$1::text\[\]\)/,
     );
     // Group derivation goes through the association's connection too.
     expect(sql).toMatch(/COALESCE\(a\.connection_id, cc\.connection_id\)/);

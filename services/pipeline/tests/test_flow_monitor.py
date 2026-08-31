@@ -19,6 +19,7 @@ from pipeline.flow.repo import (
     ErrorConnection,
     FlowCandidate,
     FlowMonitorRepo,
+    ProcessSourceCandidate,
 )
 from pipeline.jobs.monitor import JOB_NAME
 from pipeline.main import build_queue
@@ -39,6 +40,11 @@ class FakeMonitorRepo(FlowMonitorRepo):
     #: (collection_id, finalized_at) rejected staged_uploads rows; the fake
     #: applies the lookback like the Pg query does.
     push_rejections: list[tuple[str, dt.datetime]] = field(default_factory=list)
+    #: Phase 9 (M5-E): per-source expectation candidates + the two run-state
+    #: counts the process conditions are observed from.
+    process_sources: list[ProcessSourceCandidate] = field(default_factory=list)
+    dead_process_runs: list[tuple[str, int]] = field(default_factory=list)
+    rate_deferred: list[tuple[str, int]] = field(default_factory=list)
     alerts: list[dict[str, Any]] = field(default_factory=list)
     #: "now" for the fake's lookback filter (tests pin time via monitor_tick's
     #: ``now=NOW`` — keep the two clocks identical).
@@ -65,6 +71,15 @@ class FakeMonitorRepo(FlowMonitorRepo):
 
     async def list_failed_backfills(self) -> list[tuple[str, str, str | None]]:
         return list(self.failed_backfills)
+
+    async def list_process_source_candidates(self) -> list[ProcessSourceCandidate]:
+        return list(self.process_sources)
+
+    async def list_dead_process_runs(self) -> list[tuple[str, int]]:
+        return list(self.dead_process_runs)
+
+    async def list_rate_deferred_processes(self) -> list[tuple[str, int]]:
+        return list(self.rate_deferred)
 
     async def list_recent_push_rejections(
         self, lookback_seconds: int

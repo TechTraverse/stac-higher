@@ -1265,6 +1265,70 @@ const MIGRATIONS = [
         ON stac_higher.flow_stats_daily (day);
     `,
   },
+  {
+    // M5-E (Phase 9 spec §8): anchors for the three process alert kinds.
+    // Alerts previously anchored on connection / association / channel /
+    // collection (migrations 014/015/021); none of those fits a process.
+    //
+    // TWO anchors, because the kinds have genuinely different scopes:
+    //   - process_id  — `process_failed` (a dead run belongs to the process;
+    //     per-source would fragment one incident across its triggers) and
+    //     `process_rate_limited` (the ceiling IS per-process).
+    //   - source_id   — `process_stalled`, which is per-SOURCE by I-63:
+    //     different sources carry different cron cadences and arrival
+    //     profiles, so one stalled trigger must not silence another.
+    //
+    // The migration-021 lockstep applies, and it is the whole reason this is
+    // one migration: the anchor CHECK, the open-dedup index, and BOTH
+    // pipeline INSERT conflict targets (flow/repo.py sync_alerts,
+    // notify/repo.py raise_alert) must name the same expressions or alert
+    // dedup breaks at runtime with no type error anywhere.
+    //
+    // ON DELETE CASCADE: unlike collection-anchored alerts (collections live
+    // in pgstac, out of band), a process row is ours — deleting one should
+    // take its alerts with it rather than leave rows anchored to nothing.
+    // Group scoping for these alerts derives from processes.group_id at read
+    // time (lib/alerts/storage.ts), the same shape as the collection anchor.
+    name: "024_alerts_process_anchors",
+    sql: `
+      ALTER TABLE stac_higher.alerts
+        ADD COLUMN IF NOT EXISTS process_id uuid
+          REFERENCES stac_higher.processes(id) ON DELETE CASCADE;
+      ALTER TABLE stac_higher.alerts
+        ADD COLUMN IF NOT EXISTS source_id uuid
+          REFERENCES stac_higher.process_sources(id) ON DELETE CASCADE;
+
+      ALTER TABLE stac_higher.alerts
+        DROP CONSTRAINT IF EXISTS alerts_anchor_check;
+      ALTER TABLE stac_higher.alerts
+        ADD CONSTRAINT alerts_anchor_check CHECK (
+          connection_id IS NOT NULL
+          OR association_id IS NOT NULL
+          OR channel_id IS NOT NULL
+          OR collection_id IS NOT NULL
+          OR process_id IS NOT NULL
+          OR source_id IS NOT NULL
+        );
+
+      DROP INDEX IF EXISTS stac_higher.alerts_open_dedup_idx;
+      CREATE UNIQUE INDEX IF NOT EXISTS alerts_open_dedup_idx
+        ON stac_higher.alerts (
+          source, kind,
+          coalesce(connection_id::text, ''),
+          coalesce(association_id::text, ''),
+          coalesce(channel_id::text, ''),
+          coalesce(collection_id, ''),
+          coalesce(process_id::text, ''),
+          coalesce(source_id::text, '')
+        )
+        WHERE state <> 'resolved';
+
+      CREATE INDEX IF NOT EXISTS alerts_process_idx
+        ON stac_higher.alerts (process_id);
+      CREATE INDEX IF NOT EXISTS alerts_source_idx
+        ON stac_higher.alerts (source_id);
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

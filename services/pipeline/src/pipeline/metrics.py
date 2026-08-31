@@ -121,6 +121,33 @@ WEBHOOK_DELIVERIES = Counter(
     ["outcome"],  # delivered | failed | dead | skipped
     registry=REGISTRY,
 )
+# --- Phase 9 processes (M5-E, §8) ------------------------------------------
+# Per-JOB run/duration/outcome already comes free from instrument_handler; the
+# counters below are about RUNS (the domain object), which is a different
+# thing from the job that drove them — a job that succeeds can carry a run
+# that died.
+PROCESS_RUNS = Counter(
+    "pipeline_process_runs_total",
+    "Process run terminal outcomes (Phase 9 §6 ledger statuses)",
+    ["outcome"],  # succeeded | dead | failed | queued (infrastructure requeue)
+    registry=REGISTRY,
+)
+PROCESS_RUN_SECONDS = Histogram(
+    "pipeline_process_run_seconds",
+    "Wall-clock duration of a process run, executor launch to exit",
+    registry=REGISTRY,
+)
+PROCESS_OUTPUT_ITEMS = Counter(
+    "pipeline_process_output_items_total",
+    "Items a process run published (Phase 9 §2 / ADR 0014)",
+    registry=REGISTRY,
+)
+PROCESS_RATE_DEFERRALS = Counter(
+    "pipeline_process_rate_deferrals_total",
+    "Runs deferred by the §7 per-process run-rate ceiling",
+    registry=REGISTRY,
+)
+
 ALERTS = Counter(
     "pipeline_alerts_total",
     "Alert lifecycle events written by the flow monitor",

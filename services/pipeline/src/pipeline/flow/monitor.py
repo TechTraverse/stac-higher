@@ -42,7 +42,13 @@ from pipeline.flow.expectation import (
     parse_delivery_expectation,
     parse_ingest_expectation,
 )
-from pipeline.flow.repo import AlertCondition, FlowCandidate, FlowMonitorRepo
+from pipeline.flow.repo import (
+    AlertCondition,
+    FlowCandidate,
+    FlowMonitorRepo,
+    ProcessSourceCandidate,
+)
+from pipeline.process.config import ProcessConfigError, parse_process_expectation
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +61,15 @@ MONITOR_KINDS = (
     "ingest_failed",
     "backfill_failed",
     "push_rejected",
-    # Phase 9's three process kinds are NOT here yet, deliberately. Membership
-    # is not a declaration — it grants this monitor auto-resolve authority
-    # (sync_alerts closes open rows of an owned kind whose condition is absent
-    # from the current tick), so claiming a kind before its evaluator exists
-    # would silently resolve any alert another writer raised. They sit in the
-    # fixture's `declared_kinds` until M5-E decides which writer owns each:
-    # process_rate_limited in particular is an enqueue-time event, the same
-    # shape as the deliberately notify-owned webhook_failed.
+    # Phase 9 (M5-E). All three are evaluated here as CONDITIONS observed from
+    # state — a breached per-source expectation, a dead run, a deferred run —
+    # rather than raised at the instant they happen. That is deliberate and it
+    # is what makes membership correct: auto-resolve falls out of the
+    # condition's absence, so a recovered process clears its own alert with no
+    # second writer involved.
+    "process_stalled",
+    "process_failed",
+    "process_rate_limited",
 )
 
 
@@ -156,6 +163,38 @@ def evaluate_push_rejections(
     ]
 
 
+def evaluate_process_stalled(
+    candidate: ProcessSourceCandidate, window_seconds: int, now: dt.datetime
+) -> AlertCondition | None:
+    """The §8 per-source expectation breach (I-63).
+
+    Mirrors ``evaluate_ingest_inactivity`` including its false-positive guard:
+    the window restarts at the source's last edit, so attaching a source or
+    re-enabling one does not fire an alert before it has had a chance to run.
+    """
+    last_run = _parse_iso(candidate.flow_stats.get("last_run_at"))
+    reference = last_run or candidate.updated_at
+    if reference is None:
+        return None
+    elapsed = (now - reference).total_seconds()
+    if elapsed < window_seconds:
+        return None
+    detail = (
+        f"last run {int(elapsed)}s ago"
+        if last_run
+        else f"no run since the source was configured {int(elapsed)}s ago"
+    )
+    return AlertCondition(
+        source="flow",
+        kind="process_stalled",
+        source_id=candidate.id,
+        message=(
+            f"process {candidate.process_name!r} has not run for "
+            f"{candidate.collection_id!r} within {window_seconds}s ({detail})"
+        ),
+    )
+
+
 async def monitor_tick(
     repo: FlowMonitorRepo,
     *,
@@ -235,6 +274,52 @@ async def monitor_tick(
         floors = await repo.latest_push_rejected_resolved_at()
         conditions.extend(
             evaluate_push_rejections(rejections, floors, push_lookback_seconds)
+        )
+
+    # -- flow: per-source process expectations (§8, I-63) --------------------
+    for source in await repo.list_process_source_candidates():
+        try:
+            window = parse_process_expectation(source.expectation)
+        except ProcessConfigError:
+            # A stored expectation we cannot read must not arm or disarm
+            # alerting silently — skip THIS source loudly, like the
+            # association path does.
+            logger.warning(
+                "process source has an unusable expectation, skipping",
+                extra={"source_id": source.id, "process_id": source.process_id},
+            )
+            continue
+        if window is None:
+            continue
+        condition = evaluate_process_stalled(source, window, now)
+        if condition:
+            conditions.append(condition)
+
+    # -- job_failure: dead process runs (the delivery_dead analog) -----------
+    for process_id, count in await repo.list_dead_process_runs():
+        noun = "run" if count == 1 else "runs"
+        conditions.append(
+            AlertCondition(
+                source="job_failure",
+                kind="process_failed",
+                process_id=process_id,
+                message=f"{count} process {noun} dead-lettered",
+            )
+        )
+
+    # -- flow: the §7 ceiling is currently holding runs back -----------------
+    for process_id, count in await repo.list_rate_deferred_processes():
+        noun = "run" if count == 1 else "runs"
+        conditions.append(
+            AlertCondition(
+                source="flow",
+                kind="process_rate_limited",
+                process_id=process_id,
+                message=(
+                    f"{count} {noun} deferred by the run-rate ceiling; the "
+                    "process is producing work faster than its limit allows"
+                ),
+            )
         )
 
     return await repo.sync_alerts(conditions, MONITOR_KINDS)

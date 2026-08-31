@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from pipeline.metrics import PROCESS_RATE_DEFERRALS
 from pipeline.process.rate import WINDOW_SECONDS, evaluate
 from pipeline.process.repo import ProcessRepo
 
@@ -64,6 +65,7 @@ async def trigger_run(
     )
 
     if verdict.deferred:
+        PROCESS_RATE_DEFERRALS.inc()
         # The monitor raises `process_rate_limited` off this state (M5-E); the
         # log line is what an operator sees until then, and it carries the
         # numbers rather than just "limited".

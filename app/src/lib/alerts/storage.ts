@@ -81,7 +81,7 @@ const ALERT_SELECT = `
   SELECT a.id, a.source, a.kind, a.connection_id, a.association_id,
          a.channel_id, a.state, a.message, a.first_seen, a.last_seen,
          a.acknowledged_at, a.acknowledged_by, a.resolved_at,
-         COALESCE(c.group_id, nch.group_id, cs.group_id) AS group_id,
+         COALESCE(c.group_id, nch.group_id, cs.group_id, pr.group_id) AS group_id,
          c.name AS connection_name,
          COALESCE(a.collection_id, cc.collection_id) AS collection_id
     FROM stac_higher.alerts a
@@ -90,7 +90,13 @@ const ALERT_SELECT = `
       ON c.id = COALESCE(a.connection_id, cc.connection_id)
     LEFT JOIN stac_higher.notification_channels nch ON nch.id = a.channel_id
     LEFT JOIN stac_higher.collection_settings cs
-      ON cs.collection_id = a.collection_id`;
+      ON cs.collection_id = a.collection_id
+    -- M5-E: process-anchored alerts. process_stalled anchors on a SOURCE
+    -- (I-63), so the group comes through its parent process — one more hop
+    -- than the other anchors, but the same derived-at-read-time shape.
+    LEFT JOIN stac_higher.process_sources ps ON ps.id = a.source_id
+    LEFT JOIN stac_higher.processes pr
+      ON pr.id = COALESCE(a.process_id, ps.process_id)`;
 
 function toApiAlert(row: AlertRow): ApiAlert {
   return {
@@ -134,7 +140,8 @@ export async function listAlerts(
   if (groups !== null) {
     params.push(groups);
     where.push(
-      `COALESCE(c.group_id, nch.group_id, cs.group_id) = ANY($${params.length}::text[])`,
+      `COALESCE(c.group_id, nch.group_id, cs.group_id, pr.group_id)` +
+        ` = ANY($${params.length}::text[])`,
     );
   }
   if (options.state === "open") {
@@ -217,7 +224,9 @@ export async function countUnreadAlerts(
   let groupClause = "";
   if (groups !== null) {
     params.push(groups);
-    groupClause = ` AND COALESCE(c.group_id, nch.group_id, cs.group_id) = ANY($${params.length}::text[])`;
+    groupClause =
+      ` AND COALESCE(c.group_id, nch.group_id, cs.group_id, pr.group_id)` +
+      ` = ANY($${params.length}::text[])`;
   }
   const result = await query<{ count: string }>(
     `SELECT count(*) AS count
@@ -228,6 +237,9 @@ export async function countUnreadAlerts(
        LEFT JOIN stac_higher.notification_channels nch ON nch.id = a.channel_id
        LEFT JOIN stac_higher.collection_settings cs
          ON cs.collection_id = a.collection_id
+       LEFT JOIN stac_higher.process_sources ps ON ps.id = a.source_id
+       LEFT JOIN stac_higher.processes pr
+         ON pr.id = COALESCE(a.process_id, ps.process_id)
       WHERE a.state = 'firing'
         AND a.first_seen > COALESCE(
           (SELECT r.last_read_at FROM stac_higher.alert_reads r
