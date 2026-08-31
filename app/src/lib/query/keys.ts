@@ -60,6 +60,15 @@ export const channelKeys = {
   list: () => [...channelKeys.all(), "list"] as const,
 };
 
+export const processKeys = {
+  all: () => ["processes"] as const,
+  list: () => [...processKeys.all(), "list"] as const,
+  detail: (id: string) => [...processKeys.all(), id] as const,
+  revisions: (id: string) => [...processKeys.detail(id), "revisions"] as const,
+  sources: (id: string) => [...processKeys.detail(id), "sources"] as const,
+  outputs: (id: string) => [...processKeys.detail(id), "outputs"] as const,
+} as const;
+
 export const stacKeys = {
   all: (endpointUrl: string) => ["stac", endpointUrl] as const,
 

@@ -48,7 +48,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
       it); Zod schemas ↔ pipeline lenient readers, both suites consuming.
       Remember the slice-1 asymmetry: `container` runtime = app reject,
       pipeline accept.
-- [ ] **M5-A · app CRUD + editor UI** (spec §4, §7). `/api/processes*`
+- [x] **M5-A · app CRUD + editor UI** (spec §4, §7). `/api/processes*`
       (+revisions, sources, outputs, audited verbs), `/processes` +
       `/processes/[id]` islands with the **plain-textarea** editor (P9-C:
       no editor dep in slice 1), test-run request rows (ADR 0004 bridge).
@@ -140,5 +140,19 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
   "no FK" pin silently widened over every migration added after 021 (M5-0's
   022 tripped it). Fixed by slicing to the next entry. Worth remembering for
   any future text-pinned migration test.
+
+- **M5-A left the run surfaces to M5-C, deliberately.** There is no
+  `/api/processes/[id]/runs` route and the detail page has no runs panel: the
+  ledger has no writer yet, so a list would only ever show "none" and read as
+  "nothing ran" rather than "nothing runs yet". M5-C adds the route, the panel
+  and the Re-run verb together.
+- **The source/output routes are the M5-D cycle-check hook points.** Both
+  `POST .../sources` and `POST .../outputs` (and re-enabling a source) need the
+  our-edges-only DFS before insert, 409ing with the path. The route comments
+  mark the spots; until then the §7 ceiling is the only backstop.
+- **The editor collects no env vars yet.** The contract, the storage column and
+  the deploy route all carry `env` (and it round-trips), but the UI deploys
+  `env: []` — the secret-ref picker needs the `secret_ref` target question
+  settled first (see the entry above).
 
 (append here during iterations)

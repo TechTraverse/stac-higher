@@ -1,0 +1,10 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { ProcessDetailPage } from "../../components/processes/ProcessDetailPage";
+
+const { id } = Astro.params;
+---
+
+<Layout title="Process">
+  <ProcessDetailPage id={id!} client:only="react" />
+</Layout>

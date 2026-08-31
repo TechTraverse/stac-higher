@@ -43,7 +43,8 @@ export type GatedAction =
   | "backfill"
   | "redeliver"
   | "ack"
-  | "resolve";
+  | "resolve"
+  | "deploy";
 
 export interface GatedRouteMatch {
   action: GatedAction;
@@ -90,6 +91,30 @@ const SUB_ACTION_ROUTES: {
     pattern: /^\/api\/connections\/([^/]+)\/test$/,
     action: "test",
     resourceType: "connection",
+  },
+  // M5-A: deploying a revision (the audited verb that changes what a process
+  // executes) and requesting a UI test run. Both are audited against the
+  // PROCESS id — the revision does not exist yet at deploy time, and the
+  // created revision id lands in the audit detail from the 201 body.
+  {
+    pattern: /^\/api\/processes\/([^/]+)\/revisions$/,
+    action: "deploy",
+    resourceType: "process_revision",
+  },
+  {
+    pattern: /^\/api\/processes\/([^/]+)\/test$/,
+    action: "test",
+    resourceType: "process",
+  },
+  {
+    pattern: /^\/api\/processes\/([^/]+)\/sources$/,
+    action: "create",
+    resourceType: "process_source",
+  },
+  {
+    pattern: /^\/api\/processes\/([^/]+)\/outputs$/,
+    action: "create",
+    resourceType: "process_output",
   },
   // M2-B: alert lifecycle transitions (§3.3). Group ownership in-route.
   {
@@ -145,6 +170,42 @@ export function matchGatedRoute(
 
   if (m === "POST" && path === "/api/connections") {
     return { action: "create", resourceType: "connection", resourceId: null };
+  }
+
+  // Phase 9 (M5-A): processes are group-owned; member views, operator+
+  // creates/deploys/tests. Group ownership is enforced in-route (the guard
+  // cannot see the DB), like connections.
+  if (m === "POST" && path === "/api/processes") {
+    return { action: "create", resourceType: "process", resourceId: null };
+  }
+  const processSourceId = path.match(
+    /^\/api\/processes\/[^/]+\/sources\/([^/]+)$/,
+  );
+  if (processSourceId && (m === "PUT" || m === "PATCH" || m === "DELETE")) {
+    return {
+      action: m === "DELETE" ? "delete" : "update",
+      resourceType: "process_source",
+      resourceId: processSourceId[1],
+    };
+  }
+  const processOutputId = path.match(
+    /^\/api\/processes\/[^/]+\/outputs\/([^/]+)$/,
+  );
+  if (processOutputId && m === "DELETE") {
+    return {
+      action: "delete",
+      resourceType: "process_output",
+      resourceId: processOutputId[1],
+    };
+  }
+  const processId = path.match(/^\/api\/processes\/([^/]+)$/);
+  if (processId) {
+    if (m === "PUT" || m === "PATCH") {
+      return { action: "update", resourceType: "process", resourceId: processId[1] };
+    }
+    if (m === "DELETE") {
+      return { action: "delete", resourceType: "process", resourceId: processId[1] };
+    }
   }
 
   // M2-C: per-group notification channels (spec §4). /api/alerts/read is a
