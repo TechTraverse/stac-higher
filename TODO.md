@@ -288,7 +288,7 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
 
 ## Phase 7 gate
 
-- [ ] **P7-Z · live gate check** (lead only: Docker + dev server + e2e). On
+- [x] **P7-Z · live gate check** (lead only: Docker + dev server + e2e). On
       the auth-enforced stack: mint a real token, upload via presigned PUT,
       POST an item as an external client → finalize moves bytes to canonical
       + rewrites hrefs → a delivery association fires from it; a finalize
@@ -296,6 +296,20 @@ parallel; Z closes. Teammate slices: `npm run verify` (+ `uv run pytest` /
       evidence in ROADMAP §9 (M-gate style), update FEATURES.md / ISSUES.md /
       ROADMAP phase table, and STOP the loop with a summary for the human
       (promotion PR is theirs).
+      **Done 2026-08-30 — gate met.** Fresh-wiped enforced stack, full
+      four-step client loop with a real client-credentials token (finalize →
+      href rewrite → byte round-trip == checksum), exactly-once delivery,
+      insert-tier + snapshot-restore rejection legs, `push_rejected` alert
+      on real Postgres (migration 021 live), integration 14/14 non-skipped,
+      e2e 32/32. Evidence: ROADMAP §9 Phase 7. **Gate findings fixed on
+      ai/main during the rehearsal:** the realm push-client description over
+      Keycloak's 255-char column; **I-80** (I-46 delete+insert pairs GC-
+      marked live items and broke the rejection tiers — dispatcher skip +
+      snapshot-first/provable-create fix); the proxy-policy CQL2 constants
+      serializing to JSON booleans upstream rejects (every enforced read
+      400'd → `1 = 1`/`1 <> 1`); an integration-test body double-read.
+      Docs nit for a later pass: the poll response nests under `upload`
+      while push-ingest.md's example shows it flat.
 
 ## Discovered follow-ups
 

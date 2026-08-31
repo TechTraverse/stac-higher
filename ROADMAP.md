@@ -791,7 +791,7 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 4 — Ingest pipeline | ✅ Done (live-verified end-to-end 2026-07-20) | Slices A, B1–B5, C (`reference` mode). Done-when met: dropped file → catalogued item through the real scheduler, copy and reference both. [FEATURES §Phase 4](docs/FEATURES.md). |
 | 5 — Delivery pipeline | ✅ Done (Slices A→D live/e2e-verified by 2026-07-25) | Outbox + NOTIFY dispatcher, delivery worker + payloads/policies, retry → dead-letter → redeliver, backfill bridge, Data-flow delivery UI. [FEATURES §Phase 5](docs/FEATURES.md). |
 | 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
-| 7 — Direct interaction | 🚧 Implemented, gate pending | All slices P7-B…P7-I merged 2026-08-30 (bearer auth, staged uploads, brokered BFF push path, finalize on the ADR 0014 seam, dispatcher gating, ADR 0015 proxy write policy, `push_rejected` alerting, `docs/push-ingest.md`). Remaining: the **P7-Z live gate check** (auth-enforced rehearsal) + the promotion PR. [FEATURES §Phase 7](docs/FEATURES.md). |
+| 7 — Direct interaction | ✅ Done (gate met 2026-08-30) | All slices P7-B…P7-I merged (bearer auth, staged uploads, brokered BFF push path, finalize on the ADR 0014 seam, dispatcher gating, ADR 0015 proxy write policy, `push_rejected` alerting, `docs/push-ingest.md`); **P7-Z rehearsal closed the done-when live** (evidence under the Phase 7 entry below; two gate findings fixed — I-80). Open: the promotion PR (human) + human review of the provisionally-approved spec. [FEATURES §Phase 7](docs/FEATURES.md). |
 | 8 — Cloud, scale gate & viz | ⬜ Not started | — |
 | 9 — Processes | ⬜ Scoped (design spec approved 2026-08-29) | Planning complete: `docs/superpowers/specs/2026-08-29-phase9-processes-design.md` (slices M5-0…M5-G), ADRs 0013/0014 accepted, scoping queue P9-A…F done. Implementation starts after Phase 7. |
 
@@ -921,6 +921,55 @@ there are no intermediate demos; the first demo is M1, complete:
   still says retention "arrives with M2-F"; Keycloak's default 30-min SSO
   idle ends long-idle operator sessions (handled cleanly; demo realms may
   want it longer).
+- **Phase 7 — Direct interaction (push ingest): gate met 2026-08-30** —
+  the P7-Z rehearsal closed the done-when live on a fresh-wiped
+  auth-enforced stack. Design:
+  `docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md`
+  (provisionally approved through two adversarial review rounds — human
+  review pending); ADR 0015 accepted; slices P7-B…P7-I + the P7-X I-67 fix
+  all merged 2026-08-30; migrations 020–021; client docs
+  `docs/push-ingest.md`. Promotion PR pending (human).
+
+  *Phase 7 rehearsal evidence (recorded by P7-Z, 2026-08-30, times UTC):*
+  Fresh `down -v`, enforced overlay `up --build --wait` (the missing-secret
+  fail-fast interpolation error observed working when the shell lost the
+  secret); all 8 containers healthy — including the derived proxy-policy
+  image passing its startup conformance check, settling the P7-G derived-
+  image and CHECK_CONFORMANCE confirms. Realm re-import surfaced a P7-B
+  defect (push-client description over Keycloak's 255-char column — fixed).
+  App on :4399 in `AUTH_MODE=oidc`. **Full four-step client loop with a
+  real `stac-higher-push` client-credentials token**: bearer settings PUT
+  (audited, migrations 020/021 ran on the fresh DB) → staged mint →
+  presigned PUT → brokered POST (provisional 201) → poll `finalized`;
+  hrefs rewritten to `/api/assets/...`, staged originals deleted, and the
+  asset route's 302 round-tripped the bytes byte-identical to the finalize
+  checksum. **Delivery leg:** an s3 deliver association (MinIO `push-dest`)
+  fired from a pushed item exactly once (`counts` delivered=1 — §7.2's
+  no-double-fire pair held live). **Rejection legs:** a never-uploaded
+  staged href rejected `missing_bytes`; the insert tier restored absence
+  (item 404s); the `push_rejected` alert raised collection-anchored within
+  a monitor tick — migration 021's widened anchor CHECK + dedup index and
+  the monitor's ON CONFLICT exercised against real Postgres; a brokered
+  update rejection restored the `prior_item` snapshot (`restored: true`,
+  pre-push document back verbatim, zero open GC marks on the live item).
+  **Integration suite: 14 pass / 0 fail / 3 skip** on the enforced stack —
+  incl. bulk-deny (clean 403 `ForbiddenError`, settling the P7-G rejection-
+  shape question), the X-BFF-Auth exempt/wrong-value pair, role floor +
+  flag gating, and read-shape legs. **e2e: 32/32** on pass-through
+  (`E2E_PORT=4399`). **Gate findings, both fixed on `ai/main` during the
+  rehearsal:** (1) **I-46 delete+insert pairs** — the transaction-API path
+  splits a client PUT into delete+insert events, which made the dispatcher
+  GC-mark a LIVE item's canonical prefix on every update push and made
+  finalize's op-discriminated tiers delete a rejected update instead of
+  restoring it (observed live, rejection reason `gc_pending` from the
+  spurious mark). Fixed: the dispatcher skips the mark when the item still
+  exists at claim time; finalize discriminates snapshot-first and deletes
+  only a provable create (`item_predates` against `item_events`); ISSUES
+  **I-80** records the residuals. (2) **CQL2 constant serialization** — the
+  factory's bare `true`/`false` literals serialize to JSON booleans that
+  stac-fastapi's filter model rejects (every enforced-mode read 400'd);
+  fixed as `1 = 1` / `1 <> 1` expressions. Plus a docs nit: the poll
+  response nests under `upload` (docs example showed it flat).
 - **M3 — NOAA-scale readiness:** sustained ~30 items/s (~2.6M items/day,
   mission-critical subscribers) — dispatcher throughput headroom beyond
   Slice C, concurrency-safe multi-worker operation (I-40 and the ingest-ledger

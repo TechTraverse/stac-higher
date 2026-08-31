@@ -455,14 +455,17 @@ ROADMAP §9).
 
 ---
 
-## Phase 7 — Direct interaction (push ingest) 🚧 implemented, gate pending
+## Phase 7 — Direct interaction (push ingest) ✅ (gate met 2026-08-30)
 
-All implementation slices P7-B…P7-I merged (2026-08-30); the **P7-Z live
-gate check** (auth-enforced stack: real token → presigned PUT → external
-item POST → finalize → delivery; finalize-failure alert; full e2e) and the
-promotion PR remain. Design spec:
-`docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md` (provisionally
-approved; human review pending). Client docs: [`push-ingest.md`](push-ingest.md).
+All implementation slices P7-B…P7-I merged and the **P7-Z live gate closed**
+2026-08-30 (auth-enforced stack: real token → presigned PUT → brokered item
+POST → finalize → exactly-once delivery; rejection tiers + `push_rejected`
+alert; integration 14/14 non-skipped, e2e 32/32 — evidence in ROADMAP §9
+Phase 7; two gate findings fixed on the spot, ISSUES I-80). Remaining
+human work: the promotion PR and review of the provisionally-approved
+design spec
+(`docs/superpowers/specs/2026-08-29-phase7-push-ingest-design.md`).
+Client docs: [`push-ingest.md`](push-ingest.md).
 
 | Feature | Status | Entry points |
 |---|---|---|
