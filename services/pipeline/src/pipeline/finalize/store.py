@@ -36,6 +36,15 @@ class ObjectStore(Protocol):
 
     def delete(self, key: str) -> None: ...
 
+    def list_keys(self, prefix: str) -> list[str]:
+        """Every object key under ``prefix``.
+
+        Push finalize never needs this — the client declares its filenames at
+        mint time. A process run does: user code decides what it wrote, so the
+        outputs must be discovered rather than declared (ADR 0014).
+        """
+        ...
+
 
 @dataclass
 class PlatformObjectStore:
@@ -62,3 +71,6 @@ class PlatformObjectStore:
 
     def delete(self, key: str) -> None:
         platform.delete_object(self.client, self.bucket, key)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        return platform.list_keys(self.client, self.bucket, prefix)

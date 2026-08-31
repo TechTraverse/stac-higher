@@ -7,15 +7,18 @@
  *        association precedent: wiring a flow needs rights on both ends).
  *        Archived collections are refused, matching M2-F.
  *
- * NOT here yet: the M5-D cycle check. Creating or re-enabling a source is one
- * of its two hook points (the other is outputs) — it runs a DFS over the
- * shared {ingest, deliver, process_source, process_output} edge model and
- * 409s with the path. Until then the §7 rate ceiling is the backstop.
+ * Cycle refusal (I-64, M5-D): attaching a source adds a
+ * collection → process edge, so it is refused when the process already
+ * reaches that collection through its outputs. Our edges only — a loop
+ * closing through a connection is not statically decidable, and the §7 rate
+ * ceiling is the backstop for those.
  */
 import type { APIRoute } from "astro";
 import { authzError } from "@/lib/authz/guard";
 import { canManageCollection } from "@/lib/associations/access";
 import { getCollectionSettings } from "@/lib/collections/settings";
+import { formatPath, collectionNode, processNode, wouldCycle } from "@/lib/graph/edges";
+import { loadGraphEdges } from "@/lib/graph/storage";
 import { jsonResponse } from "@/lib/http/response";
 import { loadVisibleProcess } from "@/lib/processes/access";
 import { processSourceCreateSchema } from "@/lib/processes/schemas";
@@ -24,6 +27,30 @@ import {
   DuplicateSourceError,
   listSources,
 } from "@/lib/processes/storage";
+
+
+/**
+ * Refuse a wiring that would close a loop over OUR edges (I-64, M5-D).
+ *
+ * Returns a 409 Response with the path, or null when the edge is safe.
+ * Paths through connections or external systems are not statically decidable
+ * and are deliberately out of scope — the §7 run-rate ceiling is the backstop
+ * for those.
+ */
+async function refuseCycle(
+  from: string,
+  to: string,
+): Promise<Response | null> {
+  const path = wouldCycle(await loadGraphEdges(), from, to);
+  if (!path) return null;
+  return jsonResponse(409, {
+    error:
+      "This would create a processing loop: " +
+      formatPath(path) +
+      ". A process cannot consume, directly or indirectly, what it produces.",
+    cycle: path,
+  });
+}
 
 export const GET: APIRoute = async ({ params, locals }) => {
   const loaded = await loadVisibleProcess(locals.auth, params.id, false);
@@ -64,6 +91,12 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
         error: `Collection '${data.collection_id}' is archived and cannot gain new data flows`,
       });
     }
+
+    const cycle = await refuseCycle(
+      collectionNode(data.collection_id),
+      processNode(loaded.process.id),
+    );
+    if (cycle) return cycle;
 
     const source = await createSource({
       processId: loaded.process.id,

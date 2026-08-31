@@ -65,7 +65,7 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
       RetrySpec + stall sweep (the repo's ledger+sweep shape), **rate
       ceiling + deferral** (`process_rate_limited` backstop), Re-run verb.
       After M5-A and M5-B.
-- [ ] **M5-D · output path** (spec §2, ADR 0014). `finalize(process_run)`
+- [x] **M5-D · output path** (spec §2, ADR 0014). `finalize(process_run)`
       integration (the resolver/recorder pair the Phase 7 seam left as
       `NotImplementedError`), output_items recording, outbox composition
       verified (delivery fires from process output), **cycle refusal**
@@ -194,5 +194,25 @@ per-process run-rate ceiling is a requirement; M5 precedes M3 (M3 budget
   so an operator who deploys a fix must deploy AND then trigger, not re-run an
   old dead row expecting the new code. Worth a line in the UI copy if operators
   trip on it.
+
+- **The cycle check walks collection↔process edges ONLY.** Writing the test
+  intent down caught the first cut treating a connection as a traversable
+  node, which refused delivery→re-ingest topologies the spec explicitly leaves
+  permitted (a deliver to `/out` and an ingest from `/in` on one host are not
+  the same path). `TRAVERSABLE_KINDS` in `graph/edges.ts` is the fix. **M5-E's
+  `/graph` must still DRAW ingest/deliver edges** — they are in the model, just
+  not traversed — so do not "simplify" them out of the loader.
+- **Process outputs use sibling filenames, not the `staging://` grammar.** That
+  scheme identifies an upload SESSION and belongs to push; overloading it would
+  make one grammar mean two things depending on who wrote it. Documented for
+  process authors in `docs/processes.md`.
+- **`process_finalize` runs only after a SUCCESSFUL run.** A failed run's
+  partial outputs stay in staging and age out with the TTL sweep. If M5-G finds
+  operators want partial publication, that is a spec change, not a bug fix.
+- **Output collections are read at finalize time, not pinned on the run.** So
+  detaching an output stops publishing there immediately, including for a run
+  already in flight. A run whose process has NO outputs logs and publishes
+  nothing rather than failing — worth confirming in the M5-G rehearsal that
+  this reads as intended and not as a silent drop.
 
 (append here during iterations)

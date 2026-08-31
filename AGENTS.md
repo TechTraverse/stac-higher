@@ -270,6 +270,22 @@ with pinned `PUSH_REJECTION_REASONS` strings (contract fixtures
 and raise the collection-anchored `push_rejected` alert (migration 021).
 Client contract + failure semantics: **`docs/push-ingest.md`**.
 
+**Processes (Phase 9, M5)**: operator-authored transforms. `processes` /
+`process_revisions` (immutable snapshots; deploy = insert + repoint) /
+`process_sources` (item_event | cron triggers) / `process_outputs` /
+`process_runs` / `process_checks` (migrations 022/023). The app owns the DDL
+and the CRUD (`/api/processes*`); the PIPELINE triggers, executes and records.
+Execution is container-per-run behind the `Executor` seam
+(`pipeline/process/`, ADR 0013) — the run's environment holds only its
+revision's env, run-scoped STS credentials for `staging/runs/{run_id}/`, and
+its code; never the DB URL, master key or platform keys. Outputs publish
+through the ADR 0014 `finalize(process_run)` producer hooks
+(`finalize/process_run.py`), so delivery composes off the resulting outbox
+event for free. A per-process `max_runs_per_hour` ceiling defers-and-coalesces
+rather than dropping (§7), and write-time cycle refusal over
+collection↔process edges (`lib/graph/edges.ts`, I-64) blocks the loops that
+ARE decidable. Process-author contract: **`docs/processes.md`**.
+
 **Service telemetry (M2-H)**: Prometheus exposition at `GET :8083/metrics`
 (`pipeline/metrics.py`): per-job run/duration/outcome (wrapped centrally at
 Procrastinate registration), ingest stage counters at the flow-stats choke

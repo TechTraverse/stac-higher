@@ -10,10 +10,12 @@
  */
 import type { APIRoute } from "astro";
 import { isUuid } from "@/lib/connections/access";
+import { formatPath, collectionNode, processNode, wouldCycle } from "@/lib/graph/edges";
+import { loadGraphEdges } from "@/lib/graph/storage";
 import { jsonResponse } from "@/lib/http/response";
 import { loadVisibleProcess } from "@/lib/processes/access";
 import { processSourceUpdateSchema } from "@/lib/processes/schemas";
-import { deleteSource, updateSource } from "@/lib/processes/storage";
+import { deleteSource, getSource, updateSource } from "@/lib/processes/storage";
 
 function sourceNotFound(): Response {
   return jsonResponse(404, { error: "Process source not found" });
@@ -33,6 +35,30 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
         details: parsed.error.issues,
       });
     }
+    // Re-enabling is a cycle hook point too (spec §8): a disabled source is
+    // not an edge, so a loop can be assembled while it is off and closed by
+    // flipping it back on. Only the off→on transition is checked — an edit to
+    // an already-enabled source cannot add an edge that is not there.
+    if (parsed.data.enabled === true) {
+      const existing = await getSource(loaded.process.id, params.sourceId);
+      if (existing && !existing.enabled) {
+        const path = wouldCycle(
+          await loadGraphEdges(),
+          collectionNode(existing.collection_id),
+          processNode(loaded.process.id),
+        );
+        if (path) {
+          return jsonResponse(409, {
+            error:
+              "Re-enabling this source would create a processing loop: " +
+              formatPath(path) +
+              ". A process cannot consume, directly or indirectly, what it produces.",
+            cycle: path,
+          });
+        }
+      }
+    }
+
     const updated = await updateSource(
       loaded.process.id,
       params.sourceId,

@@ -18,6 +18,7 @@ Delivery is planned in phases — see [`../ROADMAP.md`](../ROADMAP.md) for the f
 - [`monitoring.md`](monitoring.md) — flow telemetry, alerts, notification channels, the `/monitoring` UI, retention & GC, metrics (Phase 6 / M2).
 - [`serving.md`](serving.md) — OGC API serving (titiler-pgstac + tipg), the per-collection serving toggle, and its I-1/I-68 caveats (pre-M5 hardening).
 - [`push-ingest.md`](push-ingest.md) — the external push-client contract: bearer auth, staged uploads, the brokered write path, finalize semantics and rejection reasons (Phase 7).
+- [`processes.md`](processes.md) — writing a process: the run environment, how to publish items, and the rules that surprise (Phase 9).
 - [`AI-STRATEGY.md`](AI-STRATEGY.md) — how `AGENTS.md`, the skills, and per-harness shims fit together for AI coding agents.
 
 ## Conventions

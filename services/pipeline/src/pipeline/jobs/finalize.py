@@ -20,12 +20,18 @@ import logging
 from typing import Any
 
 from pipeline.config import Settings
+from pipeline.finalize.process_run import ProcessRunRecorder, ProcessRunResolver
 from pipeline.finalize.push import PushRecorder, PushResolver, build_push_request
 from pipeline.finalize.repo import PgFinalizeRepo
-from pipeline.finalize.seam import PRODUCER_PUSH_INGEST, ProducerHooks
+from pipeline.finalize.seam import (
+    PRODUCER_PROCESS_RUN,
+    PRODUCER_PUSH_INGEST,
+    ProducerHooks,
+)
 from pipeline.finalize.steps import run_finalize
 from pipeline.finalize.store import PlatformObjectStore
 from pipeline.finalize.sweep import finalize_sweep_tick
+from pipeline.process.repo import PgProcessRepo
 from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client
@@ -44,13 +50,36 @@ SWEEP_BATCH = 500
 FINALIZE_RETRY = RetrySpec(max_attempts=4, wait_seconds=60)
 
 
+def build_hooks(
+    repo: PgFinalizeRepo,
+    writer: PgPgstacWriter,
+    store: PlatformObjectStore,
+    process_repo: PgProcessRepo,
+) -> dict[str, ProducerHooks]:
+    """Both producers' hook pairs in ONE registry.
+
+    Registering them together is what keeps the seam honest: `run_finalize`
+    dispatches on `req.producer` and never branches on it, so a request naming
+    either producer takes the identical step path (ADR 0014's check
+    criterion).
+    """
+    return {
+        PRODUCER_PUSH_INGEST: ProducerHooks(
+            resolver=PushResolver(repo), recorder=PushRecorder(repo, writer)
+        ),
+        PRODUCER_PROCESS_RUN: ProducerHooks(
+            resolver=ProcessRunResolver(store=store),
+            recorder=ProcessRunRecorder(repo=process_repo),
+        ),
+    }
+
+
 def register(queue: QueueBackend, settings: Settings) -> None:
     def _hooks(repo: PgFinalizeRepo, writer: PgPgstacWriter) -> dict[str, ProducerHooks]:
-        return {
-            PRODUCER_PUSH_INGEST: ProducerHooks(
-                resolver=PushResolver(repo), recorder=PushRecorder(repo, writer)
-            )
-        }
+        store = PlatformObjectStore(
+            client=build_platform_client(settings), bucket=settings.staging_bucket
+        )
+        return build_hooks(repo, writer, store, PgProcessRepo(settings.database_url))
 
     async def finalize_job(
         upload_id: str,
