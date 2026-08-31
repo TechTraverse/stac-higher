@@ -141,6 +141,21 @@ def delete_object(client: S3Like, bucket: str, key: str) -> None:
     client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": key}]})
 
 
+def list_keys(client: S3Like, bucket: str, prefix: str) -> list[str]:
+    """Every object key under ``prefix``, paginated.
+
+    Pure over an injected client (no network in tests). Callers on the event
+    loop wrap it in ``asyncio.to_thread``. Unbounded by design at this layer —
+    the caller bounds it (a process run's output prefix is one run's work);
+    a cap here would silently truncate someone's outputs.
+    """
+    keys: list[str] = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        keys.extend(obj["Key"] for obj in page.get("Contents", []))
+    return keys
+
+
 def cleanup_expired(
     client: S3Like,
     bucket: str,

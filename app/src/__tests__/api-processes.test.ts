@@ -37,9 +37,12 @@ vi.mock("@/lib/collections/settings", () => ({
   getCollectionSettings: vi.fn(async () => ({ archived: false })),
 }));
 vi.mock("@/lib/db/migrate", () => ({ runMigrations: vi.fn(async () => {}) }));
+vi.mock("@/lib/graph/storage", () => ({ loadGraphEdges: vi.fn(async () => []) }));
 
 import type { AuthContext, CanonicalRole } from "@/lib/auth/types";
 import { canManageCollection } from "@/lib/associations/access";
+import { loadGraphEdges } from "@/lib/graph/storage";
+import { collectionNode, processNode } from "@/lib/graph/edges";
 import { getCollectionSettings } from "@/lib/collections/settings";
 import {
   createOutput,
@@ -164,6 +167,7 @@ beforeEach(() => {
   vi.mocked(getCollectionSettings).mockResolvedValue({
     archived: false,
   } as never);
+  vi.mocked(loadGraphEdges).mockResolvedValue([]);
 });
 
 describe("GET /api/processes", () => {
@@ -500,5 +504,69 @@ describe("the run ledger and the re-run verb (M5-C)", () => {
     });
     expect(res.status).toBe(404);
     expect(rerunRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("cycle refusal (I-64, M5-D)", () => {
+  it("409s attaching an output the process already sources from", async () => {
+    // p1 already reads cloud-masks; publishing back into it would make the
+    // process re-trigger on its own output forever.
+    vi.mocked(loadGraphEdges).mockResolvedValue([
+      {
+        from: collectionNode("cloud-masks"),
+        to: processNode(PROCESS_ID),
+        kind: "process_source",
+        id: "e1",
+      },
+    ]);
+    const res = await call(createOutputRoute, operator, {
+      method: "POST",
+      body: { collection_id: "cloud-masks" },
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain("processing loop");
+    // The PATH is in the body: an operator needs to know which wiring to
+    // undo, not just that something was refused.
+    expect(body.cycle).toEqual([
+      processNode(PROCESS_ID),
+      collectionNode("cloud-masks"),
+      processNode(PROCESS_ID),
+    ]);
+    expect(createOutput).not.toHaveBeenCalled();
+  });
+
+  it("409s attaching a source the process already outputs to", async () => {
+    vi.mocked(loadGraphEdges).mockResolvedValue([
+      {
+        from: processNode(PROCESS_ID),
+        to: collectionNode("sentinel-2"),
+        kind: "process_output",
+        id: "e1",
+      },
+    ]);
+    const res = await call(createSourceRoute, operator, {
+      method: "POST",
+      body: { collection_id: "sentinel-2", trigger: { kind: "item_event" } },
+    });
+    expect(res.status).toBe(409);
+    expect(createSource).not.toHaveBeenCalled();
+  });
+
+  it("permits an ordinary source → process → different collection wiring", async () => {
+    vi.mocked(createOutput).mockResolvedValue({} as never);
+    vi.mocked(loadGraphEdges).mockResolvedValue([
+      {
+        from: collectionNode("sentinel-2"),
+        to: processNode(PROCESS_ID),
+        kind: "process_source",
+        id: "e1",
+      },
+    ]);
+    const res = await call(createOutputRoute, operator, {
+      method: "POST",
+      body: { collection_id: "cloud-masks" },
+    });
+    expect(res.status).toBe(201);
   });
 });

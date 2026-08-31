@@ -215,6 +215,9 @@ class FakeObjectStore:
     def get(self, key: str) -> bytes:
         return self.objects[key]
 
+    def list_keys(self, prefix: str) -> list[str]:
+        return [k for k in self.objects if k.startswith(prefix)]
+
     def copy(self, src_key: str, dest_key: str) -> None:
         data = self.objects[src_key]
         if src_key in self.corrupt_on_copy:

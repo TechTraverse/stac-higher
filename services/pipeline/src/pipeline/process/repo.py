@@ -141,6 +141,15 @@ class ProcessRepo(abc.ABC):
         """Write a run's terminal (or retry-pending) state."""
 
     @abc.abstractmethod
+    async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
+        """The collections this process may publish into.
+
+        Read at FINALIZE time rather than pinned on the run: detaching an
+        output should stop publishing there immediately, including for a run
+        already in flight.
+        """
+
+    @abc.abstractmethod
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
         """Return runs stranded `running` by a crashed worker to `queued`.
 
@@ -394,6 +403,18 @@ class PgProcessRepo(ProcessRepo):
                 ),
             )
             await conn.commit()
+
+    async def list_output_collections(  # pragma: no cover
+        self, process_id: str
+    ) -> tuple[str, ...]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT collection_id FROM stac_higher.process_outputs"
+                " WHERE process_id = %s ORDER BY collection_id",
+                (process_id,),
+            )
+            rows = await cur.fetchall()
+        return tuple(r[0] for r in rows)
 
     async def reset_stalled_runs(  # pragma: no cover
         self, older_than: dt.datetime, limit: int

@@ -24,6 +24,7 @@ class FakeProcessRepo(ProcessRepo):
     windows: dict[str, RateWindow] = field(default_factory=dict)
     due_runs: list[QueuedRun] = field(default_factory=list)
     checks: list[ProcessCheckRequest] = field(default_factory=list)
+    output_collections: list[str] = field(default_factory=list)
 
     #: recorded writes
     enqueued: list[dict[str, Any]] = field(default_factory=list)
@@ -105,6 +106,9 @@ class FakeProcessRepo(ProcessRepo):
                 "next_attempt_at": next_attempt_at,
             }
         )
+
+    async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
+        return tuple(self.output_collections)
 
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
         return self.stalled_reset

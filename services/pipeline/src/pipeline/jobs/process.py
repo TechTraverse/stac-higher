@@ -23,6 +23,11 @@ from typing import Any
 
 from pipeline.config import Settings
 from pipeline.connections.envelope import decrypt, load_master_key
+from pipeline.finalize.process_run import build_process_request
+from pipeline.finalize.repo import PgFinalizeRepo
+from pipeline.finalize.steps import run_finalize
+from pipeline.finalize.store import PlatformObjectStore
+from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
 from pipeline.process.docker_executor import DockerExecutor
 from pipeline.process.repo import PgProcessRepo
@@ -30,12 +35,14 @@ from pipeline.process.runner import run_one
 from pipeline.process.sweep import process_sweep_tick
 from pipeline.process.trigger import trigger_run
 from pipeline.queue.interface import QueueBackend, RetrySpec
+from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client
 
 logger = logging.getLogger(__name__)
 
 JOB_TRIGGER = "pipeline.process_trigger"
 JOB_RUN_TICK = "pipeline.process_run_tick"
+JOB_FINALIZE = "pipeline.process_finalize"
 JOB_CRON = "pipeline.process_cron"
 JOB_SWEEP = "pipeline.process_sweep"
 
@@ -152,12 +159,13 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         executor = DockerExecutor(docker_host=settings.docker_host)
         storage_client = build_platform_client(settings)
         resolver = build_secret_resolver(settings)
+        finalize_payloads: list[dict[str, Any]] = []
         for run in runs:
             # Per-run isolation: one run's failure must never abandon the rest
             # of the claimed batch in `running`, where only the stall sweep
             # would recover them.
             try:
-                await run_one(
+                result = await run_one(
                     run,
                     repo=repo,
                     executor=executor,
@@ -171,6 +179,43 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     "process run raised outside the ledger path",
                     extra={"run_id": run.id, "process_id": run.process_id},
                 )
+                continue
+            # Only a SUCCESSFUL run publishes (ADR 0014). A failed run's
+            # partial outputs stay in staging and age out with the TTL sweep:
+            # publishing half of what a crashed run intended would put items
+            # in the catalog that no successful run stands behind.
+            if result.status == "succeeded":
+                finalize_payloads.append(
+                    {"run_id": run.id, "process_id": run.process_id}
+                )
+
+        if finalize_payloads:
+            await queue.enqueue_batch(JOB_FINALIZE, finalize_payloads)
+
+    async def process_finalize(run_id: str, process_id: str) -> None:
+        """Publish one successful run's outputs through the ADR 0014 seam."""
+        process_repo = _repo()
+        outputs = await process_repo.list_output_collections(process_id)
+        if not outputs:
+            logger.warning(
+                "process run produced outputs but the process has no output"
+                " collection; nothing published",
+                extra={"run_id": run_id, "process_id": process_id},
+            )
+            return
+        finalize_repo = PgFinalizeRepo(settings.database_url)
+        writer = PgPgstacWriter(settings.database_url)
+        store = PlatformObjectStore(
+            client=build_platform_client(settings), bucket=settings.staging_bucket
+        )
+        await run_finalize(
+            build_process_request(run_id, outputs),
+            hooks=build_hooks(finalize_repo, writer, store, process_repo),
+            preflight=finalize_repo,
+            store=store,
+            writer=writer,
+            asset_href_base=settings.asset_href_base,
+        )
 
     async def process_cron(timestamp: int) -> None:
         repo = _repo()
@@ -198,6 +243,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         )
 
     queue.register_task(process_trigger, name=JOB_TRIGGER, retry=TRIGGER_RETRY)
+    queue.register_task(process_finalize, name=JOB_FINALIZE, retry=TRIGGER_RETRY)
     queue.register_periodic(process_run_tick, name=JOB_RUN_TICK, cron=RUN_TICK_CRON)
     queue.register_periodic(process_cron, name=JOB_CRON, cron=CRON_TICK_CRON)
     queue.register_periodic(process_sweep, name=JOB_SWEEP, cron=SWEEP_CRON)
