@@ -11,6 +11,7 @@
 import type {
   Process,
   ProcessCheck,
+  ProcessRun,
   ProcessOutput,
   ProcessRevision,
   ProcessSource,
@@ -160,6 +161,20 @@ export async function deleteOutput(
 ): Promise<void> {
   await processFetch(`/${enc(id)}/outputs/${enc(outputId)}`, {
     method: "DELETE",
+  });
+}
+
+export async function listRuns(id: string, limit = 50): Promise<ProcessRun[]> {
+  return (
+    await processFetch<{ runs: ProcessRun[] }>(`/${enc(id)}/runs?limit=${limit}`)
+  ).runs;
+}
+
+/** Re-run a DEAD run (the `redeliver` analog). Returns the requeued row; the
+ * pipeline's run tick picks it up. */
+export async function rerunRun(id: string, runId: string): Promise<ProcessRun> {
+  return processFetch<ProcessRun>(`/${enc(id)}/runs/${enc(runId)}/rerun`, {
+    method: "POST",
   });
 }
 

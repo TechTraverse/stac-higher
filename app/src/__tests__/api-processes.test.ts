@@ -23,6 +23,9 @@ vi.mock("@/lib/processes/storage", () => ({
   deleteOutput: vi.fn(),
   insertProcessCheck: vi.fn(),
   getProcessCheck: vi.fn(),
+  listRuns: vi.fn(),
+  getRun: vi.fn(),
+  rerunRun: vi.fn(),
   DuplicateProcessNameError: class extends Error {},
   DuplicateSourceError: class extends Error {},
   DuplicateOutputError: class extends Error {},
@@ -47,9 +50,13 @@ import {
   getProcessCheck,
   insertProcessCheck,
   listProcesses,
+  listRuns,
+  getRun,
+  rerunRun,
   softDeleteProcess,
   updateProcess,
   type ApiProcess,
+  type ApiProcessRun,
 } from "@/lib/processes/storage";
 import {
   GET as listRoute,
@@ -65,6 +72,8 @@ import { POST as createSourceRoute } from "@/pages/api/processes/[id]/sources/in
 import { POST as createOutputRoute } from "@/pages/api/processes/[id]/outputs/index";
 import { POST as testRoute } from "@/pages/api/processes/[id]/test";
 import { GET as pollRoute } from "@/pages/api/processes/[id]/checks/[checkId]";
+import { GET as runsRoute } from "@/pages/api/processes/[id]/runs/index";
+import { POST as rerunRoute } from "@/pages/api/processes/[id]/runs/[runId]/rerun";
 
 const PROCESS_ID = "3a9f1c2e-0000-4000-8000-0000000000a1";
 const REVISION_ID = "3a9f1c2e-0000-4000-8000-0000000000b1";
@@ -125,6 +134,28 @@ function call(
 }
 
 const INLINE = { kind: "inline_python" as const };
+const RUN_ID = "3a9f1c2e-0000-4000-8000-0000000000d1";
+
+function run(overrides: Partial<ApiProcessRun> = {}): ApiProcessRun {
+  return {
+    id: RUN_ID,
+    process_id: PROCESS_ID,
+    revision_id: REVISION_ID,
+    source_id: null,
+    status: "dead",
+    attempts: 3,
+    input_items: [],
+    output_items: [],
+    log_ref: null,
+    error: "run exited 1",
+    rate_deferred_until: null,
+    is_test: false,
+    created_at: "2026-08-31T00:00:00.000Z",
+    started_at: null,
+    finished_at: null,
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -409,5 +440,65 @@ describe("the ADR 0004 test-run bridge", () => {
     });
     expect(res.status).toBe(404);
     expect(getProcessCheck).not.toHaveBeenCalled();
+  });
+});
+
+describe("the run ledger and the re-run verb (M5-C)", () => {
+  it("lets a member read the ledger", async () => {
+    vi.mocked(listRuns).mockResolvedValue([run()]);
+    const res = await call(runsRoute, member, { params: { runId: RUN_ID } });
+    expect(res.status).toBe(200);
+    expect(listRuns).toHaveBeenCalledWith(PROCESS_ID, 50);
+  });
+
+  it("403s a member re-running", async () => {
+    const res = await call(rerunRoute, member, {
+      method: "POST",
+      params: { runId: RUN_ID },
+    });
+    expect(res.status).toBe(403);
+    expect(rerunRun).not.toHaveBeenCalled();
+  });
+
+  it("requeues a dead run and 202s — the app executes nothing", async () => {
+    vi.mocked(rerunRun).mockResolvedValue(run({ status: "queued", attempts: 0 }));
+    const res = await call(rerunRoute, operator, {
+      method: "POST",
+      params: { runId: RUN_ID },
+    });
+    expect(res.status).toBe(202);
+    expect(rerunRun).toHaveBeenCalledWith(PROCESS_ID, RUN_ID);
+  });
+
+  it("409s a non-dead run WITH its status, rather than silently doing nothing", async () => {
+    // The conditional UPDATE matched nothing; an operator recovering a flow
+    // needs to know why, not to wonder whether the click registered.
+    vi.mocked(rerunRun).mockResolvedValue(null);
+    vi.mocked(getRun).mockResolvedValue(run({ status: "running" }));
+    const res = await call(rerunRoute, operator, {
+      method: "POST",
+      params: { runId: RUN_ID },
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("running");
+  });
+
+  it("404s an unknown run", async () => {
+    vi.mocked(rerunRun).mockResolvedValue(null);
+    vi.mocked(getRun).mockResolvedValue(null);
+    const res = await call(rerunRoute, operator, {
+      method: "POST",
+      params: { runId: RUN_ID },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("404s a malformed run id before it reaches a uuid column", async () => {
+    const res = await call(rerunRoute, operator, {
+      method: "POST",
+      params: { runId: "nope" },
+    });
+    expect(res.status).toBe(404);
+    expect(rerunRun).not.toHaveBeenCalled();
   });
 });

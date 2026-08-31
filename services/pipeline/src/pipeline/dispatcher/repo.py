@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pipeline.delivery.matcher import DeliverAssociation
+from pipeline.process.matcher import ProcessSource
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,11 @@ class DispatchRepo(abc.ABC):
     @abc.abstractmethod
     async def list_deliver_associations(self, collection_id: str) -> list[DeliverAssociation]:
         """Enabled direction='deliver' associations for a collection."""
+
+    @abc.abstractmethod
+    async def list_process_sources(self, collection_id: str) -> list[ProcessSource]:
+        """Enabled `item_event` process sources for a collection, on enabled
+        non-deleted processes that have something deployed (Phase 9 §6)."""
 
     @abc.abstractmethod
     async def get_item(self, collection_id: str, item_id: str) -> dict[str, Any] | None:
@@ -170,6 +176,33 @@ class PgDispatchRepo(DispatchRepo):
             rows = await cur.fetchall()
         return [
             DeliverAssociation(id=str(r[0]), collection_id=r[1], config=dict(r[2]) if r[2] else {})
+            for r in rows
+        ]
+
+    async def list_process_sources(  # pragma: no cover
+        self, collection_id: str
+    ) -> list[ProcessSource]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT s.id, s.process_id, s.collection_id, s.trigger"
+                "  FROM stac_higher.process_sources s"
+                "  JOIN stac_higher.processes p ON p.id = s.process_id"
+                " WHERE s.collection_id = %s AND s.enabled"
+                "   AND p.enabled AND p.deleted_at IS NULL"
+                # A process with nothing deployed has no revision to pin, so a
+                # run would be unrunnable the moment it was queued.
+                "   AND p.current_revision IS NOT NULL"
+                "   AND s.trigger->>'kind' = 'item_event'",
+                (collection_id,),
+            )
+            rows = await cur.fetchall()
+        return [
+            ProcessSource(
+                id=str(r[0]),
+                process_id=str(r[1]),
+                collection_id=r[2],
+                trigger=dict(r[3]) if r[3] else {},
+            )
             for r in rows
         ]
 

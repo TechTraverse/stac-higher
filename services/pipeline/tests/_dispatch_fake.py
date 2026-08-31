@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 
 from pipeline.delivery.matcher import DeliverAssociation
 from pipeline.dispatcher.repo import DEFAULT_GC_GRACE_DAYS, DispatchRepo, ItemEvent
+from pipeline.process.matcher import ProcessSource
 
 
 @dataclass
@@ -27,6 +28,10 @@ class FakeDispatchRepo(DispatchRepo):
     released: list[tuple[list[int], int]] = field(default_factory=list)
     #: per-collection gc_grace_days override (default mirrors the app's 30).
     grace_days: dict[str, int] = field(default_factory=dict)
+    #: Phase 9 §6 — enabled item_event process sources per collection.
+    process_sources: dict[str, list[ProcessSource]] = field(default_factory=dict)
+    #: number of list_process_sources calls (asserts the per-collection memo)
+    source_calls: int = 0
 
     async def claim_pending_events(self, limit: int) -> list[ItemEvent]:
         pending = [
@@ -63,6 +68,10 @@ class FakeDispatchRepo(DispatchRepo):
     async def list_deliver_associations(self, collection_id: str) -> list[DeliverAssociation]:
         self.assoc_calls += 1
         return self.associations.get(collection_id, [])
+
+    async def list_process_sources(self, collection_id: str) -> list[ProcessSource]:
+        self.source_calls += 1
+        return self.process_sources.get(collection_id, [])
 
     async def get_item(self, collection_id: str, item_id: str) -> dict | None:
         return self.items.get((collection_id, item_id))

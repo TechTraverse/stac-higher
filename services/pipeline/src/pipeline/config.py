@@ -116,6 +116,10 @@ DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS = 300
 #: STS role the run session is derived from. MinIO accepts any ARN here;
 #: AWS deployments set the real one.
 DEFAULT_PROCESS_STS_ROLE_ARN = "arn:aws:iam::000000000000:role/stac-higher-process-run"
+#: A run still `running` after this is presumed crashed and is requeued
+#: (M5-C, the M2-0 sweep pattern). Comfortably above the default run timeout
+#: so a legitimately slow run is never mistaken for a stranded one.
+DEFAULT_PROCESS_RUN_STALL_SECONDS = 3600
 
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
@@ -184,6 +188,7 @@ class Settings:
     #: on its own network, where the platform's endpoint hostname may not
     #: resolve. None => fall back to the pipeline's staging endpoint.
     process_run_s3_endpoint: str | None = None
+    process_run_stall_seconds: int = DEFAULT_PROCESS_RUN_STALL_SECONDS
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -291,4 +296,10 @@ class Settings:
                 "PROCESS_STS_ROLE_ARN", DEFAULT_PROCESS_STS_ROLE_ARN
             ),
             process_run_s3_endpoint=env.get("PROCESS_RUN_S3_ENDPOINT") or None,
+            process_run_stall_seconds=int(
+                env.get(
+                    "PROCESS_RUN_STALL_SECONDS",
+                    str(DEFAULT_PROCESS_RUN_STALL_SECONDS),
+                )
+            ),
         )

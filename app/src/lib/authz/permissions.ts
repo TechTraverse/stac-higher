@@ -44,7 +44,8 @@ export type GatedAction =
   | "redeliver"
   | "ack"
   | "resolve"
-  | "deploy";
+  | "deploy"
+  | "rerun";
 
 export interface GatedRouteMatch {
   action: GatedAction;
@@ -104,6 +105,13 @@ const SUB_ACTION_ROUTES: {
   {
     pattern: /^\/api\/processes\/([^/]+)\/test$/,
     action: "test",
+    resourceType: "process",
+  },
+  // M5-C: dead-run recovery (the `redeliver` analog). Audited against the
+  // PROCESS; the run id stays in the request path recorded in audit detail.
+  {
+    pattern: /^\/api\/processes\/([^/]+)\/runs\/[^/]+\/rerun$/,
+    action: "rerun",
     resourceType: "process",
   },
   {

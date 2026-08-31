@@ -19,7 +19,9 @@ import {
   listOutputs,
   listProcesses,
   listRevisions,
+  listRuns,
   listSources,
+  rerunRun,
   updateProcess,
   updateSource,
 } from "./api";
@@ -64,6 +66,17 @@ export function useOutputs(id: string) {
     queryKey: processKeys.outputs(id),
     queryFn: () => listOutputs(id),
     enabled: !!id,
+  });
+}
+
+export function useRuns(id: string) {
+  return useQuery({
+    queryKey: processKeys.runs(id),
+    queryFn: () => listRuns(id),
+    enabled: !!id,
+    // Runs change underneath the page as the pipeline works them; a short
+    // poll keeps the panel honest without a websocket.
+    refetchInterval: 10_000,
   });
 }
 
@@ -132,6 +145,12 @@ export function useCreateOutput() {
   return useProcessMutation(
     ({ id, collectionId }: { id: string; collectionId: string }) =>
       createOutput(id, collectionId),
+  );
+}
+
+export function useRerunRun() {
+  return useProcessMutation(({ id, runId }: { id: string; runId: string }) =>
+    rerunRun(id, runId),
   );
 }
 

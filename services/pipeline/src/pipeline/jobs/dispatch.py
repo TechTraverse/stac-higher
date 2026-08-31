@@ -43,6 +43,7 @@ from pipeline.gc.repo import PgGcRepo
 from pipeline.gc.sweep import item_prefix
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import JOB_FINALIZE
+from pipeline.jobs.process import JOB_TRIGGER as JOB_PROCESS_TRIGGER
 from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.storage.platform import build_platform_client
 
@@ -96,6 +97,13 @@ def build_dispatch_drain(
         async def _enqueue(batches: list[dict[str, Any]]) -> None:
             await queue.enqueue_batch(JOB_DELIVER, batches)
 
+        async def _enqueue_process_runs(batches: list[dict[str, Any]]) -> None:
+            # Phase 9 §6: one trigger job per matched source per tick. The job
+            # applies the §7 ceiling and writes the run row; dispatch stays
+            # out of the rate decision so a slow ceiling check cannot stall
+            # the outbox.
+            await queue.enqueue_batch(JOB_PROCESS_TRIGGER, batches)
+
         async def _enqueue_finalize(payloads: list[dict[str, Any]]) -> None:
             # Staged gate (spec §7.1): one pipeline.finalize job per staged
             # event, P7-E payload contract, batched per claim.
@@ -118,6 +126,7 @@ def build_dispatch_drain(
             _enqueue,
             enqueue_finalize=_enqueue_finalize,
             mark_delete_gc=_mark_delete_gc,
+            enqueue_process_runs=_enqueue_process_runs,
         )
         if matches:
             logger.info(
