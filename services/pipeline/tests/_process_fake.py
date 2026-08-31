@@ -25,6 +25,8 @@ class FakeProcessRepo(ProcessRepo):
     due_runs: list[QueuedRun] = field(default_factory=list)
     checks: list[ProcessCheckRequest] = field(default_factory=list)
     output_collections: list[str] = field(default_factory=list)
+    #: What `current_revision` reports; None models "nothing deployed".
+    deployed_revision: str | None = "rev-1"
 
     #: recorded writes
     enqueued: list[dict[str, Any]] = field(default_factory=list)
@@ -40,6 +42,9 @@ class FakeProcessRepo(ProcessRepo):
 
     async def list_due_cron_sources(self, now: dt.datetime) -> list[CronSource]:
         return list(self.cron_sources)
+
+    async def current_revision(self, process_id: str) -> str | None:
+        return self.deployed_revision
 
     async def rate_window(self, process_id: str, since: dt.datetime) -> RateWindow:
         return self.windows.get(
