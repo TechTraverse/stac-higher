@@ -139,6 +139,15 @@ Astro server routes:
 | `/api/channels` | GET, POST | List (member+: own groups; admin: all) / create (operator+) per-group notification channels (`in_app` \| `webhook`); webhook signing secret is write-only (`has_secret`) — M2-C, ADR 0010 |
 | `/api/channels/[id]` | GET, PUT, DELETE | Get / replace-config / delete a channel (group-owned; PUT replaces `config` wholesale, kind+group immutable) |
 | `/api/monitoring/flows` | GET | Cross-collection association list with `flow_stats` + expectation (member+: own groups; admin: all) — feeds `/monitoring` (M2-D) |
+| `/api/processes` | GET, POST | List (member+: own groups; admin: all) / create (operator+, audited) group-owned processes — Phase 9 M5-A |
+| `/api/processes/[id]` | GET, PUT, DELETE | Get / update / soft-delete a process. `current_revision` is NOT updatable — only a deploy moves it |
+| `/api/processes/[id]/revisions` | GET, POST | List immutable revision snapshots / **deploy** (operator+, audited `deploy`): insert a revision + repoint `current_revision` in one transaction. `runtime.kind: container` is refused this slice (ADR 0013) |
+| `/api/processes/[id]/sources` | GET, POST | List / attach a trigger source (operator+ who can also manage the collection; archived collections refused) |
+| `/api/processes/[id]/sources/[sourceId]` | PUT, DELETE | Update trigger/expectation/enabled, or detach. `collection_id` is immutable (unique key + M5-D cycle edge) |
+| `/api/processes/[id]/outputs` | GET, POST | List / attach an output collection (operator+, same collection rules) |
+| `/api/processes/[id]/outputs/[outputId]` | DELETE | Detach an output; already-published items are untouched |
+| `/api/processes/[id]/test` | POST | Request a test run (operator+, audited `test`) — inserts a `process_checks` row the pipeline drains (ADR 0004); 409 when nothing is deployed |
+| `/api/processes/[id]/checks/[checkId]` | GET | Poll a test-run request (member+ of the owning group) |
 | `/api/catalog/[...path]` | POST, PUT, PATCH, DELETE | BFF for built-in-catalog writes (ADR 0008): transaction endpoints only; operator+, audited. Session callers get the session access token injected server-side; **bearer callers get their own token forwarded — the Phase 7 §4.3 brokered push path** (precondition set on every bearer write, synchronous staged pre-validation, `prior_item` snapshot on PUT, staged PATCH → 400, bearer collection-create → 403; `X-BFF-Auth` stamped when `CATALOG_BFF_SHARED_SECRET` is set). Reads stay direct. Client docs: `docs/push-ingest.md` |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode

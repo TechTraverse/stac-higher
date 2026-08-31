@@ -1,0 +1,142 @@
+/**
+ * TanStack Query hooks for processes (M5-A).
+ *
+ * Mutations invalidate by the `processKeys` prefix so a change refreshes the
+ * list and the detail together — a deploy, for instance, moves both the
+ * revision list and the parent's `current_revision`.
+ */
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { processKeys } from "@/lib/query/keys";
+import {
+  createOutput,
+  createProcess,
+  createSource,
+  deleteOutput,
+  deleteProcess,
+  deleteSource,
+  deployRevision,
+  getProcess,
+  listOutputs,
+  listProcesses,
+  listRevisions,
+  listSources,
+  updateProcess,
+  updateSource,
+} from "./api";
+import type {
+  ProcessCreate,
+  ProcessRevisionCreate,
+  ProcessSourceCreate,
+  ProcessSourceUpdate,
+  ProcessUpdate,
+} from "./schemas";
+
+export function useProcesses() {
+  return useQuery({ queryKey: processKeys.list(), queryFn: listProcesses });
+}
+
+export function useProcess(id: string) {
+  return useQuery({
+    queryKey: processKeys.detail(id),
+    queryFn: () => getProcess(id),
+    enabled: !!id,
+  });
+}
+
+export function useRevisions(id: string) {
+  return useQuery({
+    queryKey: processKeys.revisions(id),
+    queryFn: () => listRevisions(id),
+    enabled: !!id,
+  });
+}
+
+export function useSources(id: string) {
+  return useQuery({
+    queryKey: processKeys.sources(id),
+    queryFn: () => listSources(id),
+    enabled: !!id,
+  });
+}
+
+export function useOutputs(id: string) {
+  return useQuery({
+    queryKey: processKeys.outputs(id),
+    queryFn: () => listOutputs(id),
+    enabled: !!id,
+  });
+}
+
+/** Every mutation below invalidates the whole process subtree — the surfaces
+ * are small and interdependent, so a narrower invalidation would buy nothing
+ * but a chance to miss one. */
+function useProcessMutation<TArgs, TResult>(
+  mutationFn: (args: TArgs) => Promise<TResult>,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => qc.invalidateQueries({ queryKey: processKeys.all() }),
+  });
+}
+
+export function useCreateProcess() {
+  return useProcessMutation((input: ProcessCreate) => createProcess(input));
+}
+
+export function useUpdateProcess() {
+  return useProcessMutation(({ id, input }: { id: string; input: ProcessUpdate }) =>
+    updateProcess(id, input),
+  );
+}
+
+export function useDeleteProcess() {
+  return useProcessMutation((id: string) => deleteProcess(id));
+}
+
+export function useDeployRevision() {
+  return useProcessMutation(
+    ({ id, input }: { id: string; input: ProcessRevisionCreate }) =>
+      deployRevision(id, input),
+  );
+}
+
+export function useCreateSource() {
+  return useProcessMutation(
+    ({ id, input }: { id: string; input: ProcessSourceCreate }) =>
+      createSource(id, input),
+  );
+}
+
+export function useUpdateSource() {
+  return useProcessMutation(
+    ({
+      id,
+      sourceId,
+      input,
+    }: {
+      id: string;
+      sourceId: string;
+      input: ProcessSourceUpdate;
+    }) => updateSource(id, sourceId, input),
+  );
+}
+
+export function useDeleteSource() {
+  return useProcessMutation(({ id, sourceId }: { id: string; sourceId: string }) =>
+    deleteSource(id, sourceId),
+  );
+}
+
+export function useCreateOutput() {
+  return useProcessMutation(
+    ({ id, collectionId }: { id: string; collectionId: string }) =>
+      createOutput(id, collectionId),
+  );
+}
+
+export function useDeleteOutput() {
+  return useProcessMutation(({ id, outputId }: { id: string; outputId: string }) =>
+    deleteOutput(id, outputId),
+  );
+}

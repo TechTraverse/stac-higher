@@ -1,0 +1,8 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { ProcessesPage } from "../../components/processes/ProcessesPage";
+---
+
+<Layout title="Processes">
+  <ProcessesPage client:only="react" />
+</Layout>

@@ -244,3 +244,100 @@ export const processExpectationSchema = z
   .strict();
 
 export type ProcessExpectation = z.infer<typeof processExpectationSchema>;
+
+// ---------------------------------------------------------------------------
+// API payloads (M5-A). The route path carries the process id; these validate
+// the bodies. Group ownership and collection manageability are enforced
+// in-route, where the row and the caller's identity are both known.
+// ---------------------------------------------------------------------------
+
+export const processCreateSchema = z
+  .object({
+    name: nonBlank("name is required"),
+    description: z.string().default(""),
+    group_id: nonBlank("group_id is required"),
+    enabled: z.boolean().default(true),
+    // §7: operator-editable, floored at 1 so "pause by ceiling" stays
+    // expressible without a zero that would read as "unlimited".
+    max_runs_per_hour: z.number().int().min(1).default(60),
+  })
+  .strict();
+
+export type ProcessCreate = z.infer<typeof processCreateSchema>;
+
+/** Every field optional; `current_revision` is NOT here — only a deploy moves
+ * it, so an update can never silently repoint what runs. */
+export const processUpdateSchema = z
+  .object({
+    name: nonBlank("name must not be blank").optional(),
+    description: z.string().optional(),
+    group_id: nonBlank("group_id must not be blank").optional(),
+    enabled: z.boolean().optional(),
+    max_runs_per_hour: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+export type ProcessUpdate = z.infer<typeof processUpdateSchema>;
+
+/**
+ * A deploy: an immutable revision snapshot, which the route then makes
+ * current. `code` is required for `inline_python` and refused for anything
+ * else — the runtime kind decides where the code lives, so carrying both
+ * would leave two sources of truth for what executes.
+ */
+export const processRevisionCreateSchema = z
+  .object({
+    runtime: processRuntimeSchema,
+    code: z.string().nullable().default(null),
+    env: processEnvSchema,
+  })
+  .strict()
+  .superRefine((revision, ctx) => {
+    const inline = revision.runtime.kind === "inline_python";
+    if (inline && (revision.code === null || revision.code.trim().length === 0)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["code"],
+        message: "inline_python revisions need code",
+      });
+    }
+    if (!inline && revision.code !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["code"],
+        message: "only inline_python revisions carry code",
+      });
+    }
+  });
+
+export type ProcessRevisionCreate = z.infer<typeof processRevisionCreateSchema>;
+
+export const processSourceCreateSchema = z
+  .object({
+    collection_id: nonBlank("collection_id is required"),
+    trigger: processTriggerSchema,
+    expectation: processExpectationSchema.nullable().default(null),
+    enabled: z.boolean().default(true),
+  })
+  .strict();
+
+export type ProcessSourceCreate = z.infer<typeof processSourceCreateSchema>;
+
+/** `collection_id` is absent on purpose: it is half the row's unique key and
+ * an edge in the cycle-check graph (M5-D), so re-pointing a source at another
+ * collection is a delete plus a create, not an edit. */
+export const processSourceUpdateSchema = z
+  .object({
+    trigger: processTriggerSchema.optional(),
+    expectation: processExpectationSchema.nullable().optional(),
+    enabled: z.boolean().optional(),
+  })
+  .strict();
+
+export type ProcessSourceUpdate = z.infer<typeof processSourceUpdateSchema>;
+
+export const processOutputCreateSchema = z
+  .object({ collection_id: nonBlank("collection_id is required") })
+  .strict();
+
+export type ProcessOutputCreate = z.infer<typeof processOutputCreateSchema>;

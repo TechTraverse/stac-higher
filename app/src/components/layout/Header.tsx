@@ -2,7 +2,7 @@ import { CatalogSelector } from "@/components/catalogs/CatalogSelector";
 import { AlertBell } from "@/components/layout/AlertBell";
 import { UserMenu } from "@/components/layout/UserMenu";
 import { ThemeToggle } from "@stac-higher/shared";
-import { Layers, Search, Puzzle, Database, Plug, Activity } from "lucide-react";
+import { Layers, Search, Puzzle, Database, Plug, Activity, Cpu } from "lucide-react";
 import { Button } from "@stac-higher/shared";
 
 const navLinks = [
@@ -12,6 +12,7 @@ const navLinks = [
   { href: "/search", label: "Search", icon: Search },
   { href: "/extensions", label: "Extensions", icon: Puzzle },
   { href: "/connections", label: "Connections", icon: Plug },
+  { href: "/processes", label: "Processes", icon: Cpu },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
 ];
 
