@@ -342,7 +342,9 @@ class PgNotifyRepo(NotifyRepo):
                 "   coalesce(connection_id::text, ''),"
                 "   coalesce(association_id::text, ''),"
                 "   coalesce(channel_id::text, ''),"
-                "   coalesce(collection_id, ''))"
+                "   coalesce(collection_id, ''),"
+                "   coalesce(process_id::text, ''),"
+                "   coalesce(source_id::text, ''))"
                 " WHERE state <> 'resolved'"
                 " DO UPDATE SET last_seen = now(), message = EXCLUDED.message",
                 (

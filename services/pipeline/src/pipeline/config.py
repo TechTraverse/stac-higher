@@ -120,6 +120,10 @@ DEFAULT_PROCESS_STS_ROLE_ARN = "arn:aws:iam::000000000000:role/stac-higher-proce
 #: (M5-C, the M2-0 sweep pattern). Comfortably above the default run timeout
 #: so a legitimately slow run is never mistaken for a stranded one.
 DEFAULT_PROCESS_RUN_STALL_SECONDS = 3600
+#: How long the daily flow-stats history is kept (P9-E: ~400 days, so a
+#: year-over-year comparison always has a full prior year to compare against).
+#: A bounded DELETE — the row count is subjects x days.
+DEFAULT_FLOW_STATS_RETENTION_DAYS = 400
 
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
@@ -189,6 +193,7 @@ class Settings:
     #: resolve. None => fall back to the pipeline's staging endpoint.
     process_run_s3_endpoint: str | None = None
     process_run_stall_seconds: int = DEFAULT_PROCESS_RUN_STALL_SECONDS
+    flow_stats_retention_days: int = DEFAULT_FLOW_STATS_RETENTION_DAYS
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -300,6 +305,12 @@ class Settings:
                 env.get(
                     "PROCESS_RUN_STALL_SECONDS",
                     str(DEFAULT_PROCESS_RUN_STALL_SECONDS),
+                )
+            ),
+            flow_stats_retention_days=int(
+                env.get(
+                    "FLOW_STATS_RETENTION_DAYS",
+                    str(DEFAULT_FLOW_STATS_RETENTION_DAYS),
                 )
             ),
         )

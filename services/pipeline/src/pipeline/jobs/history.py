@@ -45,3 +45,39 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             )
 
     queue.register_periodic(history_retention, name=JOB_NAME, cron=CRON)
+    # M5-E: the daily flow-stats history the lineage strip reads (P9-E).
+    register_flow_stats_daily(queue, settings)
+
+
+# ---------------------------------------------------------------------------
+# M5-E: the daily flow-stats rollup (P9-E, spec §10)
+# ---------------------------------------------------------------------------
+
+JOB_FLOW_STATS_DAILY = "pipeline.flow_stats_daily"
+#: Just after midnight UTC, so the bucket it writes is a COMPLETE day. Running
+#: mid-day would snapshot a partial day as final; the UI derives today's
+#: partial bucket live from the cumulative counters instead.
+FLOW_STATS_DAILY_CRON = "5 0 * * *"
+
+
+def register_flow_stats_daily(queue: QueueBackend, settings: Settings) -> None:
+    async def flow_stats_daily(timestamp: int) -> None:
+        import datetime as dt
+
+        from pipeline.flow.daily_repo import PgDailyStatsRepo, rollup_tick
+
+        # Yesterday: the day that just ended is the one with complete data.
+        day = dt.datetime.fromtimestamp(timestamp, dt.UTC).date() - dt.timedelta(days=1)
+        written, pruned = await rollup_tick(
+            PgDailyStatsRepo(settings.database_url),
+            day=day,
+            retention_days=settings.flow_stats_retention_days,
+        )
+        logger.info(
+            "flow stats daily rollup",
+            extra={"day": day.isoformat(), "written": written, "pruned": pruned},
+        )
+
+    queue.register_periodic(
+        flow_stats_daily, name=JOB_FLOW_STATS_DAILY, cron=FLOW_STATS_DAILY_CRON
+    )

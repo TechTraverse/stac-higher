@@ -284,19 +284,18 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
     expect(fixture.monitor_kinds).toContain("push_rejected");
   });
 
-  it("the three process kinds are declared but unowned (Phase 9 §8)", () => {
-    // M5-0 declares them so the enum and labels land with the contract, and
-    // deliberately assigns no writer: list membership grants auto-resolve
-    // authority, so M5-E has to claim each kind for the writer that actually
-    // raises it. This assertion is what fails if a kind is declared and left
-    // in limbo, or claimed without moving it out of the waiting room.
+  it("the three process kinds are monitor-owned (Phase 9 §8)", () => {
+    // M5-0 parked them in `declared_kinds` rather than guessing a writer;
+    // M5-E claimed all three for the monitor, because each is evaluated as a
+    // CONDITION observed from state — which is what makes auto-resolve fall
+    // out of the condition's absence.
     for (const kind of [
       "process_stalled",
       "process_failed",
       "process_rate_limited",
     ]) {
-      expect(fixture.declared_kinds, kind).toContain(kind);
-      expect(fixture.monitor_kinds, kind).not.toContain(kind);
+      expect(fixture.monitor_kinds, kind).toContain(kind);
+      expect(fixture.declared_kinds, kind).not.toContain(kind);
     }
   });
 

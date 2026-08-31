@@ -13,6 +13,7 @@ import {
   connectionNode,
   processNode,
   type GraphEdge,
+  type GraphNodeType,
 } from "./edges";
 
 interface AssociationEdgeRow {
@@ -98,4 +99,135 @@ export async function loadGraphEdges(): Promise<GraphEdge[]> {
     });
   }
   return edges;
+}
+
+// ---------------------------------------------------------------------------
+// The full graph for /api/monitoring/graph (M5-E)
+// ---------------------------------------------------------------------------
+
+export interface GraphNode {
+  id: string;
+  type: GraphNodeType;
+  label: string;
+  /** Owning group, or null for an unowned collection (ADR 0003: public). */
+  group_id: string | null;
+  /** Type-specific badges the UI shows: connection status, archived, … */
+  meta: Record<string, unknown>;
+}
+
+export interface Graph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+interface ConnectionNodeRow {
+  id: string;
+  name: string;
+  protocol: string;
+  status: string;
+  group_id: string;
+}
+
+interface ProcessNodeRow {
+  id: string;
+  name: string;
+  group_id: string;
+  enabled: boolean;
+  current_revision: string | null;
+}
+
+interface CollectionNodeRow {
+  collection_id: string;
+  group_id: string | null;
+  archived: boolean;
+  serving_enabled: boolean;
+}
+
+/**
+ * The member+-scoped graph.
+ *
+ * `groups: null` = admin (everything). Otherwise a node is visible when the
+ * caller owns it, and a collection with NO settings row is visible to all —
+ * the ADR 0003 unowned-is-public rule, the same one `/api/monitoring/flows`
+ * applies.
+ *
+ * Edges are filtered to those whose BOTH endpoints survived: a half-edge
+ * would draw an arrow to a node the caller cannot see, leaking the existence
+ * of another group's wiring through the picture.
+ */
+export async function loadGraph(groups: string[] | null): Promise<Graph> {
+  await runMigrations();
+
+  const [connections, processes, collections, edges] = await Promise.all([
+    query<ConnectionNodeRow>(
+      `SELECT id, name, protocol, status, group_id
+         FROM stac_higher.connections
+        WHERE deleted_at IS NULL`,
+    ),
+    query<ProcessNodeRow>(
+      `SELECT id, name, group_id, enabled, current_revision
+         FROM stac_higher.processes
+        WHERE deleted_at IS NULL`,
+    ),
+    // Collections are named by the edges that touch them: pgstac owns the
+    // collection list, and a graph of every collection in the catalog would
+    // be noise rather than a pipeline view.
+    query<CollectionNodeRow>(
+      `SELECT DISTINCT c.collection_id,
+              s.group_id, coalesce(s.archived, false) AS archived,
+              coalesce(s.serving_enabled, false) AS serving_enabled
+         FROM (
+           SELECT collection_id FROM stac_higher.collection_connections
+            WHERE deleted_at IS NULL
+           UNION
+           SELECT collection_id FROM stac_higher.process_sources
+           UNION
+           SELECT collection_id FROM stac_higher.process_outputs
+         ) c
+         LEFT JOIN stac_higher.collection_settings s
+                ON s.collection_id = c.collection_id`,
+    ),
+    loadGraphEdges(),
+  ]);
+
+  const visible = (groupId: string | null): boolean =>
+    groups === null || groupId === null || groups.includes(groupId);
+
+  const nodes: GraphNode[] = [];
+  for (const row of connections.rows) {
+    if (!visible(row.group_id)) continue;
+    nodes.push({
+      id: connectionNode(row.id),
+      type: "connection",
+      label: row.name,
+      group_id: row.group_id,
+      meta: { protocol: row.protocol, status: row.status },
+    });
+  }
+  for (const row of processes.rows) {
+    if (!visible(row.group_id)) continue;
+    nodes.push({
+      id: processNode(row.id),
+      type: "process",
+      label: row.name,
+      group_id: row.group_id,
+      meta: { enabled: row.enabled, deployed: row.current_revision !== null },
+    });
+  }
+  for (const row of collections.rows) {
+    if (!visible(row.group_id)) continue;
+    nodes.push({
+      id: collectionNode(row.collection_id),
+      type: "collection",
+      label: row.collection_id,
+      group_id: row.group_id,
+      meta: { archived: row.archived, serving_enabled: row.serving_enabled },
+    });
+  }
+
+  const ids = new Set(nodes.map((node) => node.id));
+  return {
+    nodes,
+    edges: edges.filter((edge) => ids.has(edge.from) && ids.has(edge.to)),
+  };
 }

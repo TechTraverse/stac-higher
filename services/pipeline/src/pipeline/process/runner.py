@@ -19,6 +19,7 @@ import logging
 from dataclasses import dataclass
 
 from pipeline.config import Settings
+from pipeline.metrics import PROCESS_RUNS
 from pipeline.process.config import ProcessConfigError, parse_process_env, parse_process_runtime
 from pipeline.process.credentials import RunCredentialsError
 from pipeline.process.executor import Executor, ExecutorUnavailable
@@ -91,6 +92,7 @@ async def run_one(
         transition = infrastructure_transition(
             now=at, retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS, error=str(err)
         )
+        PROCESS_RUNS.labels(outcome=transition.status).inc()
         await repo.finish_run(
             run.id,
             status=transition.status,
@@ -141,6 +143,7 @@ async def _finish(
     next_attempt_at: dt.datetime | None,
     at: dt.datetime,
 ) -> None:
+    PROCESS_RUNS.labels(outcome=status).inc()
     await repo.finish_run(
         run.id,
         status=status,

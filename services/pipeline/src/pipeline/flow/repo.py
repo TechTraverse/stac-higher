@@ -60,7 +60,33 @@ class AlertCondition:
     #: Collection-anchored alerts (P7-H ``push_rejected`` — push has no
     #: connection/association/channel); None for every other kind.
     collection_id: str | None = None
+    #: Process-anchored alerts (M5-E): ``process_failed`` and
+    #: ``process_rate_limited``. Per-PROCESS because a dead run belongs to the
+    #: process (per-source would fragment one incident across its triggers)
+    #: and the rate ceiling is itself a per-process setting.
+    process_id: str | None = None
+    #: Source-anchored alerts (M5-E): ``process_stalled``, per-SOURCE by I-63
+    #: — different sources carry different cadences, so one stalled trigger
+    #: must not silence another.
+    source_id: str | None = None
     message: str = ""
+
+
+@dataclass(frozen=True)
+class ProcessSourceCandidate:
+    """One `process_sources` row with a declared expectation, plus the
+    pipeline-written rollup the §8 condition is judged against."""
+
+    id: str
+    process_id: str
+    process_name: str
+    collection_id: str
+    expectation: dict
+    flow_stats: dict
+    #: Guards the M2-B false-positive shape: a freshly attached source has no
+    #: runs yet, so the window restarts at its last edit rather than firing
+    #: immediately.
+    updated_at: dt.datetime | None = None
 
 
 class FlowMonitorRepo(abc.ABC):
@@ -103,6 +129,24 @@ class FlowMonitorRepo(abc.ABC):
     async def list_failed_backfills(self) -> list[tuple[str, str, str | None]]:
         """``(association_id, backfill_id, error)`` where the association's
         MOST RECENT backfill failed. A newer successful backfill clears it."""
+
+    @abc.abstractmethod
+    async def list_process_source_candidates(self) -> list[ProcessSourceCandidate]:
+        """Enabled sources WITH an expectation, on enabled live processes,
+        plus their flow_stats rollup — the §8 `process_stalled` input."""
+
+    @abc.abstractmethod
+    async def list_dead_process_runs(self) -> list[tuple[str, int]]:
+        """(process_id, count) of runs currently `dead` — the `delivery_dead`
+        analog for processes."""
+
+    @abc.abstractmethod
+    async def list_rate_deferred_processes(self) -> list[tuple[str, int]]:
+        """(process_id, count) of runs the §7 ceiling is currently holding.
+
+        Observed as STATE, so the alert clears itself once the deferrals drain
+        — a raise at enqueue time would need a second writer to resolve it.
+        """
 
     @abc.abstractmethod
     async def list_recent_push_rejections(
@@ -247,6 +291,60 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
             rows = await cur.fetchall()
         return [(str(r[0]), str(r[1]), r[2]) for r in rows]
 
+    async def list_process_source_candidates(  # pragma: no cover
+        self,
+    ) -> list[ProcessSourceCandidate]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT s.id, s.process_id, p.name, s.collection_id,"
+                "       s.expectation, s.flow_stats,"
+                "       GREATEST(s.created_at, s.updated_at)"
+                "  FROM stac_higher.process_sources s"
+                "  JOIN stac_higher.processes p ON p.id = s.process_id"
+                " WHERE s.expectation IS NOT NULL AND s.enabled"
+                "   AND p.enabled AND p.deleted_at IS NULL"
+            )
+            rows = await cur.fetchall()
+        return [
+            ProcessSourceCandidate(
+                id=str(r[0]),
+                process_id=str(r[1]),
+                process_name=r[2],
+                collection_id=r[3],
+                expectation=dict(r[4]) if r[4] else {},
+                flow_stats=dict(r[5]) if r[5] else {},
+                updated_at=r[6],
+            )
+            for r in rows
+        ]
+
+    async def list_dead_process_runs(self) -> list[tuple[str, int]]:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT r.process_id, count(*)::int"
+                "  FROM stac_higher.process_runs r"
+                "  JOIN stac_higher.processes p ON p.id = r.process_id"
+                " WHERE r.status = 'dead' AND p.deleted_at IS NULL"
+                " GROUP BY r.process_id"
+            )
+            rows = await cur.fetchall()
+        return [(str(r[0]), int(r[1])) for r in rows]
+
+    async def list_rate_deferred_processes(  # pragma: no cover
+        self,
+    ) -> list[tuple[str, int]]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT r.process_id, count(*)::int"
+                "  FROM stac_higher.process_runs r"
+                "  JOIN stac_higher.processes p ON p.id = r.process_id"
+                " WHERE r.rate_deferred_until IS NOT NULL"
+                "   AND r.status = 'queued' AND p.deleted_at IS NULL"
+                " GROUP BY r.process_id"
+            )
+            rows = await cur.fetchall()
+        return [(str(r[0]), int(r[1])) for r in rows]
+
     async def list_recent_push_rejections(  # pragma: no cover
         self, lookback_seconds: int
     ) -> list[tuple[str, dt.datetime]]:
@@ -287,18 +385,21 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
                 # on the open row (firing OR acknowledged — ack suppresses
                 # notification, not detection). xmax = 0 marks a fresh row.
                 # The conflict target must match the index expressions
-                # EXACTLY, including the M2-C channel leg and the P7-H
-                # collection leg (text column — no cast).
+                # EXACTLY, including the M2-C channel leg, the P7-H
+                # collection leg (text column — no cast) and the M5-E process
+                # and source legs.
                 cur = await conn.execute(
                     "INSERT INTO stac_higher.alerts"
                     " (source, kind, connection_id, association_id, channel_id,"
-                    "  collection_id, message)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                    "  collection_id, process_id, source_id, message)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
                     " ON CONFLICT (source, kind,"
                     "   coalesce(connection_id::text, ''),"
                     "   coalesce(association_id::text, ''),"
                     "   coalesce(channel_id::text, ''),"
-                    "   coalesce(collection_id, ''))"
+                    "   coalesce(collection_id, ''),"
+                    "   coalesce(process_id::text, ''),"
+                    "   coalesce(source_id::text, ''))"
                     " WHERE state <> 'resolved'"
                     " DO UPDATE SET last_seen = now(), message = EXCLUDED.message"
                     " RETURNING (xmax = 0)",
@@ -309,6 +410,8 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
                         c.association_id,
                         c.channel_id,
                         c.collection_id,
+                        c.process_id,
+                        c.source_id,
                         c.message,
                     ),
                 )
@@ -324,13 +427,21 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
                 " AND NOT EXISTS ("
                 "   SELECT 1 FROM unnest("
                 "     %s::text[], %s::text[], %s::text[], %s::text[], %s::text[],"
-                "     %s::text[])"
-                "     AS c(source, kind, conn, assoc, chan, coll)"
+                "     %s::text[], %s::text[], %s::text[])"
+                "     AS c(source, kind, conn, assoc, chan, coll, proc, src)"
                 "   WHERE c.source = a.source AND c.kind = a.kind"
                 "   AND c.conn = coalesce(a.connection_id::text, '')"
                 "   AND c.assoc = coalesce(a.association_id::text, '')"
                 "   AND c.chan = coalesce(a.channel_id::text, '')"
-                "   AND c.coll = coalesce(a.collection_id, ''))",
+                "   AND c.coll = coalesce(a.collection_id, '')"
+                # The M5-E legs are NOT optional here. Without them every
+                # process_stalled condition would "match" every open
+                # process_stalled alert — all four older anchors are empty on
+                # both sides — so one source recovering would never clear its
+                # own alert while a sibling stayed stalled. A recovered flow
+                # that keeps alerting is worse than no alert at all.
+                "   AND c.proc = coalesce(a.process_id::text, '')"
+                "   AND c.src = coalesce(a.source_id::text, ''))",
                 (
                     list(owned_kinds),
                     [c.source for c in conditions],
@@ -339,6 +450,8 @@ class PgFlowMonitorRepo(FlowMonitorRepo):
                     [c.association_id or "" for c in conditions],
                     [c.channel_id or "" for c in conditions],
                     [c.collection_id or "" for c in conditions],
+                    [c.process_id or "" for c in conditions],
+                    [c.source_id or "" for c in conditions],
                 ),
             )
             resolved = cur.rowcount or 0
