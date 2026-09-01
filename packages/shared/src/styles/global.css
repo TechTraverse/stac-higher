@@ -19,7 +19,11 @@
    to either must be mirrored to the other.
    --------------------------------------------------------------------------- */
 
-@theme {
+/* NOTE: `@theme static` — not plain `@theme`. Tailwind v4 tree-shakes theme
+   variables nothing references, which silently deleted `--color-chart-*` at
+   runtime (UI-7 found the graph legend painting transparent). A token block is
+   a published palette, not a usage-derived one: emit it all. */
+@theme static {
   /* Type */
   --font-sans:
     "Public Sans Variable", "Public Sans", ui-sans-serif, system-ui,
