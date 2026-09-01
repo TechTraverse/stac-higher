@@ -24,8 +24,6 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
-  CONNECTION_PROTOCOLS,
-  WRITABLE_PROTOCOLS,
   STAC_API_RESERVED_MESSAGE,
   configSchemaFor,
   credentialsSchemaFor,
@@ -254,6 +252,32 @@ interface ConnectionFormProps {
   groups: string[];
 }
 
+/** Card labels for the type picker. Values stay the raw protocol strings the
+ * API and the pipeline share — only the display text is friendlier. */
+const PROTOCOL_ORDER: readonly WritableProtocol[] = [
+  "s3",
+  "sftp",
+  "ssh",
+  "ftp",
+  "ftps",
+];
+
+const PROTOCOL_LABEL: Record<WritableProtocol, string> = {
+  s3: "Amazon S3",
+  sftp: "SFTP",
+  ssh: "SSH",
+  ftp: "FTP",
+  ftps: "FTPS",
+};
+
+const PROTOCOL_HINT: Record<WritableProtocol, string> = {
+  s3: "Bucket + prefix",
+  sftp: "File transfer over SSH",
+  ssh: "Remote host, key auth",
+  ftp: "Legacy transfer",
+  ftps: "FTP over TLS",
+};
+
 export function ConnectionForm({
   open,
   onOpenChange,
@@ -281,33 +305,66 @@ export function ConnectionForm({
           </DialogDescription>
         </DialogHeader>
 
+        {/* Direction note, not a direction CONTROL.
+            The mockup's create screen leads with an Ingest source /
+            Distribution destination toggle, but a connection row has no
+            direction column — direction lives on the association
+            (`collection_connections.direction`), and the same endpoint is
+            routinely used both ways. A toggle here would either need an API
+            change (out of scope) or silently discard the choice, so the form
+            says where direction is actually decided instead. */}
+        <p className="rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+          A connection is just an endpoint. Whether it acts as an{" "}
+          <strong className="font-semibold text-foreground">ingest source</strong>{" "}
+          or a{" "}
+          <strong className="font-semibold text-foreground">
+            distribution destination
+          </strong>{" "}
+          is chosen when you wire it to a product, on that product&rsquo;s Data
+          flow tab — and one endpoint can be both.
+        </p>
+
         <div className="space-y-2">
-          <Label htmlFor="conn-protocol">Protocol</Label>
-          <Select
-            value={protocol}
-            onValueChange={(v) => setProtocol(v as ConnectionProtocol)}
-            disabled={isEdit}
+          <span id="conn-protocol-label" className="text-sm font-medium">
+            Type
+          </span>
+          <div
+            role="radiogroup"
+            aria-labelledby="conn-protocol-label"
+            className="grid grid-cols-2 gap-2 sm:grid-cols-3"
           >
-            <SelectTrigger id="conn-protocol" aria-label="Protocol">
-              <SelectValue placeholder="Select a protocol" />
-            </SelectTrigger>
-            <SelectContent>
-              {CONNECTION_PROTOCOLS.map((p) => {
-                const isReserved = !(
-                  WRITABLE_PROTOCOLS as readonly string[]
-                ).includes(p);
-                return (
-                  <SelectItem key={p} value={p} disabled={isReserved}>
-                    {p}
-                    {isReserved ? " (reserved)" : ""}
-                  </SelectItem>
-                );
-              })}
-            </SelectContent>
-          </Select>
+            {PROTOCOL_ORDER.map((p) => {
+              const selected = protocol === p;
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  role="radio"
+                  aria-label={p}
+                  aria-checked={selected}
+                  disabled={isEdit}
+                  onClick={() => setProtocol(p)}
+                  className={`rounded-md border p-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                    selected
+                      ? "border-primary bg-accent"
+                      : "border-border hover:border-primary/50"
+                  }`}
+                >
+                  <span
+                    className={`block text-[13px] font-bold ${selected ? "text-accent-foreground" : ""}`}
+                  >
+                    {PROTOCOL_LABEL[p]}
+                  </span>
+                  <span className="block text-[11px] text-muted-foreground">
+                    {PROTOCOL_HINT[p]}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
           {isEdit && (
             <p className="text-xs text-muted-foreground">
-              Protocol is immutable — create a new connection to change it.
+              Type is immutable — create a new connection to change it.
             </p>
           )}
         </div>

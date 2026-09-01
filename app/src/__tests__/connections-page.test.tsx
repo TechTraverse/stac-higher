@@ -86,7 +86,8 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
 
     expect(screen.getByText("Prod SFTP")).toBeInTheDocument();
-    expect(screen.getByText("OK")).toBeInTheDocument();
+    // UI-6: the "OK" badge became a health chip labelled by meaning.
+    expect(screen.getByText("Reachable")).toBeInTheDocument();
     expect(screen.getByText("sftp")).toBeInTheDocument();
     expect(screen.getByText("Credentials set")).toBeInTheDocument();
     expect(screen.getByText("SHA256:abc123")).toBeInTheDocument();

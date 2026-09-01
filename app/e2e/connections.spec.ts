@@ -27,8 +27,9 @@ test.describe("Connections page", () => {
     await expect(page.getByLabel("Access key ID")).toBeVisible();
 
     // Switch to sftp → SSH-family config + credential fields appear.
-    await page.getByLabel("Protocol").click();
-    await page.getByRole("option", { name: "sftp", exact: true }).click();
+    // The protocol Select became a type-card radiogroup in UI-6; each card's
+    // accessible name is still the raw protocol string.
+    await page.getByRole("radio", { name: "sftp", exact: true }).click();
     await expect(page.getByLabel("Host")).toBeVisible();
     await expect(page.getByLabel("Private key")).toBeVisible();
     await expect(page.getByLabel("Bucket")).toHaveCount(0);

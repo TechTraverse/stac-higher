@@ -23,6 +23,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  ArrowDownToLine,
+  ArrowUpFromLine,
   KeyRound,
   Loader2,
   Pencil,
@@ -43,19 +45,102 @@ import { runConnectionTest } from "@/lib/connections/api";
 import { isSshFamily } from "@/lib/connections/schemas";
 import type { Connection } from "@/lib/connections/types";
 import { ConnectionForm } from "./ConnectionForm";
+import { useFlows } from "@/lib/monitoring/queries";
+import { healthDotClass, type LineageHealth } from "@stac-higher/shared";
 
-function StatusBadge({ status }: { status: Connection["status"] }) {
-  if (status === "ok") return <Badge variant="default">OK</Badge>;
-  if (status === "error") return <Badge variant="destructive">Error</Badge>;
-  return <Badge variant="secondary">Unverified</Badge>;
+type DirectionFilter = "all" | "ingest" | "deliver";
+
+const DIRECTION_FILTERS: Array<{ value: DirectionFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "ingest", label: "Ingest sources" },
+  { value: "deliver", label: "Distribution destinations" },
+];
+
+const STATUS_HEALTH: Record<Connection["status"], LineageHealth> = {
+  ok: "ok",
+  error: "error",
+  unverified: "unknown",
+};
+
+const STATUS_LABEL: Record<Connection["status"], string> = {
+  ok: "Reachable",
+  error: "Unreachable",
+  unverified: "Unverified",
+};
+
+const STATUS_TEXT: Record<Connection["status"], string> = {
+  ok: "text-success",
+  error: "text-danger",
+  unverified: "text-muted-foreground",
+};
+
+/**
+ * The health chip: a status DOT rather than a filled badge.
+ *
+ * The old badge used the primary colour for "OK", which read as decoration on
+ * a page where colour is supposed to mean health (ADR 0017 §3). "Unverified"
+ * is deliberately neutral — untested is not unhealthy.
+ */
+function StatusChip({ status }: { status: Connection["status"] }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        aria-hidden="true"
+        className={`h-2 w-2 shrink-0 rounded-full ${healthDotClass(STATUS_HEALTH[status])}`}
+      />
+      <span className={`text-[12.5px] font-semibold ${STATUS_TEXT[status]}`}>
+        {STATUS_LABEL[status]}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * How this connection is actually wired, from the association list.
+ *
+ * Direction is NOT a property of a connection — it lives on the association
+ * (`collection_connections.direction`), so the only truthful direction badge
+ * is a derived one. A connection nobody has wired yet says so.
+ */
+function DirectionBadges({
+  directions,
+}: {
+  directions: Array<"ingest" | "deliver">;
+}) {
+  if (directions.length === 0) {
+    return (
+      <Badge variant="outline" className="text-[11px] text-muted-foreground">
+        not wired
+      </Badge>
+    );
+  }
+  return (
+    <>
+      {directions.includes("ingest") && (
+        <Badge variant="outline" className="gap-1 text-[11px]">
+          <ArrowDownToLine className="h-3 w-3" />
+          ingest source
+        </Badge>
+      )}
+      {directions.includes("deliver") && (
+        <Badge variant="outline" className="gap-1 text-[11px]">
+          <ArrowUpFromLine className="h-3 w-3" />
+          distribution destination
+        </Badge>
+      )}
+    </>
+  );
 }
 
 function ConnectionCard({
   connection,
+  directions,
   onEdit,
   onDelete,
 }: {
   connection: Connection;
+  /** Derived from the association list — see DirectionBadges. */
+  directions: Array<"ingest" | "deliver">;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -102,10 +187,11 @@ function ConnectionCard({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <CardTitle className="text-base">{connection.name}</CardTitle>
-              <Badge variant="outline" className="uppercase">
+              <Badge variant="outline" className="tech text-[11px] uppercase">
                 {connection.protocol}
               </Badge>
-              <StatusBadge status={connection.status} />
+              <DirectionBadges directions={directions} />
+              <StatusChip status={connection.status} />
               {!connection.enabled && (
                 <Badge variant="secondary">Disabled</Badge>
               )}
@@ -199,8 +285,10 @@ function ConnectionsInner() {
     error,
     refetch,
   } = useConnections();
+  const { data: flows } = useFlows();
   const deleteMutation = useDeleteConnection();
 
+  const [filter, setFilter] = useState<DirectionFilter>("all");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Connection | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null);
@@ -220,14 +308,27 @@ function ConnectionsInner() {
     });
   };
 
+  // Direction comes from the associations, not the connection row.
+  const directionsById = new Map<string, Array<"ingest" | "deliver">>();
+  for (const flow of flows ?? []) {
+    const list = directionsById.get(flow.connection_id) ?? [];
+    if (!list.includes(flow.direction)) list.push(flow.direction);
+    directionsById.set(flow.connection_id, list);
+  }
+
+  const visible = (connections ?? []).filter((conn) => {
+    if (filter === "all") return true;
+    return (directionsById.get(conn.id) ?? []).includes(filter);
+  });
+
   return (
     <>
       <main className="w-full max-w-4xl flex-1 p-6 mx-auto">
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-5 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold">Connections</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Group-owned endpoints the pipeline ingests from and delivers to
+              Endpoints a product ingests from, or distributes to
             </p>
           </div>
           <Button
@@ -239,6 +340,32 @@ function ConnectionsInner() {
             <Plus className="mr-1.5 h-4 w-4" />
             Add Connection
           </Button>
+        </div>
+
+        {/* Direction-first framing (ADR 0017): the filter is over how each
+            connection is actually WIRED, which is the only place direction
+            exists. */}
+        <div
+          role="radiogroup"
+          aria-label="Filter by direction"
+          className="mb-5 inline-flex rounded-md border border-border p-0.5"
+        >
+          {DIRECTION_FILTERS.map(({ value, label }) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={filter === value}
+              onClick={() => setFilter(value)}
+              className={`rounded-sm px-3 py-1.5 text-[12.5px] font-semibold transition-colors ${
+                filter === value
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
         {isLoading ? (
@@ -265,12 +392,19 @@ function ConnectionsInner() {
               },
             }}
           />
+        ) : visible.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            No connections are wired as{" "}
+            {filter === "ingest" ? "ingest sources" : "distribution destinations"}{" "}
+            yet.
+          </p>
         ) : (
           <div className="grid gap-4">
-            {connections.map((conn) => (
+            {visible.map((conn) => (
               <ConnectionCard
                 key={conn.id}
                 connection={conn}
+                directions={directionsById.get(conn.id) ?? []}
                 onEdit={() => {
                   setEditing(conn);
                   setFormOpen(true);
