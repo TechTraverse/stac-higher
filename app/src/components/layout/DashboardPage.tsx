@@ -82,7 +82,7 @@ function DashboardContent() {
                 <Skeleton className="h-6 w-24" />
               ) : connected ? (
                 <>
-                  <CheckCircle2 className="h-5 w-5 text-green-500" />
+                  <CheckCircle2 className="h-5 w-5 text-success" />
                   Connected
                 </>
               ) : (

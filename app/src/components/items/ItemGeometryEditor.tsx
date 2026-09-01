@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from "react";
+import { useStore } from "@nanostores/react";
 import Map, { Source, Layer, NavigationControl } from "react-map-gl/maplibre";
 import type { MapRef, MapMouseEvent } from "react-map-gl/maplibre";
 import type { DrawMode } from "@/stores/mapStore";
@@ -7,9 +8,13 @@ import { Button } from "@stac-higher/shared";
 import { Textarea } from "@stac-higher/shared";
 import { Label } from "@stac-higher/shared";
 import { Trash2 } from "lucide-react";
+import { $theme } from "@/stores/uiStore";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-const BASEMAP = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const BASEMAP_DARK =
+  "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const BASEMAP_LIGHT =
+  "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
 interface ItemGeometryEditorProps {
   value: GeoJSON.Geometry | null;
@@ -17,6 +22,7 @@ interface ItemGeometryEditorProps {
 }
 
 export function ItemGeometryEditor({ value, onChange }: ItemGeometryEditorProps) {
+  const theme = useStore($theme);
   const mapRef = useRef<MapRef>(null);
   const [drawMode, setDrawMode] = useState<DrawMode>(null);
   const [points, setPoints] = useState<[number, number][]>([]);
@@ -207,7 +213,7 @@ export function ItemGeometryEditor({ value, onChange }: ItemGeometryEditorProps)
             ref={mapRef}
             initialViewState={{ longitude: 0, latitude: 20, zoom: 1.5 }}
             style={{ width: "100%", height: "100%" }}
-            mapStyle={BASEMAP}
+            mapStyle={theme === "dark" ? BASEMAP_DARK : BASEMAP_LIGHT}
             onClick={handleMapClick}
             onDblClick={handleMapDblClick}
             doubleClickZoom={!drawMode}

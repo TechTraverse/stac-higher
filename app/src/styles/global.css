@@ -2,75 +2,158 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ---------------------------------------------------------------------------
+   NOAA geospatial-platform palette (ADR 0017).
+
+   Anchors: navy #0D2A47 (sidebar/brand), federal blue #005EA2 (primary, links,
+   active state), #F5F8FB content ground with white cards and #D9E2EC hairline
+   borders. Light is the default theme; dark is a navy-tinted variant.
+
+   The sidebar ramp is navy in BOTH themes — the shell's dark rail is part of
+   the identity, not a dark-mode artifact.
+
+   Health colors (green/amber/red) carry status meaning only, never decoration.
+
+   NOTE: app/src/styles/global.css and packages/shared/src/styles/global.css
+   are byte-identical copies (the app loads one, Storybook the other). Any edit
+   to either must be mirrored to the other.
+   --------------------------------------------------------------------------- */
+
 @theme {
-  --color-background: hsl(0 0% 100%);
-  --color-foreground: hsl(240 10% 3.9%);
-  --color-card: hsl(0 0% 100%);
-  --color-card-foreground: hsl(240 10% 3.9%);
-  --color-popover: hsl(0 0% 100%);
-  --color-popover-foreground: hsl(240 10% 3.9%);
-  --color-primary: hsl(240 5.9% 10%);
-  --color-primary-foreground: hsl(0 0% 98%);
-  --color-secondary: hsl(240 4.8% 95.9%);
-  --color-secondary-foreground: hsl(240 5.9% 10%);
-  --color-muted: hsl(240 4.8% 95.9%);
-  --color-muted-foreground: hsl(240 3.8% 46.1%);
-  --color-accent: hsl(240 4.8% 95.9%);
-  --color-accent-foreground: hsl(240 5.9% 10%);
-  --color-destructive: hsl(0 84.2% 60.2%);
-  --color-destructive-foreground: hsl(0 0% 98%);
-  --color-border: hsl(240 5.9% 90%);
-  --color-input: hsl(240 5.9% 90%);
-  --color-ring: hsl(240 5.9% 10%);
-  --color-chart-1: hsl(12 76% 61%);
-  --color-chart-2: hsl(173 58% 39%);
-  --color-chart-3: hsl(197 37% 24%);
-  --color-chart-4: hsl(43 74% 66%);
-  --color-chart-5: hsl(27 87% 67%);
-  --color-sidebar: hsl(0 0% 98%);
-  --color-sidebar-foreground: hsl(240 5.3% 26.1%);
-  --color-sidebar-primary: hsl(240 5.9% 10%);
-  --color-sidebar-primary-foreground: hsl(0 0% 98%);
-  --color-sidebar-accent: hsl(240 4.8% 95.9%);
-  --color-sidebar-accent-foreground: hsl(240 5.9% 10%);
-  --color-sidebar-border: hsl(220 13% 91%);
-  --color-sidebar-ring: hsl(217.2 91.2% 59.8%);
-  --radius: 0.5rem;
+  /* Type */
+  --font-sans:
+    "Public Sans Variable", "Public Sans", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* Squarer, USWDS-flavored corners */
+  --radius-sm: 0.125rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.25rem;
+  --radius-xl: 0.5rem;
+  --radius: 0.25rem;
+
+  /* Surfaces */
+  --color-background: #f5f8fb;
+  --color-foreground: #14263a;
+  --color-card: #ffffff;
+  --color-card-foreground: #14263a;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #14263a;
+
+  /* Brand */
+  --color-primary: #005ea2;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #edf2f6;
+  --color-secondary-foreground: #14263a;
+  --color-muted: #edf2f6;
+  --color-muted-foreground: #5c7080;
+  --color-accent: #e7f1f8;
+  --color-accent-foreground: #0b4778;
+  --color-navy: #0d2a47;
+
+  /* Lines + focus */
+  --color-border: #d9e2ec;
+  --color-input: #c6d3de;
+  --color-ring: #005ea2;
+
+  /* Health — status only */
+  --color-success: #157f3d;
+  --color-success-foreground: #ffffff;
+  --color-success-subtle: #e9f4ec;
+  --color-success-border: #c4e0cc;
+  --color-warning: #c05621;
+  --color-warning-foreground: #ffffff;
+  --color-warning-subtle: #fdf1e7;
+  --color-warning-border: #f0d3bb;
+  --color-danger: #b3261e;
+  --color-danger-foreground: #ffffff;
+  --color-danger-subtle: #fbecea;
+  --color-danger-border: #efc9c5;
+  --color-destructive: #b3261e;
+  --color-destructive-foreground: #ffffff;
+
+  /* Charts — NOAA blue/teal ramp */
+  --color-chart-1: #005ea2;
+  --color-chart-2: #0f766e;
+  --color-chart-3: #4a9bd6;
+  --color-chart-4: #c05621;
+  --color-chart-5: #7b8fa3;
+
+  /* Sidebar — navy in both themes */
+  --color-sidebar: #0d2a47;
+  --color-sidebar-foreground: #9fb3c8;
+  --color-sidebar-primary: #4a9bd6;
+  --color-sidebar-primary-foreground: #ffffff;
+  --color-sidebar-accent: #16375a;
+  --color-sidebar-accent-foreground: #ffffff;
+  --color-sidebar-border: #1b3a5c;
+  --color-sidebar-ring: #4a9bd6;
+  --color-sidebar-muted: #6e86a0;
 }
 
 .dark {
-  --color-background: hsl(240 10% 3.9%);
-  --color-foreground: hsl(0 0% 98%);
-  --color-card: hsl(240 10% 3.9%);
-  --color-card-foreground: hsl(0 0% 98%);
-  --color-popover: hsl(240 10% 3.9%);
-  --color-popover-foreground: hsl(0 0% 98%);
-  --color-primary: hsl(0 0% 98%);
-  --color-primary-foreground: hsl(240 5.9% 10%);
-  --color-secondary: hsl(240 3.7% 15.9%);
-  --color-secondary-foreground: hsl(0 0% 98%);
-  --color-muted: hsl(240 3.7% 15.9%);
-  --color-muted-foreground: hsl(240 5% 64.9%);
-  --color-accent: hsl(240 3.7% 15.9%);
-  --color-accent-foreground: hsl(0 0% 98%);
-  --color-destructive: hsl(0 62.8% 30.6%);
-  --color-destructive-foreground: hsl(0 0% 98%);
-  --color-border: hsl(240 3.7% 15.9%);
-  --color-input: hsl(240 3.7% 15.9%);
-  --color-ring: hsl(240 4.9% 83.9%);
-  --color-chart-1: hsl(220 70% 50%);
-  --color-chart-2: hsl(160 60% 45%);
-  --color-chart-3: hsl(30 80% 55%);
-  --color-chart-4: hsl(280 65% 60%);
-  --color-chart-5: hsl(340 75% 55%);
-  --color-sidebar: hsl(240 5.9% 10%);
-  --color-sidebar-foreground: hsl(240 4.8% 95.9%);
-  --color-sidebar-primary: hsl(224.3 76.3% 48%);
-  --color-sidebar-primary-foreground: hsl(0 0% 100%);
-  --color-sidebar-accent: hsl(240 3.7% 15.9%);
-  --color-sidebar-accent-foreground: hsl(240 4.8% 95.9%);
-  --color-sidebar-border: hsl(240 3.7% 15.9%);
-  --color-sidebar-ring: hsl(217.2 91.2% 59.8%);
+  --color-background: #0b1f35;
+  --color-foreground: #e6edf5;
+  --color-card: #12263a;
+  --color-card-foreground: #e6edf5;
+  --color-popover: #12263a;
+  --color-popover-foreground: #e6edf5;
+
+  --color-primary: #4a9bd6;
+  --color-primary-foreground: #06121f;
+  --color-secondary: #1a3149;
+  --color-secondary-foreground: #e6edf5;
+  --color-muted: #1a3149;
+  --color-muted-foreground: #93a9c0;
+  --color-accent: #1d3a56;
+  --color-accent-foreground: #cfe3f5;
+  --color-navy: #0d2a47;
+
+  --color-border: #1e3752;
+  --color-input: #24405c;
+  --color-ring: #4a9bd6;
+
+  --color-success: #4faf6f;
+  --color-success-foreground: #05170c;
+  --color-success-subtle: #12301f;
+  --color-success-border: #1f5233;
+  --color-warning: #e08a4d;
+  --color-warning-foreground: #1c0e04;
+  --color-warning-subtle: #33220f;
+  --color-warning-border: #6b4620;
+  --color-danger: #e5645b;
+  --color-danger-foreground: #1a0a09;
+  --color-danger-subtle: #351614;
+  --color-danger-border: #6b2a26;
+  --color-destructive: #e5645b;
+  --color-destructive-foreground: #1a0a09;
+
+  --color-chart-1: #4a9bd6;
+  --color-chart-2: #2fa397;
+  --color-chart-3: #8ec4e8;
+  --color-chart-4: #e08a4d;
+  --color-chart-5: #93a9c0;
+
+  --color-sidebar: #081b2e;
+  --color-sidebar-foreground: #9fb3c8;
+  --color-sidebar-primary: #4a9bd6;
+  --color-sidebar-primary-foreground: #ffffff;
+  --color-sidebar-accent: #14304d;
+  --color-sidebar-accent-foreground: #ffffff;
+  --color-sidebar-border: #16324d;
+  --color-sidebar-ring: #4a9bd6;
+  --color-sidebar-muted: #6e86a0;
+}
+
+/* Technical values — IDs, hrefs, crons, counts. Applied page by page in the
+   later remodel slices. */
+@utility tech {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  letter-spacing: -0.01em;
 }
 
 @layer base {
@@ -79,6 +162,9 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-family: var(--font-sans);
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
   }
 }

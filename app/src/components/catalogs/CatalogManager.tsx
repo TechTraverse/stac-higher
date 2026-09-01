@@ -123,7 +123,7 @@ function CatalogCard({
             {testing ? (
               <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
             ) : status === "ok" ? (
-              <CheckCircle2 className="h-3.5 w-3.5 mr-1.5 text-green-500" />
+              <CheckCircle2 className="h-3.5 w-3.5 mr-1.5 text-success" />
             ) : status === "error" ? (
               <XCircle className="h-3.5 w-3.5 mr-1.5 text-destructive" />
             ) : null}
