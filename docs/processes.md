@@ -82,6 +82,63 @@ always `/api/assets/{collection}/{item}/{filename}` — never a storage URL.
 An **absolute** href (`https://…`, `s3://…`) is left exactly as written: that
 is how you publish a reference-style item whose bytes live elsewhere.
 
+## Environment and secrets
+
+A revision carries an `env` list, edited on the process page and deployed with
+the code. Each entry is **either** a literal value **or** a secret reference —
+never both, and never neither:
+
+```json
+[
+  { "name": "TILE_SIZE", "value": "512" },
+  {
+    "name": "SOURCE_TOKEN",
+    "secret_ref": { "connection_id": "…uuid…", "key": "secret_access_key" }
+  }
+]
+```
+
+- A **literal** is stored in the revision exactly as written and is visible to
+  anyone who can read the process. It is for non-secret configuration.
+  **Never put a secret in `value`.** A `value` beside a `secret_ref` is
+  rejected outright rather than resolved by precedence, precisely so a
+  plaintext secret cannot survive next to the reference that replaced it.
+- A **secret reference** names a key inside a connection's encrypted
+  credentials. Nothing is resolved when you deploy: the pipeline decrypts it at
+  run launch and injects it straight into the run container's environment. It
+  never enters the platform worker's own process, never comes back through the
+  API, and never appears in audit detail.
+
+Names must be POSIX environment-variable identifiers (`[A-Za-z_][A-Za-z0-9_]*`)
+and must be unique within the revision.
+
+### What a secret reference can reach — and why that is the whole namespace
+
+A `secret_ref` points into a **connection's** credentials envelope, so the keys
+you can name are exactly that protocol's credential fields:
+
+| Protocol | Keys |
+|---|---|
+| `s3` | `access_key_id`, `secret_access_key`, `session_token` |
+| `ssh`, `sftp` | `username`, `password`, `private_key`, `passphrase` |
+| `ftp`, `ftps` | `username`, `password` |
+
+and the connection must belong to **the process's own group**. The deploy is
+refused otherwise — a missing connection and one in another group give the same
+answer, so the form cannot be used to discover what exists elsewhere.
+
+This limit is deliberate, not an unfinished edge. The platform has one place
+where operator secrets are already encrypted, group-owned, audited and
+rotatable, and that is `connections`. A general-purpose secret store is a
+separate decision (a new owner, a new lifecycle, a new blast radius) — it would
+be introduced as such, not by quietly widening what `{connection_id, key}`
+means. If your process needs a credential that is not a connection's, say so:
+that is a feature request, not a workaround to invent.
+
+If a reference cannot be resolved at launch, the run is marked **dead**
+immediately rather than started with the variable unset — user code must never
+silently receive an empty string where a credential was intended.
+
 ## Rules that will surprise you
 
 - **Only a successful run publishes.** A non-zero exit means nothing is
