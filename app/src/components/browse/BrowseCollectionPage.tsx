@@ -12,18 +12,20 @@ import {
   browseCollectionsPath,
   browseItemPath,
   browseItemsPath,
+  browseTarget,
 } from "@/lib/browse/paths";
 import { BrowseFrame } from "./BrowseFrame";
+import type { BrowseRouteProps } from "./types";
 import { useBrowseCatalog } from "./useBrowseCatalog";
 
 function BrowseCollectionInner({
   catalogId,
   collectionId,
-}: {
-  catalogId: string;
-  collectionId: string;
-}) {
-  const catalog = useBrowseCatalog(catalogId);
+  src,
+}: BrowseRouteProps & { collectionId: string }) {
+  const catalog = useBrowseCatalog(catalogId, src);
+  // Links are props: they are built before BrowseFrame can early-return.
+  const target = browseTarget(catalog, catalogId, src);
   const endpointUrl = catalog?.url ?? "";
   const {
     data: collection,
@@ -41,7 +43,7 @@ function BrowseCollectionInner({
       </a>
       <span>/</span>
       <a
-        href={browseCollectionsPath(catalogId)}
+        href={browseCollectionsPath(target)}
         className="hover:text-foreground transition-colors"
       >
         {catalog?.name}
@@ -52,7 +54,7 @@ function BrowseCollectionInner({
   );
 
   return (
-    <BrowseFrame catalog={catalog} breadcrumb={breadcrumb}>
+    <BrowseFrame catalog={catalog} src={src} breadcrumb={breadcrumb}>
       {isLoading ? (
         <div className="space-y-6">
           <Skeleton className="h-8 w-64" />
@@ -103,12 +105,12 @@ function BrowseCollectionInner({
                         key={item.id}
                         item={item}
                         collectionId={collectionId}
-                        href={browseItemPath(catalogId, collectionId, item.id)}
+                        href={browseItemPath(target, collectionId, item.id)}
                       />
                     ))}
                   </div>
                   <div className="mt-4 text-center">
-                    <a href={browseItemsPath(catalogId, collectionId)}>
+                    <a href={browseItemsPath(target, collectionId)}>
                       <Button variant="outline">View all items</Button>
                     </a>
                   </div>
@@ -130,10 +132,9 @@ function BrowseCollectionInner({
   );
 }
 
-export function BrowseCollectionPage(props: {
-  catalogId: string;
-  collectionId: string;
-}) {
+export function BrowseCollectionPage(
+  props: BrowseRouteProps & { collectionId: string },
+) {
   return (
     <AppShell title="Browse catalog">
       <BrowseCollectionInner {...props} />

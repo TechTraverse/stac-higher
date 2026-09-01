@@ -3,11 +3,15 @@ import Layout from "../../../../../../../layouts/Layout.astro";
 import { BrowseItemPage } from "../../../../../../../components/browse/BrowseItemPage";
 
 const { catalogId, collectionId, itemId } = Astro.params;
+// `?src=` makes a browse link shareable (UI-15) — read here so the island
+// has it on first render instead of reaching for window.location.
+const src = Astro.url.searchParams.get("src");
 ---
 
 <Layout title={`Browse item: ${itemId}`}>
   <BrowseItemPage
     client:only="react"
+    src={src}
     catalogId={catalogId!}
     collectionId={collectionId!}
     itemId={itemId!}

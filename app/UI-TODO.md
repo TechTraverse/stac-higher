@@ -261,6 +261,34 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       per verb, and `/search` still reaching both an external catalog and the
       built-in one directly.
 
+- [x] **UI-15 · Make a catalog-browse link shareable.** [e2e-touch]
+      A browse URL's catalog id is `crypto.randomUUID()` from the browser that
+      added the catalog, so a link like
+      `/catalogs/92f1f883-…/collections/ak_bare_earth` resolved for NOBODY
+      else — not another user, not the same user in another browser. Browse
+      links now carry `?src=<catalog url>`, which is the identity everyone
+      agrees on:
+      - `resolveBrowseCatalog` matches by URL when `src` is present and
+        **ignores the path id** — a local catalog that happens to share the
+        sender's id is a different catalog, not this one. Without `src` it
+        falls back to the id (a link the user made in this browser).
+      - A recipient who has the catalog browses it under their OWN id; one who
+        does not gets "This link points at a catalog you haven't added" with
+        the host, the URL, and an **Add this catalog** button that opens the
+        normal `CatalogForm` prefilled (new `defaults` prop — the dialog stays
+        an "Add", not an "Edit").
+      - **Nothing is fetched before consent.** `src` comes from a link someone
+        else wrote, so `parseSrc` discards anything that is not http(s), the
+        query hooks stay disabled while the catalog is unresolved, and the
+        browser verified zero requests to the target host until Add was
+        clicked.
+      **A crash the unit tests could not have caught:** a page's breadcrumb and
+      card hrefs are JSX PROPS, evaluated before `BrowseFrame` can early-return,
+      so `catalog!` threw `Cannot read properties of null (reading 'id')` on
+      exactly the case this feature exists for. `browseTarget()` now supplies
+      the route's own id + src while unresolved; regression-tested.
+
+
 ## Discovered follow-ups
 
 The ones that outlive the remodel are now tracked in `docs/ISSUES.md`:
@@ -465,6 +493,22 @@ eight slices of reasoned-only selector edits actually broke.
   graph / monitoring are full-width. That is deliberate (reading width for
   lists and forms, full width for telemetry), but it is a judgment call a
   designer may want to revisit.
+
+**From UI-15:**
+- **The address bar keeps the SENDER's catalog id** after a recipient adds the
+  catalog; resolution is URL-first so everything works, and every link the page
+  renders uses the local id. Rewriting the id segment with `history.replaceState`
+  would be tidier but is pure cosmetics — deliberately not done.
+- `?src=` is now part of the browse URL contract. Any new browse route, or any
+  new link into one, must go through `lib/browse/paths.ts` or it will silently
+  produce a link that only works in the author's browser again.
+- A shared link still needs the recipient to know whether to trust the host —
+  we show it, but the app cannot vouch for it. That is the whole reason the add
+  step is a click and not automatic.
+- The `proxy` toggle defaults OFF in the add dialog, so a shared link to a
+  catalog without CORS headers will add fine and then fail to load. The dialog
+  shows the toggle, but nothing hints that it is the fix. Worth a follow-up if
+  it bites.
 
 **From UI-13:**
 - **Astro's dev toolbar eats Playwright clicks.** It is a fixed bottom-centre

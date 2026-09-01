@@ -7,12 +7,15 @@ import { EmptyState } from "@stac-higher/shared";
 import { ErrorState } from "@stac-higher/shared";
 import { Input } from "@stac-higher/shared";
 import { Layers, Search } from "lucide-react";
-import { browseCollectionPath } from "@/lib/browse/paths";
+import { browseCollectionPath, browseTarget } from "@/lib/browse/paths";
 import { BrowseFrame } from "./BrowseFrame";
+import type { BrowseRouteProps } from "./types";
 import { useBrowseCatalog } from "./useBrowseCatalog";
 
-function BrowseCollectionsInner({ catalogId }: { catalogId: string }) {
-  const catalog = useBrowseCatalog(catalogId);
+function BrowseCollectionsInner({ catalogId, src }: BrowseRouteProps) {
+  const catalog = useBrowseCatalog(catalogId, src);
+  // Links are props: they are built before BrowseFrame can early-return.
+  const target = browseTarget(catalog, catalogId, src);
   const endpointUrl = catalog?.url ?? "";
   const { data, isLoading, error, refetch } = useCollections(endpointUrl);
   const [search, setSearch] = useState("");
@@ -31,6 +34,7 @@ function BrowseCollectionsInner({ catalogId }: { catalogId: string }) {
   return (
     <BrowseFrame
       catalog={catalog}
+      src={src}
       breadcrumb={
         <>
           <a href="/catalogs" className="hover:text-foreground transition-colors">
@@ -88,7 +92,7 @@ function BrowseCollectionsInner({ catalogId }: { catalogId: string }) {
             <CollectionCard
               key={collection.id}
               collection={collection}
-              href={browseCollectionPath(catalogId, collection.id)}
+              href={browseCollectionPath(target, collection.id)}
             />
           ))}
         </div>
@@ -97,10 +101,10 @@ function BrowseCollectionsInner({ catalogId }: { catalogId: string }) {
   );
 }
 
-export function BrowseCollectionsPage({ catalogId }: { catalogId: string }) {
+export function BrowseCollectionsPage(props: BrowseRouteProps) {
   return (
     <AppShell title="Browse catalog">
-      <BrowseCollectionsInner catalogId={catalogId} />
+      <BrowseCollectionsInner {...props} />
     </AppShell>
   );
 }

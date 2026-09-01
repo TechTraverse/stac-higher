@@ -16,7 +16,14 @@ interface CatalogFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (data: { name: string; url: string; proxy: boolean }) => void;
+  /** Editing an existing entry: prefills, and titles the dialog "Edit". */
   initial?: StacCatalog;
+  /**
+   * Prefill for a NEW entry — the shared-link flow (UI-15) proposes a name and
+   * URL the user can still change. Ignored when `initial` is given, and the
+   * dialog stays an "Add", because that is what it does.
+   */
+  defaults?: { name?: string; url?: string; proxy?: boolean };
 }
 
 export function CatalogForm({
@@ -24,19 +31,20 @@ export function CatalogForm({
   onOpenChange,
   onSubmit,
   initial,
+  defaults,
 }: CatalogFormProps) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [url, setUrl] = useState(initial?.url ?? "");
-  const [proxy, setProxy] = useState(initial?.proxy ?? false);
+  const [name, setName] = useState(initial?.name ?? defaults?.name ?? "");
+  const [url, setUrl] = useState(initial?.url ?? defaults?.url ?? "");
+  const [proxy, setProxy] = useState(initial?.proxy ?? defaults?.proxy ?? false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !url.trim()) return;
     onSubmit({ name: name.trim(), url: url.trim().replace(/\/+$/, ""), proxy });
     if (!initial) {
-      setName("");
-      setUrl("");
-      setProxy(false);
+      setName(defaults?.name ?? "");
+      setUrl(defaults?.url ?? "");
+      setProxy(defaults?.proxy ?? false);
     }
     onOpenChange(false);
   };

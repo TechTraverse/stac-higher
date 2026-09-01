@@ -49,7 +49,10 @@ test.describe("Catalogs page", () => {
     await expect(added.getByText("Platform", { exact: true })).toHaveCount(0);
 
     await added.getByRole("link", { name: "Browse" }).click();
-    await expect(page).toHaveURL(/\/catalogs\/[^/]+\/collections$/);
+    // UI-15: the Browse link carries ?src= so the link is shareable.
+    await expect(page).toHaveURL(
+      /\/catalogs\/[^/]+\/collections\?src=http%3A%2F%2Flocalhost%3A9999$/,
+    );
     await expect(page.getByRole("heading", { name: "Collections", level: 1 })).toBeVisible();
     await expect(page.getByText("Read-only")).toBeVisible();
     // The browser mints no writes.
