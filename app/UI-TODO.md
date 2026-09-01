@@ -136,7 +136,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       chips on the list (status dot + protocol tag + direction), copy sweep
       (source/destination). No behavior change to test/host-key/credential
       flows. Update `connections.spec.ts` selectors as needed.
-- [ ] **UI-7 · Pipeline graph.**
+- [x] **UI-7 · Pipeline graph.**
       `PipelineGraph.tsx`: columnar left→right layout (source connections →
       source products → processes → derived products → destinations) using
       the full `LineageStrip` visual language, health-colored nodes/edges,
@@ -304,3 +304,29 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
 - The mockup's fourth type card, "OGC API hosting", is deliberately absent —
   ROADMAP §8 settled that as the per-collection serving toggle, not a
   connection type (the spec lists it under Out of scope).
+
+**From UI-7:**
+- **`packages/shared` is outside the app's Tailwind source scan.** A utility
+  class used ONLY in a shared component is never generated; today's shared
+  components survive because their classes also appear in app code. UI-7 works
+  around it by referencing CSS variables inline for the graph's type colours.
+  The proper fix is an `@source "../../../packages/shared/src"` in the app's
+  `global.css` — but the two copies are byte-identical by contract and the
+  relative path differs (app is one level under the root, packages/shared is
+  two), so it needs either a deliberate divergence with a comment on both
+  sides, or a shared Tailwind config. **Worth doing in UI-8** before more
+  shared components are written against classes that silently do not exist.
+- `@theme` → `@theme static` in both global.css copies. Plain `@theme`
+  tree-shakes variables no generated utility references, which had deleted the
+  whole `--color-chart-*` ramp at runtime. Do not "optimize" it back.
+- `LineageStrip`'s `full` renderer shows COLUMN adjacency, not per-node edges.
+  Drawing real edges needs measured node positions (refs + ResizeObserver +
+  an SVG overlay) — a genuinely bigger component. The Flows list is the edge
+  truth in the meantime, and the file says so.
+- A connection wired both ways appears in both the Source-connections and
+  Destinations columns by design. If that ever reads as duplication, the fix
+  is a marker on the node, not a forced single home.
+- `/graph`'s h1 is now "Pipeline graph" (was "Pipeline"). `processes.spec.ts`
+  asserts `heading { name: "Pipeline", level: 1 }` — still passes, since
+  Playwright's name matching is substring-based, but it is now an inexact
+  match worth tightening during the e2e run.
