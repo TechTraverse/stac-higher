@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { connectionKeys } from "@/lib/query/keys";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import {
   Badge,
   Button,
@@ -223,7 +222,6 @@ function ConnectionsInner() {
 
   return (
     <>
-      <Header />
       <main className="w-full max-w-4xl flex-1 p-6 mx-auto">
         <div className="mb-6 flex items-center justify-between">
           <div>
@@ -364,8 +362,8 @@ function ConnectionsInner() {
 
 export function ConnectionsPage() {
   return (
-    <QueryProvider>
+    <AppShell>
       <ConnectionsInner />
-    </QueryProvider>
+    </AppShell>
   );
 }

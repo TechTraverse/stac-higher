@@ -9,8 +9,8 @@ import {
   setActiveCatalog,
   type StacCatalog,
 } from "@/stores/catalogStore";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
+import { CatalogSelector } from "@/components/catalogs/CatalogSelector";
 import { CatalogForm } from "./CatalogForm";
 import { StacIndexImportDialog } from "./StacIndexImportDialog";
 import { Button } from "@stac-higher/shared";
@@ -164,7 +164,6 @@ function CatalogManagerInner() {
 
   return (
     <>
-      <Header />
       <main className="flex-1 p-6 max-w-4xl mx-auto w-full">
         <div className="flex items-center justify-between mb-6">
           <div>
@@ -174,6 +173,9 @@ function CatalogManagerInner() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* The CatalogSelector left the app shell in UI-2 — it is
+                catalog-context UI, so it renders on catalog-context pages. */}
+            <CatalogSelector />
             <Button variant="outline" onClick={() => setImportOpen(true)}>
               <Download className="h-4 w-4 mr-1.5" />
               Import from StacIndex
@@ -269,8 +271,8 @@ function CatalogManagerInner() {
 
 export function CatalogManagerPage() {
   return (
-    <QueryProvider>
+    <AppShell>
       <CatalogManagerInner />
-    </QueryProvider>
+    </AppShell>
   );
 }

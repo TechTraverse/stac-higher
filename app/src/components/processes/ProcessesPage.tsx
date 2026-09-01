@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import {
   Badge,
   Button,
@@ -335,9 +334,8 @@ function ProcessesContent() {
 
 export function ProcessesPage() {
   return (
-    <QueryProvider>
-      <Header />
+    <AppShell>
       <ProcessesContent />
-    </QueryProvider>
+    </AppShell>
   );
 }

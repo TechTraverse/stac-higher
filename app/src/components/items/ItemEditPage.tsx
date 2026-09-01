@@ -1,8 +1,7 @@
 import { useStore } from "@nanostores/react";
 import { $activeCatalog } from "@/stores/catalogStore";
 import { useItem } from "@/lib/query/items";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { ItemFormPage } from "./ItemForm";
 import { LoadingState } from "@stac-higher/shared";
 import { ErrorState } from "@stac-higher/shared";
@@ -25,7 +24,6 @@ function ItemEditInner({
   if (isLoading) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6">
           <LoadingState />
         </main>
@@ -36,7 +34,6 @@ function ItemEditInner({
   if (error || !data) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
           <ErrorState
             message={error instanceof Error ? error.message : "Item not found"}
@@ -58,8 +55,8 @@ export function ItemEditPage({
   itemId: string;
 }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <ItemEditInner collectionId={collectionId} itemId={itemId} />
-    </QueryProvider>
+    </AppShell>
   );
 }

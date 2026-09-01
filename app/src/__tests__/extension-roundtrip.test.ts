@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 
 // Mock UI components and map dependencies that don't work in jsdom
-vi.mock("@/components/layout/Header", () => ({ Header: () => null }));
+vi.mock("@/components/layout/AppShell", () => ({
+  AppShell: ({ children }: { children: unknown }) => children,
+}));
 vi.mock("@/components/layout/QueryProvider", () => ({
   QueryProvider: ({ children }: { children: unknown }) => children,
 }));

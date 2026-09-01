@@ -20,7 +20,17 @@ const {
   markReadMutate: vi.fn(),
 }));
 
-vi.mock("@/components/layout/Header", () => ({ Header: () => null }));
+// The shell is replaced by the bare QueryProvider it wraps: these tests
+// exercise page content, not the sidebar/top-bar chrome, but the components
+// under test still need a QueryClient.
+vi.mock("@/components/layout/AppShell", async () => {
+  const { QueryProvider } = await import("@/components/layout/QueryProvider");
+  return {
+    AppShell: ({ children }: { children: React.ReactNode }) => (
+      <QueryProvider>{children}</QueryProvider>
+    ),
+  };
+});
 vi.mock("@/lib/query/auth", () => ({
   useAuthMe: () => ({
     data: {

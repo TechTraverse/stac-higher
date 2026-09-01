@@ -2,8 +2,7 @@ import { useStore } from "@nanostores/react";
 import { $activeCatalog, $catalogs } from "@/stores/catalogStore";
 import { useLandingPage } from "@/lib/query/search";
 import { useCollections } from "@/lib/query/collections";
-import { QueryProvider } from "./QueryProvider";
-import { Header } from "./Header";
+import { AppShell } from "@/components/layout/AppShell";
 import {
   Card,
   CardContent,
@@ -208,9 +207,8 @@ function DashboardContent() {
 
 export function DashboardPage() {
   return (
-    <QueryProvider>
-      <Header />
+    <AppShell>
       <DashboardContent />
-    </QueryProvider>
+    </AppShell>
   );
 }

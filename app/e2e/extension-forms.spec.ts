@@ -102,8 +102,9 @@ test.describe("Dynamic extension forms", () => {
       .last()
       .scrollIntoViewIfNeeded();
 
-    // Open the extension picker (the header's catalog selector is also a
-    // combobox now that the built-in catalog always exists — disambiguate)
+    // Open the extension picker. The filter is kept even though the
+    // CatalogSelector left the shell in UI-2 — the form itself can grow more
+    // comboboxes, and scoping by placeholder text is the stable choice.
     await page
       .getByRole("combobox")
       .filter({ hasText: /select extensions|extensions? selected/i })
@@ -140,8 +141,9 @@ test.describe("Dynamic extension forms", () => {
 
     await page.goto("/collections/test-collection/items/new");
 
-    // Open the extension picker (the header's catalog selector is also a
-    // combobox now that the built-in catalog always exists — disambiguate)
+    // Open the extension picker. The filter is kept even though the
+    // CatalogSelector left the shell in UI-2 — the form itself can grow more
+    // comboboxes, and scoping by placeholder text is the stable choice.
     await page
       .getByRole("combobox")
       .filter({ hasText: /select extensions|extensions? selected/i })
@@ -249,7 +251,7 @@ test.describe("Dynamic extension forms", () => {
 
     await page.goto("/collections/test-collection/items/new");
 
-    // Open picker and select (filter: the header catalog selector is also a combobox)
+    // Open picker and select (scoped by placeholder — see the note above)
     await page
       .getByRole("combobox")
       .filter({ hasText: /select extensions|extensions? selected/i })
