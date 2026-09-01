@@ -212,12 +212,19 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       unmeasured) and `unanchoredAlerts`. Mutation-checked: breaking `worse()`
       fails three of them.
 
-- [ ] **UI-12 · Storybook CSS + font entry (closes I-85).**
-      Add a `.storybook/preview` CSS entry mirroring `app/src/styles/app.css`:
-      import the shared `global.css`, add an `@source` for
-      `packages/shared/src`, and import the `@fontsource` faces (today an `app`
-      dependency, so it moves or is duplicated in the shared package). Without
-      it, shared-only classes and both typefaces are missing in Storybook.
+- [x] **UI-12 · Storybook CSS + font entry (closes I-85).**
+      `packages/shared/.storybook/preview.css` (imports the shared
+      `global.css`, states `@source "../src"`) + the four `@fontsource`
+      imports in `preview.tsx`, mirroring `Layout.astro`; the two packages are
+      now declared in `packages/shared` devDependencies too. Verified in a
+      built Storybook: both faces load in the story iframe
+      (`document.fonts.check`) and 33 font files ship.
+      **I-85 was half wrong and the fix says so:** the missing FONTS were real,
+      but shared-only classes were never missing — verified by building with
+      and without the `@source` (a marker class in `LineageStrip` is generated
+      either way, because Storybook's Vite root IS `packages/shared`). The
+      `@source` stays as belt-and-braces, documented as such.
+      Storybook's default theme also flipped dark → light, matching ADR 0017.
 
 - [ ] **UI-13 · The e2e run (lead-scheduled).**
       The suite has NOT run since UI-2. Selectors were updated by reasoning
@@ -431,6 +438,20 @@ now tracked as **UI-13** above.
   graph / monitoring are full-width. That is deliberate (reading width for
   lists and forms, full width for telemetry), but it is a judgment call a
   designer may want to revisit.
+
+**From UI-12:**
+- **`LineageStrip` has no story** — the one component UI-3 introduced
+  specifically as "pure props, presentational" is the one not in Storybook.
+  Its three size variants are exactly what a story is for. Same for
+  `ProductOverview`-adjacent shared pieces if any land later.
+- Storybook and the app now import the same `@fontsource` packages from two
+  different `package.json` files at the same pinned version. If one is bumped
+  the other must be too, or Storybook renders a different typeface than the
+  product — the failure this slice just fixed, in reverse.
+- Tailwind v4's auto source detection follows the **Vite root**, not the CSS
+  file's directory. That is why the app needs an explicit `@source` for the
+  shared package and Storybook does not. Worth remembering before filing the
+  next "class not generated" issue.
 
 **From UI-11:**
 - **`buildProductRows`' `lateFlow` branch is unreachable.** `isLate` matches an
