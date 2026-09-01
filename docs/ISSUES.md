@@ -665,6 +665,33 @@ the facade never fakes a verb the platform does not have.
   `services/pipeline/src/pipeline/process/docker_executor.py` (timeout is
   the existing kill path a cancel would reuse).
 
+### I-82 · The M3 byte-volume model is declared, not measured 🟡
+M3-S-B redid ROADMAP §2's arithmetic at 2.6M items/day against a **stated
+model** of NOAA-class product sizes (2 MB / 25 MB / 250 MB at 60/30/10% of
+items, mean 33.7 MB), chosen to span the three shapes that behave differently
+— not against a census of the actual feeds. Every byte conclusion inherits
+that: 88 TB/day ingest-origin, the 59%-of-storage case for referencing the
+large tier, the FTP/SFTP honest-limits arithmetic, and the concurrency sizing
+that follows from it. The *shapes* are robust (a heavy tail is the defining
+property, and 10% of items carrying 74% of the bytes is what every
+recommendation turns on); the absolute numbers are not. A real size census
+belongs before any contractual scale or storage-cost commitment.
+- Tracked in: here; `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md`
+  (M3-S-B "Stated assumptions"); the M3 design spec §6 "What M3 explicitly
+  does NOT do".
+
+### I-83 · Streaming ingest reaches object stores only ⚪
+The M3 streaming decision (M3-S-E) fixes whole-object buffering for **s3**
+sources and canonical storage via GDAL `/vsis3` and streamed multipart
+transfers. SFTP/FTP sources keep the buffered `adapter.get() -> bytes` path,
+because there is no VSI handler that authenticates through our adapter. This
+is consistent with ROADMAP §2's honest-limits posture — those protocols carry
+NRT-subset volumes — and M3-S-B now attaches a number to it (~8 saturated
+10 GbE streams to feed one such destination at envelope volume). It becomes a
+real gap only if a deployment tries to run a high-volume SFTP source, which
+the posture says it should not.
+- Tracked in: here; I-19; `services/pipeline/.../connections/adapters/base.py`.
+
 ---
 
 ## Resolved — archived
