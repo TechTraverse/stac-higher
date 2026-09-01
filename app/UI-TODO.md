@@ -129,7 +129,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       the supply-chain review in the PR/commit per I-65). Keep EnvEditor,
       test-run, deploy, re-run flows exactly as they behave today.
       Update `processes.spec.ts` selectors if layout changes break them.
-- [ ] **UI-6 · Connections restyle.** [e2e-touch]
+- [x] **UI-6 · Connections restyle.** [e2e-touch]
       `ConnectionsPage.tsx` + `ConnectionForm.tsx`: direction-first framing
       (Ingest source / Distribution destination segmented control per the
       mockup's create screen; type cards for s3/sftp/ftp/https), health
@@ -282,3 +282,25 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
 - `CodeEditor` rebuilds the view when theme / language / editability change
   (compartments would be more machinery than the rebuild costs). If a caller
   ever flips those mid-typing, revisit with `Compartment`.
+
+**From UI-6:**
+- **The mockup's create-screen direction toggle was NOT adopted.** A connection
+  has no direction column — direction is on `collection_connections` — and the
+  same endpoint is routinely both. Adding the toggle needs an `/api/*` +
+  schema change (out of scope) or it silently discards the choice. Direction
+  instead appears where it is real: the list filter and per-card badges,
+  derived from `useFlows()`. If the lead WANTS direction on the connection
+  itself, that is a platform-track decision (a `default_direction` hint
+  column), not a UI slice.
+- The list now calls `useFlows()` for direction. That is the whole
+  cross-collection association list on a page that only needs
+  connection→direction; harmless today, but a `?connection_id=` filter would
+  be the right fix if the association count ever grows.
+- Protocol card ORDER is a display constant (`PROTOCOL_ORDER`) separate from
+  `WRITABLE_PROTOCOLS`. Adding a protocol to the schema without adding it to
+  `PROTOCOL_ORDER` / `PROTOCOL_LABEL` / `PROTOCOL_HINT` will silently hide it
+  from the form — the maps are typed `Record<WritableProtocol, …>` so the
+  labels fail the build, but the ORDER array does not.
+- The mockup's fourth type card, "OGC API hosting", is deliberately absent —
+  ROADMAP §8 settled that as the per-collection serving toggle, not a
+  connection type (the spec lists it under Out of scope).
