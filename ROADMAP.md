@@ -722,30 +722,44 @@ Enforcement by plane:
 
 ## 8. UI surface
 
-Every row is live except `/admin` (Phase 7+), the parenthesized Settings
-visibility knob (needs read-visibility, I-1), and the **Phase 9 (proposed)**
-rows in the second table.
+Every row is live except `/admin` (Phase 7+) and the parenthesized Settings
+visibility knob (needs read-visibility, I-1).
+
+The surface was reorganized by the **product-centric UI remodel** (ADR 0017,
+2026-09-01): a persistent navy sidebar + slim top bar replace the top-header
+nav, home became the product overview, and UI copy says *product / source /
+destination / pipeline graph* while routes, APIs and schema keep
+*collection / association / graph*. Design brief:
+`docs/superpowers/specs/2026-08-31-ui-remodel-design.md`; slice log:
+`app/UI-TODO.md`.
 
 | Page | Contents |
 |---|---|
-| `/connections` | List + live health badges; per-protocol create/edit wizard (SSH-family: host/port/user/key; S3: bucket/region/endpoint/keys); Test connection; host-key re-verify action on mismatch |
+| App shell | Navy sidebar (Products · Processes · Connections · Pipeline graph · Monitoring, with Catalogs/Search/Extensions under a collapsed **More**), stack-status footer, slim top bar with client-side global search, alert bell, theme toggle, user menu. Icon rail + sheet on narrow viewports. The catalog selector lives on the Catalogs and Search pages, not the shell |
+| `/connections` | Direction filter + per-connection direction badges derived from associations, health chips, mono protocol tags; type-card create/edit form (S3, SFTP, SSH, FTP, FTPS); Test connection; host-key re-verify action on mismatch |
 | Collection **Data flow** tab | Associate connections; ingest config (patterns, grouping, metadata, poll frequency, storage mode); delivery config (path template, filters, payload options, on_update, expectations); enable/disable; backfill/redeliver |
 | Collection **Settings** | Group ownership, (visibility,) externally-writable flag, retention period, grace window, archived |
-| `/monitoring` | Flow telemetry per association, delivery latency, alert list with ack/resolve, notification-channel management; alert bell in header |
+| `/monitoring` | Flow telemetry per association, delivery latency, alert list with ack/resolve, notification-channel management; alert bell in the top bar |
 | `/admin` | Groups, cross-group connections/collections overview, audit-log viewer |
 | Item forms | Asset upload via presigned flow |
 
-**Phase 9 (proposed — from the NOAA mockups, translated to repo terms; see the
-§9 Phase 9 terminology note):**
+**From the NOAA mockups (ADR 0017) — all landed except the last row:**
 
-| Page | Contents |
-|---|---|
-| `/` or a new `/overview` | Catalog overview: per-collection rollup (item counts, last ingest, source/destination health from `flow_stats` + connection status) with the `/connections` health badges surfaced as a strip |
-| Collection page **lineage panel** (Data flow tab) | Upstream connection/process → collection → destinations lineage (processes join associations as edge types) + a 30-day health-history strip — requires a small daily `flow_stats` history rollup, a new data requirement |
-| Collection create/edit form | Mockup deltas folded in: `item_assets` definitions, extent editors, license/keywords |
-| `/processes` | Dashboard: per-process health, last run, success rate, run sparkline |
-| `/processes/[id]` | Editor: sources + triggers, outputs, runtime config, inline code editor (**new dependency decision** — CodeMirror vs. Monaco, flagged against the no-new-deps rule), env vars (secret-refs), test run (ADR 0004 bridge), recent runs with re-run |
-| `/graph` (or a `/monitoring` tab) | Pipeline graph: connections → collections → processes → collections → destinations with health-colored edges; fed by one new read endpoint (e.g. `/api/monitoring/graph`) assembling nodes/edges from connections, `collection_connections`, `process_sources`/`process_outputs` + statuses; member+ scoped like `/api/monitoring/flows` |
+| Page | Contents | Status |
+|---|---|---|
+| `/` | Product overview: four stat tiles, connection-health chip strip, product list with health verdict + reason and a mini lineage glyph. Derived from `/api/monitoring/{graph,flows}` + `/api/alerts` only — no new endpoints | ✅ UI-3 |
+| Product **Overview tab** | Health badge (30d success % where the history endpoint has one), visibility chips, **Lineage & distribution** panel (medium lineage strip), endpoints (STAC + OGC serving links when `serving_enabled`), recent items | ✅ UI-4 |
+| `/processes` | Dashboard: per-process health, in/out product links, trigger summary, last run + duration, success rate, last-20-runs sparkline | ✅ UI-5 |
+| `/processes/[id]` | Editor layout: definition + sources/triggers + outputs left, **CodeMirror 6** code pane and test run right, runs below; env vars (secret-refs), deploy, re-run | ✅ UI-5 (closes I-65) |
+| `/graph` | Columnar pipeline graph: source connections → source products → processes → derived products → destinations, health-coloured nodes, legend, mono ids, not-wired section, plus the exact edge list. Fed by `/api/monitoring/graph` (M5-E) | ✅ UI-7 |
+| Collection create/edit form | Mockup deltas: `item_assets` definitions, extent editors, license/keywords | ⬜ not started — out of the remodel's presentation-only scope |
+
+The **lineage strip** is one shared presentational component at three zoom
+levels (mini on home rows, medium on the product Overview tab, full on
+`/graph`), so the three surfaces cannot drift apart visually. The 30-day
+`flow_stats_daily` history rollup the original plan called for landed earlier
+in M5-F; the remodel moved its per-source strip onto the process detail page,
+where the source it describes is visible.
 
 **Deliberate divergence from the mockups:** the mockups' "OGC API hosting"
 *destination type* (expose a collection via Tiles/Features) is **not** a

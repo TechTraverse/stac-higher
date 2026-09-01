@@ -610,17 +610,33 @@ scope — the per-process run-rate ceiling + `process_rate_limited` alert
 (spec §7) is the blast-radius backstop.
 - Tracked in: ADR 0014 (accepted), the Phase 9 design spec §7–8.
 
-### I-65 · Inline-editor dependency choice + supply-chain review 🟢 (settled 2026-08-29)
-`/processes/[id]` wants a code editor (CodeMirror vs. Monaco) — a
+### I-65 · Inline-editor dependency choice + supply-chain review ✅ (closed 2026-09-01)
+`/processes/[id]` wanted a code editor (CodeMirror vs. Monaco) — a
 significant new frontend dependency under the no-new-deps-without-need rule
 and the platform's compliance posture (supply-chain review before adoption).
-A plain textarea may be acceptable for a first slice.
-**Settled by P9-C + the approved Phase 9 spec**: slice 1 ships a plain
-textarea (dependency-free first accreditation surface); when editor UX is
-justified, CodeMirror 6 (modular, island-friendly, CSS-themeable) — never
-Monaco (~98MB unpacked, worker architecture). Supply-chain review recorded
-in the adopting PR when that day comes.
-- Tracked in: the P9 scoping notes; the Phase 9 design spec §10.
+**Settled by P9-C + the approved Phase 9 spec**: slice 1 shipped a plain
+textarea (dependency-free first accreditation surface); when editor UX was
+justified, CodeMirror 6 — never Monaco (~98MB unpacked, worker architecture).
+**Adopted in UI-5 (ADR 0017 §6).** Supply-chain review recorded here, since
+this repo merges to `ai/main` rather than through a PR:
+- **Packages (7, all pinned exactly via `--save-exact`):**
+  `@codemirror/state` 6.7.2, `@codemirror/view` 6.43.10,
+  `@codemirror/commands` 6.11.0, `@codemirror/language` 6.12.4,
+  `@codemirror/lang-python` 6.2.1, `@codemirror/lang-json` 6.0.2,
+  `@lezer/highlight` 1.2.3.
+- **Why these and not `codemirror`:** the meta-package pulls autocomplete,
+  search and lint whether or not they are used. Assembling from the
+  individual modules keeps the dependency surface to what the editor
+  actually needs.
+- **Provenance:** all from the `codemirror` / `lezer` orgs (Marijn
+  Haverbeke), the reference implementations for their ecosystem.
+- **Install-time risk:** no postinstall scripts in any of the seven.
+- **No theme package:** the editor theme is written against the app's own CSS
+  variables, so the palette follows `global.css` in both modes and one more
+  dependency is avoided.
+- **Scope:** the process code editor ONLY. Every other textarea in the app
+  stays a textarea (ADR 0017 §6 is explicit about this).
+- Tracked in: the P9 scoping notes; the Phase 9 design spec §10; ADR 0017.
 
 ### I-66 · OGC API — Processes conformant facade: worth exposing? 🟢 (settled 2026-08-29)
 The Phase 9 capability is the domain of the OGC API — Processes standard
@@ -691,6 +707,57 @@ NRT-subset volumes — and M3-S-B now attaches a number to it (~8 saturated
 real gap only if a deployment tries to run a high-volume SFTP source, which
 the posture says it should not.
 - Tracked in: here; I-19; `services/pipeline/.../connections/adapters/base.py`.
+
+---
+
+## UI remodel (ADR 0017, 2026-09-01)
+
+Carried out of the remodel. Full per-slice follow-up list: `app/UI-TODO.md`.
+
+### I-84 · `/api/alerts` omits `process_id` / `source_id` 🔴
+Migration 024 anchors process alerts (`process_stalled`, `process_failed`,
+`process_rate_limited`) to a process and a source, but the API response shape
+stops at connection / association / channel / collection. The client therefore
+**cannot attribute a process alert to a product**, which forces three separate
+honest-but-lossy workarounds: home counts them as "not shown against a
+product", the product Overview says "may relate to this product", and the
+graph gives process nodes `unknown` health rather than green.
+Adding the two fields to the `ApiAlert` shape is a small, additive `/api/*`
+change — deliberately OUT of the remodel's presentation-only scope. Once it
+lands, `processVerdict` should fold alerts in and both caveats can go.
+- Tracked in: `app/src/components/layout/overview.ts` (`unanchoredAlerts`),
+  `ProductOverview.tsx`, `PipelineGraph.tsx`.
+
+### I-85 · Storybook misses the shared Tailwind scan and the fonts 🟠
+The app fixed its Tailwind source scan in UI-8 (`app/src/styles/app.css` adds
+`@source "../../../packages/shared/src"`), but Storybook loads
+`packages/shared/src/styles/global.css` directly and has no equivalent — so a
+utility used only inside a shared component may render unstyled *there* while
+working in the app. Storybook also never got the `@fontsource` imports (they
+live in `Layout.astro`), so stories render in the fallback stack.
+Both want one `.storybook/preview` CSS entry mirroring `app.css`. Low
+severity — Storybook is a development surface — but it makes the shared
+package's own previews untrustworthy for visual work.
+
+### I-86 · No true item count per product 🟠
+The home product list shows ingest-derived `flow_stats.items` (labelled
+"ingested"), not an item count: a real count needs `numberMatched` per
+collection — one request each — or a rollup no endpoint exposes. The same
+constraint caps the product Overview tab. Revisit if operators ask for it;
+the honest label is the mitigation.
+
+### I-87 · `flow_stats_daily` counter semantics are not pinned 🟠
+`runs` / `failed` / `dead` are deltas of a live `flow_stats` jsonb, and
+nothing states whether `runs` includes failures. UI-5 therefore derives
+process success from the RUN LEDGER and labels it "last N runs" rather than
+"30d". Pinning the semantics (a contract fixture would be the right place)
+would let the UI report a real 30-day rate. Until then, do not relabel the
+current number.
+
+### I-88 · `overview.ts` derivations are untested 🟠
+Health ranking, alert attribution and lineage grouping are pure functions over
+plain data — the most logic-heavy UI module in the remodel, feeding three
+surfaces — and carry no unit tests. Cheap to cover with the `new-test` skill.
 
 ---
 

@@ -151,7 +151,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       surfaces (grep user-facing strings; keep "collection" in the catalog
       browser/search context). Both-theme screenshot pass over every page;
       fix stragglers. Update `monitoring.spec.ts` if labels change.
-- [ ] **UI-9 · Wrap-up.** Update `docs/FEATURES.md` (UI surface
+- [x] **UI-9 · Wrap-up.** Update `docs/FEATURES.md` (UI surface
       descriptions), ROADMAP §8 rows' page copy where stale, ISSUES: close
       I-65 (CodeMirror landed), log any deferred follow-ups from below.
       Ask the lead to schedule the full e2e run (M3 session owns it);
@@ -159,7 +159,17 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
 
 ## Discovered follow-ups
 
-(append here during iterations)
+The ones that outlive the remodel are now tracked in `docs/ISSUES.md`:
+**I-84** (`/api/alerts` omits `process_id`/`source_id` — the reason three
+surfaces carry health caveats), **I-85** (Storybook misses the shared Tailwind
+scan + fonts), **I-86** (no true item count per product), **I-87**
+(`flow_stats_daily` counter semantics unpinned), **I-88** (`overview.ts`
+derivations untested). Everything below is the per-slice detail behind them.
+
+**Still open, not yet an issue:** the full e2e suite has NOT run since UI-2.
+Selectors were updated in-slice across `connections.spec.ts`,
+`processes.spec.ts` and `extension-forms.spec.ts` by reasoning only. The lead
+owns scheduling that run (the M3 session owns Docker/e2e).
 
 **From UI-1:**
 - The `tech` utility (`@utility tech` in both `global.css` copies) is defined

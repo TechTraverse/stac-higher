@@ -505,6 +505,45 @@ I-70 through I-79 (+ the I-13/I-14/I-15 amendments).
 
 ---
 
+## Cross-phase — Product-centric UI remodel (ADR 0017, 2026-09-01) ✅
+
+Presentation-layer only: no `/api/*` contract change, no migration, no route
+rename, nothing removed. De-emphasized surfaces were relocated, not deleted.
+Design brief: `docs/superpowers/specs/2026-08-31-ui-remodel-design.md`;
+per-slice log and carried follow-ups: `app/UI-TODO.md`.
+
+| Area | Status | Entry points |
+|---|---|---|
+| NOAA theme + light default | ✅ | `app/src/styles/global.css` ⇄ `packages/shared/src/styles/global.css` (byte-identical; `@theme static`), navy `#0D2A47` / federal blue `#005EA2`, health tokens, self-hosted Public Sans + IBM Plex Mono. Light is the default; the pre-hydration script moved into `<head>` |
+| App shell | ✅ | `app/src/components/layout/{AppShell,SidebarNav,TopBar}.tsx` — navy rail (navy in BOTH themes), collapsed **More** group, stack-status footer, top-bar client-side global search. Replaced `Header.tsx` across all 20 islands |
+| Home overview | ✅ | `app/src/components/layout/DashboardPage.tsx` + `overview.ts` (the shared derivations) |
+| Product Overview tab | ✅ | `app/src/components/collections/ProductOverview.tsx` (built-in catalogs only) |
+| Lineage strip | ✅ | `packages/shared/src/components/shared/LineageStrip.tsx` — one presentational component at mini / medium / full zoom |
+| Processes dashboard + editor | ✅ | `app/src/components/processes/{ProcessesPage,ProcessDetailPage,CodeEditor,RunSparkline,health}.tsx` — CodeMirror 6 (closes I-65) |
+| Connections restyle | ✅ | `app/src/components/connections/{ConnectionsPage,ConnectionForm}.tsx` — direction filter/badges derived from associations, type cards |
+| Pipeline graph | ✅ | `app/src/components/monitoring/PipelineGraph.tsx` — five columns + exact edge list |
+
+**Terminology seam (deliberate).** UI copy says *product* (built-in-catalog
+collection), *source* (ingest association), *destination* (deliver
+association), *pipeline graph*. Routes, `/api/*`, schema and code vocabulary
+keep the canonical terms. External-catalog collections keep "collection" —
+that surface really is a STAC browser. Read ADR 0017 before "fixing" it.
+
+**Health is derived once.** `overview.ts` turns the graph, flow and open-alert
+reads into the shapes home, the product page and the graph render, so those
+surfaces cannot disagree about whether something is healthy. Where the API
+cannot answer — `/api/alerts` returns no `process_id`, so process-anchored
+alerts cannot be tied to a product — the UI says so instead of guessing.
+
+**Two Tailwind v4 traps worth knowing** (both found by the in-browser pass):
+`@theme` tree-shakes variables no generated utility references (which had
+deleted the whole `--color-chart-*` ramp — hence `@theme static`), and
+`packages/shared` is outside the app's source scan, so a class used only in a
+shared component is never generated (hence `app/src/styles/app.css`, which
+adds the `@source`). Storybook still lacks that `@source` and the font imports.
+
+---
+
 ## Phase 8 — Not started ⬜
 
 Cloud deployment, scale gate & visualization. See
