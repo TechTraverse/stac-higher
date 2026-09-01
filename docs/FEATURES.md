@@ -14,7 +14,7 @@ The Astro (SSR) + React 19 STAC client that predates the platform phases
 | Collections & Items CRUD | ✅ | `app/src/pages/{collections,items}*`, forms via React Hook Form + Zod (`app/src/lib/stac-api/schemas.ts`) |
 | STAC search | ✅ | `app/src/pages/search.astro` |
 | Map layers | ✅ | `StacMap`, `FootprintLayer`, `ExtentLayer`, `ItemGeometryEditor` (MapLibre GL via `packages/shared/src/lib/map/`) |
-| Multi-catalog management | ✅ | `app/src/pages/catalogs.astro`, `app/src/stores/catalogStore.ts` (localStorage; built-in catalog is undeletable) |
+| Multi-catalog management | ✅ | `app/src/pages/catalogs/index.astro`, `app/src/stores/catalogStore.ts` (localStorage; built-in catalog is undeletable). Since UI-10 each non-built-in catalog gets a read-only browser at `/catalogs/[catalogId]/collections*` instead of taking over the product pages |
 | Custom STAC extensions | ✅ | `/api/extensions*` routes, RJSF theme in `packages/shared`; import/preview external JSON Schemas |
 | CORS proxy | ✅ | `/api/proxy` (`X-Proxy-Target` + `X-Proxy-Endpoint`; rejects cross-site; optional `PROXY_AUTH_TOKEN`) |
 
@@ -508,7 +508,11 @@ I-70 through I-79 (+ the I-13/I-14/I-15 amendments).
 ## Cross-phase — Product-centric UI remodel (ADR 0017, 2026-09-01) ✅
 
 Presentation-layer only: no `/api/*` contract change, no migration, no route
-rename, nothing removed. De-emphasized surfaces were relocated, not deleted.
+rename. De-emphasized surfaces were relocated, not deleted — with ONE
+deliberate exception the lead settled on 2026-09-01: UI-10 made the external-
+catalog browser read-only, so create/edit/delete against a third-party STAC API
+is gone (see I-89). Those writes bypassed the ADR 0008 BFF, the RBAC guard and
+the audit log, which is why they were a bug wearing a feature's clothes.
 Design brief: `docs/superpowers/specs/2026-08-31-ui-remodel-design.md`;
 per-slice log and carried follow-ups: `app/UI-TODO.md`.
 
@@ -522,12 +526,17 @@ per-slice log and carried follow-ups: `app/UI-TODO.md`.
 | Processes dashboard + editor | ✅ | `app/src/components/processes/{ProcessesPage,ProcessDetailPage,CodeEditor,RunSparkline,health}.tsx` — CodeMirror 6 (closes I-65) |
 | Connections restyle | ✅ | `app/src/components/connections/{ConnectionsPage,ConnectionForm}.tsx` — direction filter/badges derived from associations, type cards |
 | Pipeline graph | ✅ | `app/src/components/monitoring/PipelineGraph.tsx` — five columns + exact edge list |
+| Products pinned to the built-in catalog | ✅ | `app/src/stores/catalogStore.ts` — `$builtInCatalog` replaces the global `$activeCatalogId`/`$activeCatalog`/`setActiveCatalog`; the orphaned `stac-active-catalog` key is dropped on init. Every product surface (home, `/collections*`, items, top-bar search, stack-status footer) reads it, and `stacFetch`'s no-`endpointUrl` fallback points there so no write can inherit a browse selection past the ADR 0008 BFF |
+| Read-only catalog browser | ✅ | `app/src/components/browse/*` at `/catalogs/[catalogId]/collections[/[collectionId][/items[/[itemId]]]]` — entered from each catalog card's **Browse** link (the old "Set Active") and from external `/search` hits. No create/edit/delete, no Data flow / Settings. `CollectionMetadata.tsx` and `ItemDetailView.tsx` are the catalog-agnostic renderers both worlds share |
 
 **Terminology seam (deliberate).** UI copy says *product* (built-in-catalog
 collection), *source* (ingest association), *destination* (deliver
 association), *pipeline graph*. Routes, `/api/*`, schema and code vocabulary
 keep the canonical terms. External-catalog collections keep "collection" —
-that surface really is a STAC browser. Read ADR 0017 before "fixing" it.
+that surface really is a STAC browser, and since UI-10 it is a SEPARATE one
+(`/catalogs/[catalogId]/collections*`) rather than a mode of the product
+pages, so the product copy no longer branches at all. Read ADR 0017 before
+"fixing" it.
 
 **Health is derived once.** `overview.ts` turns the graph, flow and open-alert
 reads into the shapes home, the product page and the graph render, so those

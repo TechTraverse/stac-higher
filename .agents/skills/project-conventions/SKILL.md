@@ -16,21 +16,25 @@ a page is one React tree.
 Layout.astro (HTML shell, theme script)
   └── <PageComponent client:only="react" />
         ├── QueryProvider (TanStack Query + Toaster)
-        ├── Header (nav, CatalogSelector, ThemeToggle)
+        ├── AppShell (sidebar nav, top bar: search/alerts/theme/user)
         └── Page content (forms, maps, tables)
 ```
 
 **Why**: separate islands cannot share React context. Anything that needs the
 QueryClient, form context, or map context must live in the same tree. Nanostores
-exist precisely to bridge the Header island and the page island.
+exist precisely to bridge the shell island and the page island.
 
 ## Three-Tier State — pick the right tier
 
-1. **Nanostores** — cross-island persistent state only (catalog selection,
-   theme, map view/draw state, sidebar). Module-level atoms shared across
-   React trees; persisted via `@nanostores/persistent`. Do not put per-page
-   state here. `app/src/stores/catalogStore.ts` is app-local; `mapStore.ts` /
-   `uiStore.ts` are re-export proxies for the shared package's stores.
+1. **Nanostores** — cross-island persistent state only (the configured
+   catalog list, theme, map view/draw state, sidebar). Module-level atoms
+   shared across React trees; persisted via `@nanostores/persistent`. Do not
+   put per-page state here. `app/src/stores/catalogStore.ts` is app-local;
+   `mapStore.ts` / `uiStore.ts` are re-export proxies for the shared package's
+   stores. **There is no global "active catalog"** (UI-10): products read
+   `$builtInCatalog`, the catalog browser reads its route param, and `/search`
+   holds a local, non-persistent selection — a browse choice must never be
+   able to redirect a product write.
 2. **TanStack Query** — all server state. The key factory is
    `app/src/lib/query/keys.ts` for ALL domains — never inline key arrays;
    mutations invalidate by key prefix. **Only `stacKeys` includes the catalog
