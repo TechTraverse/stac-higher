@@ -410,7 +410,7 @@ function SourcesCard({ id, canMutate }: { id: string; canMutate: boolean }) {
         {canMutate && (
           <form onSubmit={add} className="grid gap-3 border-t border-border pt-4">
             <div className="grid gap-2">
-              <Label htmlFor="source-collection">Source collection</Label>
+              <Label htmlFor="source-collection">Source product</Label>
               <Input
                 id="source-collection"
                 value={collectionId}
@@ -489,7 +489,7 @@ function OutputsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
         {isLoading && <LoadingState message="Loading outputs…" />}
         {outputs?.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            No output collection yet — runs would have nowhere to publish.
+            No output product yet — runs would have nowhere to publish.
           </p>
         )}
         {outputs?.map((output) => (
@@ -516,7 +516,7 @@ function OutputsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
         {canMutate && (
           <form onSubmit={add} className="grid gap-3 border-t border-border pt-4">
             <div className="grid gap-2">
-              <Label htmlFor="output-collection">Output collection</Label>
+              <Label htmlFor="output-collection">Output product</Label>
               <Input
                 id="output-collection"
                 value={collectionId}

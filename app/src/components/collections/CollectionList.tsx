@@ -47,15 +47,19 @@ function CollectionListInner() {
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold">Collections</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              {collections.length} collection{collections.length !== 1 ? "s" : ""} available
+            <h1 className="text-2xl font-bold tracking-tight">
+              {catalog?.builtIn ? "Products" : "Collections"}
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {collections.length}{" "}
+              {catalog?.builtIn ? "product" : "collection"}
+              {collections.length !== 1 ? "s" : ""} in {catalog?.name ?? "this catalog"}
             </p>
           </div>
           <a href="/collections/new">
             <Button>
               <Plus className="h-4 w-4 mr-1.5" />
-              Create Collection
+              {catalog?.builtIn ? "Create product" : "Create Collection"}
             </Button>
           </a>
         </div>
@@ -64,7 +68,7 @@ function CollectionListInner() {
           <div className="relative mb-6">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search collections..."
+              placeholder={`Search ${catalog?.builtIn ? "products" : "collections"}...`}
               className="pl-9"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -90,7 +94,10 @@ function CollectionListInner() {
             icon={Layers}
             title="No collections yet"
             description="Create your first STAC collection to get started."
-            action={{ label: "Create Collection", href: "/collections/new" }}
+            action={{
+              label: catalog?.builtIn ? "Create product" : "Create Collection",
+              href: "/collections/new",
+            }}
           />
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

@@ -376,7 +376,7 @@ function ProcessesContent() {
           title="No processes yet"
           description={
             canMutate
-              ? "Create one, deploy a revision, then attach a source collection."
+              ? "Create one, deploy a revision, then attach a source product."
               : "No processes are visible to your groups."
           }
         />

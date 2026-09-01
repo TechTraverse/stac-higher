@@ -64,7 +64,7 @@ function FlowRow({
           </Badge>
           <a
             href={`/collections/${encodeURIComponent(flow.collection_id)}`}
-            className="text-sm font-medium hover:underline"
+            className="tech text-[13px] font-medium hover:underline"
           >
             {flow.collection_id}
           </a>
@@ -93,11 +93,13 @@ function FlowRow({
                   variant={
                     status === "failed" || status === "dead"
                       ? "destructive"
-                      : status === "delivered"
-                        ? "default"
-                        : "secondary"
+                      : "secondary"
                   }
-                  className="text-[10px]"
+                  className={
+                    status === "delivered"
+                      ? "border-success-border bg-success-subtle text-[10px] text-success"
+                      : "text-[10px]"
+                  }
                 >
                   {status} {stats.counts[status]}
                 </Badge>
@@ -110,7 +112,12 @@ function FlowRow({
         {window === null ? (
           <span className="text-xs text-muted-foreground">no expectation</span>
         ) : late || onTimeKnown ? (
-          <Badge variant={late ? "destructive" : "default"}>
+          <Badge
+            variant={late ? "destructive" : "secondary"}
+            className={
+              late ? "" : "border-success-border bg-success-subtle text-success"
+            }
+          >
             {late ? "late" : "on time"} ·{" "}
             {flow.direction === "ingest" ? "activity ≤" : "deliver ≤"} {window}s
           </Badge>
@@ -154,7 +161,7 @@ export function FlowsCard() {
           <EmptyState
             icon={Waves}
             title="No data flows"
-            description="Wire a connection to a collection from its Data flow tab to see ingest and delivery telemetry here."
+            description="Wire a connection to a product from its Data flow tab to see ingest and delivery telemetry here."
           />
         ) : (
           <div className="grid gap-2">

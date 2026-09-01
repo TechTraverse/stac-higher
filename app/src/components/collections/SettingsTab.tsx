@@ -226,7 +226,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
             <Label htmlFor="settings-writable">Externally writable</Label>
             <p className="text-xs text-muted-foreground">
               Allow external clients (direct bearer auth at the proxy) to write
-              to this collection.
+              to this product.
             </p>
           </div>
           <Switch
@@ -286,7 +286,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
           <div>
             <Label htmlFor="settings-archived">Archived</Label>
             <p className="text-xs text-muted-foreground">
-              Mark this collection archived (ADR 0009): item writes and new
+              Mark this product archived (ADR 0009): item writes and new
               associations are refused, and the retention sweep expires every
               item (assets collected after the grace window).
             </p>
@@ -308,7 +308,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
                 OGC serving
               </Label>
               <p className="text-xs text-muted-foreground">
-                Advertise this collection's OGC API endpoints (raster tiles via
+                Advertise this product's OGC API endpoints (raster tiles via
                 titiler-pgstac; vector features/tiles via tipg). Link-level
                 only: until per-collection read visibility lands (I-1), the
                 serving services are effectively public — enable this only for
@@ -384,14 +384,14 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
               <DialogTitle className="flex items-center gap-2">
                 <TriangleAlert className="h-5 w-5 text-destructive" />
                 {confirm?.archiving
-                  ? "Archive this collection?"
+                  ? "Archive this product?"
                   : "Enable retention?"}
               </DialogTitle>
               <DialogDescription data-testid="settings-impact">
                 {confirm?.archiving
                   ? confirm.impact.total_items === null
-                    ? "Every item in this collection will be deleted (count unavailable)."
-                    : `All ${confirm.impact.total_items} items in this collection will be deleted from the catalog.`
+                    ? "Every item in this product will be deleted (count unavailable)."
+                    : `All ${confirm.impact.total_items} items in this product will be deleted from the catalog.`
                   : confirm?.impact.expired_items === null
                     ? `Items older than ${retentionParsed} days will be deleted (count unavailable).`
                     : `${confirm?.impact.expired_items} of ${confirm?.impact.total_items} items are already older than ${retentionParsed} days and will be deleted by the first sweep.`}{" "}
@@ -409,7 +409,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
                 data-testid="settings-confirm"
                 onClick={doSave}
               >
-                {confirm?.archiving ? "Archive collection" : "Enable retention"}
+                {confirm?.archiving ? "Archive product" : "Enable retention"}
               </Button>
             </DialogFooter>
           </DialogContent>

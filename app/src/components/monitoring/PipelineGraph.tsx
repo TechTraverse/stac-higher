@@ -246,7 +246,7 @@ function GraphContent() {
       <EmptyState
         icon={Share2}
         title="Nothing wired yet"
-        description="Connections, ingest and delivery associations, and processes appear here once they exist."
+        description="Connections, sources and destinations, and processes appear here once they exist."
       />
     );
   }
