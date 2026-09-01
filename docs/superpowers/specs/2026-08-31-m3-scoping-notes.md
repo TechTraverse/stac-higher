@@ -928,3 +928,132 @@ One slice, "bounded-memory byte path", with three verifiable parts:
    deployment can size against its box rather than an emergent property.
 
 Sequence it **with or before** the concurrency raise (S-C), never after.
+
+---
+
+## M3-S-F · Queue-backend headroom — RESULTS (2026-09-01)
+
+The brief called this "paper only". It is mostly paper, and the paper answer is
+reassuring — but a live check of the queue's own tables turned up the one thing
+about Procrastinate that *does* threaten the shared Postgres at M3 scale, and
+it is not throughput.
+
+### Jobs per second at the M3 budget
+
+From M3-S-A's structural count, per **item**:
+
+| leg | jobs per item |
+|---|---:|
+| ingest | **2** (`ingest_fetch`, `ingest_itemize`) |
+| delivery | **1 per destination** (`deliver`) |
+| dispatch | batched — 1 job per tick, not per item |
+| finalize / process runs | batched — 1 job per batch |
+| DISCOVER / GROUP | 1 each per association per poll tick |
+
+At the settled budget — 30 items/s ingest-origin + 30 items/s process output,
+one delivery destination each:
+
+```
+ingest         30 × 2 =  60 jobs/s
+deliver        60 × 1 =  60 jobs/s
+process runs   30 / 10 =  3 jobs/s   (batch 10)
+periodic ticks         ≈  0.3 jobs/s (≈15 tasks, mostly per minute)
+                        ─────────────
+                        ≈ 125 jobs/s
+```
+
+### Measured Procrastinate costs (live, this stack)
+
+| operation | ms each | per second |
+|---|---:|---:|
+| defer, one statement each | 0.207 | **4,830** |
+| defer, `executemany` (the `batch_defer` shape) | 0.025 | **40,766** |
+| `procrastinate_fetch_job_v2` (claim, one at a time, committed) | 0.520 | **1,923** |
+
+The claim is the tighter side, as expected — it is the contended one. **125
+jobs/s against ~1,900 claims/s is ~7% utilisation.**
+
+`enqueue_batch` already uses `batch_defer_async`, so the enqueue side is on the
+40k/s path rather than the 4.8k/s one wherever it matters.
+
+**Verdict: Procrastinate has roughly an order of magnitude of throughput
+headroom at the M3 budget on a single shared Postgres.** The comfort ceiling
+sits around **~1,000 jobs/s** (half the measured claim rate, leaving room for
+the application's own ~840 writes/s from M3-S-D on the same instance) — i.e.
+around **8× the M3 budget**. Nothing here argues for SQS in M3, and the number
+Phase 8 wants for its Procrastinate→SQS boundary is: *a deployment sustaining
+more than a few hundred items/s of catalog write, or one that cannot give the
+queue its own Postgres.*
+
+Two caveats on the number: it was measured single-connection and serial, so it
+is a floor, not a peak; and it was measured on an idle instance, so real
+contention with the application's writes will reduce it.
+
+### The real risk: nothing prunes the queue's tables
+
+Live, after the S-A load runs (a few thousand items):
+
+```
+procrastinate_jobs      25,087 rows (25,087 succeeded, 45 failed)   7,952 kB
+procrastinate_events    75,396 rows  =  3 events per job            8,656 kB
+```
+
+**Every finished job and its three status events are retained forever.**
+Nothing in this repo prunes them: M2-G's `history_retention` sweep (ADR 0012)
+covers `item_events`, `audit_log`, `delivery_log`, `ingest_files` and
+`connection_checks` — the *application's* tables — and says nothing about the
+queue's.
+
+At ~660 bytes per job across both tables:
+
+| rate | rows/day | growth/day |
+|---|---:|---:|
+| 125 jobs/s (M3 budget) | 43.2M | **~7.1 GB/day** |
+
+That is larger than every application table combined, on the same instance the
+catalog is on, growing without bound — and it degrades the claim path, since
+`procrastinate_fetch_job_v2` works against a table that is 99.9% dead rows.
+
+The facility exists and is simply not configured:
+- `JobManager.delete_old_jobs(...)` — a Python-side prune, the natural fit for
+  a periodic job alongside the M2-G sweep.
+- `Worker(delete_jobs=...)` — a deletion policy applied as jobs finish
+  (`never` today, by omission).
+
+**Recommend `delete_jobs` on the worker for the succeeded path plus a periodic
+`delete_old_jobs` for the stragglers**, so the steady state is bounded by
+retention rather than by uptime. Note the trade: deleting finished jobs removes
+the per-job history an operator might want when debugging a failure, so the
+policy should keep failures. That is exactly what a "successful only" policy
+does.
+
+This belongs in M3, not Phase 8: it is a consequence of the *rate*, and M3 is
+the milestone that creates the rate.
+
+### LISTEN/NOTIFY
+
+The defer path fires `procrastinate_notify_queue_job_inserted_v1` per insert —
+~125 NOTIFYs/s at budget. Postgres handles that comfortably (NOTIFY is cheap
+and the payload is empty); it is also the wake path that keeps the worker off
+its 5 s poll floor. No action, but it is a reason **not** to batch defers so
+aggressively that wakes become rare — latency, not throughput.
+
+### M2-G sweep load
+
+`history_retention` is hourly and conservative by design (ADR 0012). At M3
+rates its per-run working set grows with the tables it prunes; nothing measured
+here suggests it needs to change, but it should be re-checked once the M3
+implementation raises the write rate, since ADR 0012 sized it against a much
+smaller platform.
+
+### Recommendation to M3-S-G
+
+1. **No queue-backend change in M3.** ~7% utilisation with ~8× headroom to a
+   conservative ceiling. Record the number so Phase 8's Procrastinate→SQS
+   boundary is an argument rather than a preference.
+2. **Add queue-table retention** (`delete_jobs` policy + a periodic
+   `delete_old_jobs`), keeping failures. Unbounded growth of ~7 GB/day is the
+   only queue-side finding that bites at M3 scale.
+3. **Re-run this arithmetic at the chosen concurrency** (M3-S-C): the job rate
+   above is a property of the workload, not of concurrency, but the *claim*
+   rate is contended and its measured ceiling was single-connection.
