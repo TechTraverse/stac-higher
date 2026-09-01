@@ -59,7 +59,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       Fix `app/src/components/items/ItemGeometryEditor.tsx` hardcoded
       dark-matter basemap → wire to `$theme` like `StacMap`. Existing pages
       may look transitional under old layout — acceptable for this slice.
-- [ ] **UI-2 · AppShell: sidebar + top bar.** [e2e-touch]
+- [x] **UI-2 · AppShell: sidebar + top bar.** [e2e-touch]
       `npx shadcn@latest add sidebar` (deps sheet/separator/tooltip already
       present; goes to `app/src/components/ui/`). Build in
       `app/src/components/layout/`: `AppShell.tsx` (QueryProvider + sidebar
@@ -183,3 +183,26 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
 - The dev-server `optimizeDeps` fix carried in from the working tree
   (c99346b) lists client island deps explicitly; **CodeMirror 6 must be added
   to that list in UI-5**, or the editor island will 504 on first load.
+
+**From UI-2:**
+- **E2E has not run since the shell landed.** `connections.spec.ts`,
+  `processes.spec.ts` and `monitoring.spec.ts` navigate by sidebar link and
+  `extension-forms.spec.ts` scopes comboboxes by placeholder; selectors were
+  updated in-slice but only reasoned about, never executed. Ask the lead to
+  schedule a run (M3 session owns Docker/e2e) — ideally before UI-5/UI-6 pile
+  more selector churn on top.
+- `AppShell` does NOT use shadcn's `SidebarInset` (which renders a `<main>`)
+  because each island already owns its `<main>`. If a later slice
+  restructures islands to drop theirs, switch to `SidebarInset` then.
+- The top bar's title is route-derived (`ROUTE_TITLES` in `TopBar.tsx`); the
+  `AppShell title` prop overrides it but nothing passes one yet. Home shows
+  "Products" in the bar while `DashboardPage` still renders its own
+  `<h1>Dashboard</h1>` — UI-3 should drop that duplicate heading (or pass an
+  explicit title). Add a `ROUTE_TITLES` row whenever a route is added.
+- Global search matches products/connections/processes by name/id only; a
+  connection has no `direction` on `ApiConnection` (direction lives on the
+  association), so the hit detail shows the protocol. Relevant to UI-3's
+  connection-health strip and UI-6's direction-first framing: direction must
+  come from `/api/monitoring/flows` or the associations, not the connection.
+- `app/src/hooks/use-mobile.ts` arrived with the shadcn sidebar — first file
+  in `app/src/hooks/`. Non-primitive, safe to edit.
