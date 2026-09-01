@@ -202,11 +202,15 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
         `extension-roundtrip` reworked; `catalogs.spec.ts` rewritten around
         Browse/Platform instead of Set Active/Active.
 
-- [ ] **UI-11 · Unit-test `overview.ts` (closes I-88).**
-      Health ranking, alert attribution and lineage grouping are pure functions
-      over plain data feeding three surfaces, with no tests. Follow the
-      `new-test` skill; cover `buildProductRows` ordering/verdicts,
-      `buildConnectionChips`, `successRate`, `unanchoredAlerts`.
+- [x] **UI-11 · Unit-test `overview.ts` (closes I-88).**
+      `app/src/__tests__/overview.test.ts` — 27 cases over
+      `buildConnectionChips` (direction joined from flows, health ranking,
+      alert override, acknowledged→warn), `buildProductRows` (the four health
+      branches, the three attribution paths, unattributed alerts, lineage
+      grouping and roll-up, ingest-only item counts), `buildStats`,
+      `successRate` (per-direction numerator/denominator, null when
+      unmeasured) and `unanchoredAlerts`. Mutation-checked: breaking `worse()`
+      fails three of them.
 
 - [ ] **UI-12 · Storybook CSS + font entry (closes I-85).**
       Add a `.storybook/preview` CSS entry mirroring `app/src/styles/app.css`:
@@ -427,6 +431,17 @@ now tracked as **UI-13** above.
   graph / monitoring are full-width. That is deliberate (reading width for
   lists and forms, full width for telemetry), but it is a judgment call a
   designer may want to revisit.
+
+**From UI-11:**
+- **`buildProductRows`' `lateFlow` branch is unreachable.** `isLate` matches an
+  association-anchored alert that is not resolved — exactly the set the `own`
+  filter has already claimed as firing or acknowledged, so one of those two
+  branches always hits first. The verdict is `warn` either way, so nothing is
+  wrong today; deleting the branch (or making it the source of a better reason
+  string than "(acknowledged)") is a behavior decision, not a test-slice one.
+- The tests fix `alertKindLabel`'s exact strings (e.g. `"ingest inactivity"`,
+  lowercase). Renaming a label in `components/monitoring/shared.ts` will fail
+  them — which is the point: three surfaces render those strings.
 
 **From UI-10:**
 - **The catalog browser is read-only by construction, not by a flag.** There is
