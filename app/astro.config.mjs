@@ -15,6 +15,14 @@ export default defineConfig({
   adapter: node({ mode: 'standalone' }),
   integrations: [react()],
 
+  // The dev toolbar is a fixed, bottom-centre overlay, and Playwright's clicks
+  // land on it instead of whatever sits underneath — `extensions.spec.ts`'s
+  // "Update Extension" button retried 57 times against
+  // `<astro-dev-toolbar> intercepts pointer events`. Astro exposes no env
+  // switch, so the Playwright webServer sets E2E=1 and we disable it there
+  // only; ordinary `npm run dev` keeps the toolbar.
+  devToolbar: { enabled: process.env.E2E !== '1' },
+
   vite: {
     plugins: [/** @type {import('vite').PluginOption} */ (tailwindcss())],
     resolve: {

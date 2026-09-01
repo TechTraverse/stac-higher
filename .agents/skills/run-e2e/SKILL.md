@@ -49,6 +49,13 @@ error line each. Don't dump the report directory.
 
 ## Gotchas (each of these has burned an agent before)
 
+- **Astro's dev toolbar swallows clicks.** It is a fixed bottom-centre overlay,
+  so a control underneath it is unclickable and the failure reads like a broken
+  selector (`<astro-dev-toolbar> intercepts pointer events`, dozens of click
+  retries). `playwright.config.ts` sets `E2E=1` on its webServer and
+  `astro.config.mjs` disables the toolbar on that signal — but only for a
+  server Playwright STARTS. Running against an already-running dev server
+  (`reuseExistingServer`) keeps the toolbar and can still hit this.
 - **Astro 7 daemonizes `astro dev` under AI agents**: it auto-detects agent
   environments and backgrounds the server (parent exits → Playwright reports
   "webServer exited early", and an orphaned server holds the port —
