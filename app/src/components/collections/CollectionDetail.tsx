@@ -3,8 +3,7 @@ import { useStore } from "@nanostores/react";
 import { $activeCatalog } from "@/stores/catalogStore";
 import { useCollection, useDeleteCollection } from "@/lib/query/collections";
 import { useItems } from "@/lib/query/items";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { JsonViewer } from "@stac-higher/shared";
 import { ErrorState } from "@stac-higher/shared";
 import { Skeleton } from "@stac-higher/shared";
@@ -75,7 +74,6 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
   if (isLoading) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6 max-w-6xl mx-auto w-full space-y-6">
           <Skeleton className="h-4 w-48" />
           <div className="flex items-start justify-between">
@@ -102,7 +100,6 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
   if (error || !collection) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
           <ErrorState
             message={error instanceof Error ? error.message : "Collection not found"}
@@ -119,7 +116,6 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
 
   return (
     <>
-      <Header />
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors inline-flex items-center gap-1">
@@ -378,8 +374,8 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
 
 export function CollectionDetailPage({ collectionId }: { collectionId: string }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <CollectionDetailInner collectionId={collectionId} />
-    </QueryProvider>
+    </AppShell>
   );
 }

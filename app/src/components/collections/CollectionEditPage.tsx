@@ -1,8 +1,7 @@
 import { useStore } from "@nanostores/react";
 import { $activeCatalog } from "@/stores/catalogStore";
 import { useCollection } from "@/lib/query/collections";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { CollectionFormPage } from "./CollectionForm";
 import { LoadingState } from "@stac-higher/shared";
 import { ErrorState } from "@stac-higher/shared";
@@ -15,7 +14,6 @@ function CollectionEditInner({ collectionId }: { collectionId: string }) {
   if (isLoading) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6">
           <LoadingState />
         </main>
@@ -26,7 +24,6 @@ function CollectionEditInner({ collectionId }: { collectionId: string }) {
   if (error || !data) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
           <ErrorState
             message={error instanceof Error ? error.message : "Collection not found"}
@@ -42,8 +39,8 @@ function CollectionEditInner({ collectionId }: { collectionId: string }) {
 
 export function CollectionEditPage({ collectionId }: { collectionId: string }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <CollectionEditInner collectionId={collectionId} />
-    </QueryProvider>
+    </AppShell>
   );
 }

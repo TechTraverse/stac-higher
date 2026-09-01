@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useExtensions } from "@/lib/extensions/queries";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { LoadingState } from "@stac-higher/shared";
 import { EmptyState } from "@stac-higher/shared";
 import { ErrorState } from "@stac-higher/shared";
@@ -106,7 +105,6 @@ function ExtensionListInner() {
 
   return (
     <>
-      <Header />
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center justify-between mb-6">
           <div>
@@ -177,8 +175,8 @@ function ExtensionListInner() {
 
 export function ExtensionListPage() {
   return (
-    <QueryProvider>
+    <AppShell>
       <ExtensionListInner />
-    </QueryProvider>
+    </AppShell>
   );
 }

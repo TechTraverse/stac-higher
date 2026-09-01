@@ -2,8 +2,7 @@ import { useState } from "react";
 import { useStore } from "@nanostores/react";
 import { $activeCatalog } from "@/stores/catalogStore";
 import { useItem, useDeleteItem } from "@/lib/query/items";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { JsonViewer } from "@stac-higher/shared";
 import { ErrorState } from "@stac-higher/shared";
 import { Skeleton } from "@stac-higher/shared";
@@ -70,7 +69,6 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
   if (isLoading) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6 max-w-6xl mx-auto w-full space-y-6">
           <Skeleton className="h-4 w-64" />
           <div className="flex items-start justify-between">
@@ -103,7 +101,6 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
   if (error || !item) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
           <ErrorState
             message={error instanceof Error ? error.message : "Item not found"}
@@ -120,7 +117,6 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
 
   return (
     <>
-      <Header />
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors">
@@ -368,8 +364,8 @@ export function ItemDetailPage({
   itemId: string;
 }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <ItemDetailInner collectionId={collectionId} itemId={itemId} />
-    </QueryProvider>
+    </AppShell>
   );
 }

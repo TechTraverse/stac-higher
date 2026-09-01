@@ -11,7 +11,7 @@ test.describe("Connections page", () => {
     await page.goto("/connections");
   });
 
-  test("is reachable from the header nav", async ({ page }) => {
+  test("is reachable from the sidebar nav", async ({ page }) => {
     await page.goto("/catalogs");
     await page.getByRole("link", { name: "Connections" }).click();
     await expect(

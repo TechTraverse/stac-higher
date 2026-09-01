@@ -4,8 +4,7 @@
  * Operator-only verbs render only for operator/admin identities (the server
  * guard enforces regardless).
  */
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { useAuthMe } from "@/lib/query/auth";
 import { AlertsCard } from "./AlertsCard";
 import { FlowsCard } from "./FlowsCard";
@@ -20,7 +19,6 @@ function MonitoringInner() {
 
   return (
     <>
-      <Header />
       <main className="mx-auto w-full max-w-5xl flex-1 p-6">
         <div className="mb-6">
           <h1 className="text-2xl font-bold">Monitoring</h1>
@@ -40,8 +38,8 @@ function MonitoringInner() {
 
 export function MonitoringPage() {
   return (
-    <QueryProvider>
+    <AppShell>
       <MonitoringInner />
-    </QueryProvider>
+    </AppShell>
   );
 }

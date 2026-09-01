@@ -1,6 +1,5 @@
 import { useMemo } from "react";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import {
   Badge,
   Card,
@@ -205,8 +204,7 @@ function GraphContent() {
 
 export function PipelineGraphPage() {
   return (
-    <QueryProvider>
-      <Header />
+    <AppShell>
       <div className="container mx-auto px-4 py-8 space-y-6">
         <div>
           <h1 className="text-3xl font-bold">Pipeline</h1>
@@ -217,7 +215,7 @@ export function PipelineGraphPage() {
         </div>
         <GraphContent />
       </div>
-    </QueryProvider>
+    </AppShell>
   );
 }
 

@@ -6,8 +6,7 @@ import { useItems } from "@/lib/query/items";
 import { stacKeys } from "@/lib/query/keys";
 import { createItem } from "@/lib/stac-api/items";
 import type { StacItem } from "@/lib/stac-api/types";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { ItemCard } from "@stac-higher/shared";
 import { StacMap } from "@stac-higher/shared";
 import { FootprintLayer } from "@stac-higher/shared";
@@ -114,7 +113,6 @@ function ItemListInner({ collectionId }: ItemListInnerProps) {
 
   return (
     <>
-      <Header />
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors">
@@ -276,8 +274,8 @@ function ItemListInner({ collectionId }: ItemListInnerProps) {
 
 export function ItemListPage({ collectionId }: { collectionId: string }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <ItemListInner collectionId={collectionId} />
-    </QueryProvider>
+    </AppShell>
   );
 }

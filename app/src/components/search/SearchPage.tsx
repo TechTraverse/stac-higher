@@ -4,8 +4,8 @@ import { $activeCatalog } from "@/stores/catalogStore";
 import { useCollections } from "@/lib/query/collections";
 import { useStacSearch } from "@/lib/query/search";
 import type { StacSearchBody } from "@/lib/stac-api/types";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
+import { CatalogSelector } from "@/components/catalogs/CatalogSelector";
 import { StacMap } from "@stac-higher/shared";
 import { FootprintLayer } from "@stac-higher/shared";
 import { ItemCard } from "@stac-higher/shared";
@@ -95,9 +95,12 @@ function SearchInner() {
 
   return (
     <>
-      <Header />
-      <main className="flex-1 flex flex-col lg:flex-row lg:overflow-hidden lg:h-[calc(100vh-3.5rem)]">
+      <main className="flex-1 flex flex-col lg:flex-row lg:overflow-hidden lg:min-h-0">
         <div className="w-full lg:w-[380px] shrink-0 lg:border-r border-b lg:border-b-0 border-border lg:overflow-y-auto p-4 space-y-4">
+          {/* The CatalogSelector left the app shell in UI-2 — search is
+              catalog-context, so the selector renders here. */}
+          <CatalogSelector />
+
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Search</h2>
             {searchParams && (
@@ -281,8 +284,8 @@ function SearchInner() {
 
 export function SearchPageComponent() {
   return (
-    <QueryProvider>
+    <AppShell>
       <SearchInner />
-    </QueryProvider>
+    </AppShell>
   );
 }

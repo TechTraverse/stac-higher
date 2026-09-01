@@ -11,8 +11,7 @@ import {
   useCreateExtension,
   useUpdateExtension,
 } from "@/lib/extensions/queries";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { Button, JsonViewer } from "@stac-higher/shared";
 import { ArrowLeft, Save } from "lucide-react";
 import { toast } from "sonner";
@@ -81,7 +80,6 @@ function ExtensionFormInner({ existingExtension }: ExtensionFormInnerProps) {
 
   return (
     <>
-      <Header />
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a
@@ -142,8 +140,8 @@ export function ExtensionFormPage({
   existingExtension?: StacExtension;
 }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <ExtensionFormInner existingExtension={existingExtension} />
-    </QueryProvider>
+    </AppShell>
   );
 }

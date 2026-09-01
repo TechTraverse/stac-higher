@@ -12,8 +12,7 @@ import {
   type CollectionFormData,
 } from "@/lib/stac-api/schemas";
 import type { StacCollection } from "@/lib/stac-api/types";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { JsonViewer } from "@stac-higher/shared";
 import { BboxInput } from "@stac-higher/shared";
 import { StacMap } from "@stac-higher/shared";
@@ -239,7 +238,6 @@ function CollectionFormInner({ existingCollection }: CollectionFormInnerProps) {
 
   return (
     <>
-      <Header />
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors inline-flex items-center gap-1">
@@ -633,8 +631,8 @@ export function CollectionFormPage({
   existingCollection?: StacCollection;
 }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <CollectionFormInner existingCollection={existingCollection} />
-    </QueryProvider>
+    </AppShell>
   );
 }

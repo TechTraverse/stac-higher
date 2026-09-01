@@ -6,8 +6,7 @@ import { useCreateItem, useUpdateItem } from "@/lib/query/items";
 import { itemFormSchema, type ItemFormData } from "@/lib/stac-api/schemas";
 import type { StacItem } from "@/lib/stac-api/types";
 import { geometryToBbox } from "@/lib/map/bbox";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { ItemGeometryEditor } from "./ItemGeometryEditor";
 import { AssetUpload } from "./AssetUpload";
 import { JsonViewer } from "@stac-higher/shared";
@@ -181,7 +180,6 @@ function ItemFormInner({ collectionId, existingItem }: ItemFormInnerProps) {
 
   return (
     <>
-      <Header />
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors">
@@ -497,8 +495,8 @@ export function ItemFormPage({
   existingItem?: StacItem;
 }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <ItemFormInner collectionId={collectionId} existingItem={existingItem} />
-    </QueryProvider>
+    </AppShell>
   );
 }

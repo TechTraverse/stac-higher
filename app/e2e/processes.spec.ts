@@ -13,7 +13,7 @@ import { test, expect } from "@playwright/test";
  * to the M5-G gate rehearsal, not to a suite that runs against a shared DB.
  */
 test.describe("Processes", () => {
-  test("is reachable from the header nav", async ({ page }) => {
+  test("is reachable from the sidebar nav", async ({ page }) => {
     await page.goto("/catalogs");
     await page.getByRole("link", { name: "Processes" }).click();
     await expect(
@@ -47,9 +47,9 @@ test.describe("Processes", () => {
 });
 
 test.describe("Pipeline graph", () => {
-  test("is reachable from the header nav", async ({ page }) => {
+  test("is reachable from the sidebar nav", async ({ page }) => {
     await page.goto("/catalogs");
-    await page.getByRole("link", { name: "Pipeline" }).click();
+    await page.getByRole("link", { name: "Pipeline graph" }).click();
     await expect(
       page.getByRole("heading", { name: "Pipeline", level: 1 }),
     ).toBeVisible();

@@ -1,6 +1,5 @@
 import { useExtension } from "@/lib/extensions/queries";
-import { QueryProvider } from "@/components/layout/QueryProvider";
-import { Header } from "@/components/layout/Header";
+import { AppShell } from "@/components/layout/AppShell";
 import { ExtensionFormPage } from "./ExtensionForm";
 import { LoadingState } from "@stac-higher/shared";
 import { ErrorState } from "@stac-higher/shared";
@@ -11,7 +10,6 @@ function ExtensionEditInner({ extensionId }: { extensionId: string }) {
   if (isLoading) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6">
           <LoadingState />
         </main>
@@ -22,7 +20,6 @@ function ExtensionEditInner({ extensionId }: { extensionId: string }) {
   if (error || !data) {
     return (
       <>
-        <Header />
         <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
           <ErrorState
             message={error instanceof Error ? error.message : "Extension not found"}
@@ -38,8 +35,8 @@ function ExtensionEditInner({ extensionId }: { extensionId: string }) {
 
 export function ExtensionEditPage({ extensionId }: { extensionId: string }) {
   return (
-    <QueryProvider>
+    <AppShell>
       <ExtensionEditInner extensionId={extensionId} />
-    </QueryProvider>
+    </AppShell>
   );
 }

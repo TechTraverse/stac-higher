@@ -137,13 +137,15 @@
   --color-chart-4: #e08a4d;
   --color-chart-5: #93a9c0;
 
-  --color-sidebar: #081b2e;
+  /* The rail keeps the light theme's navy: against the darker #0b1f35 page
+     it reads as a distinct band, where a darker rail merged into the page. */
+  --color-sidebar: #0d2a47;
   --color-sidebar-foreground: #9fb3c8;
   --color-sidebar-primary: #4a9bd6;
   --color-sidebar-primary-foreground: #ffffff;
-  --color-sidebar-accent: #14304d;
+  --color-sidebar-accent: #1b456f;
   --color-sidebar-accent-foreground: #ffffff;
-  --color-sidebar-border: #16324d;
+  --color-sidebar-border: #1d4066;
   --color-sidebar-ring: #4a9bd6;
   --color-sidebar-muted: #6e86a0;
 }

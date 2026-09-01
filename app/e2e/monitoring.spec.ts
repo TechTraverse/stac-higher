@@ -12,7 +12,7 @@ test.describe("Monitoring page", () => {
     await page.goto("/monitoring");
   });
 
-  test("is reachable from the header nav and shows the bell", async ({
+  test("is reachable from the sidebar nav and shows the bell", async ({
     page,
   }) => {
     await page.goto("/catalogs");
