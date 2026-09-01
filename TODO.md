@@ -58,7 +58,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
       items/day + 1× process output: size-distribution assumptions, copy vs
       reference split, storage growth vs retention, GC bulk-path check.
       Append to the scoping notes; feeds S-E's decision.
-- [ ] **M3-S-C · concurrency & HA plan (I-40).** Scale-workers-only vs
+- [x] **M3-S-C · concurrency & HA plan (I-40).** Scale-workers-only vs
       leader election vs partitioned ownership, decided from S-A's numbers;
       audit `ingest_files` transitions for multi-worker atomicity the way
       `item_events` claims already are. Bias: if the singleton dispatcher
