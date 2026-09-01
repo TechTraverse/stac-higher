@@ -104,7 +104,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       `LineageStrip` component (packages/shared — pure props: ordered
       node groups + health, size variant mini|medium|full) with the mini
       variant; app-side adapter builds props from graph/flows data.
-- [ ] **UI-4 · Product Overview tab.**
+- [x] **UI-4 · Product Overview tab.**
       In `CollectionDetail.tsx`: add a default **Overview** tab (built-in
       catalog collections; external catalogs keep current default): title +
       health badge (30d success % from `useFlowHistory` where available,
@@ -234,3 +234,26 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
   alert attribution, lineage grouping). It is the most logic-heavy UI module
   in the remodel and is pure functions over plain data — cheap to cover, and
   worth a `new-test` pass in UI-8 or UI-9.
+
+**From UI-4:**
+- The Overview tab already existed and was rebuilt, not added: the product
+  panel is prepended for built-in catalogs and the original STAC metadata
+  (description / extents / license / providers) still renders below it. If a
+  later slice wants those restructured, that is a separate decision.
+- `CollectionDetail`'s `Tabs` is now CONTROLLED (`tab` / `setTab`) so the
+  Overview panel can hand off to Data flow. Anything adding a tab must add it
+  to that state's vocabulary, and a deep link to a tab still isn't supported
+  (no hash/query sync) — worth doing if the e2e suite or docs ever want to
+  link straight to Settings or Data flow.
+- The 30d success % covers only the PRIMARY association (first ingest, else
+  first flow). A product with several flows shows one flow's rate. A truthful
+  product-wide number needs either N history requests or a rollup the API
+  doesn't expose; revisit only if operators ask.
+- `PUBLIC_TITILER_URL` / `PUBLIC_TIPG_URL` are read with compose defaults
+  baked in. They are not declared in an `env.d.ts` — if one is added later,
+  declare both there.
+- `successRate` and `unanchoredAlerts` live in
+  `app/src/components/layout/overview.ts` alongside the home derivations. If
+  that file keeps growing, `app/src/lib/overview/` is the better home — but
+  keep ONE module: the whole point is that home and the product page cannot
+  disagree.
