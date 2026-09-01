@@ -33,7 +33,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
       side: list containers by the `stac-higher.run-id` label through the
       socket proxy, reap those whose run row is terminal or whose age exceeds
       the run timeout + slack. Pipeline-only; pytest with a fake executor.
-- [ ] **M3-W-2 · env editor + secret-ref picker + docs.** The `env` contract
+- [x] **M3-W-2 · env editor + secret-ref picker + docs.** The `env` contract
       (fixture `process-env.json`: `{name, value}` | `{name, secret_ref:
       {connection_id, key}}`) round-trips through storage and deploy, but the
       UI deploys `env: []` and `docs/processes.md` never mentions env or
