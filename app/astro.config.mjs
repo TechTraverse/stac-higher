@@ -25,5 +25,46 @@ export default defineConfig({
         '@shared': path.resolve(__dirname, '../packages/shared/src'),
       },
     },
+    optimizeDeps: {
+      // Every page mounts its React island with `client:only="react"`, so Vite's
+      // dep scanner never traverses into island code and starts the dev server
+      // with only astro/react pre-bundled. These deps are then discovered one at
+      // a time at request time; each discovery re-runs the optimizer and bumps
+      // `browserHash`, while already-cached module transforms keep emitting the
+      // previous generation's `/node_modules/.vite/deps/x.js?v=<old>` URLs. Those
+      // URLs answer `504 Outdated Optimize Dep` with an empty content-type, which
+      // the browser reports as NS_ERROR_CORRUPTED_CONTENT / "disallowed MIME type"
+      // and the island fails to hydrate.
+      //
+      // Listing the client-side deps here pre-bundles them in one pass at startup,
+      // so the optimizer set is complete before the first request. Keep this in
+      // sync when a client component pulls in a new third-party package.
+      // Type-only packages (e.g. `geojson`) must NOT be listed — they have no
+      // runtime entry to pre-bundle.
+      include: [
+        'react',
+        'react-dom',
+        'react-dom/client',
+        'react-hook-form',
+        '@hookform/resolvers/zod',
+        'zod',
+        '@tanstack/react-query',
+        'nanostores',
+        '@nanostores/react',
+        '@nanostores/persistent',
+        '@rjsf/core',
+        '@rjsf/utils',
+        '@rjsf/validator-ajv8',
+        'radix-ui',
+        'lucide-react',
+        'sonner',
+        'next-themes',
+        'maplibre-gl',
+        'react-map-gl/maplibre',
+        'class-variance-authority',
+        'tailwind-merge',
+        'clsx',
+      ],
+    },
   },
 });
