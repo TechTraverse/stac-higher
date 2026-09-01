@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { useEffect } from "react";
-import { $catalogs, $activeCatalogId, type StacCatalog } from "@/stores/catalogStore";
+import { useEffect, useState } from "react";
+import { $catalogs, type StacCatalog } from "@/stores/catalogStore";
 import { CatalogSelector } from "./CatalogSelector";
 
 const mockCatalogs: StacCatalog[] = [
@@ -9,18 +9,25 @@ const mockCatalogs: StacCatalog[] = [
   { id: "cat-3", name: "Staging API", url: "https://staging.stac.example.com", isDefault: false },
 ];
 
-function withCatalogs(catalogs: StacCatalog[], activeId: string) {
+function withCatalogs(catalogs: StacCatalog[]) {
   return function CatalogDecorator(Story: React.ComponentType) {
     useEffect(() => {
       $catalogs.set(catalogs);
-      $activeCatalogId.set(activeId);
       return () => {
         $catalogs.set([]);
-        $activeCatalogId.set("");
       };
     }, []);
     return <Story />;
   };
+}
+
+/**
+ * The selector is controlled (UI-10) — the owning surface holds the selection,
+ * so the stories hold it too.
+ */
+function ControlledSelector({ initial }: { initial: string }) {
+  const [value, setValue] = useState(initial);
+  return <CatalogSelector value={value} onChange={setValue} />;
 }
 
 const meta: Meta<typeof CatalogSelector> = {
@@ -32,17 +39,21 @@ export default meta;
 type Story = StoryObj<typeof CatalogSelector>;
 
 export const NoCatalogs: Story = {
-  decorators: [withCatalogs([], "")],
+  decorators: [withCatalogs([])],
+  render: () => <ControlledSelector initial="" />,
 };
 
 export const SingleCatalog: Story = {
-  decorators: [withCatalogs([mockCatalogs[0]], "cat-1")],
+  decorators: [withCatalogs([mockCatalogs[0]])],
+  render: () => <ControlledSelector initial="cat-1" />,
 };
 
 export const MultipleCatalogs: Story = {
-  decorators: [withCatalogs(mockCatalogs, "cat-1")],
+  decorators: [withCatalogs(mockCatalogs)],
+  render: () => <ControlledSelector initial="cat-1" />,
 };
 
-export const ThirdCatalogActive: Story = {
-  decorators: [withCatalogs(mockCatalogs, "cat-3")],
+export const ThirdCatalogSelected: Story = {
+  decorators: [withCatalogs(mockCatalogs)],
+  render: () => <ControlledSelector initial="cat-3" />,
 };

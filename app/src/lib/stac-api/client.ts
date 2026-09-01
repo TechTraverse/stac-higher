@@ -1,4 +1,4 @@
-import { $activeCatalog, $catalogs } from "@/stores/catalogStore";
+import { $builtInCatalog, $catalogs } from "@/stores/catalogStore";
 import type { StacCatalog } from "@/stores/catalogStore";
 import { StacApiError } from "./types";
 
@@ -22,12 +22,15 @@ export async function stacFetch<T>(
 ): Promise<T> {
   const { method = "GET", body, signal, endpointUrl } = options;
   // Resolve the request's catalog ONCE; base URL, proxy routing, and the BFF
-  // branch all derive from it.
+  // branch all derive from it. With no explicit endpoint the request is a
+  // platform request, so it falls back to the BUILT-IN catalog — never to a
+  // browse selection (UI-10): an implicit inherit is how a product write could
+  // silently land in someone else's catalog, bypassing the ADR 0008 BFF.
   const catalog = endpointUrl
     ? getCatalogForUrl(endpointUrl)
-    : ($activeCatalog.get() ?? undefined);
+    : ($builtInCatalog.get() ?? undefined);
   if (!endpointUrl && !catalog) {
-    throw new StacApiError("No active STAC catalog configured", 0);
+    throw new StacApiError("No built-in STAC catalog configured", 0);
   }
   const baseUrl = (endpointUrl ?? catalog!.url).replace(/\/+$/, "");
   const targetUrl = `${baseUrl}${path}`;

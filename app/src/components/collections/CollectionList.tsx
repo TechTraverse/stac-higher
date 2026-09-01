@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import { useCollections } from "@/lib/query/collections";
 import { AppShell } from "@/components/layout/AppShell";
 import { CollectionCard } from "@stac-higher/shared";
@@ -12,7 +12,7 @@ import { Input } from "@stac-higher/shared";
 import { Layers, Plus, Search } from "lucide-react";
 
 function CollectionListInner() {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const endpointUrl = catalog?.url ?? "";
   const { data, isLoading, error, refetch } = useCollections(endpointUrl);
   const [search, setSearch] = useState("");
@@ -23,9 +23,9 @@ function CollectionListInner() {
         <main className="flex-1 p-6">
           <EmptyState
             icon={Layers}
-            title="No catalog configured"
-            description="Add a STAC catalog to browse collections."
-            action={{ label: "Add Catalog", href: "/catalogs" }}
+            title="Platform catalog unavailable"
+            description="The built-in catalog entry is missing. Reload the page, or check PUBLIC_BUILTIN_CATALOG_URL."
+            action={{ label: "Manage catalogs", href: "/catalogs" }}
           />
         </main>
       </>
@@ -47,19 +47,16 @@ function CollectionListInner() {
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">
-              {catalog?.builtIn ? "Products" : "Collections"}
-            </h1>
+            <h1 className="text-2xl font-bold tracking-tight">Products</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              {collections.length}{" "}
-              {catalog?.builtIn ? "product" : "collection"}
-              {collections.length !== 1 ? "s" : ""} in {catalog?.name ?? "this catalog"}
+              {collections.length} product{collections.length !== 1 ? "s" : ""} on
+              this platform
             </p>
           </div>
           <a href="/collections/new">
             <Button>
               <Plus className="h-4 w-4 mr-1.5" />
-              {catalog?.builtIn ? "Create product" : "Create Collection"}
+              Create product
             </Button>
           </a>
         </div>
@@ -68,7 +65,7 @@ function CollectionListInner() {
           <div className="relative mb-6">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder={`Search ${catalog?.builtIn ? "products" : "collections"}...`}
+              placeholder="Search products..."
               className="pl-9"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -87,17 +84,14 @@ function CollectionListInner() {
           <EmptyState
             icon={Search}
             title="No results"
-            description={`No collections match "${search}"`}
+            description={`No products match "${search}"`}
           />
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={Layers}
-            title="No collections yet"
-            description="Create your first STAC collection to get started."
-            action={{
-              label: catalog?.builtIn ? "Create product" : "Create Collection",
-              href: "/collections/new",
-            }}
+            title="No products yet"
+            description="Create your first product to start wiring sources, processes and destinations."
+            action={{ label: "Create product", href: "/collections/new" }}
           />
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

@@ -11,11 +11,10 @@ const EXTERNAL = {
   isDefault: false,
 };
 
-async function importClient(activeId: string) {
+async function importClient() {
   vi.resetModules();
   const engine: Record<string, string> = {
     "stac-catalogs": JSON.stringify([EXTERNAL]),
-    "stac-active-catalog": activeId,
   };
   const { setPersistentEngine } = await import("@nanostores/persistent");
   setPersistentEngine(engine, {
@@ -49,7 +48,7 @@ afterEach(() => {
 
 describe("stacFetch routing (ADR 0008)", () => {
   it("routes built-in-catalog writes through /api/catalog", async () => {
-    const { stacFetch } = await importClient("built-in");
+    const { stacFetch } = await importClient();
     await stacFetch("/collections", { method: "POST", body: { id: "c1" } });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/catalog/collections",
@@ -58,7 +57,7 @@ describe("stacFetch routing (ADR 0008)", () => {
   });
 
   it("routes built-in item updates through /api/catalog", async () => {
-    const { stacFetch } = await importClient("built-in");
+    const { stacFetch } = await importClient();
     await stacFetch("/collections/c1/items/i1", {
       method: "PUT",
       body: { id: "i1" },
@@ -70,7 +69,7 @@ describe("stacFetch routing (ADR 0008)", () => {
   });
 
   it("leaves built-in-catalog reads on the direct path", async () => {
-    const { stacFetch } = await importClient("built-in");
+    const { stacFetch } = await importClient();
     await stacFetch("/collections");
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost:8081/collections",
@@ -79,8 +78,14 @@ describe("stacFetch routing (ADR 0008)", () => {
   });
 
   it("leaves external-catalog writes on their direct path", async () => {
-    const { stacFetch } = await importClient("user-1");
-    await stacFetch("/collections", { method: "POST", body: { id: "c1" } });
+    // Since UI-10 an external catalog is only ever addressed EXPLICITLY —
+    // there is no active-catalog fallback that could route here implicitly.
+    const { stacFetch } = await importClient();
+    await stacFetch("/collections", {
+      method: "POST",
+      body: { id: "c1" },
+      endpointUrl: EXTERNAL.url,
+    });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://stac.example.com/collections",
       expect.objectContaining({ method: "POST" }),
@@ -88,9 +93,8 @@ describe("stacFetch routing (ADR 0008)", () => {
   });
 
   it("routes built-in writes via endpointUrl override too", async () => {
-    // A mutation fired while another catalog is active but explicitly
-    // targeting the built-in endpoint still goes through the BFF.
-    const { stacFetch } = await importClient("user-1");
+    // An explicit built-in endpoint still goes through the BFF.
+    const { stacFetch } = await importClient();
     await stacFetch("/collections/c1", {
       method: "DELETE",
       endpointUrl: "http://localhost:8081",

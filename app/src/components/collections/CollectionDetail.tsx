@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import { useCollection, useDeleteCollection } from "@/lib/query/collections";
 import { useItems } from "@/lib/query/items";
 import { AppShell } from "@/components/layout/AppShell";
@@ -10,13 +10,10 @@ import { Skeleton } from "@stac-higher/shared";
 import { ItemCard } from "@stac-higher/shared";
 import { AssetManager } from "@/components/assets/AssetManager";
 import { DataFlowTab } from "./DataFlowTab";
+import { CollectionMetadata } from "./CollectionMetadata";
 import { ProductOverview } from "./ProductOverview";
 import { SettingsTab } from "./SettingsTab";
-import { StacMap } from "@stac-higher/shared";
-import { ExtentLayer } from "@stac-higher/shared";
-import { bboxToLngLatBounds } from "@/lib/map/bbox";
 import { Button } from "@stac-higher/shared";
-import { Badge } from "@stac-higher/shared";
 import {
   Card,
   CardContent,
@@ -32,28 +29,15 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import {
-  Pencil,
-  Trash2,
-  Plus,
-  MapPin,
-  Calendar,
-  ArrowLeft,
-  ExternalLink,
-} from "lucide-react";
+import { Pencil, Trash2, Plus, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
-
-function formatBbox(bbox: number[]): string {
-  if (bbox.length < 4) return "N/A";
-  return `[${bbox.map((n) => n.toFixed(4)).join(", ")}]`;
-}
 
 interface CollectionDetailInnerProps {
   collectionId: string;
 }
 
 function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const endpointUrl = catalog?.url ?? "";
   const { data: collection, isLoading, error, refetch } = useCollection(endpointUrl, collectionId);
   const { data: itemsData } = useItems(endpointUrl, collectionId, { limit: 10 });
@@ -65,7 +49,7 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
   const handleDelete = () => {
     deleteMutation.mutate(collectionId, {
       onSuccess: () => {
-        toast.success("Collection deleted");
+        toast.success("Product deleted");
         window.location.href = "/collections";
       },
       onError: (err) => {
@@ -105,7 +89,7 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
       <>
         <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
           <ErrorState
-            message={error instanceof Error ? error.message : "Collection not found"}
+            message={error instanceof Error ? error.message : "Product not found"}
             onRetry={() => refetch()}
           />
         </main>
@@ -113,8 +97,6 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
     );
   }
 
-  const bbox = collection.extent?.spatial?.bbox?.[0];
-  const temporal = collection.extent?.temporal?.interval?.[0];
   const items = itemsData?.features ?? [];
 
   return (
@@ -123,7 +105,7 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors inline-flex items-center gap-1">
             <ArrowLeft className="h-3.5 w-3.5" />
-            {catalog?.builtIn ? "Products" : "Collections"}
+            Products
           </a>
           <span>/</span>
           <span className="text-foreground">{collection.title || collection.id}</span>
@@ -161,149 +143,24 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
             <TabsTrigger value="assets">
               Assets {collection.assets ? `(${Object.keys(collection.assets).length})` : ""}
             </TabsTrigger>
-            {/* Data flow (ingest/delivery) applies to the built-in catalog only
-                — external catalogs are browse-only (ROADMAP §1). */}
-            {catalog?.builtIn && (
-              <TabsTrigger value="dataflow">Data flow</TabsTrigger>
-            )}
-            {/* Settings (ownership/retention/archived — M2-E) is platform
-                metadata, so built-in only, like Data flow. */}
-            {catalog?.builtIn && (
-              <TabsTrigger value="settings">Settings</TabsTrigger>
-            )}
+            <TabsTrigger value="dataflow">Data flow</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
             <TabsTrigger value="json">Raw JSON</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4">
-            {/* Platform view first for products (built-in catalog); external
-                catalogs are browse-only and keep the STAC metadata alone. */}
-            {catalog?.builtIn && (
-              <ProductOverview
-                collection={collection}
-                collectionId={collectionId}
-                endpointUrl={endpointUrl}
-                items={items}
-                onOpenDataFlow={() => setTab("dataflow")}
-              />
-            )}
+            {/* Platform view first, then the raw STAC metadata below it. This
+                page is built-in-only since UI-10 — external catalogs are
+                browsed read-only at /catalogs/[catalogId]/collections. */}
+            <ProductOverview
+              collection={collection}
+              collectionId={collectionId}
+              endpointUrl={endpointUrl}
+              items={items}
+              onOpenDataFlow={() => setTab("dataflow")}
+            />
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Description</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                  {collection.description}
-                </p>
-              </CardContent>
-            </Card>
-
-            {bbox && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <MapPin className="h-4 w-4" />
-                    Spatial Extent
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="h-[300px] rounded-lg overflow-hidden border border-border">
-                    <StacMap initialBounds={bboxToLngLatBounds(bbox)}>
-                      <ExtentLayer bbox={bbox} />
-                    </StacMap>
-                  </div>
-                  <p className="text-sm font-mono text-muted-foreground">
-                    {formatBbox(bbox)}
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-
-            <div className="grid gap-4 md:grid-cols-2">
-              {!bbox && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <MapPin className="h-4 w-4" />
-                      Spatial Extent
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground">No spatial extent defined</p>
-                  </CardContent>
-                </Card>
-              )}
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Calendar className="h-4 w-4" />
-                    Temporal Extent
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {temporal ? (
-                    <div className="text-sm text-muted-foreground">
-                      <p>Start: {temporal[0] ?? "Open"}</p>
-                      <p>End: {temporal[1] ?? "Ongoing"}</p>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">No temporal extent defined</p>
-                  )}
-                </CardContent>
-              </Card>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="secondary">{collection.license}</Badge>
-              <Badge variant="outline">STAC {collection.stac_version}</Badge>
-              {collection.stac_extensions?.map((url) => {
-                const label = url.split("/").filter(Boolean).slice(-3, -1).join(" ") || url;
-                return (
-                  <a key={url} href={url} target="_blank" rel="noopener noreferrer" title={url}>
-                    <Badge variant="outline" className="text-xs font-mono hover:bg-accent/50 transition-colors">
-                      {label}
-                    </Badge>
-                  </a>
-                );
-              })}
-            </div>
-
-            {collection.providers && collection.providers.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Providers</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {collection.providers.map((provider, i) => (
-                    <div key={i} className="flex items-start justify-between">
-                      <div>
-                        <p className="text-sm font-medium">{provider.name}</p>
-                        {provider.description && (
-                          <p className="text-xs text-muted-foreground">{provider.description}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        {provider.roles?.map((role) => (
-                          <Badge key={role} variant="outline" className="text-xs">
-                            {role}
-                          </Badge>
-                        ))}
-                        {provider.url && (
-                          <a
-                            href={provider.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            )}
+            <CollectionMetadata collection={collection} />
 
           </TabsContent>
 
@@ -341,17 +198,13 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
             <AssetManager collection={collection} endpointUrl={endpointUrl} />
           </TabsContent>
 
-          {catalog?.builtIn && (
-            <TabsContent value="dataflow">
-              <DataFlowTab collectionId={collectionId} />
-            </TabsContent>
-          )}
+          <TabsContent value="dataflow">
+            <DataFlowTab collectionId={collectionId} />
+          </TabsContent>
 
-          {catalog?.builtIn && (
-            <TabsContent value="settings">
-              <SettingsTab collectionId={collectionId} />
-            </TabsContent>
-          )}
+          <TabsContent value="settings">
+            <SettingsTab collectionId={collectionId} />
+          </TabsContent>
 
           <TabsContent value="json">
             <JsonViewer data={collection} defaultOpen />
@@ -361,10 +214,10 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
         <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Delete Collection</DialogTitle>
+              <DialogTitle>Delete product</DialogTitle>
               <DialogDescription>
                 Are you sure you want to delete "{collection.title || collection.id}"?
-                This will also remove all items in this collection. This action cannot be
+                This will also remove all items in this product. This action cannot be
                 undone.
               </DialogDescription>
             </DialogHeader>
@@ -377,7 +230,7 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
                 onClick={handleDelete}
                 disabled={deleteMutation.isPending}
               >
-                {deleteMutation.isPending ? "Deleting..." : "Delete Collection"}
+                {deleteMutation.isPending ? "Deleting..." : "Delete product"}
               </Button>
             </DialogFooter>
           </DialogContent>

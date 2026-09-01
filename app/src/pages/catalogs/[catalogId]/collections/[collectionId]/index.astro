@@ -1,0 +1,14 @@
+---
+import Layout from "../../../../../layouts/Layout.astro";
+import { BrowseCollectionPage } from "../../../../../components/browse/BrowseCollectionPage";
+
+const { catalogId, collectionId } = Astro.params;
+---
+
+<Layout title={`Browse: ${collectionId}`}>
+  <BrowseCollectionPage
+    client:only="react"
+    catalogId={catalogId!}
+    collectionId={collectionId!}
+  />
+</Layout>

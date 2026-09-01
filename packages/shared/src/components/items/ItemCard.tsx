@@ -11,9 +11,14 @@ import { Calendar, MapPin, File } from "lucide-react";
 interface ItemCardProps {
   item: StacItem;
   collectionId: string;
+  /**
+   * Link target. Defaults to the product item page; the catalog browser and
+   * external search results pass their own browse path (UI-10).
+   */
+  href?: string;
 }
 
-export function ItemCard({ item, collectionId }: ItemCardProps) {
+export function ItemCard({ item, collectionId, href }: ItemCardProps) {
   const datetime = item.properties.datetime
     ? new Date(item.properties.datetime).toLocaleString()
     : item.properties.start_datetime
@@ -29,7 +34,10 @@ export function ItemCard({ item, collectionId }: ItemCardProps) {
 
   return (
     <a
-      href={`/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(item.id)}`}
+      href={
+        href ??
+        `/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(item.id)}`
+      }
       className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background"
       onKeyDown={(e) => {
         if (e.key === " ") {

@@ -1,31 +1,13 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import { useItem, useDeleteItem } from "@/lib/query/items";
 import { AppShell } from "@/components/layout/AppShell";
-import { JsonViewer } from "@stac-higher/shared";
 import { ErrorState } from "@stac-higher/shared";
 import { Skeleton } from "@stac-higher/shared";
-import { StacMap } from "@stac-higher/shared";
-import { Source, Layer } from "react-map-gl/maplibre";
-import { bboxToLngLatBounds } from "@/lib/map/bbox";
 import { Button } from "@stac-higher/shared";
 import { Badge } from "@stac-higher/shared";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@stac-higher/shared";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ItemDetailView } from "./ItemDetailView";
 import {
   Dialog,
   DialogContent,
@@ -34,12 +16,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import {
-  Pencil,
-  Trash2,
-  ExternalLink,
-  Download,
-} from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 interface ItemDetailInnerProps {
@@ -48,7 +25,7 @@ interface ItemDetailInnerProps {
 }
 
 function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const endpointUrl = catalog?.url ?? "";
   const { data: item, isLoading, error, refetch } = useItem(endpointUrl, collectionId, itemId);
   const deleteMutation = useDeleteItem(endpointUrl, collectionId);
@@ -111,16 +88,12 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
     );
   }
 
-  const properties = Object.entries(item.properties).filter(
-    ([key]) => !key.startsWith("_"),
-  );
-
   return (
     <>
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors">
-            Collections
+            Products
           </a>
           <span>/</span>
           <a
@@ -164,169 +137,7 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
           </div>
         </div>
 
-        <Tabs defaultValue="properties" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="properties">Properties</TabsTrigger>
-            <TabsTrigger value="assets">
-              Assets ({Object.keys(item.assets).length})
-            </TabsTrigger>
-            <TabsTrigger value="geometry">Geometry</TabsTrigger>
-            <TabsTrigger value="json">Raw JSON</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="properties">
-            {item.stac_extensions && item.stac_extensions.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-3">
-                {item.stac_extensions.map((url) => {
-                  const label = url.split("/").filter(Boolean).slice(-3, -1).join(" ") || url;
-                  return (
-                    <a key={url} href={url} target="_blank" rel="noopener noreferrer" title={url}>
-                      <Badge variant="outline" className="text-xs font-mono hover:bg-accent/50 transition-colors">
-                        {label}
-                      </Badge>
-                    </a>
-                  );
-                })}
-              </div>
-            )}
-            <Card>
-              <CardContent className="pt-6">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[200px]">Property</TableHead>
-                      <TableHead>Value</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {properties.map(([key, value]) => (
-                      <TableRow key={key}>
-                        <TableCell className="font-mono text-xs">{key}</TableCell>
-                        <TableCell className="text-sm">
-                          {typeof value === "object"
-                            ? JSON.stringify(value)
-                            : String(value ?? "null")}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="assets">
-            <div className="grid gap-3">
-              {Object.entries(item.assets).map(([key, asset]) => (
-                <Card key={key}>
-                  <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-sm">
-                        {asset.title || key}
-                      </CardTitle>
-                      <div className="flex items-center gap-2">
-                        {asset.roles?.map((role) => (
-                          <Badge key={role} variant="outline" className="text-xs">
-                            {role}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    {asset.description && (
-                      <p className="text-xs text-muted-foreground mb-2">
-                        {asset.description}
-                      </p>
-                    )}
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs text-muted-foreground">
-                        {asset.type && (
-                          <span className="font-mono">{asset.type}</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <a href={asset.href} target="_blank" rel="noopener noreferrer">
-                          <Button variant="ghost" size="sm">
-                            <ExternalLink className="h-3.5 w-3.5 mr-1" />
-                            Open
-                          </Button>
-                        </a>
-                        <a href={asset.href} download>
-                          <Button variant="ghost" size="sm">
-                            <Download className="h-3.5 w-3.5 mr-1" />
-                            Download
-                          </Button>
-                        </a>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          </TabsContent>
-
-          <TabsContent value="geometry" className="space-y-4">
-            {item.geometry && (
-              <div className="h-[400px] rounded-lg overflow-hidden border border-border">
-                <StacMap
-                  initialBounds={
-                    item.bbox ? bboxToLngLatBounds(item.bbox) : undefined
-                  }
-                >
-                  <Source
-                    id="item-geometry"
-                    type="geojson"
-                    data={{
-                      type: "Feature",
-                      properties: {},
-                      geometry: item.geometry,
-                    }}
-                  >
-                    <Layer
-                      id="item-geometry-fill"
-                      type="fill"
-                      paint={{ "fill-color": "#3b82f6", "fill-opacity": 0.15 }}
-                    />
-                    <Layer
-                      id="item-geometry-line"
-                      type="line"
-                      paint={{ "line-color": "#3b82f6", "line-width": 2 }}
-                    />
-                    <Layer
-                      id="item-geometry-point"
-                      type="circle"
-                      filter={["==", "$type", "Point"]}
-                      paint={{
-                        "circle-color": "#3b82f6",
-                        "circle-radius": 6,
-                        "circle-stroke-color": "#fff",
-                        "circle-stroke-width": 2,
-                      }}
-                    />
-                  </Source>
-                </StacMap>
-              </div>
-            )}
-            {item.bbox && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Bounding Box</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="font-mono text-sm text-muted-foreground">
-                    [{item.bbox.map((n) => n.toFixed(6)).join(", ")}]
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-            <JsonViewer data={item.geometry} title="GeoJSON Geometry" />
-          </TabsContent>
-
-          <TabsContent value="json">
-            <JsonViewer data={item} defaultOpen />
-          </TabsContent>
-        </Tabs>
+        <ItemDetailView item={item} />
 
         <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
           <DialogContent>

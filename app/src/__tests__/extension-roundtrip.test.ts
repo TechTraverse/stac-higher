@@ -24,7 +24,7 @@ vi.mock("@/lib/map/bbox", () => ({
   geometryToBbox: vi.fn(() => [0, 0, 1, 1]),
 }));
 vi.mock("@nanostores/react", () => ({ useStore: vi.fn(() => ({ url: "http://localhost:8082" })) }));
-vi.mock("@/stores/catalogStore", () => ({ $activeCatalog: null }));
+vi.mock("@/stores/catalogStore", () => ({ $builtInCatalog: null }));
 vi.mock("@/lib/query/items", () => ({
   useCreateItem: vi.fn(() => ({ mutate: vi.fn() })),
   useUpdateItem: vi.fn(() => ({ mutate: vi.fn() })),

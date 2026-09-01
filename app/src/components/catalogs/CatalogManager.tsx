@@ -2,15 +2,13 @@ import { useState } from "react";
 import { useStore } from "@nanostores/react";
 import {
   $catalogs,
-  $activeCatalog,
   addCatalog,
   updateCatalog,
   removeCatalog,
-  setActiveCatalog,
   type StacCatalog,
 } from "@/stores/catalogStore";
+import { browseCollectionsPath } from "@/lib/browse/paths";
 import { AppShell } from "@/components/layout/AppShell";
-import { CatalogSelector } from "@/components/catalogs/CatalogSelector";
 import { CatalogForm } from "./CatalogForm";
 import { StacIndexImportDialog } from "./StacIndexImportDialog";
 import { Button } from "@stac-higher/shared";
@@ -44,16 +42,12 @@ import { toast } from "sonner";
 
 function CatalogCard({
   catalog,
-  isActive,
   onEdit,
   onDelete,
-  onSetActive,
 }: {
   catalog: StacCatalog;
-  isActive: boolean;
   onEdit: () => void;
   onDelete: () => void;
-  onSetActive: () => void;
 }) {
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState<"idle" | "ok" | "error">("idle");
@@ -88,13 +82,15 @@ function CatalogCard({
   };
 
   return (
-    <Card className={isActive ? "border-primary" : ""} data-testid={`catalog-card-${catalog.id}`}>
+    <Card
+      className={catalog.builtIn ? "border-primary" : ""}
+      data-testid={`catalog-card-${catalog.id}`}
+    >
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <CardTitle className="text-base">{catalog.name}</CardTitle>
-            {isActive && <Badge variant="default">Active</Badge>}
-            {catalog.builtIn && <Badge variant="outline">Built-in</Badge>}
+            {catalog.builtIn && <Badge variant="default">Platform</Badge>}
             {catalog.proxy && <Badge variant="secondary">Proxied</Badge>}
           </div>
           {!catalog.builtIn && (
@@ -114,11 +110,20 @@ function CatalogCard({
       </CardHeader>
       <CardContent>
         <div className="flex items-center gap-2">
-          {!isActive && (
-            <Button variant="outline" size="sm" onClick={onSetActive}>
-              Set Active
+          {/* UI-10: there is no global "active catalog" any more. The
+              built-in catalog IS the product surface; every other catalog is
+              browsed read-only under its own route. */}
+          <a
+            href={
+              catalog.builtIn
+                ? "/collections"
+                : browseCollectionsPath(catalog.id)
+            }
+          >
+            <Button variant="outline" size="sm">
+              {catalog.builtIn ? "Open products" : "Browse"}
             </Button>
-          )}
+          </a>
           <Button variant="outline" size="sm" onClick={testConnection} disabled={testing}>
             {testing ? (
               <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
@@ -137,7 +142,6 @@ function CatalogCard({
 
 function CatalogManagerInner() {
   const catalogs = useStore($catalogs);
-  const active = useStore($activeCatalog);
   const [formOpen, setFormOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<StacCatalog | undefined>();
@@ -169,13 +173,12 @@ function CatalogManagerInner() {
           <div>
             <h1 className="text-2xl font-bold">Catalogs</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Manage your STAC API connections
+              The platform catalog plus any external STAC APIs you browse
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {/* The CatalogSelector left the app shell in UI-2 — it is
-                catalog-context UI, so it renders on catalog-context pages. */}
-            <CatalogSelector />
+            {/* No CatalogSelector here since UI-10: the list IS the picker,
+                and each card carries its own Browse link. */}
             <Button variant="outline" onClick={() => setImportOpen(true)}>
               <Download className="h-4 w-4 mr-1.5" />
               Import from StacIndex
@@ -214,12 +217,10 @@ function CatalogManagerInner() {
               <CatalogCard
                 key={cat.id}
                 catalog={cat}
-                isActive={active?.id === cat.id}
                 onEdit={() => {
                   setEditing(cat);
                 }}
                 onDelete={() => setDeleteTarget(cat)}
-                onSetActive={() => setActiveCatalog(cat.id)}
               />
             ))}
           </div>
