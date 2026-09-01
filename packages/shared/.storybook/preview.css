@@ -1,0 +1,21 @@
+/* Storybook Tailwind entry.
+ *
+ * `global.css` is byte-identical to the app's copy by contract, so anything
+ * Storybook-specific belongs HERE — never in global.css. Same rule, and same
+ * shape, as app/src/styles/app.css.
+ *
+ * The fonts are the real fix (I-85): only the APP imported @fontsource, so
+ * every story rendered in the system fallback stack — Storybook was showing a
+ * typography the product does not use. They are imported from preview.tsx
+ * (JS-side, like Layout.astro does) rather than here.
+ *
+ * The `@source` is belt-and-braces, NOT a fix for a live bug. Verified by
+ * building with and without it: a class used only in a shared component is
+ * generated either way, because Storybook's Vite root IS `packages/shared`,
+ * so Tailwind's auto-detection already covers `src/`. The app needs its own
+ * `@source` for the opposite reason — its Vite root is `app/`, which does not
+ * contain the shared package. Stating the source explicitly here keeps
+ * Storybook's CSS independent of where the Vite root happens to sit.
+ */
+@import "../src/styles/global.css";
+@source "../src";

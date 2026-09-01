@@ -2,10 +2,15 @@ import type { Preview, Decorator } from "@storybook/react-vite";
 import { useEffect } from "react";
 import { TooltipProvider } from "@shared/components/ui/tooltip";
 import { $theme } from "@shared/stores/uiStore";
-import "../src/styles/global.css";
+import "./preview.css";
+// Same faces, same order as app/src/layouts/Layout.astro.
+import "@fontsource-variable/public-sans";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
 
 const withThemeAndProviders: Decorator = (Story, context) => {
-  const theme = (context.globals.theme as "light" | "dark") || "dark";
+  const theme = (context.globals.theme as "light" | "dark") || "light";
 
   useEffect(() => {
     $theme.set(theme);
@@ -37,7 +42,8 @@ const preview: Preview = {
     },
   },
   initialGlobals: {
-    theme: "dark",
+    // Light is the product default (ADR 0017) — Storybook opens the same way.
+    theme: "light",
   },
   decorators: [withThemeAndProviders],
   parameters: {

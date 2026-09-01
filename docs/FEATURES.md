@@ -549,7 +549,9 @@ alerts cannot be tied to a product — the UI says so instead of guessing.
 deleted the whole `--color-chart-*` ramp — hence `@theme static`), and
 `packages/shared` is outside the app's source scan, so a class used only in a
 shared component is never generated (hence `app/src/styles/app.css`, which
-adds the `@source`). Storybook still lacks that `@source` and the font imports.
+adds the `@source`). Storybook needed the FONT imports, not a second scan fix —
+its Vite root already IS `packages/shared` (UI-12 verified both halves before
+believing either).
 
 ---
 

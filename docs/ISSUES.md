@@ -728,16 +728,22 @@ lands, `processVerdict` should fold alerts in and both caveats can go.
 - Tracked in: `app/src/components/layout/overview.ts` (`unanchoredAlerts`),
   `ProductOverview.tsx`, `PipelineGraph.tsx`.
 
-### I-85 · Storybook misses the shared Tailwind scan and the fonts 🟠
-The app fixed its Tailwind source scan in UI-8 (`app/src/styles/app.css` adds
-`@source "../../../packages/shared/src"`), but Storybook loads
-`packages/shared/src/styles/global.css` directly and has no equivalent — so a
-utility used only inside a shared component may render unstyled *there* while
-working in the app. Storybook also never got the `@fontsource` imports (they
-live in `Layout.astro`), so stories render in the fallback stack.
-Both want one `.storybook/preview` CSS entry mirroring `app.css`. Low
-severity — Storybook is a development surface — but it makes the shared
-package's own previews untrustworthy for visual work.
+### I-85 · Storybook missed the fonts (and, it turned out, not the scan) — 🟢 resolved (UI-12)
+The FONT half was real: only the app imported `@fontsource`, so every story
+rendered in the system fallback stack — Storybook showed a typography the
+product does not use. Fixed by `packages/shared/.storybook/preview.css` plus
+the four font imports in `preview.tsx`, with the packages declared in
+`packages/shared` devDependencies. Verified in a built Storybook:
+`document.fonts.check` passes for both faces.
+
+The SCAN half was a false alarm. Shared-only utility classes were never
+missing: verified by building with and without an `@source`, with a marker
+class placed in a shared component — generated either way, because Storybook's
+Vite root IS `packages/shared`, so Tailwind's auto-detection already covers
+`src/`. The app needs its explicit `@source` for the opposite reason (its Vite
+root is `app/`). The directive is kept in `preview.css` as belt-and-braces and
+labelled as such.
+
 
 ### I-86 · No true item count per product 🟠
 The home product list shows ingest-derived `flow_stats.items` (labelled
