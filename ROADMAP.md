@@ -764,6 +764,17 @@ All new UI follows the existing conventions: Astro thin shells + React
 islands, TanStack Query for server state, shared components in
 `packages/shared` where reusable.
 
+**UI remodel track (2026-08-31, ADR 0017):** the whole surface above is being
+reoriented product-first — persistent navy sidebar shell (Catalogs/Search/
+Extensions de-emphasized under "More", nothing removed), `/` becomes the
+product list with at-a-glance health, a default Overview tab on collection
+pages with a lineage panel, NOAA light-default theming, and full adoption of
+the Phase 9 terminology note's "product / source / destination" copy
+(copy-only; routes and APIs unchanged). Presentation-layer only by
+invariant. Brief: `docs/superpowers/specs/2026-08-31-ui-remodel-design.md`;
+queue: `app/UI-TODO.md` (runs parallel to the M3 scoping queue in
+`TODO.md`).
+
 ---
 
 ## 9. Phases
