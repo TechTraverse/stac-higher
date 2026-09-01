@@ -77,17 +77,49 @@ describe("stacFetch routing (ADR 0008)", () => {
     );
   });
 
-  it("leaves external-catalog writes on their direct path", async () => {
-    // Since UI-10 an external catalog is only ever addressed EXPLICITLY —
-    // there is no active-catalog fallback that could route here implicitly.
+  it("REFUSES an external-catalog write instead of sending it", async () => {
+    // UI-10 / I-89: external catalogs are browsed read-only. A write aimed at
+    // one would leave the browser without passing the BFF — unaudited and
+    // un-RBAC'd — so the client refuses rather than routes.
     const { stacFetch } = await importClient();
-    await stacFetch("/collections", {
+    await expect(
+      stacFetch("/collections", {
+        method: "POST",
+        body: { id: "c1" },
+        endpointUrl: EXTERNAL.url,
+      }),
+    ).rejects.toThrow(/only allowed against the built-in catalog/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses every write verb, and names the one it refused", async () => {
+    const { stacFetch } = await importClient();
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      await expect(
+        stacFetch("/collections/c1", { method, endpointUrl: EXTERNAL.url }),
+      ).rejects.toThrow(new RegExp(`Refusing to ${method}`));
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still allows POST /search against an external catalog — a read that speaks POST", async () => {
+    const { stacFetch } = await importClient();
+    await stacFetch("/search", {
       method: "POST",
-      body: { id: "c1" },
+      body: { limit: 1 },
       endpointUrl: EXTERNAL.url,
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://stac.example.com/collections",
+      "https://stac.example.com/search",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("does not route POST /search through the BFF for the built-in catalog either", async () => {
+    const { stacFetch } = await importClient();
+    await stacFetch("/search", { method: "POST", body: { limit: 1 } });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8081/search",
       expect.objectContaining({ method: "POST" }),
     );
   });

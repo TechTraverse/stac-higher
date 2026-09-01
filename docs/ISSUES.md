@@ -779,6 +779,20 @@ wanted back, it needs its own design: which identity signs the write, what gets
 audited, and whether `/api/proxy` should carry mutations at all — not a revived
 dual-mode page.
 
+**Enforced in the client since UI-14**, not just conventionally: `stacFetch`
+refuses a write whose catalog is not the built-in one, so a future caller that
+passes an explicit `endpointUrl` cannot reinstate the old behaviour by
+accident. `POST /search` is exempt — STAC's item search is a read that speaks
+POST, which is also why `/api/proxy` cannot simply be narrowed to GET/HEAD.
+
+**Still open (deliberately):** `/api/proxy` is `export const ALL` — it will
+forward any method to the declared endpoint, ungated and unaudited. Nothing in
+the app sends a write through it any more, but the capability is there for
+anything that can reach the route same-origin (`Sec-Fetch-Site: cross-site` is
+rejected and `PROXY_AUTH_TOKEN` can lock it down; `safeFetch` blocks
+private/loopback targets). Narrowing it is an `/api/*` change and needs the
+`/search` carve-out above.
+
 ---
 
 ## Resolved — archived

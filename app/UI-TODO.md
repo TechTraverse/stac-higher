@@ -244,6 +244,23 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       `processes.spec.ts`'s Pipeline heading was already exact — the UI-7
       follow-up had been handled in-slice.
 
+### Added after UI-13 (lead review, 2026-09-01)
+
+- [x] **UI-14 · Enforce the built-in-only write rule in the client.**
+      Lead confirmed the external-CRUD removal and asked what remained.
+      Nothing in the UI could reach it — all five write-bearing components read
+      `$builtInCatalog` — but `stacFetch` still had the branch, so the rule
+      lived in convention. It now refuses: a write whose resolved catalog is
+      not `builtIn` throws instead of leaving the browser.
+      **`POST /search` is exempt** — STAC's item search is a read that speaks
+      POST. That carve-out is the same reason `/api/proxy` cannot simply be
+      narrowed to GET/HEAD, which is why the proxy is documented under I-89
+      rather than changed (it is an `/api/*` surface, out of remodel scope).
+      README's unscoped "Full CRUD" claims are now scoped to the platform
+      catalog. `stac-client-bff.test.ts` gained four cases: refusal, refusal
+      per verb, and `/search` still reaching both an external catalog and the
+      built-in one directly.
+
 ## Discovered follow-ups
 
 The ones that outlive the remodel are now tracked in `docs/ISSUES.md`:

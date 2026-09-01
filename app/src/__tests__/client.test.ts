@@ -7,7 +7,15 @@ const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
 const $catalogs = atom([
-  { id: "1", name: "Test", url: "http://localhost:8082", isDefault: true },
+  // Stands in for the built-in catalog, so it carries `builtIn` — writes are
+  // refused against anything else (UI-14) and routed through the BFF here.
+  {
+    id: "built-in",
+    name: "Test",
+    url: "http://localhost:8082",
+    isDefault: true,
+    builtIn: true,
+  },
 ]);
 // UI-10: with no explicit endpointUrl, stacFetch falls back to the BUILT-IN
 // catalog — never to a browse selection.

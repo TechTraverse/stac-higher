@@ -1,12 +1,18 @@
 # STAC Higher
 
-A modern web interface for browsing, searching, and managing SpatioTemporal Asset Catalogs (STAC). Full CRUD for collections, items, and assets with interactive map visualization.
+A modern web interface for building and operating a SpatioTemporal Asset Catalog (STAC) platform. Full CRUD for the platform's own catalog — collections, items and assets — with interactive map visualization, plus read-only browsing and search across any other STAC API you point it at.
 
 <!-- Add a screenshot here: ![STAC Higher Dashboard](docs/screenshot.png) -->
 
 ## Features
 
 ### Catalog Management
+
+Writes target the **built-in (platform) catalog only** — they route through the
+app's BFF, so they are RBAC-checked and audited (ADR 0008). Any other catalog
+you add is browsed **read-only**: see [I-89](../docs/ISSUES.md) for why, and
+what bringing third-party writes back would have to answer.
+
 - **Collections**: Create, view, edit, and delete STAC collections with form validation
 - **Items**: Full CRUD with geometry drawing (polygon, rectangle, point), dynamic properties, and asset management
 - **Assets**: Add, edit, and delete collection-level and item-level assets
@@ -100,7 +106,7 @@ npm run dev
 
 The frontend starts at [http://localhost:4321](http://localhost:4321). The built-in catalog is served through stac-auth-proxy at [http://localhost:8081](http://localhost:8081) (stac-fastapi directly at [http://localhost:8082](http://localhost:8082)).
 
-On first launch, the Catalogs page already contains the undeletable **Built-in Catalog** entry pointing at `http://localhost:8081` (override with `PUBLIC_BUILTIN_CATALOG_URL`). From there you can create collections, add items, search, and manage extensions — or add further external catalogs.
+On first launch, the Catalogs page already contains the undeletable **Built-in Catalog** entry pointing at `http://localhost:8081` (override with `PUBLIC_BUILTIN_CATALOG_URL`). That is the platform catalog: create collections, add items, search, and manage extensions against it. You can add further external catalogs there too — those get a read-only browser at `/catalogs/[catalogId]/collections`, and appear in the `/search` catalog picker.
 
 ### Storybook
 
