@@ -87,7 +87,7 @@ function CopyButton({ value, label }: { value: string; label?: string }) {
       title={copied ? "Copied!" : `Copy ${label ?? "to clipboard"}`}
     >
       {copied ? (
-        <Check className="h-3.5 w-3.5 text-green-500" />
+        <Check className="h-3.5 w-3.5 text-success" />
       ) : (
         <Copy className="h-3.5 w-3.5" />
       )}

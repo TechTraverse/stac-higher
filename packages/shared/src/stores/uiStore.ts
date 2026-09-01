@@ -1,7 +1,9 @@
 import { atom } from "nanostores";
 import { persistentAtom } from "@nanostores/persistent";
 
-export const $theme = persistentAtom<"light" | "dark">("stac-theme", "dark");
+// Light is the default (ADR 0017). Keep in lockstep with the pre-hydration
+// script in app/src/layouts/Layout.astro, which reads the same key.
+export const $theme = persistentAtom<"light" | "dark">("stac-theme", "light");
 
 export const $sidebarOpen = atom(true);
 

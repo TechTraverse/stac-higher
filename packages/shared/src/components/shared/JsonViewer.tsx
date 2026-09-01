@@ -44,7 +44,7 @@ export function JsonViewer({ data, title = "Raw JSON", defaultOpen = false }: Js
             aria-label={copied ? "Copied" : "Copy JSON"}
           >
             {copied ? (
-              <Check className="h-3.5 w-3.5 text-green-500" />
+              <Check className="h-3.5 w-3.5 text-success" />
             ) : (
               <Copy className="h-3.5 w-3.5" />
             )}

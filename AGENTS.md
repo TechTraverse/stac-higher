@@ -394,8 +394,11 @@ when changing shared components.
   form resolvers — this is a known pattern, not a bug to fix.
 - `extensions.spec.ts` and `proxy.spec.ts` (e2e) require the Docker backend on
   :8082. Full e2e preconditions and selector gotchas: `run-e2e` skill.
-- Theme is dark by default; `Layout.astro` applies the theme class pre-hydration
-  to prevent flash. Toggle via `toggleTheme()` from `@stac-higher/shared`.
+- Theme is **light** by default (ADR 0017); `Layout.astro` applies the theme
+  class pre-hydration in `<head>` to prevent flash. That inline script and the
+  `$theme` persistentAtom default in `packages/shared/src/stores/uiStore.ts`
+  read the same `stac-theme` key and must stay in lockstep. Toggle via
+  `toggleTheme()` from `@stac-higher/shared`.
 
 ## Agent Skills
 

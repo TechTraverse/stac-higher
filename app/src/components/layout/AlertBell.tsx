@@ -22,7 +22,7 @@ export function AlertBell() {
         {count > 0 && (
           <span
             data-testid="alert-bell-count"
-            className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-white"
+            className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground"
           >
             {count > 99 ? "99+" : count}
           </span>
