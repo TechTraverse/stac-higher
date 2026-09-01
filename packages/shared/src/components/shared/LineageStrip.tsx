@@ -13,8 +13,11 @@
  * this component can never disagree with the monitoring surfaces about what
  * "healthy" means.
  *
- * NOTE: `full` currently renders the `medium` layout at a larger scale. The
- * columnar pipeline-graph renderer lands with the /graph slice (UI-7).
+ * `full` is the pipeline-graph renderer: the same columns, but with a header
+ * per column, a type-coloured bar on every node, and connector arrows between
+ * columns. It shows COLUMN adjacency, not per-node edges — a five-column
+ * layout cannot align arbitrary N:M wiring without lying about which node
+ * feeds which, so the exact edge list stays a separate, precise list.
  */
 import { ArrowRight, Cpu, Layers, Plug, type LucideIcon } from "lucide-react";
 import { cn } from "@shared/lib/utils";
@@ -56,6 +59,20 @@ const KIND_ICON: Record<LineageKind, LucideIcon> = {
   connection: Plug,
   collection: Layers,
   process: Cpu,
+};
+
+/**
+ * Node-TYPE accents (the /graph legend). Type, not health — health is the dot.
+ *
+ * These are inline CSS-variable values rather than `bg-chart-2` classes on
+ * purpose: this file lives in `packages/shared`, which the app's Tailwind
+ * source scan does not cover, so a utility used ONLY here is never generated.
+ * Referencing the variable directly is immune to that.
+ */
+export const KIND_COLOR_VAR: Record<LineageKind, string> = {
+  connection: "var(--color-chart-2)",
+  collection: "var(--color-chart-1)",
+  process: "var(--color-chart-4)",
 };
 
 const DOT_CLASS: Record<LineageHealth, string> = {
@@ -154,15 +171,23 @@ function MiniStrip({ groups, emptyLabel, className }: LineageStripProps) {
 
 // -- medium / full -----------------------------------------------------------
 
-function NodeChip({ node, large }: { node: LineageNode; large: boolean }) {
+function NodeChip({
+  node,
+  large,
+  kind,
+}: {
+  node: LineageNode;
+  large: boolean;
+  kind: LineageKind;
+}) {
   const inner = (
     <>
-      <HealthDot health={node.health} />
+      <HealthDot health={node.health} className={large ? "mt-1.5 self-start" : ""} />
       <span className="min-w-0">
         <span
           className={cn(
             "block truncate font-medium",
-            large ? "text-sm" : "text-[13px]",
+            large ? "text-[13.5px] font-semibold" : "text-[13px]",
           )}
         >
           {node.label}
@@ -177,14 +202,21 @@ function NodeChip({ node, large }: { node: LineageNode; large: boolean }) {
   );
   const classes = cn(
     "flex items-center gap-2 rounded-md border border-border bg-card px-3",
-    large ? "py-2.5" : "py-2",
+    large ? "border-l-2 py-2.5" : "py-2",
   );
+  const style = large ? { borderLeftColor: KIND_COLOR_VAR[kind] } : undefined;
   return node.href ? (
-    <a href={node.href} className={cn(classes, "hover:border-primary/50 hover:bg-accent")}>
+    <a
+      href={node.href}
+      style={style}
+      className={cn(classes, "hover:border-primary/50 hover:bg-accent")}
+    >
       {inner}
     </a>
   ) : (
-    <div className={classes}>{inner}</div>
+    <div style={style} className={classes}>
+      {inner}
+    </div>
   );
 }
 
@@ -213,7 +245,7 @@ function GroupColumn({
         </div>
       ) : (
         group.nodes.map((node) => (
-          <NodeChip key={node.id} node={node} large={large} />
+          <NodeChip key={node.id} node={node} large={large} kind={group.kind} />
         ))
       )}
     </div>
@@ -233,7 +265,9 @@ function ColumnStrip({ groups, emptyLabel, className, size }: LineageStripProps)
     <div
       className={cn(
         "flex flex-col gap-3 sm:flex-row sm:items-start",
-        large && "gap-5",
+        // The graph keeps its columns side by side and scrolls instead of
+        // wrapping: a pipeline that wraps stops reading left-to-right.
+        large && "gap-4 overflow-x-auto pb-2 sm:[&>*]:min-w-56",
         className,
       )}
     >
@@ -245,7 +279,7 @@ function ColumnStrip({ groups, emptyLabel, className, size }: LineageStripProps)
           {i > 0 && (
             <ArrowRight
               aria-hidden="true"
-              className="mt-7 hidden h-4 w-4 shrink-0 text-muted-foreground/50 sm:block"
+              className="mt-8 hidden h-4 w-4 shrink-0 text-muted-foreground sm:block"
             />
           )}
           <GroupColumn group={group} large={large} />
