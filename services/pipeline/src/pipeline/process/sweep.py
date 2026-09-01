@@ -12,8 +12,12 @@ Two things a tick does, and one it deliberately does not:
   could drift from the claim's.
 
 What it does NOT do is reap orphaned CONTAINERS. That needs the executor, and
-wiring one into a DB sweep would couple two independent failure domains; the
-`stac-higher.run-id` label exists so a dedicated reaper can find them.
+wiring one into a DB sweep would couple two independent failure domains. That
+job is `process/reaper.py` (M3-W-1), which finds them by the
+`stac-higher.run-id` label and reads this ledger without writing it — and it
+composes with the stall recovery above: a container whose row this sweep
+returns to `queued` stops being `running`, which is exactly the reaper's
+orphan signal.
 """
 
 from __future__ import annotations

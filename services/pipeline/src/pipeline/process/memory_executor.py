@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pipeline.process.executor import (
     Executor,
     ExitStatus,
+    LaunchedRun,
     RunHandle,
     RunSpec,
 )
@@ -53,3 +54,13 @@ class MemoryExecutor(Executor):
 
     def reap(self, handle: RunHandle) -> None:
         self.reaped.append(handle.id)
+
+    def list_launched(self) -> list[LaunchedRun]:
+        # Launched-minus-reaped is the fake's honest analogue of "resources
+        # the backend still holds", which is what the reaper reconciles.
+        return [
+            LaunchedRun(handle=RunHandle(id=f"mem-{spec.run_id}", backend=self.name),
+                        run_id=spec.run_id)
+            for spec in self.launched
+            if f"mem-{spec.run_id}" not in self.reaped
+        ]

@@ -142,6 +142,11 @@ PROCESS_OUTPUT_ITEMS = Counter(
     "Items a process run published (Phase 9 §2 / ADR 0014)",
     registry=REGISTRY,
 )
+PROCESS_ORPHANS_REAPED = Counter(
+    "pipeline_process_orphan_containers_reaped_total",
+    "Run containers a dead worker left behind, removed by the reaper (M3-W-1)",
+    registry=REGISTRY,
+)
 PROCESS_RATE_DEFERRALS = Counter(
     "pipeline_process_rate_deferrals_total",
     "Runs deferred by the §7 per-process run-rate ceiling",

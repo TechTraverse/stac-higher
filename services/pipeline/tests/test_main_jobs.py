@@ -9,6 +9,7 @@ from pipeline.jobs.heartbeat import JOB_NAME as HEARTBEAT_JOB
 from pipeline.jobs.history import JOB_NAME as HISTORY_JOB
 from pipeline.jobs.ingest import JOB_DISCOVER, JOB_FETCH, JOB_GROUP, JOB_ITEMIZE, JOB_POLL
 from pipeline.jobs.monitor import JOB_NAME as MONITOR_JOB
+from pipeline.jobs.process import JOB_CRON, JOB_REAP, JOB_RUN_TICK, JOB_SWEEP
 from pipeline.jobs.notify import SWEEP_JOB_NAME as NOTIFY_SWEEP_JOB
 from pipeline.jobs.staging_cleanup import JOB_NAME as CLEANUP_JOB
 from pipeline.main import build_queue
@@ -24,3 +25,5 @@ def test_build_queue_registers_all_periodic_jobs():
     assert JOB_DISPATCH_POLL in registered
     assert {MONITOR_JOB, NOTIFY_SWEEP_JOB, WEBHOOK_JOB_NAME} <= registered
     assert {RETENTION_JOB_NAME, COLLECT_JOB_NAME, HISTORY_JOB} <= registered
+    # The reaper is its own leg, not folded into the DB sweep (M3-W-1).
+    assert {JOB_RUN_TICK, JOB_CRON, JOB_SWEEP, JOB_REAP} <= registered

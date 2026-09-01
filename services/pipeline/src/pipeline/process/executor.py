@@ -18,11 +18,17 @@ is shaped to make the invariants enforceable rather than merely intended:
   fails itself, it does not degrade the worker.
 - ``reap`` is always called by the caller, and backends must not rely on
   container auto-removal to do it (ADR 0013: "AutoRemove not trusted").
+- ``list_launched`` exists because the caller's ``reap`` is not enough on its
+  own: a worker killed between launch and reap never runs the ``finally``, so
+  the platform needs a way to ENUMERATE what it started and reconcile it
+  against the ledger (M3-W-1). Every backend must be able to answer it —
+  a backend that cannot list what it launched cannot be operated.
 """
 
 from __future__ import annotations
 
 import abc
+import datetime as dt
 from dataclasses import dataclass, field
 
 
@@ -88,6 +94,23 @@ class ExitStatus:
         return self.exit_code == 0 and not self.timed_out
 
 
+@dataclass(frozen=True)
+class LaunchedRun:
+    """One run the backend still holds resources for — what the reaper sees.
+
+    Deliberately the backend's view, not the ledger's: the whole point of the
+    reaper is to find things the ledger has forgotten about.
+    """
+
+    handle: RunHandle
+    #: The `stac-higher.run-id` this was launched for.
+    run_id: str
+    #: When the BACKEND says it created the run, or None when it does not say.
+    #: A missing time is not an orphan signal — it just means the age rule
+    #: cannot apply and the ledger decides alone.
+    created_at: dt.datetime | None = None
+
+
 class Executor(abc.ABC):
     """Launch, await, read the logs of, and reap one isolated run."""
 
@@ -117,3 +140,14 @@ class Executor(abc.ABC):
     def reap(self, handle: RunHandle) -> None:
         """Remove the run's resources. Called in a finally, must be
         idempotent, and must not raise for an already-gone run."""
+
+    @abc.abstractmethod
+    def list_launched(self) -> list[LaunchedRun]:
+        """Every run the backend still holds resources for, INCLUDING those
+        that have already exited — an exited-but-not-removed run is precisely
+        the orphan the reaper is looking for.
+
+        Raises :class:`ExecutorUnavailable` when the backend cannot be asked;
+        an outage must never be reported as an empty list, because the caller
+        would read that as "nothing to reap".
+        """
