@@ -754,10 +754,13 @@ process success from the RUN LEDGER and labels it "last N runs" rather than
 would let the UI report a real 30-day rate. Until then, do not relabel the
 current number.
 
-### I-88 · `overview.ts` derivations are untested 🟠
-Health ranking, alert attribution and lineage grouping are pure functions over
-plain data — the most logic-heavy UI module in the remodel, feeding three
-surfaces — and carry no unit tests. Cheap to cover with the `new-test` skill.
+### I-88 · `overview.ts` derivations are untested — 🟢 resolved (UI-11)
+Covered by `app/src/__tests__/overview.test.ts` (27 cases over health ranking,
+the three alert-attribution paths, unattributed alerts, lineage roll-up,
+ingest-only counts, `successRate` and `unanchoredAlerts`). Residual noted in
+`app/UI-TODO.md`: `buildProductRows`' `lateFlow` branch is unreachable, because
+`isLate`'s match set is already claimed by the firing/acknowledged branches.
+The verdict is identical either way, so it is dead, not wrong.
 
 ### I-89 · External-catalog CRUD was removed with UI-10 🟡
 Before UI-10, selecting an external catalog made `/collections*` write to it —
