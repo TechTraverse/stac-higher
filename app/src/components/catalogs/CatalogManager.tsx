@@ -115,9 +115,7 @@ function CatalogCard({
               browsed read-only under its own route. */}
           <a
             href={
-              catalog.builtIn
-                ? "/collections"
-                : browseCollectionsPath(catalog.id)
+              catalog.builtIn ? "/collections" : browseCollectionsPath(catalog)
             }
           >
             <Button variant="outline" size="sm">

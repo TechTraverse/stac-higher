@@ -14,8 +14,10 @@ import {
   browseCollectionPath,
   browseCollectionsPath,
   browseItemPath,
+  browseTarget,
 } from "@/lib/browse/paths";
 import { BrowseFrame } from "./BrowseFrame";
+import type { BrowseRouteProps } from "./types";
 import { useBrowseCatalog } from "./useBrowseCatalog";
 
 const PAGE_SIZE = 20;
@@ -23,11 +25,11 @@ const PAGE_SIZE = 20;
 function BrowseItemsInner({
   catalogId,
   collectionId,
-}: {
-  catalogId: string;
-  collectionId: string;
-}) {
-  const catalog = useBrowseCatalog(catalogId);
+  src,
+}: BrowseRouteProps & { collectionId: string }) {
+  const catalog = useBrowseCatalog(catalogId, src);
+  // Links are props: they are built before BrowseFrame can early-return.
+  const target = browseTarget(catalog, catalogId, src);
   const endpointUrl = catalog?.url ?? "";
   const paging = useTokenPaging();
   const { data, isLoading, error, refetch } = useItems(
@@ -48,14 +50,14 @@ function BrowseItemsInner({
       </a>
       <span>/</span>
       <a
-        href={browseCollectionsPath(catalogId)}
+        href={browseCollectionsPath(target)}
         className="hover:text-foreground transition-colors"
       >
         {catalog?.name}
       </a>
       <span>/</span>
       <a
-        href={browseCollectionPath(catalogId, collectionId)}
+        href={browseCollectionPath(target, collectionId)}
         className="hover:text-foreground transition-colors"
       >
         {collectionId}
@@ -66,7 +68,7 @@ function BrowseItemsInner({
   );
 
   return (
-    <BrowseFrame catalog={catalog} breadcrumb={breadcrumb}>
+    <BrowseFrame catalog={catalog} src={src} breadcrumb={breadcrumb}>
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Items</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -108,7 +110,7 @@ function BrowseItemsInner({
                   <ItemCard
                     item={item}
                     collectionId={collectionId}
-                    href={browseItemPath(catalogId, collectionId, item.id)}
+                    href={browseItemPath(target, collectionId, item.id)}
                   />
                 </div>
               ))}
@@ -145,10 +147,9 @@ function BrowseItemsInner({
   );
 }
 
-export function BrowseItemsPage(props: {
-  catalogId: string;
-  collectionId: string;
-}) {
+export function BrowseItemsPage(
+  props: BrowseRouteProps & { collectionId: string },
+) {
   return (
     <AppShell title="Browse catalog">
       <BrowseItemsInner {...props} />

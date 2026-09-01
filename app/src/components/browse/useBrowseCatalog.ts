@@ -1,16 +1,17 @@
 import { useStore } from "@nanostores/react";
 import { $catalogs, type StacCatalog } from "@/stores/catalogStore";
+import { parseSrc, resolveBrowseCatalog } from "@/lib/browse/paths";
 
 /**
- * Resolve the catalog a browse route addresses. The id comes from the URL, so
- * it may not exist (a stale link, or a catalog removed on another device —
- * catalogs live in localStorage). `undefined` while the persistent store is
- * still hydrating, `null` once we know the id is unknown.
+ * The catalog a browse route addresses: by `?src=` URL when the link carries
+ * one (shareable), otherwise by the path id (local link). `undefined` while
+ * the persistent store hydrates, `null` when this browser has no such catalog
+ * — which is what makes `BrowseFrame` offer to add it.
  */
 export function useBrowseCatalog(
   catalogId: string,
+  src?: string | null,
 ): StacCatalog | null | undefined {
   const catalogs = useStore($catalogs);
-  if (catalogs.length === 0) return undefined;
-  return catalogs.find((c) => c.id === catalogId) ?? null;
+  return resolveBrowseCatalog(catalogs, catalogId, parseSrc(src));
 }
