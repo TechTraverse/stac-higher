@@ -21,6 +21,7 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0013](0013-process-executor-isolation.md) | Process executor isolation | accepted (2026-08-29) | 9 (M5) |
 | [0014](0014-process-output-path.md) | Process output path: staging + platform finalize | accepted (2026-08-29) | 9 (M5) |
 | [0015](0015-proxy-write-policy.md) | Proxy write policy: custom filter factory enforcing `externally_writable` | accepted (2026-08-30) | 7 |
+| [0016](0016-ogc-processes-conformance-posture.md) | OGC API — Processes conformance posture | accepted (2026-08-31) | 9 (post-gate) |
 
 Proposed ADRs establish no invariants until accepted (via the Phase 9 design
 spec); their draft invariants live inside the documents.
@@ -43,6 +44,6 @@ spec); their draft invariants live inside the documents.
 ## Adding an ADR
 
 1. Copy the format of an existing record: a `# ADR NNNN — Title` heading, then **Status**, **Context**, **Decision**, **Consequences** (and **Revisit** if the choice is expected to be reconsidered).
-2. Number sequentially (next: `0016`).
+2. Number sequentially (next: `0017`).
 3. Add a row to the index above and, if it changes an invariant, note it in "Key invariants."
 4. ADRs are immutable once accepted — supersede with a new ADR rather than editing history; mark the old one `superseded by NNNN`.
