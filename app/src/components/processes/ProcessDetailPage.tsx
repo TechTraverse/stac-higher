@@ -13,11 +13,15 @@ import {
   Label,
   LoadingState,
   Switch,
-  Textarea,
 } from "@stac-higher/shared";
 import { FileText, Loader2, Play, RotateCcw, Rocket, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { EnvEditor } from "@/components/processes/EnvEditor";
+import { CodeEditor } from "@/components/processes/CodeEditor";
+import { FlowStrip } from "@/components/monitoring/FlowStrip";
+import { useFlowHistory } from "@/lib/monitoring/graph-queries";
+import { processVerdict } from "@/components/processes/health";
+import { healthDotClass, type LineageHealth } from "@stac-higher/shared";
 import { useConnections } from "@/lib/connections/queries";
 import { useAuthMe } from "@/lib/query/auth";
 import { getTestRun, requestTestRun } from "@/lib/processes/api";
@@ -36,7 +40,12 @@ import {
   useUpdateProcess,
 } from "@/lib/processes/queries";
 import type { ProcessEnv } from "@/lib/processes/schemas";
-import type { ProcessCheck, ProcessRun } from "@/lib/processes/types";
+import type {
+  Process,
+  ProcessCheck,
+  ProcessRun,
+  ProcessSource,
+} from "@/lib/processes/types";
 
 /**
  * `/processes/[id]` — the M5-A editor (spec §10).
@@ -254,13 +263,13 @@ function CodeCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <Textarea
-          aria-label="Process code"
+        <CodeEditor
+          ariaLabel="Process code"
           value={code}
+          onChange={setCode}
+          language="python"
           disabled={!canMutate}
-          onChange={(e) => setCode(e.target.value)}
-          className="font-mono text-sm min-h-64"
-          spellCheck={false}
+          minHeight="26rem"
         />
         <EnvEditor
           value={env}
@@ -750,6 +759,78 @@ function RunsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// status + history
+// ---------------------------------------------------------------------------
+
+const HEALTH_BADGE: Record<LineageHealth, string> = {
+  ok: "border-success-border bg-success-subtle text-success",
+  warn: "border-warning-border bg-warning-subtle text-warning",
+  error: "border-danger-border bg-danger-subtle text-danger",
+  unknown: "border-border bg-muted text-muted-foreground",
+};
+
+/** The header verdict, from the same run-ledger derivation the dashboard uses. */
+function DeployState({ process }: { process: Process }) {
+  const { data: sources } = useSources(process.id);
+  const { data: runs } = useRuns(process.id);
+  const verdict = processVerdict(process, runs, sources?.length);
+  return (
+    <span
+      className={`inline-flex items-center gap-2 rounded-sm border px-3 py-1 text-[12.5px] font-bold ${HEALTH_BADGE[verdict.health]}`}
+    >
+      <span
+        aria-hidden="true"
+        className={`h-2 w-2 rounded-full ${healthDotClass(verdict.health)}`}
+      />
+      {verdict.label}
+      {verdict.reason && (
+        <span className="font-medium opacity-80">· {verdict.reason}</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * The 30-day daily strip, per SOURCE.
+ *
+ * It used to sit on the dashboard card showing only the first source, which
+ * was honest but ambiguous. `flow_stats_daily` is keyed per source, so this is
+ * where it belongs: next to the sources it actually describes, one strip each.
+ */
+function HistoryCard({ id }: { id: string }) {
+  const { data: sources } = useSources(id);
+  if (!sources || sources.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Run history</CardTitle>
+        <CardDescription>
+          Daily rollup per source, 30 days. A hatched cell is a day the rollup
+          did not run — distinct from a quiet day.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {sources.map((source) => (
+          <SourceHistory key={source.id} source={source} />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SourceHistory({ source }: { source: ProcessSource }) {
+  const { data: history } = useFlowHistory("process", source.id);
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <FlowStrip days={history ?? []} metric="runs" label="run history" />
+      <span className="tech text-[11.5px] text-muted-foreground">
+        {source.collection_id}
+      </span>
+    </div>
+  );
+}
+
 function ProcessDetailContent({ id }: { id: string }) {
   const { data: process, isLoading, error, refetch } = useProcess(id);
   const { data: revisions } = useRevisions(id);
@@ -771,47 +852,65 @@ function ProcessDetailContent({ id }: { id: string }) {
     null;
 
   return (
-    <div className="container mx-auto px-4 py-8 space-y-6">
-      <div>
-        <a
-          href="/processes"
-          className="text-sm text-muted-foreground hover:underline"
-        >
-          ← Processes
-        </a>
-        <h1 className="text-3xl font-bold">{process.name}</h1>
-        <p className="text-muted-foreground">
-          {process.description || "No description"}
-        </p>
+    <main className="flex-1 space-y-5 p-6">
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <a
+            href="/processes"
+            className="text-[12.5px] font-semibold text-primary hover:underline"
+          >
+            ← Processes
+          </a>
+          <div className="mt-1 flex flex-wrap items-center gap-2.5">
+            <h1 className="text-2xl font-bold tracking-tight">{process.name}</h1>
+            <DeployState process={process} />
+          </div>
+          <p className="tech mt-0.5 text-[11.5px] text-muted-foreground">
+            {process.id}
+          </p>
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+            {process.description || "No description"}
+          </p>
+        </div>
       </div>
 
-      <SettingsCard
-        id={process.id}
-        name={process.name}
-        description={process.description}
-        enabled={process.enabled}
-        maxRunsPerHour={process.max_runs_per_hour}
-        canMutate={canMutate}
-      />
-      <CodeCard
-        id={process.id}
-        groupId={process.group_id}
-        currentCode={current?.code ?? null}
-        currentEnv={(current?.env ?? []) as ProcessEnv}
-        currentRevision={process.current_revision}
-        canMutate={canMutate}
-      />
-      <div className="grid gap-6 lg:grid-cols-2">
-        <SourcesCard id={process.id} canMutate={canMutate} />
-        <OutputsCard id={process.id} canMutate={canMutate} />
+      {/* Editor layout (mockup 06): what the process IS on the left, what it
+          RUNS on the right, and what it DID underneath. On narrow viewports it
+          stacks back into one column in the same reading order. */}
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] xl:items-start">
+        <div className="space-y-5">
+          <SettingsCard
+            id={process.id}
+            name={process.name}
+            description={process.description}
+            enabled={process.enabled}
+            maxRunsPerHour={process.max_runs_per_hour}
+            canMutate={canMutate}
+          />
+          <SourcesCard id={process.id} canMutate={canMutate} />
+          <OutputsCard id={process.id} canMutate={canMutate} />
+        </div>
+
+        <div className="space-y-5 xl:sticky xl:top-20">
+          <CodeCard
+            id={process.id}
+            groupId={process.group_id}
+            currentCode={current?.code ?? null}
+            currentEnv={(current?.env ?? []) as ProcessEnv}
+            currentRevision={process.current_revision}
+            canMutate={canMutate}
+          />
+          <TestRunCard
+            id={process.id}
+            hasRevision={process.current_revision !== null}
+            canMutate={canMutate}
+          />
+        </div>
       </div>
-      <TestRunCard
-        id={process.id}
-        hasRevision={process.current_revision !== null}
-        canMutate={canMutate}
-      />
+
+      <HistoryCard id={process.id} />
       <RunsCard id={process.id} canMutate={canMutate} />
-    </div>
+    </main>
   );
 }
 

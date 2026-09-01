@@ -69,14 +69,20 @@ export function useOutputs(id: string) {
   });
 }
 
-export function useRuns(id: string) {
+/**
+ * The run ledger for one process.
+ *
+ * `poll` is on by default because the detail page watches a run it just
+ * started. The DASHBOARD turns it off: one poll per process every 10s is a
+ * lot of traffic for a list nobody is watching a single run on, and it still
+ * refetches on mount and on window focus.
+ */
+export function useRuns(id: string, { poll = true }: { poll?: boolean } = {}) {
   return useQuery({
     queryKey: processKeys.runs(id),
     queryFn: () => listRuns(id),
     enabled: !!id,
-    // Runs change underneath the page as the pipeline works them; a short
-    // poll keeps the panel honest without a websocket.
-    refetchInterval: 10_000,
+    refetchInterval: poll ? 10_000 : false,
   });
 }
 
