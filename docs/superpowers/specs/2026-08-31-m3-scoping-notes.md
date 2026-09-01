@@ -657,3 +657,159 @@ S-E decide whether (b) lands in M3 or Phase 8.
 - **Phase 8**: leader election and partitioned ownership stay deferred, with
   the reason now recorded as *measured* rather than assumed — the periodic
   scheduler already dedupes, so there is nothing a leader would add.
+
+---
+
+## M3-S-D · Hot-path write batching — RESULTS (2026-09-01)
+
+Measured against the live stack, then read off the code for the amplification
+count. The brief called `flow_stats` batching *mandatory*; the measurement
+says it is mandatory as **headroom and lock hygiene**, not as the blocker —
+and it turned up a bigger write-path cost the brief did not list.
+
+### Write amplification per ingested item
+
+Copy mode, one source file, one delivery destination, `defaults_only`. Each
+row below is a separate statement **on its own new connection and
+transaction** (see the pooling finding):
+
+| stage | write | batched today? |
+|---|---|---|
+| DISCOVER | INSERT `ingest_files` (`seen`) | per file, per tick |
+| DISCOVER (next poll) | UPDATE → `settled` | per file |
+| DISCOVER | `bump_flow_stats(files, bytes)` | ✅ **once per tick** |
+| FETCH | UPDATE → `fetching` | per file |
+| FETCH | UPDATE → `stored` | per file |
+| ITEMIZE | pgstac upsert (+ outbox trigger INSERT) | ❌ one call per item |
+| ITEMIZE | UPDATE → `itemized` | per item (multi-row capable) |
+| ITEMIZE | `bump_flow_stats(items, bytes, latency)` | ❌ **per item** |
+| DISPATCH | claim `item_events` | ✅ batch 100 |
+| DISPATCH | INSERT/UPSERT `delivery_log` (`pending`) | per item |
+| DISPATCH | `_apply_flow_stats` (→ pending) | ❌ **per item** |
+| DISPATCH | `mark_processed` | ✅ batch |
+| DELIVER | UPDATE `delivery_log` → `delivering` | per item |
+| DELIVER | `_apply_flow_stats` (→ delivering) | ❌ **per item** |
+| DELIVER | UPDATE `delivery_log` → `delivered` | per item |
+| DELIVER | `_apply_flow_stats` (→ delivered) | ❌ **per item** |
+
+**≈16 statements and ≈14 connections per item**, of which **4 are jsonb
+read-modify-write under `SELECT … FOR UPDATE` on an association row.**
+
+### `flow_stats` — measured
+
+200 real `bump_flow_stats` calls against a live association row:
+
+| case | ms each | bumps/s |
+|---|---:|---:|
+| serial | 4.86 | 206 |
+| concurrent × 4 | 2.17 | 461 |
+| concurrent × 16 | 2.18 | 459 |
+
+**Flat past concurrency 4 — that is the row lock, exactly as designed.** The
+ceiling is ~460 bumps/s **per association row**, and it does not move with
+workers.
+
+At the M3 target one high-volume ingest association does 30 bumps/s and its
+delivery association 90/s, so **`flow_stats` is not the binding constraint**
+— it sits at ~10–20% of a ceiling it cannot exceed. What it *does* cost is
+queueing: at concurrency 16 every ITEMIZE on one association waits behind the
+others for ~2.2 ms, which is meaningful against a 44 ms itemize and is pure
+waste.
+
+So: batch it (it is cheap, and DISCOVER already shows the pattern — one rollup
+per tick, not per file), but the spec should say **why**: to remove a
+per-association serialization point and reclaim ~5% of the hot path, not
+because 460/s is close to 60/s. Overstating it would misrank the slices.
+
+One latent hazard worth naming: `_apply_flow_stats` rebuilds `counts` with a
+full `SELECT status, count(*) … GROUP BY status` over `delivery_log` for the
+association whenever the `counts` key is absent. On a delivery association with
+millions of rows that is a table scan **inside the row lock**. It fires once
+per association today, but any migration or manual edit that drops the key
+re-arms it.
+
+### The cost the brief did not list: no connection pooling
+
+Every repo method is `async with await psycopg.AsyncConnection.connect(...)`
+— a **fresh connection per statement**, everywhere in the pipeline. Measured
+connect cost: **4.19 ms**.
+
+At ~14 connections per item and 30 items/s that is **~420 connections/s ≈ 1.8
+core-seconds of connect work per wall-clock second** on the client, plus a
+backend fork per connection on Postgres. At the 60 items/s total budget it
+doubles.
+
+This is invisible today because concurrency is 1 and the pgstac call dominated
+everything. Once S-C raises concurrency, connection churn becomes a first-order
+cost and a Postgres `max_connections` risk. **A pool belongs in the same slice
+as the concurrency raise**, not after it.
+
+(Note the contrast with M3-S-A's finding that pooling would buy ~2% on the
+pgstac path: there, one 4 ms connect sat against a 245 ms call. Here it sits
+against sub-millisecond statements, and the ratio inverts.)
+
+### `delivery_log` / `ingest_files` and the ADR 0012 constraint
+
+Both are UNIQUE-key upsert models, and ADR 0012 anchors table hygiene on that.
+Batching must not break it — and it need not: the codebase already contains the
+pattern that satisfies both. `delivery/repo.py`'s backfill insert is a single
+statement over `UNNEST(%s::text[], %s::timestamptz[])` with
+`ON CONFLICT (association_id, item_id) DO NOTHING … RETURNING id`. One
+statement, N rows, upsert semantics intact, and the returned ids say which rows
+were actually new.
+
+Every per-item write above can take that shape. Specifically:
+
+- **ITEMIZE ledger + flow_stats**: accumulate per ITEMIZE batch, then one
+  `UPDATE … WHERE id = ANY(...)` (already exists as `set_ledger_status_many`)
+  plus one aggregated bump.
+- **`delivery_log` transitions**: batch per delivery batch, `UPDATE … FROM
+  UNNEST(...)`, preserving the CASE-based attempts logic already in the
+  single-row statement.
+- **pgstac upsert**: the big one. S-A measured 3.8 items/s at batch 1 versus
+  375/s at batch 100 and 709/s at batch 500 (and with `use_queue` on: ~250/s
+  flat at batch 1). Batching stacks with the `use_queue` fix rather than
+  replacing it — see the ordering warning in S-A §7.
+
+### Outbox claim batch sizing
+
+`dispatch_once` claims 100 events per call, drain-until-empty across up to
+`max_batches`. Measured: draining 3000 seeded events took 11.8 s per
+`dispatch_poll` call ≈ **127 events/s**, and it **monopolised the single worker
+slot for those 11.8 s**.
+
+Two consequences, and they pull in opposite directions:
+- The batch is not too small for throughput (127/s ≫ 60/s).
+- It is too *coarse* for fairness on a shared worker. A 12-second job is a
+  12-second ingest outage.
+
+With S-C's concurrency raise the fairness problem mostly dissolves (other slots
+keep running). The spec should nonetheless bound the drain — `max_batches` per
+tick — so one enormous backlog cannot hold a slot indefinitely, rather than
+shrinking the batch, which would only trade throughput for latency.
+
+### `/metrics` overhead
+
+Presumed fine and confirmed fine: the counters are in-process
+`prometheus_client` increments against a local registry, and the exposition
+endpoint is scraped on demand. No measurable cost appeared in any run. No
+action.
+
+### Recommendation to M3-S-G
+
+Slice order within the write path, cheapest-first and each independently
+verifiable:
+
+1. **Connection pool** — one change, benefits every statement above, and is a
+   *precondition* for the concurrency raise rather than an optimisation of it.
+2. **Batch the pgstac upsert** in ITEMIZE and finalize (the largest single
+   win after S-A's `use_queue`).
+3. **Batch `flow_stats`** per job/tick — DISCOVER's existing shape is the
+   template. Removes the per-association serialization point.
+4. **Batch the `delivery_log` transitions** using the `UNNEST` + `ON CONFLICT`
+   pattern already in the backfill path, so the ADR 0012 upsert model is
+   preserved by construction.
+5. **Bound the dispatch drain** with `max_batches`, not a smaller batch.
+
+Items 1–4 all touch the same rows M3-S-C's compare-and-set claim touches; per
+S-C, design them as one write-path slice rather than sequencing them.
