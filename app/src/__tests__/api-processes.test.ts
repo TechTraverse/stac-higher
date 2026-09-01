@@ -38,12 +38,14 @@ vi.mock("@/lib/collections/settings", () => ({
 }));
 vi.mock("@/lib/db/migrate", () => ({ runMigrations: vi.fn(async () => {}) }));
 vi.mock("@/lib/graph/storage", () => ({ loadGraphEdges: vi.fn(async () => []) }));
+vi.mock("@/lib/connections/storage", () => ({ getConnection: vi.fn() }));
 
 import type { AuthContext, CanonicalRole } from "@/lib/auth/types";
 import { canManageCollection } from "@/lib/associations/access";
 import { loadGraphEdges } from "@/lib/graph/storage";
 import { collectionNode, processNode } from "@/lib/graph/edges";
 import { getCollectionSettings } from "@/lib/collections/settings";
+import { getConnection } from "@/lib/connections/storage";
 import {
   createOutput,
   createProcess,
@@ -341,6 +343,104 @@ describe("POST /api/processes/[id]/revisions (deploy)", () => {
     });
     expect(res.status).toBe(400);
     expect(deployRevision).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A `secret_ref` is a pointer into another row's write-only credentials, so
+ * the deploy verb is the last place the platform can check that the pointer
+ * stays inside the process's own group. The revision outlives the operator
+ * who deployed it, so the test is against the PROCESS's group, not the
+ * caller's — an admin deploying into someone else's process must not be able
+ * to widen its reach either.
+ */
+describe("POST /api/processes/[id]/revisions — secret_ref scoping", () => {
+  const CONNECTION = "3a9f1c2e-0000-4000-8000-0000000000e1";
+
+  function envRef() {
+    return [{ name: "SOURCE_TOKEN", secret_ref: { connection_id: CONNECTION, key: "password" } }];
+  }
+
+  function conn(groupId: string) {
+    return { id: CONNECTION, group_id: groupId } as never;
+  }
+
+  it("deploys a secret_ref that points inside the process's group", async () => {
+    vi.mocked(getConnection).mockResolvedValue(conn(EO));
+    vi.mocked(deployRevision).mockResolvedValue({
+      id: REVISION_ID,
+      process_id: PROCESS_ID,
+      runtime: INLINE,
+      code: "print(1)",
+      env: envRef(),
+      created_by: "user-1",
+      created_at: "2026-08-30T00:00:00.000Z",
+    });
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: INLINE, code: "print(1)", env: envRef() },
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("400s a secret_ref pointing at a connection in another group", async () => {
+    vi.mocked(getConnection).mockResolvedValue(conn(OTHER));
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: INLINE, code: "print(1)", env: envRef() },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/SOURCE_TOKEN/);
+    expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it("gives a missing connection the same answer as a foreign one", async () => {
+    // Distinguishing them would turn the deploy form into an oracle for
+    // which connection UUIDs exist in groups the caller cannot see.
+    vi.mocked(getConnection).mockResolvedValue(conn(OTHER));
+    const foreign = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: INLINE, code: "print(1)", env: envRef() },
+    });
+    vi.mocked(getConnection).mockResolvedValue(null);
+    const missing = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: INLINE, code: "print(1)", env: envRef() },
+    });
+    expect(missing.status).toBe(foreign.status);
+    expect(await missing.json()).toEqual(await foreign.json());
+  });
+
+  it("checks the PROCESS's group, not the admin caller's", async () => {
+    vi.mocked(getConnection).mockResolvedValue(conn(OTHER));
+    const res = await call(deployRoute, admin, {
+      method: "POST",
+      body: { runtime: INLINE, code: "print(1)", env: envRef() },
+    });
+    expect(res.status).toBe(400);
+    expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it("never touches connections for a literal-only env", async () => {
+    vi.mocked(deployRevision).mockResolvedValue({
+      id: REVISION_ID,
+      process_id: PROCESS_ID,
+      runtime: INLINE,
+      code: "print(1)",
+      env: [{ name: "TILE_SIZE", value: "512" }],
+      created_by: "user-1",
+      created_at: "2026-08-30T00:00:00.000Z",
+    });
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: {
+        runtime: INLINE,
+        code: "print(1)",
+        env: [{ name: "TILE_SIZE", value: "512" }],
+      },
+    });
+    expect(res.status).toBe(201);
+    expect(getConnection).not.toHaveBeenCalled();
   });
 });
 

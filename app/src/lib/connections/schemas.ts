@@ -100,18 +100,24 @@ export const s3CredentialsSchema = z
   })
   .strict();
 
-export const sshCredentialsSchema = z
+/** The object arm, kept separate from the refinement so CREDENTIAL_KEYS can
+ * read `.shape` — a refined schema has no shape to read. */
+const sshCredentialsObject = z
   .object({
     username: z.string().min(1, "username is required"),
     password: z.string().min(1).optional(),
     private_key: z.string().min(1).optional(),
     passphrase: z.string().min(1).optional(),
   })
-  .strict()
-  .refine((c) => c.password !== undefined || c.private_key !== undefined, {
+  .strict();
+
+export const sshCredentialsSchema = sshCredentialsObject.refine(
+  (c) => c.password !== undefined || c.private_key !== undefined,
+  {
     message: "At least one of password or private_key is required",
     path: ["password"],
-  });
+  },
+);
 
 export const ftpCredentialsSchema = z
   .object({
@@ -135,6 +141,29 @@ const CREDENTIALS_SCHEMAS = {
   ftp: ftpCredentialsSchema,
   ftps: ftpCredentialsSchema,
 } as const;
+
+/**
+ * The credential-envelope keys a `secret_ref` may name, per protocol
+ * (Phase 9 §5.6 — see `docs/processes.md`). DERIVED from the schemas above so
+ * a new credential field shows up in the process env editor's key picker
+ * automatically instead of drifting into a ref nothing can resolve.
+ *
+ * This map is also the honest statement of the limit: a `secret_ref` reaches
+ * a CONNECTION's credentials and nothing else, so these ~8 names are the
+ * entire secret namespace a process can address today.
+ */
+export const CREDENTIAL_KEYS: Record<WritableProtocol, readonly string[]> = {
+  s3: Object.keys(s3CredentialsSchema.shape),
+  ssh: Object.keys(sshCredentialsObject.shape),
+  sftp: Object.keys(sshCredentialsObject.shape),
+  ftp: Object.keys(ftpCredentialsSchema.shape),
+  ftps: Object.keys(ftpCredentialsSchema.shape),
+};
+
+/** Keys for any protocol string, including the reserved `stac-api` (none). */
+export function credentialKeysFor(protocol: string): readonly string[] {
+  return CREDENTIAL_KEYS[protocol as WritableProtocol] ?? [];
+}
 
 export function configSchemaFor(protocol: WritableProtocol) {
   return CONFIG_SCHEMAS[protocol];

@@ -18,6 +18,8 @@ import {
 } from "@stac-higher/shared";
 import { FileText, Loader2, Play, RotateCcw, Rocket, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { EnvEditor } from "@/components/processes/EnvEditor";
+import { useConnections } from "@/lib/connections/queries";
 import { useAuthMe } from "@/lib/query/auth";
 import { getTestRun, requestTestRun } from "@/lib/processes/api";
 import {
@@ -34,6 +36,7 @@ import {
   useSources,
   useUpdateProcess,
 } from "@/lib/processes/queries";
+import type { ProcessEnv } from "@/lib/processes/schemas";
 import type { ProcessCheck, ProcessRun } from "@/lib/processes/types";
 
 /**
@@ -185,23 +188,39 @@ function SettingsCard({
 
 function CodeCard({
   id,
+  groupId,
   currentCode,
+  currentEnv,
   currentRevision,
   canMutate,
 }: {
   id: string;
+  groupId: string;
   currentCode: string | null;
+  currentEnv: ProcessEnv;
   currentRevision: string | null;
   canMutate: boolean;
 }) {
   const [code, setCode] = useState(currentCode ?? STARTER_CODE);
+  const [env, setEnv] = useState<ProcessEnv>(currentEnv);
   const [memoryMb, setMemoryMb] = useState(512);
   const [timeoutSeconds, setTimeoutSeconds] = useState(900);
   const deployMutation = useDeployRevision();
+  // Every connection the caller can see; EnvEditor narrows to the PROCESS's
+  // group, which is the scope a secret_ref may name.
+  const { data: connections } = useConnections();
 
   useEffect(() => {
     if (currentCode !== null) setCode(currentCode);
   }, [currentCode]);
+
+  // A deploy starts from what is deployed: re-sync when the current revision
+  // moves, so the form is an edit of the live env rather than a blank slate
+  // that would silently drop it.
+  useEffect(() => {
+    setEnv(currentEnv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRevision]);
 
   const deploy = async () => {
     try {
@@ -216,7 +235,7 @@ function CodeCard({
             retry: { max_attempts: 3, backoff: "exponential" },
           },
           code,
-          env: [],
+          env,
         },
       });
       toast.success("Deployed a new revision");
@@ -243,6 +262,13 @@ function CodeCard({
           onChange={(e) => setCode(e.target.value)}
           className="font-mono text-sm min-h-64"
           spellCheck={false}
+        />
+        <EnvEditor
+          value={env}
+          onChange={setEnv}
+          connections={connections ?? []}
+          groupId={groupId}
+          disabled={!canMutate}
         />
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="grid gap-2">
@@ -770,7 +796,9 @@ function ProcessDetailContent({ id }: { id: string }) {
       />
       <CodeCard
         id={process.id}
+        groupId={process.group_id}
         currentCode={current?.code ?? null}
+        currentEnv={(current?.env ?? []) as ProcessEnv}
         currentRevision={process.current_revision}
         canMutate={canMutate}
       />

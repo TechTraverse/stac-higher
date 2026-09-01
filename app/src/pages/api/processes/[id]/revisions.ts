@@ -7,6 +7,12 @@
  *        `process_revision`. Creates a snapshot and repoints
  *        `current_revision` in one transaction.
  *
+ * A revision's `env` may carry `secret_ref` pointers into a connection's
+ * encrypted credentials. Those are re-checked here against the PROCESS's
+ * group (`findUnresolvableSecretRef`) — the schema can only validate the
+ * shape, and after this the reference is immutable and is next read by the
+ * pipeline at run launch.
+ *
  * `runtime` is validated by the WRITE gate (`processRuntimeSchema`), which
  * refuses the `container` arm this slice — the contract carries it and the
  * pipeline parses it, but user-supplied images stay out of the first
@@ -14,7 +20,12 @@
  */
 import type { APIRoute } from "astro";
 import { jsonResponse } from "@/lib/http/response";
-import { loadVisibleProcess, processNotFound } from "@/lib/processes/access";
+import {
+  findUnresolvableSecretRef,
+  loadVisibleProcess,
+  processNotFound,
+  secretRefOutOfScope,
+} from "@/lib/processes/access";
 import { processRevisionCreateSchema } from "@/lib/processes/schemas";
 import { deployRevision, listRevisions } from "@/lib/processes/storage";
 
@@ -45,6 +56,12 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       });
     }
     const data = parsed.data;
+
+    const unresolvable = await findUnresolvableSecretRef(
+      data.env,
+      loaded.process.group_id,
+    );
+    if (unresolvable) return secretRefOutOfScope(unresolvable);
 
     const revision = await deployRevision({
       processId: loaded.process.id,
