@@ -992,6 +992,17 @@ there are no intermediate demos; the first demo is M1, complete:
   `TODO.md` (M3-S-A…M3-S-G, spec + lead stop point at the end) with inputs
   collected in
   `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md`.
+  **Scoping complete 2026-09-01**; findings appended to those notes and the
+  design spec written:
+  `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` (awaiting lead
+  approval). Headline: the gap is four small defects, not a re-architecture —
+  pgstac's inline `update_partition_stats` (O(partition) per write call;
+  `use_queue = true` took the measured pipeline from 2–3.5 to 22 items/s with
+  no code change), the Procrastinate worker's default `concurrency = 1`,
+  whole-object buffering, and no connection pooling. §2's byte arithmetic is
+  redone in the notes (M3-S-B): ~88 TB/day ingest-origin, ~197 TB/day through
+  the workers in full copy mode, and reference mode corrected to a storage
+  lever rather than a bandwidth one.
 - **M4 — Production deployment** (Phases 7–8 as required by the target
   environment).
 - **M5 — Processes** (Phase 9, proposed 2026-08-27): user-defined

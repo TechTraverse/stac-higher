@@ -75,7 +75,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
       at 60 items/s with S-A's observed batch sizes; where the comfort
       ceiling sits on the shared Postgres. Paper only; feeds Phase 8's
       Procrastinate→SQS boundary.
-- [ ] **M3-S-G · design spec + lead stop point.** Write the M3 design spec
+- [x] **M3-S-G · design spec + lead stop point.** Write the M3 design spec
       (M2 pattern: gate, slices, dependency spine, testing & risk; carries
       S-B's arithmetic), run adversarial review, then **STOP for lead
       approval**. Only after approval does the implementation queue replace
