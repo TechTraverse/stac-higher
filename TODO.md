@@ -26,7 +26,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
 
 ## Warm-up — M5 residuals (small, self-contained; one worktree each)
 
-- [ ] **M3-W-1 · orphaned run-container reaper.** A worker killed between
+- [x] **M3-W-1 · orphaned run-container reaper.** A worker killed between
       launch and reap leaves a run container behind; nothing prunes them
       (deliberate M5-C deferral — `process/sweep.py` docstring says why the
       DB sweep must not do it). Add a dedicated reaper leg on the executor
@@ -93,5 +93,14 @@ The M5 queue's follow-ups are archived with it at `59e8087`; the two still
 actionable became M3-W-1/M3-W-2 above, and the durable design notes were
 already captured in `docs/processes.md`, ISSUES (I-80, I-81), migration 024's
 comment block, and the module docstrings they describe.
+
+- **Re-run vs. a leftover container (M3-W-1 discovery).** A re-run reuses the
+  run id, so `launch` asks for the container name `stac-run-{run_id}` — which
+  collides (409) while that run's orphaned container still exists. The failure
+  is self-healing (a 409 surfaces as `ExecutorUnavailable` → infrastructure
+  requeue, no attempt spent → the next tick after the reaper's 15-minute pass
+  succeeds), so it is a latency wart, not a correctness one. Fix candidates if
+  it ever bites: reap-by-run-id before launch, or an attempt suffix on the
+  container name. Not worth a slice on its own.
 
 (append here during iterations)
