@@ -63,7 +63,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
       audit `ingest_files` transitions for multi-worker atomicity the way
       `item_events` claims already are. Bias: if the singleton dispatcher
       holds 60 items/s, document the singleton and defer election to Phase 8.
-- [ ] **M3-S-D · hot-path write batching design.** `flow_stats`
+- [x] **M3-S-D · hot-path write batching design.** `flow_stats`
       per-transition bumps (mandatory), `delivery_log`/`ingest_files` churn
       (must not break the ADR 0012 UNIQUE-upsert model), outbox claim batch
       sizing. Design informed by S-A's contention measurements.
