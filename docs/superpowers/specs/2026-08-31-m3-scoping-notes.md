@@ -349,3 +349,165 @@ scoping brief assumed:
 
 Note the ordering matters: batching first, without (1), would have hidden the
 O(n²) behind a bigger constant and let it resurface at scale.
+
+---
+
+## M3-S-B · §2 byte-volume arithmetic at 2.6M items/day — RESULTS (2026-09-01)
+
+ROADMAP §2 was written against 100k items/day and concluded "tens to hundreds
+of TB/day". This redoes it at the M3 envelope and pins which of §2's three
+absorption mechanisms actually carry the load.
+
+### Stated assumptions (the numbers below are only as good as these)
+
+No NOAA size census was available, so the distribution is a declared model of
+NOAA-class products, chosen to span the three shapes that behave differently:
+
+| tier | example class | size | share of ITEMS | share of BYTES |
+|---|---|---:|---:|---:|
+| small | radar / gridded products (NEXRAD chunk, MRMS grid) | 2 MB | 60% | 3.6% |
+| medium | geostationary imager slice (GOES ABI L1b, per band/sector) | 25 MB | 30% | 22.3% |
+| large | polar-orbiter granule (VIIRS/JPSS SDR) | 250 MB | 10% | 74.2% |
+
+**Mean 33.7 MB/item.** The distribution is deliberately heavy-tailed, because
+that is the property every conclusion below turns on: 10% of items carry 74% of
+the bytes.
+
+Item rates from the settled inputs: **2.6M items/day ingest-origin**, plus
+≤1× process output ⇒ 5.2M catalog writes/day. Process outputs are assumed
+**derived and smaller** — 25% of ingest bytes — since a transform that emitted
+its input verbatim would not be worth running.
+
+### Byte volume
+
+| flow | TB/day | sustained |
+|---|---:|---:|
+| ingest-origin, read from source | 87.6 | 1.01 GB/s |
+| ingest-origin, written to canonical (copy mode) | 87.6 | 1.01 GB/s |
+| process outputs written | ~21.9 | 0.25 GB/s |
+| **through workers, copy mode, no delivery** | **~197** | **~2.3 GB/s** |
+| each delivery destination, streamed | +87.6 | +1.01 GB/s |
+| each delivery destination, S3→S3 server-side copy | ~0 | ~0 |
+
+§2's "tens to hundreds of TB/day" holds and now has a number on it:
+**~88 TB/day in, ~197 TB/day through the workers in full copy mode.**
+
+Against M3-S-A's measured transfer rate (an 8 MB `ingest_fetch` get→put in
+67 ms ≈ 125 MB/s each way, local MinIO), 1.01 GB/s of copy needs **≥9
+concurrent fetch workers doing nothing else** — before ITEMIZE, dispatch or
+delivery. This is the same conclusion S-A reached from the other side, and it
+is the arithmetic case for the M3-S-C concurrency decision.
+
+### Copy vs reference — the correction that matters
+
+§2 mechanism 1 (`storage_mode: reference`) is worth less than §2 implies,
+because of a detail in the shipped implementation:
+
+> **Reference mode avoids the WRITE. It does not avoid the READ when the
+> metadata strategy is `raster_auto`.**
+
+`SourceAdapterByteSource.read` pulls the whole object from the source adapter
+so rio-stac can open it (`ingest/extract.py`), exactly as copy mode reads it
+back from canonical storage. Reference mode therefore removes 87.6 TB/day of
+writes and 87.6 TB/day of canonical storage growth, and removes **nothing**
+from the read path. Only `defaults_only` and `sidecar` avoid the read — and
+even `defaults_only` falls into the I-27 best-effort GDAL open (another full
+read) unless `defaults.geometry = collection` is set.
+
+Consequences for the M3 posture:
+
+- **Reference mode is a STORAGE lever, not a bandwidth lever**, unless the
+  association also uses a metadata strategy that does not open the raster.
+- The high-leverage configuration is therefore **reference + sidecar** (or
+  `defaults_only` with a collection geometry) for the large tier, where the
+  producer already ships metadata alongside the granule. That is a
+  documentation and defaults question, not an engineering one.
+- The engineering lever for the read path is **ranged/streaming reads**, which
+  is precisely M3-S-E's decision. rio-stac only needs the GeoTIFF header and
+  overviews, not the whole object; today it gets the whole object because
+  `MemoryFile` takes bytes.
+
+### Storage growth vs retention
+
+Canonical storage growth per day, by posture (ingest + process outputs):
+
+| posture | TB/day | 7-day retention | 30-day retention |
+|---|---:|---:|---:|
+| copy everything | 109.5 | 767 TB | 3.3 PB |
+| reference the LARGE tier only, copy the rest | 44.5 | 312 TB | 1.3 PB |
+| reference everything ingested (outputs still copied) | 21.9 | 153 TB | 657 TB |
+
+Referencing the large tier alone — 10% of items — removes **74% of the ingested
+bytes** and, once process outputs are added back, **59% of total storage
+growth**. That is the single highest-leverage byte decision available, and it
+needs no code: it is which associations operators configure as `reference`.
+Process outputs are the floor: they are written by the platform, so no
+reference posture removes them.
+
+### GC and retention are NOT bulk paths today — a real gap
+
+ROADMAP §1 said the retention sweep and `asset_gc` collector are bulk paths.
+The shipped implementation is batched but **under-sized by more than an order
+of magnitude** for this envelope:
+
+- `retention_gc` and `asset_collect` run on `*/5 * * * *` — 288 ticks/day.
+- Each tick processes `GC_BATCH_ITEMS` (default **500**), *per collection* for
+  the retention half and *globally* for the collect half
+  (`gc/sweep.py`, `gc/repo.py`).
+
+Steady state at 2.6M items/day expiring means 2.6M marks/day and 2.6M prefix
+deletions/day.
+
+| leg | capacity/day at defaults | needed | shortfall |
+|---|---:|---:|---:|
+| `retention_gc` (per collection) | 144,000 | 2.6M for a single high-volume collection | **18×** |
+| `asset_collect` (global) | 144,000 | 2.6M+ | **18×** |
+
+The retention half is per collection, so it scales with the number of
+collections carrying retention — 18 busy collections would cover it. The
+**collect half does not**: `list_due_marks(batch_limit)` is a single global
+query, so its 144k/day is the platform's total byte-deletion capacity
+regardless of how the load is spread. **`asset_collect` is the harder ceiling
+and the one M3 must raise.**
+
+Worse, its unit of work is a *prefix deletion* (list + delete every object
+under `assets/{collection}/{item}/`), so the tick's cost is object-count, not
+mark-count: 2.6M items/day at ~1.5 files/item is ~4M object deletions/day
+(~45/s sustained) — well within S3's `DeleteObjects` (1000 keys/call) if
+batched, but the sweep deletes prefix-by-prefix, serially, on the same
+single-concurrency worker S-A found. This lands squarely on M3-S-C and
+M3-S-D as well.
+
+Note the failure mode is quiet: marks that are not collected simply stay open,
+so the symptom is a storage bill and a growing `asset_gc` table, not an error.
+A backlog alert on open marks is worth considering in the M3 spec.
+
+### Delivery fan-out
+
+§2 mechanism 2 (S3→S3 server-side copy) is implemented and correctly gated
+(`delivery/transfer.py: can_server_side_copy`) — but only when the destination
+is an `s3` connection **on the platform's own endpoint**, or both sides are
+real AWS with no custom endpoint. Every other destination streams the bytes
+through a worker: +87.6 TB/day, +1.01 GB/s, per destination.
+
+§2 mechanism 3 (honest protocol claims) therefore holds and should be restated
+in the M3 spec as a hard number rather than a posture: **an FTP/SFTP delivery
+destination cannot be fed at envelope volume** — at 1 GB/s it would need ~8
+saturated 10 GbE streams through the workers. FTP/SFTP destinations are an
+NRT-subset feature, and the spec should say so with this arithmetic attached.
+
+### Recommendation to M3-S-G
+
+1. **Restate §2's envelope with these numbers** (88 TB/day in, 197 TB/day
+   through workers in full copy mode) rather than "tens to hundreds".
+2. **Correct the reference-mode claim**: it is a storage lever; it becomes a
+   bandwidth lever only when paired with a metadata strategy that does not open
+   the raster. Document the reference + sidecar combination as the intended
+   high-volume configuration.
+3. **Raise `asset_collect`'s ceiling** — it is the one GC leg whose capacity
+   does not scale with the number of collections, and it is 18× short. Batch
+   the prefix deletions (`DeleteObjects`, 1000 keys/call) and size the batch
+   against the envelope, not against 100k/day.
+4. **Feed the read-path number into M3-S-E**: 88 TB/day of reads exists whether
+   or not bytes are copied, and it is what a streaming/ranged read would
+   actually remove.
