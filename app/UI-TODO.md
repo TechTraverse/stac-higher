@@ -157,6 +157,99 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       Ask the lead to schedule the full e2e run (M3 session owns it);
       fix fallout on `ai/main`.
 
+### Added after the remodel (lead feedback, 2026-09-01)
+
+- [ ] **UI-10 · Retire the global "active catalog"; pin products to the
+      built-in catalog.** [e2e-touch]
+
+      **Why.** UI-3 renamed home to *Products* but left it reading
+      `$activeCatalog`, so selecting an external catalog produces an
+      incoherent page: the Products tile counts external collections while
+      the Connections / Processes / Items-ingested tiles count the platform;
+      every product row degrades to *"unknown / Not wired"* because external
+      collection ids can never match platform `collection_id`s; and **"Create
+      product" writes to the external catalog** (direct or `/api/proxy`, not
+      the ADR 0008 BFF). The platform surfaces (`/connections`, `/processes`,
+      `/graph`, `/monitoring`, `/extensions`) already ignore the selector
+      entirely — this slice finishes that split rather than inventing it.
+
+      **Decided (lead, 2026-09-01):** product surfaces are built-in-only;
+      catalog selection survives ONLY where browsing an arbitrary catalog is
+      the point (`/search`, `/catalogs`); the global persistent "active" flag
+      goes away.
+
+      **⚠️ OPEN DECISION — needs the lead before implementing.** Pinning
+      `/collections*` to the built-in catalog removes the only way to browse
+      an external catalog's collections and items, which collides with the
+      standing "no functionality removed" constraint. Pick one:
+      - **(a) Drop it.** External catalogs are reachable through `/search`
+        and the `/catalogs` page only. Smallest surface, real removal.
+      - **(b) Relocate it.** A `/catalogs/[catalogId]/collections` browser
+        with no product framing (adds routes; the constraint forbids
+        *renames*, not additions).
+      - **(c) Parameterize it.** `/collections?catalog=<id>` defaults to
+        built-in; product framing only when the resolved catalog is built-in.
+        No removal, no new route, but keeps the dual-mode component the
+        incoherence came from.
+      **Recommendation: (c) for this slice, (b) later if the dual mode
+      grates** — it removes the incoherence without deleting a capability,
+      and the `catalogNoun` branch it needs already exists.
+
+      **Store (`app/src/stores/catalogStore.ts`).**
+      - Add `$builtInCatalog` (computed over `$catalogs`, finds
+        `BUILT_IN_CATALOG_ID`). This is what every product surface reads.
+      - Remove `$activeCatalogId` / `$activeCatalog` / `setActiveCatalog`, or
+        demote them to a **non-persistent** browse selection scoped to the
+        catalog-browsing surfaces. Do NOT keep a persistent global.
+      - `ensureBuiltInCatalog()` no longer needs its `$activeCatalogId` seed.
+      - **Orphaned localStorage:** the `stac-active-catalog` key stays in
+        users' browsers. Either drop it on read or leave it inert — decide
+        and comment; do not silently half-migrate. (`stac-catalogs` stays.)
+
+      **Client (`app/src/lib/stac-api/client.ts`).** `stacFetch` currently
+      falls back to `$activeCatalog` when no `endpointUrl` is passed.
+      **Verified: no production caller relies on that** — every call in
+      `lib/stac-api/*` passes `endpointUrl`, and only the unit tests exercise
+      the fallback. Repoint the fallback at the built-in catalog (or delete
+      it and make `endpointUrl` required) so nothing can implicitly inherit a
+      browse selection. `getCatalogForUrl` and the `builtIn` → BFF branch are
+      unchanged; the BFF routing is what makes this correctness, not polish.
+
+      **Surfaces to pin to `$builtInCatalog`.** `DashboardPage.tsx` (+ the
+      stat tiles, which then measure one world), `CollectionList`,
+      `CollectionDetail`, `CollectionForm`, `CollectionEditPage`, `ItemList`,
+      `ItemDetail`, `ItemForm`, `ItemEditPage`, and `TopBar`'s global search
+      (product hits must come from the built-in catalog — connections and
+      processes already do). `SidebarNav`'s stack-status footer should report
+      the **platform** STAC API, not whatever was last browsed.
+
+      **Surfaces that keep a selection.** `SearchPage` (local state, default
+      built-in — one island, so `useState` is enough; only reach for a
+      non-persistent atom if the picker must live outside the island) and
+      `CatalogManager`. `CatalogSelector` stays but binds to the local
+      selection instead of the global setter; its "Set active" affordance in
+      `CatalogManager` becomes "Browse" or goes away.
+
+      **Copy.** Once products are built-in-only, the `catalogNoun` ternaries
+      in `CollectionList` / `CollectionForm` and the `CollectionDetail`
+      breadcrumb collapse to plain "product" — unless option (c) keeps the
+      dual mode, in which case they stay and should be lifted into one shared
+      helper (already flagged in the UI-8 follow-ups).
+
+      **Tests / e2e.** `catalog-store.test.ts` asserts the active-id seeding
+      and `removeCatalog` reassignment (`:50`, `:67`, `:168`, `:172`);
+      `client.test.ts` mocks `$activeCatalog` for the no-`endpointUrl` path;
+      `stac-client-bff.test.ts` drives routing through the
+      `stac-active-catalog` key; `extension-roundtrip.test.ts` mocks the store.
+      All four need reworking around the new store shape. E2E: check whether
+      any spec depends on the built-in catalog being active by default (it is
+      today, so most should be unaffected) — and note this lands on top of a
+      suite that **still has not run since UI-2**.
+
+      **Out of scope.** No `/api/*` change, no migration. Ingesting *from* an
+      external catalog's bucket stays a Connection concern and never consults
+      a catalog selector — that is the point of the split, not work here.
+
 ## Discovered follow-ups
 
 The ones that outlive the remodel are now tracked in `docs/ISSUES.md`:
