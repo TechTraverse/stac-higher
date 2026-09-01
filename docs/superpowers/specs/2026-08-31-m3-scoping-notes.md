@@ -511,3 +511,149 @@ NRT-subset feature, and the spec should say so with this arithmetic attached.
 4. **Feed the read-path number into M3-S-E**: 88 TB/day of reads exists whether
    or not bytes are copied, and it is what a streaming/ranged read would
    actually remove.
+
+---
+
+## M3-S-C · Concurrency & HA plan (I-40) — RESULTS (2026-09-01)
+
+I-40 asked leader election vs partitioned ownership vs scale-workers-only.
+M3-S-A reframes the question: **the platform is not running one worker per
+box, it is running one JOB at a time in total.** `run_worker_async()` is called
+with no arguments, so Procrastinate's `WORKER_CONCURRENCY = 1` applies to
+ingest, dispatch, delivery, processes and every sweep, together. Multi-instance
+anything is premature while that is true.
+
+### Decision
+
+**Scale in-process concurrency first; keep every component a singleton;
+leave leader election in Phase 8.** In order:
+
+1. **Make worker concurrency a setting** and raise it. This is the entire
+   remaining ~5.5× gap S-A measured, and it costs one parameter.
+2. **Split the byte-heavy stage onto its own queue with its own, smaller
+   concurrency** (see the memory collision below). Procrastinate supports
+   per-queue workers; tasks are all on the default queue today.
+3. **Multi-instance stays available but unneeded.** It already works safely
+   (below); M3 does not need it to reach the envelope, so it is a deployment
+   option, not an M3 slice.
+
+Leader election earns nothing here: the periodic scheduler already dedupes
+across processes, and every singleton component is a periodic *job* on the
+shared worker rather than a separate process, so there is no leader to elect.
+
+### Multi-instance safety audit
+
+Running N pipeline containers today is safe on the scheduling side:
+`procrastinate_periodic_defers` carries `UNIQUE (task_name, periodic_id,
+defer_timestamp)` — verified on the live schema — so N processes cannot
+double-defer a periodic tick. Any worker may execute it; exactly one does.
+
+Per-leg claim audit (the I-40 question, extended to every ledger):
+
+| leg | mechanism | safe under concurrency |
+|---|---|---|
+| `item_events` dispatch | `FOR UPDATE SKIP LOCKED` | ✅ |
+| `connection_checks` drain | `FOR UPDATE SKIP LOCKED` | ✅ |
+| `delivery_backfills` | `FOR UPDATE SKIP LOCKED` | ✅ |
+| `process_runs`, `process_checks` | `FOR UPDATE SKIP LOCKED` + conditional UPDATE | ✅ |
+| staged-upload finalize | claim + `stale_claim` no-op | ✅ |
+| `flow_stats` rollup | `SELECT … FOR UPDATE` | ✅ |
+| `ingest_files` sweeps | single-statement `UPDATE … WHERE status = …` | ✅ |
+| **`ingest_files` GROUP → FETCH** | **read-then-write guard, not atomic** | ❌ |
+| `asset_gc` collect | list-then-delete, no claim | ⚠️ duplicated, idempotent |
+| retention expiry | list-then-mark-then-delete | ⚠️ duplicated, tolerated |
+
+### The one real defect: `ingest_files` has a guard, not a claim
+
+`fetch_stage` re-reads the row and skips it unless it is still `settled`
+(`ingest/fetch.py`) — an idempotency guard, and a good one. But it is
+**read-then-write**:
+
+```python
+latest = await repo.get_latest_ledger(...)          # reads 'settled'
+if latest is None or latest.status != STATUS_SETTLED:
+    continue
+await repo.set_ledger_fields(latest.id, status=STATUS_FETCHING, ...)   # unconditional UPDATE
+```
+
+Two workers can both read `settled` and both proceed. `group_stage` compounds
+it: `list_ledger_by_status(association_id, 'settled')` is a plain SELECT with
+no claim, so two overlapping GROUP jobs for one association hand the same rows
+to two FETCH batches.
+
+Consequence is **duplicated work and inflated telemetry, not corruption**: both
+workers fetch the same bytes and write the same canonical key, both ITEMIZE and
+upsert the same item id (idempotent), but `flow_stats` is bumped twice and two
+outbox events are emitted — so an operator's ingest counters and any expectation
+judged against them would be wrong, and the byte cost doubles. At the S-B
+envelope, doubling the byte path is the expensive half.
+
+**Fix (M3 slice, cheap and well-precedented here): compare-and-set.**
+
+```sql
+UPDATE stac_higher.ingest_files
+   SET status = 'fetching', item_id = %s, updated_at = now()
+ WHERE id = %s AND status = 'settled'
+```
+
+Skip the file when `rowcount = 0`. Atomic, no lock held across the fetch, no
+new table, and it makes the guard the claim it already reads as. This is the
+same shape `process_runs.claim_due_runs` uses.
+
+The two ⚠️ rows need no fix: `gc.delete_item` is deliberately failure-tolerant
+(a second delete of a gone item is swallowed), `mark_asset_prefix` is idempotent
+by the open-key unique index, and S3 prefix deletion is idempotent. They waste
+work under concurrency; they do not break. Worth a note in the spec, not a
+slice.
+
+### How much concurrency, and the collision with I-19/I-26
+
+From S-A's per-stage costs and S-B's size model:
+
+| workload | per-item work | slots for 30 items/s |
+|---|---:|---:|
+| metadata-light (64 KB, `defaults_only`) | fetch 25 ms + itemize 44 ms | ~3 |
+| delivery (64 KB) | 51 ms | ~2 |
+| byte-realistic (33.7 MB mean, copy) | fetch ~0.28 s + itemize ~55 ms | **~10** |
+
+So ~12–16 slots for the byte-realistic ingest + delivery mix — which agrees,
+from the other direction, with S-B's "≥9 concurrent fetch workers for 1.01
+GB/s".
+
+**And that is exactly where I-19/I-26 detonate.** S-A measured the envelope as
+`RSS ≈ 255 MiB + 3 × asset_size × concurrency`. At concurrency 16 against the
+250 MB large tier that is ~12 GB of resident memory in one container — for a
+workload whose whole point is that 10% of items carry 74% of the bytes.
+
+> **Concurrency and streaming are one decision, not two.** Raising concurrency
+> without addressing whole-object buffering converts a throughput problem into
+> an OOM. M3-S-E must not be deferred past the concurrency slice.
+
+Three ways out, for the spec to choose between (E decides):
+- **(a) Separate queues.** A `bytes` queue (FETCH, and reference-mode EXTRACT
+  reads) with concurrency ~4, and a `metadata` queue with concurrency ~16.
+  Bounds memory at `4 × 3 × max_asset` without capping the cheap stages.
+  Costs a `queue=` argument on `register_task` and a second worker config;
+  every task is on the default queue today.
+- **(b) Streaming** (the S-E option): per-item memory becomes a chunk, and
+  concurrency stops being memory-coupled at all.
+- **(c) A computed cap**: `concurrency = memory_budget / (3 × max_asset_size)`.
+  Honest, self-limiting, and leaves the platform unable to reach the envelope
+  on large-tier data — the honest-limits posture, and the right answer only if
+  (a) and (b) are both refused.
+
+(a) is the cheapest thing that makes a raised concurrency *safe*, and it
+composes with (b) rather than competing with it. Recommend (a) in M3 and let
+S-E decide whether (b) lands in M3 or Phase 8.
+
+### What this hands forward
+
+- **M3-S-D**: the compare-and-set above is a write-path change on the same
+  rows D is batching; they should be designed together, not sequenced.
+- **M3-S-E**: the memory collision is now quantified, and E is on M3's critical
+  path rather than optional.
+- **M3-S-F**: at concurrency 16 the job rate rises with it — F's arithmetic
+  should be run at the chosen concurrency, not at 1.
+- **Phase 8**: leader election and partitioned ownership stay deferred, with
+  the reason now recorded as *measured* rather than assumed — the periodic
+  scheduler already dedupes, so there is nothing a leader would add.
