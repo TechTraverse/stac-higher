@@ -640,7 +640,30 @@ post-gate stretch slice.** Read-only + async-execute mapping over
 `/processes` + `process_runs` (Part 1 async core; Core/JSON/Process
 Description/Job list conformance candidates); the internal model stays
 canonical and richer. Ships only after the native surface is rehearsed.
-- Tracked in: the Phase 9 design spec §11.
+**2026-08-31 addendum:** the standard's Parts 2–5 (all unreleased drafts)
+were surveyed and the conformance posture recorded in
+[ADR 0016](decisions/0016-ogc-processes-conformance-posture.md): Part 1
+v1.0 stays the claim target, the v2.0 draft's `collection-output` is the
+planned representation of output collections (better than contorting
+`output_items` into v1.0 `/results`), Part 5 provenance is a cheap future
+add-on off the run ledger, and two constraints bind now (container-runtime
+contract must not foreclose OGC Application Packages; run↔item provenance
+linkage stays queryable). The facade remains a post-M3 stretch.
+- Tracked in: the Phase 9 design spec §11; ADR 0016.
+
+### I-81 · No cancel-run verb (runaway runs; OGC `dismiss` gap) ⚪
+A `queued`/`running` process run cannot be cancelled: the only recovery
+verbs are the retry budget (automatic) and Re-run (dead rows). An operator
+watching a mis-deployed revision burn its timeout budget can disable the
+process (stops FUTURE runs) but cannot stop the one in flight — the
+executor's timeout is the only backstop. Cancellation needs executor
+cooperation (stop the container, flip the row terminal, keep the crash-safe
+ordering) plus an audited verb + UI affordance. Also the reason the future
+OGC facade cannot claim the `dismiss` conformance class (ADR 0016 §3) —
+the facade never fakes a verb the platform does not have.
+- Tracked in: here; [ADR 0016](decisions/0016-ogc-processes-conformance-posture.md);
+  `services/pipeline/src/pipeline/process/docker_executor.py` (timeout is
+  the existing kill path a cancel would reuse).
 
 ---
 

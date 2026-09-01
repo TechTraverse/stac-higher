@@ -977,7 +977,10 @@ there are no intermediate demos; the first demo is M1, complete:
   This pulls the Phase 8 load-gate *measurement* forward; the AWS/IaC half of
   Phase 8 stays put. **Not yet scoped** — needs its own design spec (the M2
   pattern), including redoing §2's byte-volume arithmetic at the 20×-higher
-  item rate.
+  item rate. **Scoping started 2026-08-31**: the scoping queue is seeded in
+  `TODO.md` (M3-S-A…M3-S-G, spec + lead stop point at the end) with inputs
+  collected in
+  `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md`.
 - **M4 — Production deployment** (Phases 7–8 as required by the target
   environment).
 - **M5 — Processes** (Phase 9, proposed 2026-08-27): user-defined
@@ -1071,9 +1074,10 @@ terms. Planning artifacts: §5 `PROCESS_*` entities + §5.6 config shapes,
 (`docs/superpowers/specs/2026-08-29-phase9-processes-design.md`, slices
 M5-0…M5-G) — the completed `TODO.md` scoping queue, and ISSUES I-60…I-66.
 Sequencing settled 2026-08-27: Phase 7 precedes 9; M5 precedes M3 (see the
-steering order above). Slice 1 is `inline_python`-only (ADR 0013); an OGC
-API — Processes conformant facade over `/processes` + runs is an open
-evaluation for the design spec (I-66).
+steering order above). Slice 1 is `inline_python`-only (ADR 0013); the OGC
+API — Processes facade was evaluated (I-66) and settled as a post-gate
+stretch — conformance posture and the Parts 2–5 outlook are ADR 0016
+(2026-08-31).
 
 - **Data model:** `processes`, `process_revisions` (immutable code+config
   snapshots; deploy = new revision), `process_sources` (built-in-catalog
@@ -1116,6 +1120,15 @@ toggle (§8), not a connection.
   filter, mirror matching items (metadata-only via `reference` mode, or with
   asset copy). The adapter enum, `storage_mode`, and association config are
   designed so this drops in without schema changes.
+- **OGC API — Processes conformance** (posture set 2026-08-31,
+  [ADR 0016](docs/decisions/0016-ogc-processes-conformance-posture.md)):
+  conformance is a goal, pursued as the §11 facade over the canonical
+  internal model — Part 1 v1.0 claim targets now, the v2.0 draft's
+  `collection-output` as the planned representation of output collections,
+  Part 5 (PROV) as a cheap add-on off the run ledger. Parts 2–4 are mapped
+  with reasoning in the ADR; two constraints bind current work (container
+  runtime must not foreclose Application Packages; run↔item provenance
+  linkage stays queryable). The facade slice stays post-M3, lead-gated.
 - **FISMA High control mapping**: a formal pass against the FedRAMP High
   baseline (inventory: audit coverage, encryption, session policy, boundary
   docs) before any accredited deployment.
