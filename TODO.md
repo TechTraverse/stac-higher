@@ -47,7 +47,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
 
 ## M3 scoping (spec §-briefs in the scoping notes; dependency spine A → B/C/D/E/F → G)
 
-- [ ] **M3-S-A · baseline throughput measurement.** The load-bearing input:
+- [x] **M3-S-A · baseline throughput measurement.** The load-bearing input:
       synthetic feed harness (parametrized S3 drop generator + direct-outbox
       seeder) + per-stage measurement (ingest, outbox drain, delivery,
       finalize, DB hot spots) off `/metrics` and table counts. Record today's
@@ -102,5 +102,15 @@ comment block, and the module docstrings they describe.
   succeeds), so it is a latency wart, not a correctness one. Fix candidates if
   it ever bites: reap-by-run-id before launch, or an attempt suffix on the
   container name. Not worth a slice on its own.
+
+- **`use_queue` is an M3 implementation slice, not a scoping change
+  (M3-S-A).** The measurement set `pgstac_settings.use_queue = true`,
+  confirmed a 10x end-to-end gain, then REVERTED it and drained
+  `pgstac.query_queue`. Turning it on for real needs a periodic
+  `CALL pgstac.run_queued_queries()` (it is a PROCEDURE) and an owner for the
+  settings row — the app owns migrations, the `pgstac` schema is pypgstac's.
+- **The harness has no process leg.** The M3 gate wants a synthetic process at
+  ~50% source share; `pipeline.loadgen` drives ingest, outbox and delivery
+  only. Gate-rehearsal work, sized when M3-S-G writes the gate.
 
 (append here during iterations)
