@@ -813,3 +813,118 @@ verifiable:
 
 Items 1–4 all touch the same rows M3-S-C's compare-and-set claim touches; per
 S-C, design them as one write-path slice rather than sequencing them.
+
+---
+
+## M3-S-E · Streaming decision (I-19 / I-26) — RESULTS (2026-09-01)
+
+The brief offered three options: (a) true streaming, (b) documented copy-mode
+size limits leaning on `reference`, (c) defer to Phase 8. It expected the
+decision to hinge on whether NOAA-class assets are large enough to matter.
+
+**They are, and the decision changed for a different reason: streaming turns
+out to be CHEAP, and — per M3-S-C — it is a precondition for the concurrency
+raise rather than an optimisation of it.**
+
+### Decision: **(a) — true streaming, in M3, both halves.**
+
+Measured, against the live stack, on a 64 MB tiled GeoTIFF.
+
+**EXTRACT (I-26).** Today: `rasterio.MemoryFile(raster_bytes)` over the whole
+object. Alternative: hand GDAL a `/vsis3/` path and let it range-read.
+
+| | seconds | RSS delta | resulting STAC item |
+|---|---:|---:|---|
+| `MemoryFile` (today) | 0.400 | **+145 MB** | — |
+| `/vsis3` ranged | 0.302 | **+55 MB** | **byte-identical** |
+
+`create_stac_item(..., with_proj=True, with_raster=True)` — i.e. including the
+`raster:bands` statistics that actually touch pixels — produced an identical
+item both ways (same bbox, same `proj:code`, same band mean to three decimals),
+in less time, at a third of the memory. GDAL's own block cache does the work,
+and it is capped by `GDAL_CACHEMAX`: memory becomes a **knob**, not a multiple
+of the asset.
+
+Note the 145 MB for a 64 MB object — 2.3× — which is exactly the "2–3× asset
+size" envelope M3-S-A inferred from container RSS. The two measurements agree.
+
+**FETCH (I-19).** Today: `adapter.get() -> bytes` then `platform.put_object`.
+
+| strategy | seconds | RSS delta | scales with object size? |
+|---|---:|---:|---|
+| buffered get → put (today) | 0.870 | +64.8 MB (≈1×) | **yes** |
+| streamed get → multipart put | 0.444 | +49.8 MB | no — bounded by `chunksize × concurrency` (32 MB as configured) |
+| **server-side copy** | **0.116** | **0** | no — **zero bytes through the worker** |
+
+Server-side copy is **7.5× faster than today and moves no bytes at all**. The
+gate for it already exists in this codebase, written for the delivery path
+(`delivery/transfer.py: can_server_side_copy`), and `S3Adapter` already
+implements `copy_object_from`. FETCH is the same question in the other
+direction and can reuse both.
+
+### The memory envelope, written down
+
+M3-S-C asked for this explicitly, because concurrency and memory are one
+decision:
+
+| | per-worker peak RSS |
+|---|---|
+| **today** | `255 MiB + ~2.3 × asset_size × concurrency` |
+| **after streaming** | `255 MiB + (GDAL_CACHEMAX + multipart_chunksize × transfer_concurrency) × concurrency` |
+
+The second is **independent of asset size**. That is the whole point: it is
+what makes S-C's concurrency of 12–16 safe. At concurrency 16 against the
+S-B large tier (250 MB), today's formula predicts ~9 GB; the streamed formula
+with a 64 MB GDAL cache and 32 MB transfer buffers predicts ~1.8 GB.
+
+### Why not (b) or (c)
+
+- **(b) — document size limits, lean on `reference`** — is now clearly wrong,
+  and M3-S-B says why: reference mode **does not avoid the read**. A reference
+  association with `raster_auto` buffers the whole object in EXTRACT exactly as
+  copy mode does. Leaning on reference to dodge a memory problem would not have
+  dodged it.
+- **(c) — defer to Phase 8** — would leave M3 unable to raise concurrency,
+  which is the entire remaining throughput gap (S-C). Deferring the cheap half
+  of a coupled pair is how the expensive half becomes unreachable.
+
+### Caveats to carry into the slice
+
+- **Credentials reach GDAL.** Copy-mode EXTRACT reads the *canonical* bucket
+  with the platform's own credentials — trivial. Reference-mode EXTRACT reads
+  the *source* bucket, so the connection's decrypted credentials would go into
+  a GDAL/`rasterio` session. The worker already decrypts them (`build_adapter`)
+  so nothing new is exposed, but it is a new place they live and belongs in the
+  slice's review, not in its footnotes.
+- **`/vsis3` only reaches s3.** SFTP/FTP sources keep the buffered `get()`.
+  That is consistent: reference mode is already s3-only, and ROADMAP §2's
+  honest-limits posture (with M3-S-B's arithmetic attached) says those
+  protocols are NRT-subset volumes.
+- **rasterio refuses raw `AWS_*` GDAL options** — `rasterio.Env(AWS_S3_ENDPOINT=…)`
+  raises `EnvError: GDAL's AWS config options can not be directly set`. The
+  working form against MinIO is
+  `rasterio.Env(session=AWSSession(..., endpoint_url="host:port"), AWS_HTTPS="NO",
+  AWS_VIRTUAL_HOSTING="FALSE")`. Recorded because it cost a debug cycle and the
+  error message points the wrong way.
+- **Server-side copy is conditional**, and FETCH's condition is not delivery's:
+  the destination (the platform bucket) must be able to read the *source*
+  bucket. Same endpoint is necessary but not sufficient across accounts. The
+  slice needs the streamed path as the general case and server-side copy as the
+  fast path, with a fallback on failure — which is exactly what the delivery
+  worker already does.
+
+### Recommendation to M3-S-G
+
+One slice, "bounded-memory byte path", with three verifiable parts:
+
+1. **EXTRACT reads through a URI, not a buffer.** Swap the `MemberByteSource`
+   seam from `-> bytes` to something GDAL can open. The seam already exists
+   and already has two implementations, so this is a change of return type,
+   not of architecture.
+2. **FETCH: server-side copy when the gate allows, streamed multipart
+   otherwise.** Reuse `can_server_side_copy` and `copy_object_from`.
+3. **Make the memory bound explicit and configured** (`GDAL_CACHEMAX`,
+   transfer chunk size and concurrency), so the envelope above is a setting a
+   deployment can size against its box rather than an emergent property.
+
+Sequence it **with or before** the concurrency raise (S-C), never after.
