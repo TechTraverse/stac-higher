@@ -71,7 +71,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
       multipart-put vs documented copy-mode size limits + reference-mode
       posture vs defer to Phase 8 — decided against S-B's size distribution,
       with the per-worker memory envelope written down.
-- [ ] **M3-S-F · queue-backend headroom arithmetic.** Procrastinate jobs/s
+- [x] **M3-S-F · queue-backend headroom arithmetic.** Procrastinate jobs/s
       at 60 items/s with S-A's observed batch sizes; where the comfort
       ceiling sits on the shared Postgres. Paper only; feeds Phase 8's
       Procrastinate→SQS boundary.
