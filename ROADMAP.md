@@ -1007,9 +1007,9 @@ there are no intermediate demos; the first demo is M1, complete:
   collected in
   `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md`.
   **Scoping complete 2026-09-01**; findings appended to those notes and the
-  design spec written:
-  `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` (awaiting lead
-  approval). Headline: the gap is four small defects, not a re-architecture —
+  design spec written and **approved 2026-09-01**:
+  `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md`; the M3-A…M3-I
+  implementation queue is live in `TODO.md`. Headline: the gap is four small defects, not a re-architecture —
   pgstac's inline `update_partition_stats` (O(partition) per write call;
   `use_queue = true` took the measured pipeline from 2–3.5 to 22 items/s with
   no code change), the Procrastinate worker's default `concurrency = 1`,
