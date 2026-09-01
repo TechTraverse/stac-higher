@@ -85,7 +85,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       `extension-forms.spec.ts`, `data-flow.spec.ts:114`, `assets.spec.ts:31`
       — verify those still scope correctly). Delete `Header.tsx` when
       nothing imports it. Nav copy adopts "Products".
-- [ ] **UI-3 · Home overview.**
+- [x] **UI-3 · Home overview.**
       Replace `DashboardPage.tsx` content with the product-centric overview
       (keep the no-catalog empty state): four stat tiles (Products ·
       Connections · Processes · Ingest 24h — derive from `usePipelineGraph()`
@@ -206,3 +206,31 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
   come from `/api/monitoring/flows` or the associations, not the connection.
 - `app/src/hooks/use-mobile.ts` arrived with the shadcn sidebar — first file
   in `app/src/hooks/`. Non-primitive, safe to edit.
+
+**From UI-3:**
+- **`/api/alerts` should return `process_id` and `source_id`.** Migration 024
+  stores both, but the API shape stops at connection / association / channel /
+  collection, so the home overview cannot attribute a `process_stalled`,
+  `process_failed` or `process_rate_limited` alert to a product. Home now
+  counts what it could not attribute and links to /monitoring — honest, but a
+  banner where a red product row belongs. Adding the two fields is an
+  `/api/*` change, so it is OUT of the UI remodel's scope: hand it to the
+  platform track.
+- **No true item count per product.** The home list shows ingest-derived
+  `flow_stats.items` (labelled "ingested") because a real count needs
+  `numberMatched` per collection — one request each — or a new endpoint.
+  UI-4's Overview tab has the same constraint for a single product, where one
+  extra request IS affordable.
+- The "Ingest (24h)" tile is an all-time total; `flow_stats` is cumulative and
+  nothing exposes a 24h rollup. `/api/monitoring/history` is per-subject, so a
+  real 24h figure means N requests or a widened endpoint.
+- `LineageStrip`'s `full` size currently renders the `medium` layout larger —
+  **UI-7 must replace that renderer**, not just call it.
+- `LineageStrip`'s `mini` variant ignores `group.href` on purpose (it sits
+  inside link rows). If a future caller renders mini outside a link and wants
+  navigation, add an explicit `interactive` prop rather than restoring the
+  anchors.
+- No unit tests were added for `overview.ts`'s derivations (health ranking,
+  alert attribution, lineage grouping). It is the most logic-heavy UI module
+  in the remodel and is pure functions over plain data — cheap to cover, and
+  worth a `new-test` pass in UI-8 or UI-9.
