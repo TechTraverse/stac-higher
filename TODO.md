@@ -54,7 +54,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
       ceiling and first bottleneck by APPENDING a measurements section to the
       scoping notes. The harness must be loop-runnable and reusable as the M3
       gate's rehearsal driver.
-- [ ] **M3-S-B · §2 byte-volume arithmetic redo.** ROADMAP §2 at 2.6M
+- [x] **M3-S-B · §2 byte-volume arithmetic redo.** ROADMAP §2 at 2.6M
       items/day + 1× process output: size-distribution assumptions, copy vs
       reference split, storage growth vs retention, GC bulk-path check.
       Append to the scoping notes; feeds S-E's decision.
