@@ -9,15 +9,13 @@ vi.stubGlobal("fetch", mockFetch);
 const $catalogs = atom([
   { id: "1", name: "Test", url: "http://localhost:8082", isDefault: true },
 ]);
-const $activeCatalogId = atom("1");
-const $mockActiveCatalog = computed(
-  [$catalogs, $activeCatalogId],
-  (catalogs, id) => catalogs.find((c) => c.id === id) ?? null,
-);
+// UI-10: with no explicit endpointUrl, stacFetch falls back to the BUILT-IN
+// catalog — never to a browse selection.
+const $mockBuiltInCatalog = computed([$catalogs], (catalogs) => catalogs[0] ?? null);
 
 vi.mock("@/stores/catalogStore", () => ({
-  get $activeCatalog() {
-    return $mockActiveCatalog;
+  get $builtInCatalog() {
+    return $mockBuiltInCatalog;
   },
   get $catalogs() {
     return $catalogs;
@@ -38,7 +36,7 @@ beforeEach(() => {
 
 describe("stacFetch", () => {
   describe("URL construction", () => {
-    it("uses active catalog URL as base", async () => {
+    it("uses the built-in catalog URL as base when no endpoint is given", async () => {
       mockFetch.mockResolvedValue(jsonResponse({ collections: [] }));
       await stacFetch("/collections");
       expect(mockFetch).toHaveBeenCalledWith(

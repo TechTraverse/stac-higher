@@ -38,7 +38,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import { useLandingPage } from "@/lib/query/search";
 import { cn } from "@/lib/utils";
 
@@ -108,7 +108,7 @@ function NavList({ items, pathname }: { items: NavItem[]; pathname: string }) {
  * runs — no new endpoint, and the cached result is shared.
  */
 function StackStatus() {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const { data, isLoading, isError } = useLandingPage(catalog?.url ?? "");
 
   const state = !catalog

@@ -1,7 +1,8 @@
 import { useState, useCallback } from "react";
+import { extractToken, useTokenPaging } from "@/hooks/use-token-paging";
 import { useStore } from "@nanostores/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import { useItems } from "@/lib/query/items";
 import { stacKeys } from "@/lib/query/keys";
 import { createItem } from "@/lib/stac-api/items";
@@ -30,26 +31,14 @@ interface ItemListInnerProps {
   collectionId: string;
 }
 
-function extractToken(links: Array<{ href: string; rel: string }>, rel: string): string | undefined {
-  const link = links.find((l) => l.rel === rel);
-  if (!link) return undefined;
-  try {
-    const url = new URL(link.href, "http://localhost");
-    return url.searchParams.get("token") ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 const PAGE_SIZE = 20;
 
 function ItemListInner({ collectionId }: ItemListInnerProps) {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const endpointUrl = catalog?.url ?? "";
   const qc = useQueryClient();
-  const [token, setToken] = useState<string | undefined>();
-  const [tokenHistory, setTokenHistory] = useState<string[]>([]);
-  const { data, isLoading, error, refetch } = useItems(endpointUrl, collectionId, { limit: PAGE_SIZE, token });
+  const paging = useTokenPaging();
+  const { data, isLoading, error, refetch } = useItems(endpointUrl, collectionId, { limit: PAGE_SIZE, token: paging.token });
   const [hoveredItemId, setHoveredItemId] = useState<string | undefined>();
 
   const [importOpen, setImportOpen] = useState(false);
@@ -94,29 +83,14 @@ function ItemListInner({ collectionId }: ItemListInnerProps) {
 
   const items = data?.features ?? [];
   const matchCount = data?.context?.matched ?? data?.numberMatched;
-  const nextToken = data?.links ? extractToken(data.links, "next") : undefined;
-  const hasPrev = tokenHistory.length > 0;
-
-  const goNext = () => {
-    if (!nextToken) return;
-    setTokenHistory((prev) => [...prev, token ?? ""]);
-    setToken(nextToken);
-  };
-
-  const goPrev = () => {
-    if (tokenHistory.length === 0) return;
-    const prev = [...tokenHistory];
-    const prevToken = prev.pop();
-    setTokenHistory(prev);
-    setToken(prevToken || undefined);
-  };
+  const nextToken = extractToken(data?.links, "next");
 
   return (
     <>
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors">
-            Collections
+            Products
           </a>
           <span>/</span>
           <a
@@ -195,25 +169,25 @@ function ItemListInner({ collectionId }: ItemListInnerProps) {
                   </div>
                 ))}
               </div>
-              {(hasPrev || nextToken) && (
+              {(paging.hasPrev || nextToken) && (
                 <div className="flex items-center justify-between pt-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasPrev}
-                    onClick={goPrev}
+                    disabled={!paging.hasPrev}
+                    onClick={paging.goPrev}
                   >
                     <ChevronLeft className="h-4 w-4 mr-1" />
                     Previous
                   </Button>
                   <span className="text-xs text-muted-foreground">
-                    Page {tokenHistory.length + 1}
+                    Page {paging.page}
                   </span>
                   <Button
                     variant="outline"
                     size="sm"
                     disabled={!nextToken}
-                    onClick={goNext}
+                    onClick={() => paging.goNext(nextToken)}
                   >
                     Next
                     <ChevronRight className="h-4 w-4 ml-1" />

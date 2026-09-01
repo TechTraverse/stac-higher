@@ -1,7 +1,7 @@
 import { useForm, useFieldArray, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useStore } from "@nanostores/react";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import { useCreateItem, useUpdateItem } from "@/lib/query/items";
 import { itemFormSchema, type ItemFormData } from "@/lib/stac-api/schemas";
 import type { StacItem } from "@/lib/stac-api/types";
@@ -114,7 +114,7 @@ interface ItemFormInnerProps {
 }
 
 function ItemFormInner({ collectionId, existingItem }: ItemFormInnerProps) {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const endpointUrl = catalog?.url ?? "";
   const isEdit = !!existingItem;
 
@@ -183,7 +183,7 @@ function ItemFormInner({ collectionId, existingItem }: ItemFormInnerProps) {
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors">
-            Collections
+            Products
           </a>
           <span>/</span>
           <a

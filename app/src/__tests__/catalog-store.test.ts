@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import type { StacCatalog } from "@/stores/catalogStore";
 
 const CATALOGS_KEY = "stac-catalogs";
-const ACTIVE_KEY = "stac-active-catalog";
+/** Retired by UI-10 — kept here only to assert the store drops it. */
+const RETIRED_ACTIVE_KEY = "stac-active-catalog";
 const DEFAULT_BUILT_IN_URL = "http://localhost:8081";
 
 /**
@@ -36,7 +37,7 @@ afterEach(() => {
 });
 
 describe("catalogStore built-in seeding", () => {
-  it("seeds the built-in catalog on fresh state and makes it active", async () => {
+  it("seeds the built-in catalog on fresh state", async () => {
     const store = await importStore();
     const catalogs = store.$catalogs.get();
 
@@ -47,24 +48,23 @@ describe("catalogStore built-in seeding", () => {
       builtIn: true,
       isDefault: true,
     });
-    expect(store.$activeCatalogId.get()).toBe(store.BUILT_IN_CATALOG_ID);
-    expect(store.$activeCatalog.get()?.id).toBe(store.BUILT_IN_CATALOG_ID);
+    expect(store.$builtInCatalog.get()?.id).toBe(store.BUILT_IN_CATALOG_ID);
   });
 
-  it("re-adds the built-in catalog when persisted state lacks it, keeping user catalogs and selection", async () => {
+  it("re-adds the built-in catalog when persisted state lacks it, keeping user catalogs", async () => {
     const store = await importStore({
       ...persistedCatalogs([
         { id: "user-1", name: "My API", url: "https://stac.example.com", isDefault: true },
       ]),
-      [ACTIVE_KEY]: "user-1",
+      [RETIRED_ACTIVE_KEY]: "user-1",
     });
     const catalogs = store.$catalogs.get();
 
     expect(catalogs).toHaveLength(2);
     expect(catalogs[0].id).toBe(store.BUILT_IN_CATALOG_ID);
     expect(catalogs[1].id).toBe("user-1");
-    // Persisted selection is untouched.
-    expect(store.$activeCatalogId.get()).toBe("user-1");
+    // A user catalog is never promoted to a product surface (UI-10).
+    expect(store.$builtInCatalog.get()?.id).toBe(store.BUILT_IN_CATALOG_ID);
   });
 
   it("updates a persisted built-in entry with a stale URL to the current default", async () => {
@@ -158,17 +158,61 @@ describe("catalogStore built-in protection", () => {
     expect(store.$catalogs.get().some((c) => c.id === id)).toBe(false);
   });
 
-  it("falls back to the built-in catalog when the active catalog is removed", async () => {
+  it("adding or removing a user catalog never moves the product surface", async () => {
     const store = await importStore();
     const id = store.addCatalog({
       name: "Other",
       url: "https://stac.example.com",
       isDefault: true,
     });
-    expect(store.$activeCatalogId.get()).toBe(id);
+
+    // Even flagged isDefault, a user catalog is not what products read.
+    expect(store.$builtInCatalog.get()?.id).toBe(store.BUILT_IN_CATALOG_ID);
 
     store.removeCatalog(id);
 
-    expect(store.$activeCatalog.get()?.id).toBe(store.BUILT_IN_CATALOG_ID);
+    expect(store.$builtInCatalog.get()?.id).toBe(store.BUILT_IN_CATALOG_ID);
+  });
+
+  it("getCatalogById resolves a browse route's catalog, or null", async () => {
+    const store = await importStore();
+    const id = store.addCatalog({
+      name: "Other",
+      url: "https://stac.example.com",
+      isDefault: false,
+    });
+
+    expect(store.getCatalogById(id)?.name).toBe("Other");
+    expect(store.getCatalogById("nope")).toBeNull();
+  });
+});
+
+describe("catalogStore retired active-catalog key", () => {
+  it("drops the orphaned stac-active-catalog key on init (UI-10)", async () => {
+    // The cleanup goes through localStorage directly, not the persistent
+    // engine, so stub the real thing for this test.
+    const backing: Record<string, string> = { [RETIRED_ACTIVE_KEY]: "user-1" };
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => backing[k] ?? null,
+      setItem: (k: string, v: string) => {
+        backing[k] = v;
+      },
+      removeItem: (k: string) => {
+        delete backing[k];
+      },
+    });
+
+    await importStore();
+
+    expect(backing[RETIRED_ACTIVE_KEY]).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it("no longer exports a global active-catalog selection", async () => {
+    const store = await importStore();
+
+    expect(store).not.toHaveProperty("$activeCatalogId");
+    expect(store).not.toHaveProperty("$activeCatalog");
+    expect(store).not.toHaveProperty("setActiveCatalog");
   });
 });

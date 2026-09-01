@@ -1,5 +1,5 @@
 import { useStore } from "@nanostores/react";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import { useItem } from "@/lib/query/items";
 import { AppShell } from "@/components/layout/AppShell";
 import { ItemFormPage } from "./ItemForm";
@@ -13,7 +13,7 @@ function ItemEditInner({
   collectionId: string;
   itemId: string;
 }) {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const endpointUrl = catalog?.url ?? "";
   const { data, isLoading, error, refetch } = useItem(
     endpointUrl,

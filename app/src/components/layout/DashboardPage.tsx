@@ -36,7 +36,7 @@ import {
   type LineageHealth,
 } from "@stac-higher/shared";
 import { AppShell } from "@/components/layout/AppShell";
-import { $activeCatalog, $catalogs } from "@/stores/catalogStore";
+import { $builtInCatalog, $catalogs } from "@/stores/catalogStore";
 import { useCollections } from "@/lib/query/collections";
 import { useLandingPage } from "@/lib/query/search";
 import { useAlerts, useFlows } from "@/lib/monitoring/queries";
@@ -230,7 +230,7 @@ function ProductListRow({ product }: { product: ProductRow }) {
  * still wanted — just not the headline once the page is about products.
  */
 function StackStrip() {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const endpointUrl = catalog?.url ?? "";
   const { data: landing, isLoading, error } = useLandingPage(endpointUrl);
   const [expanded, setExpanded] = useState(false);
@@ -292,7 +292,7 @@ function StackStrip() {
 }
 
 function DashboardContent() {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const catalogs = useStore($catalogs);
   const endpointUrl = catalog?.url ?? "";
 

@@ -187,7 +187,7 @@ Astro handles routing and serves each page as an SSR shell. Each page mounts a s
 2. **TanStack Query** for server state (collections, items, search results). Query keys include the catalog URL, so switching catalogs automatically invalidates stale data.
 3. **React Hook Form + Zod** for form state. Schemas define validation rules; converter functions transform between form shape and STAC-compliant JSON.
 
-The API client (`src/lib/stac-api/client.ts`) reads the active catalog from nanostores and provides a typed `stacFetch<T>()` wrapper that all domain functions and query hooks build on.
+The API client (`src/lib/stac-api/client.ts`) resolves each request's catalog from the `endpointUrl` its caller passes (falling back to the built-in catalog from nanostores) and provides a typed `stacFetch<T>()` wrapper that all domain functions and query hooks build on.
 
 ## STAC API Endpoints
 

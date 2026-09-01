@@ -5,6 +5,6 @@ import { CollectionDetailPage } from "../../../components/collections/Collection
 const { collectionId } = Astro.params;
 ---
 
-<Layout title={`Collection: ${collectionId}`}>
+<Layout title={`Product: ${collectionId}`}>
   <CollectionDetailPage client:only="react" collectionId={collectionId!} />
 </Layout>

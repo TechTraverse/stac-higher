@@ -38,11 +38,11 @@ shells; each mounts a single React island via `client:only="react"`. The only
 cross-island split is Header vs. page content.
 
 **Three-tier state**:
-1. **Nanostores** — cross-island persistent state (catalog selection, theme), persisted to localStorage. Catalog state: `app/src/stores/catalogStore.ts` (`$catalogs`, `$activeCatalogId`, `$activeCatalog`).
+1. **Nanostores** — cross-island persistent state (the configured catalog list, theme), persisted to localStorage. Catalog state: `app/src/stores/catalogStore.ts` (`$catalogs`, `$builtInCatalog`). There is **no global "active catalog"** (UI-10): product surfaces read `$builtInCatalog`; the catalog browser takes its catalog from the route (`/catalogs/[catalogId]/collections*`) and `/search` keeps a local, non-persistent selection.
 2. **TanStack Query** — server state. Query keys include the catalog URL, so switching catalogs invalidates all cached data. Key factory: `app/src/lib/query/keys.ts`.
 3. **React Hook Form + Zod** — form state. Schemas in `app/src/lib/stac-api/schemas.ts`.
 
-**Data flow**: `useStore($activeCatalog)` → TanStack Query hook → API function
+**Data flow**: `useStore($builtInCatalog)` → TanStack Query hook → API function
 (`app/src/lib/stac-api/*.ts`) → `stacFetch()` → STAC API. Mutations invalidate
 query keys; forms redirect via `window.location.href` on success.
 

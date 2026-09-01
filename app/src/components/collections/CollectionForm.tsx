@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useStore } from "@nanostores/react";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import {
   useCreateCollection,
   useUpdateCollection,
@@ -139,19 +139,15 @@ interface CollectionFormInnerProps {
 }
 
 /**
- * Copy noun. The built-in catalog holds PRODUCTS; an external catalog is a
- * STAC browser, where "collection" is the right word (ADR 0017 §3).
+ * Copy noun. This form only ever writes to the built-in catalog (UI-10), so
+ * the noun is fixed: a built-in-catalog collection IS a product (ADR 0017 §3).
+ * External catalogs are read-only under `/catalogs/[catalogId]/collections`.
  */
-function catalogNoun(builtIn: boolean | undefined) {
-  return builtIn
-    ? { singular: "product", plural: "Products" }
-    : { singular: "collection", plural: "Collections" };
-}
+const noun = { singular: "product", plural: "Products" };
 
 function CollectionFormInner({ existingCollection }: CollectionFormInnerProps) {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const endpointUrl = catalog?.url ?? "";
-  const noun = catalogNoun(catalog?.builtIn);
   const isEdit = !!existingCollection;
 
   const createMutation = useCreateCollection(endpointUrl);

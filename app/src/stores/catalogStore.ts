@@ -45,10 +45,21 @@ export const $catalogs = persistentAtom<StacCatalog[]>(
   },
 );
 
-export const $activeCatalogId = persistentAtom<string>(
-  "stac-active-catalog",
-  "",
-);
+/**
+ * Retired by UI-10: there is no global "active catalog" any more. Product
+ * surfaces read `$builtInCatalog`; the catalog browser and search carry their
+ * own selection (route param / local state). The key is dropped rather than
+ * left inert so a returning browser does not keep dead state around forever.
+ */
+const RETIRED_ACTIVE_CATALOG_KEY = "stac-active-catalog";
+
+function dropRetiredActiveCatalogKey(): void {
+  try {
+    localStorage.removeItem(RETIRED_ACTIVE_CATALOG_KEY);
+  } catch {
+    // No storage engine (non-browser runtime) — nothing to clean up.
+  }
+}
 
 /**
  * Guarantee the built-in catalog exists (users may carry persisted
@@ -72,9 +83,7 @@ export function ensureBuiltInCatalog(): void {
     );
   }
 
-  if (!$activeCatalogId.get()) {
-    $activeCatalogId.set(BUILT_IN_CATALOG_ID);
-  }
+  dropRetiredActiveCatalogKey();
 }
 
 try {
@@ -84,12 +93,22 @@ try {
   // happens in the browser, the only place the catalog store is used.
 }
 
-export const $activeCatalog = computed(
-  [$catalogs, $activeCatalogId],
-  (catalogs, id) => {
-    return catalogs.find((c) => c.id === id) ?? catalogs[0] ?? null;
-  },
-);
+/**
+ * The platform's own catalog. Every product surface (home, /collections, items,
+ * global search, the stack-status footer) reads THIS and nothing else — a
+ * product is a built-in-catalog collection by definition, and its writes must
+ * go through the ADR 0008 BFF. Browsing an arbitrary catalog is a separate
+ * surface (`/catalogs/[catalogId]/collections`, `/search`) that carries its own
+ * selection.
+ */
+export const $builtInCatalog = computed([$catalogs], (catalogs) => {
+  return catalogs.find((c) => c.id === BUILT_IN_CATALOG_ID) ?? null;
+});
+
+/** Resolve a catalog by id — the catalog browser's route param. */
+export function getCatalogById(id: string): StacCatalog | null {
+  return $catalogs.get().find((c) => c.id === id) ?? null;
+}
 
 export function addCatalog(catalog: Omit<StacCatalog, "id">) {
   const id = crypto.randomUUID();
@@ -99,9 +118,6 @@ export function addCatalog(catalog: Omit<StacCatalog, "id">) {
     ...current,
     { ...catalog, id, isDefault: isFirst || catalog.isDefault },
   ]);
-  if (isFirst || catalog.isDefault) {
-    $activeCatalogId.set(id);
-  }
   return id;
 }
 
@@ -122,13 +138,5 @@ export function updateCatalog(id: string, updates: Partial<StacCatalog>) {
 export function removeCatalog(id: string) {
   if (id === BUILT_IN_CATALOG_ID) return;
   const current = $catalogs.get();
-  const filtered = current.filter((c) => c.id !== id);
-  $catalogs.set(filtered);
-  if ($activeCatalogId.get() === id && filtered.length > 0) {
-    $activeCatalogId.set(filtered[0].id);
-  }
-}
-
-export function setActiveCatalog(id: string) {
-  $activeCatalogId.set(id);
+  $catalogs.set(current.filter((c) => c.id !== id));
 }

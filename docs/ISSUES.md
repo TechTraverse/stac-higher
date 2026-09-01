@@ -759,6 +759,17 @@ Health ranking, alert attribution and lineage grouping are pure functions over
 plain data — the most logic-heavy UI module in the remodel, feeding three
 surfaces — and carry no unit tests. Cheap to cover with the `new-test` skill.
 
+### I-89 · External-catalog CRUD was removed with UI-10 🟡
+Before UI-10, selecting an external catalog made `/collections*` write to it —
+directly or through `/api/proxy`, never through the ADR 0008 BFF, so those
+writes were unaudited and un-RBAC'd. UI-10 pinned the product pages to the
+built-in catalog and gave external catalogs a **read-only** browser at
+`/catalogs/[catalogId]/collections*` (lead decision, 2026-09-01). This is the
+remodel's one deliberate capability removal. If generic STAC-client CRUD is
+wanted back, it needs its own design: which identity signs the write, what gets
+audited, and whether `/api/proxy` should carry mutations at all — not a revived
+dual-mode page.
+
 ---
 
 ## Resolved — archived

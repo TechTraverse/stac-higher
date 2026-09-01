@@ -7,11 +7,11 @@ test.describe("Catalogs page", () => {
     await page.reload();
   });
 
-  test("seeds the built-in catalog as active and undeletable", async ({ page }) => {
+  test("seeds the built-in catalog as the platform catalog and undeletable", async ({ page }) => {
     const builtIn = page.getByTestId("catalog-card-built-in");
     await expect(builtIn.getByText("Built-in Catalog")).toBeVisible();
-    await expect(builtIn.getByText("Built-in", { exact: true })).toBeVisible();
-    await expect(builtIn.getByText("Active", { exact: true })).toBeVisible();
+    await expect(builtIn.getByText("Platform", { exact: true })).toBeVisible();
+    await expect(builtIn.getByRole("link", { name: "Open products" })).toBeVisible();
     await expect(builtIn.getByRole("button", { name: "Edit catalog" })).toHaveCount(0);
     await expect(builtIn.getByRole("button", { name: "Delete catalog" })).toHaveCount(0);
   });
@@ -30,7 +30,11 @@ test.describe("Catalogs page", () => {
     await expect(card.getByText("http://localhost:8082")).toBeVisible();
   });
 
-  test("built-in stays active until a new catalog is set active", async ({ page }) => {
+  // UI-10: there is no global "active catalog". The built-in catalog opens the
+  // product surface; every other catalog opens its own read-only browser.
+  test("an added catalog gets a read-only Browse entry, not a product surface", async ({
+    page,
+  }) => {
     await page.getByRole("button", { name: "Add Catalog" }).click();
     await page.getByLabel("Name").fill("Test API");
     await page.getByLabel("URL").fill("http://localhost:9999");
@@ -41,14 +45,18 @@ test.describe("Catalogs page", () => {
       .locator('[data-testid^="catalog-card-"]')
       .filter({ hasText: "Test API" });
 
-    await expect(builtIn.getByText("Active", { exact: true })).toBeVisible();
+    await expect(builtIn.getByRole("link", { name: "Open products" })).toBeVisible();
+    await expect(added.getByText("Platform", { exact: true })).toHaveCount(0);
 
-    await added.getByRole("button", { name: "Set Active" }).click();
-    await expect(added.getByText("Active", { exact: true })).toBeVisible();
-    await expect(builtIn.getByText("Active", { exact: true })).not.toBeVisible();
+    await added.getByRole("link", { name: "Browse" }).click();
+    await expect(page).toHaveURL(/\/catalogs\/[^/]+\/collections$/);
+    await expect(page.getByRole("heading", { name: "Collections", level: 1 })).toBeVisible();
+    await expect(page.getByText("Read-only")).toBeVisible();
+    // The browser mints no writes.
+    await expect(page.getByRole("link", { name: /Create/ })).toHaveCount(0);
   });
 
-  test("can delete a catalog and active falls back to built-in", async ({ page }) => {
+  test("can delete a catalog", async ({ page }) => {
     await page.getByRole("button", { name: "Add Catalog" }).click();
     await page.getByLabel("Name").fill("To Delete");
     await page.getByLabel("URL").fill("http://localhost:1234");
@@ -64,6 +72,6 @@ test.describe("Catalogs page", () => {
 
     await expect(added).not.toBeVisible();
     const builtIn = page.getByTestId("catalog-card-built-in");
-    await expect(builtIn.getByText("Active", { exact: true })).toBeVisible();
+    await expect(builtIn.getByText("Platform", { exact: true })).toBeVisible();
   });
 });

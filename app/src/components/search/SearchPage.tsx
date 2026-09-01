@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $catalogs, BUILT_IN_CATALOG_ID } from "@/stores/catalogStore";
+import { itemHref } from "@/lib/browse/paths";
 import { useCollections } from "@/lib/query/collections";
 import { useStacSearch } from "@/lib/query/search";
 import type { StacSearchBody } from "@/lib/stac-api/types";
@@ -26,7 +27,15 @@ import { Skeleton } from "@stac-higher/shared";
 import { Search, X } from "lucide-react";
 
 function SearchInner() {
-  const catalog = useStore($activeCatalog);
+  // Search browses ANY catalog, so it owns its selection (UI-10): one island,
+  // so local state is enough — and deliberately not persisted, so a search
+  // against someone else's catalog can never leak into the product surfaces.
+  const catalogs = useStore($catalogs);
+  const [catalogId, setCatalogId] = useState(BUILT_IN_CATALOG_ID);
+  const catalog =
+    catalogs.find((c) => c.id === catalogId) ??
+    catalogs.find((c) => c.id === BUILT_IN_CATALOG_ID) ??
+    null;
   const endpointUrl = catalog?.url ?? "";
   const { data: collectionsData } = useCollections(endpointUrl);
   const collections = collectionsData?.collections ?? [];
@@ -98,8 +107,9 @@ function SearchInner() {
       <main className="flex-1 flex flex-col lg:flex-row lg:overflow-hidden lg:min-h-0">
         <div className="w-full lg:w-[380px] shrink-0 lg:border-r border-b lg:border-b-0 border-border lg:overflow-y-auto p-4 space-y-4">
           {/* The CatalogSelector left the app shell in UI-2 — search is
-              catalog-context, so the selector renders here. */}
-          <CatalogSelector />
+              catalog-context, so the selector renders here, bound to this
+              page's own selection (UI-10). */}
+          <CatalogSelector value={catalog?.id ?? ""} onChange={setCatalogId} />
 
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Search</h2>
@@ -261,6 +271,11 @@ function SearchInner() {
                       <ItemCard
                         item={item}
                         collectionId={item.collection ?? "unknown"}
+                        href={itemHref(
+                          catalog,
+                          item.collection ?? "unknown",
+                          item.id,
+                        )}
                       />
                     </div>
                   ))}

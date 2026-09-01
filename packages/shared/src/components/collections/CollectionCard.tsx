@@ -11,6 +11,11 @@ import { MapPin, Calendar, Scale } from "lucide-react";
 
 interface CollectionCardProps {
   collection: StacCollection;
+  /**
+   * Link target. Defaults to the product page; the catalog browser passes its
+   * own `/catalogs/[catalogId]/collections/...` path (UI-10).
+   */
+  href?: string;
 }
 
 function formatBbox(bbox: number[]): string {
@@ -26,13 +31,13 @@ function formatTemporalRange(interval: (string | null)[][]): string {
   return `${s} - ${e}`;
 }
 
-export function CollectionCard({ collection }: CollectionCardProps) {
+export function CollectionCard({ collection, href }: CollectionCardProps) {
   const bbox = collection.extent?.spatial?.bbox?.[0];
   const temporal = collection.extent?.temporal?.interval;
 
   return (
     <a
-      href={`/collections/${encodeURIComponent(collection.id)}`}
+      href={href ?? `/collections/${encodeURIComponent(collection.id)}`}
       className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background"
       onKeyDown={(e) => {
         if (e.key === " ") {

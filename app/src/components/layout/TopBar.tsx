@@ -18,7 +18,7 @@ import { Input, ThemeToggle } from "@stac-higher/shared";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AlertBell } from "@/components/layout/AlertBell";
 import { UserMenu } from "@/components/layout/UserMenu";
-import { $activeCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog } from "@/stores/catalogStore";
 import { useCollections } from "@/lib/query/collections";
 import { useConnections } from "@/lib/connections/queries";
 import { useProcesses } from "@/lib/processes/queries";
@@ -40,6 +40,10 @@ const ROUTE_TITLES: Array<[RegExp, string]> = [
   [/^\/connections$/, "Connections"],
   [/^\/graph$/, "Pipeline graph"],
   [/^\/monitoring$/, "Monitoring"],
+  [/^\/catalogs\/[^/]+\/collections\/[^/]+\/items\/[^/]+$/, "Browse item"],
+  [/^\/catalogs\/[^/]+\/collections\/[^/]+\/items$/, "Browse items"],
+  [/^\/catalogs\/[^/]+\/collections\/[^/]+$/, "Browse collection"],
+  [/^\/catalogs\/[^/]+\/collections$/, "Browse catalog"],
   [/^\/catalogs$/, "Catalogs"],
   [/^\/search$/, "Search"],
   [/^\/extensions\/new$/, "Create extension"],
@@ -66,7 +70,7 @@ interface Hit {
 const MAX_HITS = 8;
 
 function SearchResults({ query, onPick }: { query: string; onPick: () => void }) {
-  const catalog = useStore($activeCatalog);
+  const catalog = useStore($builtInCatalog);
   const { data: collections } = useCollections(catalog?.url ?? "");
   const { data: connections } = useConnections();
   const { data: processes } = useProcesses();
