@@ -115,7 +115,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       them — display only), recent items strip (existing items query,
       first page). Existing tabs unchanged behind it. Copy sweep on this
       page: product/source/destination.
-- [ ] **UI-5 · Processes dashboard + editor + CodeMirror.** [e2e-touch]
+- [x] **UI-5 · Processes dashboard + editor + CodeMirror.** [e2e-touch]
       `/processes` (`ProcessesPage.tsx`): mockup card layout per process —
       health dot + status line, in/out product links, trigger summary
       (mono cron), last run + duration, 30d success %, last-20-runs
@@ -257,3 +257,28 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
   that file keeps growing, `app/src/lib/overview/` is the better home — but
   keep ONE module: the whole point is that home and the product page cannot
   disagree.
+
+**From UI-5:**
+- **I-65 is closed** — CodeMirror 6 landed. ISSUES needs the update in UI-9.
+  Seven new runtime deps (`@codemirror/{state,view,commands,language,
+  lang-python,lang-json}` + `@lezer/highlight`), all pinned exactly, all from
+  the codemirror/lezer orgs, no postinstall scripts. The editor's theme is
+  hand-written against the app's CSS variables, so no theme package.
+- **The daily-rollup counters are not UI-trustworthy.** `flow_stats_daily`'s
+  `runs`/`failed`/`dead` are deltas of a live jsonb, and nothing pins whether
+  `runs` includes failures. UI-5 therefore reports success over the RUN LEDGER
+  and labels it "last N runs". If someone wants a real 30-day process success
+  %, the semantics need pinning first (a contract fixture would be the right
+  place) — do NOT quietly relabel the current number as "30d".
+- `useRuns(id, { poll })` — the dashboard passes `poll: false`. Anything new
+  rendering many `useRuns` at once should do the same.
+- The dashboard is one `useRuns` + `useSources` + `useOutputs` per card (3N
+  requests, no polling). Fine at operator scale; if a deployment ever has
+  dozens of processes, the fix is a list endpoint that embeds the rollup, not
+  more client fan-out.
+- `processVerdict` deliberately ignores process-anchored ALERTS — same
+  `/api/alerts` gap as UI-3/UI-4. Once `process_id` is returned, the verdict
+  should fold it in, and the product-page caveat can go.
+- `CodeEditor` rebuilds the view when theme / language / editability change
+  (compartments would be more machinery than the rebuild costs). If a caller
+  ever flips those mid-typing, revisit with `Compartment`.
