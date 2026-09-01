@@ -41,6 +41,15 @@ export { EmptyState } from "@shared/components/shared/EmptyState";
 export { ErrorBoundary } from "@shared/components/shared/ErrorBoundary";
 export { ErrorState } from "@shared/components/shared/ErrorState";
 export { JsonViewer } from "@shared/components/shared/JsonViewer";
+export { LineageStrip, healthDotClass } from "@shared/components/shared/LineageStrip";
+export type {
+  LineageGroup,
+  LineageHealth,
+  LineageKind,
+  LineageNode,
+  LineageSize,
+  LineageStripProps,
+} from "@shared/components/shared/LineageStrip";
 export { LoadingState } from "@shared/components/shared/LoadingState";
 
 // Map components
