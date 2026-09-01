@@ -9,8 +9,8 @@ from pipeline.jobs.heartbeat import JOB_NAME as HEARTBEAT_JOB
 from pipeline.jobs.history import JOB_NAME as HISTORY_JOB
 from pipeline.jobs.ingest import JOB_DISCOVER, JOB_FETCH, JOB_GROUP, JOB_ITEMIZE, JOB_POLL
 from pipeline.jobs.monitor import JOB_NAME as MONITOR_JOB
-from pipeline.jobs.process import JOB_CRON, JOB_REAP, JOB_RUN_TICK, JOB_SWEEP
 from pipeline.jobs.notify import SWEEP_JOB_NAME as NOTIFY_SWEEP_JOB
+from pipeline.jobs.process import JOB_CRON, JOB_REAP, JOB_RUN_TICK, JOB_SWEEP
 from pipeline.jobs.staging_cleanup import JOB_NAME as CLEANUP_JOB
 from pipeline.main import build_queue
 from pipeline.notify.fanout import WEBHOOK_JOB_NAME

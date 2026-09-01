@@ -135,3 +135,217 @@ defined window on the auth-enforced local stack — ingest + a synthetic
 process at 50% share + delivery fan-out — with no lost items, alerts
 functional throughout, and a written load report recorded M-gate style in
 ROADMAP §9.
+
+---
+
+# Findings
+
+## M3-S-A · Baseline throughput measurement — RESULTS (2026-09-01)
+
+**Harness:** `services/pipeline/src/pipeline/loadgen/` (`python -m
+pipeline.loadgen`), run from the host against the plain compose stack.
+Preconditions, profiles and how to read the report: that directory's
+`README.md`. Unit-tested where a silent error would poison a measurement
+(`tests/test_loadgen.py`): the pacer, the rate arithmetic, the windowed job
+means, and a round-trip of the ingest config through the pipeline's own
+`parse_ingest_config`.
+
+Environment: docker-compose stack on the dev Mac, plain (not auth-enforced),
+pipeline container at its shipped settings, MinIO on the same host. Ingest
+config: `grouping.rule = none` (one file = one item), `poll_frequency_seconds
+= 60`. All numbers are single-container.
+
+### Headline
+
+> **Today's ceiling was ~2–3.5 items/s and DECAYING. The cause is not the
+> pipeline's code: it is `pgstac`'s inline `update_partition_stats`, which
+> scans the whole destination partition on every write call. Turning it off
+> (`pgstac_settings.use_queue = true`) took the same run to a sustained
+> ~22 items/s with no code change. The next ceiling after that is the
+> Procrastinate worker's `concurrency = 1`.**
+
+### 1. The first bottleneck: `pgstac.update_partition_stats`, O(partition) per CALL
+
+`PgPgstacWriter.upsert_items` calls `pypgstac`'s `Loader.load_items` **once per
+item** (ITEMIZE publishes one item at a time). Every such call ends up in
+`pgstac.update_partition_stats(partition)`, which does
+
+```sql
+SELECT min(datetime), max(datetime), min(end_datetime), max(end_datetime) FROM <partition>;
+ANALYZE <partition>;
+```
+
+— two full scans of the destination partition, per write call.
+
+Measured, single-item upserts into one collection as it fills:
+
+| items already in partition | ms/item | items/s |
+|---|---|---|
+| 0 | 13.2 | 75.5 |
+| 1,040 | 144.2 | 6.9 |
+| 2,080 | 272.5 | 3.7 |
+| 3,120 | 398.2 | 2.5 |
+| 4,160 | 525.4 | 1.9 |
+| 5,200 | 654.5 | 1.5 |
+
+Linear, slope ≈ **0.125 ms per item already in the partition**. O(n) per
+insert ⇒ O(n²) to fill a partition. This exactly explains the observed live
+behaviour: the first 2000-granule run itemized at 7 items/s falling to 2/s over
+ten minutes.
+
+**It is per CALL, not per item** — batching amortizes it but does not remove
+it. At batch 500 into the same growing partition:
+
+| items already in partition | call seconds | ms/item |
+|---|---|---|
+| 0 | 0.147 | 0.29 |
+| 2,000 | 0.360 | 0.72 |
+| 4,000 | 0.586 | 1.17 |
+| 5,500 | 0.793 | 1.59 |
+
+Same 0.125 ms/existing-item slope, spread over 500 items. Extrapolated, batching
+**alone** does not reach the envelope: at a 2.6M-item partition the fixed
+per-call term is ~325 s, so holding 30 items/s would need batches of ~10,000
+and a single call taking five and a half minutes.
+
+**The fix is a pgstac setting.** `pgstac_settings.use_queue = true` routes the
+stats update through `pgstac.query_queue` instead of running it inline. Same
+bench, same growing partition, batch = 1:
+
+| items already in partition | ms/item | items/s |
+|---|---|---|
+| 0 | 4.6 | 215 |
+| 1,040 | 3.2 | 310 |
+| 2,080 | 3.5 | 285 |
+| 3,120 | 3.8 | 266 |
+| 4,160 | 3.7 | 268 |
+| 5,200 | 4.1 | 242 |
+
+**Flat.** ~250–310 items/s at batch 1 — 8× the M3 ingest target with no
+batching at all.
+
+Confirmed end to end on the real pipeline, same 2000-granule run as the
+baseline: sustained **22 items/s** (21.3 / 22.0 / 22.3 / 21.2 per 20 s
+interval) versus 2–3.5 before.
+
+Constraints this fix carries into the design:
+
+- **Nothing drains `pgstac.query_queue` today** — no `run_queued_queries` call
+  exists in either runtime. Enabled without a drainer, partition stats and
+  constraints go permanently stale, which degrades search partition pruning.
+  M3 must own a periodic drainer.
+- `pgstac.run_queued_queries()` is a **PROCEDURE**: it needs `CALL`, not
+  `SELECT`. (`SELECT` fails outright, so this is a loud error, not a silent
+  no-op.)
+- The setting lives in the `pgstac.pgstac_settings` table, i.e. in a database
+  the app owns migrations for (ADR 0001) but whose `pgstac` schema is
+  pypgstac's. Who writes that row, and when, is an M3 design question.
+- Not shipped: `use_queue` was set for the measurement and **reverted**
+  afterwards, and the queue drained, so the local stack is as it was. Turning
+  it on is an M3 implementation slice, not a scoping change.
+
+Connection overhead is a red herring: opening `PgstacDB` costs 4.2 ms
+(a raw `psycopg.connect` is 4.19 ms), against 245 ms for a batch-1
+`load_items` on a reused connection. Pooling would buy ~2%.
+
+### 2. The second bottleneck: `concurrency = 1`
+
+`ProcrastinateQueue.run_worker` calls `app.run_worker_async()` with no
+arguments, so the worker runs at Procrastinate's defaults:
+**`WORKER_CONCURRENCY = 1`** and a 5 s `fetch_job_polling_interval`. One job
+at a time, for the whole service — ingest, dispatch, delivery, processes,
+every sweep.
+
+Consequences measured:
+
+- After the pgstac fix, ingest and delivery **serialize into phases** rather
+  than overlapping. A 1500-item run with a delivery fan-out ingested at ~22
+  items/s, then delivered at ~24 → 21 → 18 items/s, finishing both in ~140 s:
+  **~11 items/s of full-pipeline (ingest + 1× delivery) work**.
+- A batch job monopolises the single slot. `dispatch_poll` draining 3000
+  seeded outbox events took **11.8 s per call** — twelve seconds during which
+  no ingest job can run.
+
+Against the M3 budget (30 items/s ingest-origin, ~60/s total catalog write
+rate), ~11 items/s end-to-end is **~5.5× short**, and the deficit is now
+concurrency. Handed to **M3-S-C**, which should decide worker concurrency
+before it decides multi-instance anything — the singleton question is
+premature while the singleton is running one job at a time.
+
+### 3. Per-stage costs (windowed means, post-fix)
+
+| stage | mean s | notes |
+|---|---|---|
+| `ingest_fetch` (64 KB, copy) | 0.025 | get→put through the platform client |
+| `ingest_fetch` (8 MB, copy) | 0.067 | ≈125 MB/s each way; scales with bytes |
+| `ingest_itemize` (`defaults_only`) | 0.044 | includes the ~4 ms pgstac upsert |
+| `ingest_itemize` (`raster_auto`, 8 MB GeoTIFF) | 0.055 | **EXTRACT adds only ~11 ms** |
+| `deliver` (64 KB) | 0.051 | |
+| `ingest_discover` (2000 files) | 3.5–4.5 | one call per association per poll |
+| `dispatch_poll` (3000 events) | 11.8 | ≈127 events/s |
+
+**rio-stac EXTRACT is not a throughput problem** at 8 MB single-band rasters —
+11 ms against a 44 ms baseline. That reframes I-26 as purely a MEMORY
+question, not a CPU one; see below and hand it to **M3-S-E**.
+
+### 4. Memory envelope (I-19 / I-26 input for M3-S-E)
+
+Pipeline container RSS during the 8 MB raster run at concurrency 1:
+baseline **~255 MiB**, peak **~299 MiB**. So the whole-object buffering costs
+roughly **2–3× the asset size, transiently, per concurrent item**, on top of a
+~255 MiB floor. CPU peaked at ~80% of one core — consistent with the single
+slot being the limit.
+
+The envelope for M3-S-E is therefore: `RSS ≈ 255 MiB + 3 × (largest asset) ×
+concurrency`. Harmless at 8 MB and concurrency 1; it is the product with
+concurrency — the very knob §2 says M3 must turn — that makes I-19/I-26 bite.
+
+### 5. Two structural facts the arithmetic must carry
+
+- **DISCOVER needs two polls to settle a file** (a file goes `seen`, then
+  `settled` only when the next poll finds it unchanged). At a 60 s poll that is
+  a fixed ≥60 s latency per file before it can be fetched — throughput-neutral,
+  but it sets the floor on end-to-end latency and on how long a gate rehearsal
+  must run before steady state.
+- **Ingest is two queue jobs per item** (`ingest_fetch` + `ingest_itemize`),
+  each a separate Procrastinate job, on top of the per-association DISCOVER and
+  GROUP. At 30 items/s that is ≥60 jobs/s before dispatch and delivery — the
+  number **M3-S-F** should start its arithmetic from.
+
+### 6. What was NOT measured
+
+Stated so the spec does not mistake silence for a clean bill of health:
+
+- **Delivery in isolation.** `seed-outbox` events name items that do not exist
+  in pgstac, so run D measured dispatcher drain only. Delivery was measured
+  live (run F), interleaved with ingest.
+- **A process leg.** The M3 gate wants a synthetic process at ~50% source
+  share; the harness has no process driver yet. Gate-rehearsal work.
+- **The auth-enforced overlay.** All runs used the plain stack.
+- **Reference mode.** The harness supports `--mode reference`; the copy/
+  reference comparison belongs with M3-S-B's size distribution.
+- **Sustained-rate runs.** Every run above was a saturation probe (`--rate 0`).
+  Holding an offered 30/s for a long window is the gate's shape, not the
+  bottleneck-finding shape.
+- **Anything above ~5,500 items in one partition.** The O(n) slope was measured
+  over that range and extrapolated; the extrapolation is the argument for the
+  fix, not a measurement of a 2.6M-item partition.
+
+### 7. Recommendation to M3-S-G
+
+The spec's slice order falls out of the above, and it is cheaper than the
+scoping brief assumed:
+
+1. **`use_queue = true` + a periodic `CALL pgstac.run_queued_queries()`** — the
+   single highest-leverage change measured here (10× on the real pipeline, one
+   settings row plus a sweep). Carries the stale-stats obligation.
+2. **Worker concurrency** as a setting, decided by M3-S-C against the
+   `ingest_files` transition audit. This is where the remaining ~5.5× lives.
+3. **Batching** (M3-S-D) — still worth doing, and it stacks with (1): a batched
+   ITEMIZE would cut the per-item pgstac cost from ~4 ms to well under 1 ms and
+   drop the job count per item. But it is now an optimisation, not the fix,
+   and the `flow_stats` per-transition batching stays mandatory on its own
+   merits.
+
+Note the ordering matters: batching first, without (1), would have hidden the
+O(n²) behind a bigger constant and let it resurface at scale.
