@@ -1,6 +1,6 @@
 """Process job wiring (Phase 9 §6, M5-C).
 
-Four registrations:
+Five registrations:
 
 - ``pipeline.process_trigger`` — one job per dispatched process-source batch.
   It does NOT execute; it applies the §7 rate ceiling and writes a queued (or
@@ -10,6 +10,9 @@ Four registrations:
 - ``pipeline.process_run_tick`` — claims due runs and executes them.
 - ``pipeline.process_cron`` — the minute tick that enqueues due cron sources.
 - ``pipeline.process_sweep`` — stall recovery.
+- ``pipeline.process_reap`` — orphaned-container reconciliation (M3-W-1).
+  Separate from the sweep on purpose: the sweep is a pure DB job, and giving
+  it an executor would couple the ledger's failure domain to Docker's.
 
 All go through the queue backend, so ``instrument_handler`` wraps them
 centrally (M2-H) and the per-job run/duration/outcome metrics come for free.
@@ -30,6 +33,7 @@ from pipeline.finalize.store import PlatformObjectStore
 from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
 from pipeline.process.docker_executor import DockerExecutor
+from pipeline.process.reaper import process_reap_tick
 from pipeline.process.repo import PgProcessRepo
 from pipeline.process.runner import run_one
 from pipeline.process.sweep import process_sweep_tick
@@ -45,6 +49,7 @@ JOB_RUN_TICK = "pipeline.process_run_tick"
 JOB_FINALIZE = "pipeline.process_finalize"
 JOB_CRON = "pipeline.process_cron"
 JOB_SWEEP = "pipeline.process_sweep"
+JOB_REAP = "pipeline.process_reap"
 
 #: The run tick and the cron tick are both minute-granular: cron schedules are
 #: minute-resolution, and a queued run should not wait longer than that to
@@ -52,6 +57,10 @@ JOB_SWEEP = "pipeline.process_sweep"
 RUN_TICK_CRON = "* * * * *"
 CRON_TICK_CRON = "* * * * *"
 SWEEP_CRON = "*/5 * * * *"
+#: Orphans are rare and never urgent — a leaked container costs disk, not
+#: correctness — and every tick is a daemon round trip, so this is the
+#: slowest cadence that still bounds the leak to an hour's worth.
+REAP_CRON = "*/15 * * * *"
 
 #: Runs claimed per tick. Bounded so one tick cannot monopolise a worker.
 RUN_BATCH = 10
@@ -243,8 +252,15 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             batch_limit=SWEEP_BATCH,
         )
 
+    async def process_reap(timestamp: int) -> None:
+        await process_reap_tick(
+            executor=DockerExecutor(docker_host=settings.docker_host),
+            repo=_repo(),
+        )
+
     queue.register_task(process_trigger, name=JOB_TRIGGER, retry=TRIGGER_RETRY)
     queue.register_task(process_finalize, name=JOB_FINALIZE, retry=TRIGGER_RETRY)
     queue.register_periodic(process_run_tick, name=JOB_RUN_TICK, cron=RUN_TICK_CRON)
     queue.register_periodic(process_cron, name=JOB_CRON, cron=CRON_TICK_CRON)
     queue.register_periodic(process_sweep, name=JOB_SWEEP, cron=SWEEP_CRON)
+    queue.register_periodic(process_reap, name=JOB_REAP, cron=REAP_CRON)

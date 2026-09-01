@@ -118,6 +118,9 @@ class FakeProcessRepo(ProcessRepo):
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
         return self.stalled_reset
 
+    async def run_statuses(self, run_ids: Sequence[str]) -> dict[str, str]:
+        return {}
+
     async def record_source_run(
         self, source_id: str, *, succeeded: bool, at: dt.datetime
     ) -> None:

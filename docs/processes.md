@@ -122,4 +122,6 @@ a new run; re-running an old row will run the old code.
 
 A run stranded by a worker or executor crash is returned to `queued` by the
 stall sweep, so the crash direction is safe: a run may execute twice, never
-zero times.
+zero times. The container that crash left behind is removed separately, by the
+orphan reaper — so a second attempt does not collide with the first attempt's
+leftovers.

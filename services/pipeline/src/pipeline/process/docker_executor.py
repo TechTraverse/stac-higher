@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import datetime as dt
 import json
 import logging
 import urllib.error
@@ -44,6 +45,7 @@ from pipeline.process.executor import (
     Executor,
     ExecutorUnavailable,
     ExitStatus,
+    LaunchedRun,
     RunHandle,
     RunSpec,
 )
@@ -57,6 +59,12 @@ API_VERSION = "v1.43"
 #: Env var the platform runtime image's entrypoint decodes into the user's
 #: module. See services/process-runtime/.
 CODE_ENV_VAR = "STAC_HIGHER_PROCESS_CODE_B64"
+
+#: Labels stamped on every run container. `RUN_ID_LABEL` is load-bearing:
+#: it is how the M3-W-1 reaper finds containers a dead worker left behind,
+#: and the only thing that distinguishes ours from a stranger's.
+RUN_ID_LABEL = "stac-higher.run-id"
+PROCESS_ID_LABEL = "stac-higher.process-id"
 
 #: Docker reports a SIGKILLed container as 137. It cannot distinguish OUR
 #: timeout kill from any other SIGKILL, which is why `wait` tracks the kill
@@ -172,8 +180,8 @@ class DockerExecutor(Executor):
             # Named so an operator looking at `docker ps` can tell what a
             # stray container was, and so the reap sweep can find orphans.
             "Labels": {
-                "stac-higher.run-id": spec.run_id,
-                "stac-higher.process-id": spec.process_id,
+                RUN_ID_LABEL: spec.run_id,
+                PROCESS_ID_LABEL: spec.process_id,
             },
         }
         if spec.cmd:
@@ -265,6 +273,35 @@ class DockerExecutor(Executor):
                 "process run reap failed",
                 extra={"run": handle.id, "error": str(err)},
             )
+
+
+    def list_launched(self) -> list[LaunchedRun]:
+        # `all=1` because an EXITED container is the orphan we are hunting;
+        # the default listing shows only running ones and would miss every
+        # container a worker died before removing.
+        filters = urllib.parse.quote(json.dumps({"label": [RUN_ID_LABEL]}))
+        payload = self._request("GET", f"/containers/json?all=1&filters={filters}")
+        entries: list[LaunchedRun] = []
+        for entry in payload if isinstance(payload, list) else []:
+            run_id = (entry.get("Labels") or {}).get(RUN_ID_LABEL)
+            container_id = entry.get("Id")
+            # The daemon filtered for us, but a container without OUR label is
+            # somebody else's workload and must never be reaped on our say-so.
+            if not run_id or not container_id:
+                continue
+            created = entry.get("Created")
+            entries.append(
+                LaunchedRun(
+                    handle=RunHandle(id=container_id, backend=self.name),
+                    run_id=run_id,
+                    created_at=(
+                        dt.datetime.fromtimestamp(created, dt.UTC)
+                        if isinstance(created, int | float)
+                        else None
+                    ),
+                )
+            )
+        return entries
 
 
 def _demultiplex(payload: bytes) -> bytes:
