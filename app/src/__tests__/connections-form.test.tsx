@@ -166,6 +166,8 @@ describe("ConnectionForm — edit (write-only credentials)", () => {
         groups={["g1"]}
       />,
     );
-    expect(screen.getByLabelText("Protocol")).toBeDisabled();
+    // UI-6: the protocol Select is now a type-card radiogroup, and every
+    // card is disabled on edit (type is immutable).
+    expect(screen.getByRole("radio", { name: "sftp" })).toBeDisabled();
   });
 });
