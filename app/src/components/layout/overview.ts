@@ -16,7 +16,7 @@
 import type { LineageGroup, LineageHealth } from "@stac-higher/shared";
 import type { Association } from "@/lib/associations/types";
 import type { Alert } from "@/lib/monitoring/api";
-import type { PipelineGraph } from "@/lib/monitoring/graph-api";
+import type { DailyStats, PipelineGraph } from "@/lib/monitoring/graph-api";
 import { collectionNode } from "@/lib/graph/edges";
 import { alertKindLabel, isLate, readFlowStats } from "@/components/monitoring/shared";
 
@@ -234,6 +234,7 @@ export function buildProductRows({
           id: e.id,
           label: nodesById.get(e.from)?.label ?? e.from,
           health: nodeHealth(e.from),
+          href: "/connections",
         })),
       },
       {
@@ -243,10 +244,21 @@ export function buildProductRows({
         href: "/processes",
         nodes: processes.map((e) => {
           const id = e.kind === "process_source" ? e.to : e.from;
+          const node = nodesById.get(id);
+          // Health stays "unknown": process alerts carry no anchor the client
+          // can read (see ProductRollup.unattributed). Deployment state is the
+          // one real signal the graph does return.
+          const undeployed = node?.meta.deployed === false;
           return {
             id: `${e.kind}:${e.id}`,
-            label: nodesById.get(id)?.label ?? id,
+            label: node?.label ?? id,
+            detail: undeployed
+              ? "not deployed"
+              : e.kind === "process_source"
+                ? "reads this product"
+                : "writes this product",
             href: `/processes/${id.replace(/^proc:/, "")}`,
+            health: undeployed ? ("warn" as const) : undefined,
           };
         }),
       },
@@ -259,6 +271,7 @@ export function buildProductRows({
           id: e.id,
           label: nodesById.get(e.to)?.label ?? e.to,
           health: nodeHealth(e.to),
+          href: "/connections",
         })),
       },
     ];
@@ -302,4 +315,48 @@ export function buildStats(
       .filter((f) => f.direction === "ingest")
       .reduce((sum, f) => sum + readFlowStats(f.flow_stats).items, 0),
   };
+}
+
+/**
+ * 30-day success rate for one association, from `/api/monitoring/history`.
+ *
+ * What counts as success depends on direction, because the rollup counts
+ * different things at each end: ingest lands ITEMS and counts `failed`
+ * alongside them, while delivery counts `delivered` against `failed` + `dead`.
+ * Returns null when the window holds no attempts at all — a flow that has done
+ * nothing is not 100% healthy, it is unmeasured.
+ */
+export function successRate(
+  direction: "ingest" | "deliver",
+  days: DailyStats[] | undefined,
+): number | null {
+  if (!days?.length) return null;
+  let ok = 0;
+  let bad = 0;
+  for (const day of days) {
+    if (direction === "ingest") {
+      ok += day.items;
+      bad += day.failed;
+    } else {
+      ok += day.delivered;
+      bad += day.failed + day.dead;
+    }
+  }
+  const total = ok + bad;
+  return total === 0 ? null : (ok / total) * 100;
+}
+
+/**
+ * Open alerts carrying NO anchor the client can read — connection,
+ * association, channel and collection all null. Today that is exactly the
+ * process-anchored kinds (`process_stalled` / `process_failed` /
+ * `process_rate_limited`): migration 024 stores `process_id`/`source_id`, but
+ * `/api/alerts` does not return them, so a product page cannot tell whether
+ * one of these belongs to it. Surfacing the count is the honest fallback.
+ */
+export function unanchoredAlerts(openAlerts: Alert[] | undefined): Alert[] {
+  return (openAlerts ?? []).filter(
+    (a) =>
+      !a.connection_id && !a.association_id && !a.channel_id && !a.collection_id,
+  );
 }

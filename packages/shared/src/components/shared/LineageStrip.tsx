@@ -62,7 +62,8 @@ const DOT_CLASS: Record<LineageHealth, string> = {
   ok: "bg-success",
   warn: "bg-warning",
   error: "bg-danger",
-  unknown: "bg-muted-foreground/40",
+  // Hollow: "no signal", visibly distinct from a coloured verdict.
+  unknown: "bg-transparent ring-1 ring-inset ring-muted-foreground/50",
 };
 
 export function healthDotClass(health: LineageHealth = "unknown"): string {

@@ -10,6 +10,7 @@ import { Skeleton } from "@stac-higher/shared";
 import { ItemCard } from "@stac-higher/shared";
 import { AssetManager } from "@/components/assets/AssetManager";
 import { DataFlowTab } from "./DataFlowTab";
+import { ProductOverview } from "./ProductOverview";
 import { SettingsTab } from "./SettingsTab";
 import { StacMap } from "@stac-higher/shared";
 import { ExtentLayer } from "@stac-higher/shared";
@@ -58,6 +59,8 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
   const { data: itemsData } = useItems(endpointUrl, collectionId, { limit: 10 });
   const deleteMutation = useDeleteCollection(endpointUrl);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // Controlled so the product Overview panel can hand off to Data flow.
+  const [tab, setTab] = useState("overview");
 
   const handleDelete = () => {
     deleteMutation.mutate(collectionId, {
@@ -120,7 +123,7 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors inline-flex items-center gap-1">
             <ArrowLeft className="h-3.5 w-3.5" />
-            Collections
+            {catalog?.builtIn ? "Products" : "Collections"}
           </a>
           <span>/</span>
           <span className="text-foreground">{collection.title || collection.id}</span>
@@ -149,7 +152,7 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
           </div>
         </div>
 
-        <Tabs defaultValue="overview" className="space-y-4">
+        <Tabs value={tab} onValueChange={setTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="items">
@@ -172,6 +175,18 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4">
+            {/* Platform view first for products (built-in catalog); external
+                catalogs are browse-only and keep the STAC metadata alone. */}
+            {catalog?.builtIn && (
+              <ProductOverview
+                collection={collection}
+                collectionId={collectionId}
+                endpointUrl={endpointUrl}
+                items={items}
+                onOpenDataFlow={() => setTab("dataflow")}
+              />
+            )}
+
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Description</CardTitle>
