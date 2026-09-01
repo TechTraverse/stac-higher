@@ -35,6 +35,10 @@ export default defineConfig({
       // environment, which makes Playwright's webServer see an early exit.
       // Setting this disables the auto-detection so the server stays foreground.
       ASTRO_DEV_BACKGROUND: "0",
+      // Disables Astro's dev toolbar (see astro.config.mjs) — a fixed overlay
+      // that swallows clicks aimed at anything beneath it. Only affects a
+      // server Playwright starts itself; a reused dev server keeps its toolbar.
+      E2E: "1",
     },
   },
 });

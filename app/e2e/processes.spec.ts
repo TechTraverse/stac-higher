@@ -27,7 +27,7 @@ test.describe("Processes", () => {
     await page.goto("/processes");
     await expect(
       page
-        .getByText(/No processes yet|Ceiling: \d+ runs\/hour/)
+        .getByText(/No processes yet|Ceiling \d+ runs\/hour/)
         .first(),
     ).toBeVisible();
   });

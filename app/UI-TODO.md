@@ -226,13 +226,23 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       `@source` stays as belt-and-braces, documented as such.
       Storybook's default theme also flipped dark → light, matching ADR 0017.
 
-- [ ] **UI-13 · The e2e run (lead-scheduled).**
-      The suite has NOT run since UI-2. Selectors were updated by reasoning
-      only across `connections.spec.ts`, `processes.spec.ts`,
-      `extension-forms.spec.ts`, `monitoring.spec.ts` and now
-      `catalogs.spec.ts`. Needs Docker on :8082 and the serial singleton.
-      Tighten `processes.spec.ts`'s `heading { name: "Pipeline" }` to the exact
-      "Pipeline graph" while in there. Fix fallout on `ai/main`.
+- [x] **UI-13 · The e2e run.** Ran against `ai/main` on 2026-09-01 with the
+      full Docker stack (`E2E_PORT=4399`, worktree, `CREDENTIALS_MASTER_KEY`
+      sourced by absolute path). First run: **36 passed, 2 failed, 1 not run**
+      — so eight slices of reasoned-only selector edits cost exactly two
+      breakages. Both fixed; the suite is **39/39 green**.
+      1. `extensions.spec.ts` "edit extension": Astro's dev toolbar is a fixed
+         bottom-centre overlay and swallowed the click on "Update Extension"
+         (57 retries against `<astro-dev-toolbar> intercepts pointer events`).
+         Astro exposes no env switch, so `playwright.config.ts` sets `E2E=1`
+         on its webServer and `astro.config.mjs` disables the toolbar on that
+         signal. Ordinary `npm run dev` keeps it. NOTE: a REUSED dev server
+         (`reuseExistingServer`) still has its toolbar — if this recurs, that
+         is why.
+      2. `processes.spec.ts`: UI-5 dropped the colon from "Ceiling: N
+         runs/hour"; the regex still had it.
+      `processes.spec.ts`'s Pipeline heading was already exact — the UI-7
+      follow-up had been handled in-slice.
 
 ## Discovered follow-ups
 
@@ -243,8 +253,8 @@ scan + fonts), **I-86** (no true item count per product), **I-87**
 (`flow_stats_daily` counter semantics unpinned), **I-88** (`overview.ts`
 derivations untested). Everything below is the per-slice detail behind them.
 
-**Still open, not yet an issue:** the full e2e suite has NOT run since UI-2 —
-now tracked as **UI-13** above.
+**The e2e suite is green again** (39/39, 2026-09-01) — see UI-13 for what the
+eight slices of reasoned-only selector edits actually broke.
 
 **From UI-1:**
 - The `tech` utility (`@utility tech` in both `global.css` copies) is defined
@@ -438,6 +448,17 @@ now tracked as **UI-13** above.
   graph / monitoring are full-width. That is deliberate (reading width for
   lists and forms, full width for telemetry), but it is a judgment call a
   designer may want to revisit.
+
+**From UI-13:**
+- **Astro's dev toolbar eats Playwright clicks.** It is a fixed bottom-centre
+  overlay, so any control that lands under it is unclickable — which looks
+  exactly like a broken selector. Now disabled via `E2E=1`, but ONLY for a
+  server Playwright starts. A reused dev server keeps the toolbar, so an agent
+  running e2e against its own already-running server can still hit this.
+- Running e2e from a worktree needs `CREDENTIALS_MASTER_KEY` sourced from the
+  main checkout by ABSOLUTE path (`.env` is gitignored, so the worktree has
+  none) — as the `run-e2e` skill warns. `E2E_PORT` keeps it off :4321 when
+  another dev server owns that port.
 
 **From UI-12:**
 - **`LineageStrip` has no story** — the one component UI-3 introduced
