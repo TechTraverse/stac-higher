@@ -67,7 +67,7 @@ batching is mandatory at this rate; the OGC facade stays parked post-M3
       per-transition bumps (mandatory), `delivery_log`/`ingest_files` churn
       (must not break the ADR 0012 UNIQUE-upsert model), outbox claim batch
       sizing. Design informed by S-A's contention measurements.
-- [ ] **M3-S-E · streaming decision (I-19/I-26).** Streaming s3 get→
+- [x] **M3-S-E · streaming decision (I-19/I-26).** Streaming s3 get→
       multipart-put vs documented copy-mode size limits + reference-mode
       posture vs defer to Phase 8 — decided against S-B's size distribution,
       with the per-worker memory envelope written down.
