@@ -5,9 +5,6 @@ import {
   Button,
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
   EmptyState,
   ErrorState,
   Input,
@@ -23,17 +20,40 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Cpu, Loader2, Plus, Trash2 } from "lucide-react";
+import { healthDotClass, type LineageHealth } from "@stac-higher/shared";
 import { toast } from "sonner";
 import { useAuthMe } from "@/lib/query/auth";
-import { FlowStrip } from "@/components/monitoring/FlowStrip";
-import { useFlowHistory } from "@/lib/monitoring/graph-queries";
-import { useSources } from "@/lib/processes/queries";
+import { timeAgo } from "@/components/monitoring/shared";
+import { RunSparkline } from "@/components/processes/RunSparkline";
+import {
+  formatDuration,
+  processVerdict,
+  realRuns,
+  runDurationMs,
+  successRateOverRuns,
+  triggerSummary,
+} from "@/components/processes/health";
+import { useOutputs, useRuns, useSources } from "@/lib/processes/queries";
 import {
   useCreateProcess,
   useDeleteProcess,
   useProcesses,
 } from "@/lib/processes/queries";
 import type { Process } from "@/lib/processes/types";
+
+const HEALTH_VAR: Record<LineageHealth, string> = {
+  ok: "success",
+  warn: "warning",
+  error: "danger",
+  unknown: "border",
+};
+
+const HEALTH_TEXT: Record<LineageHealth, string> = {
+  ok: "text-success",
+  warn: "text-warning",
+  error: "text-danger",
+  unknown: "text-muted-foreground",
+};
 
 /**
  * `/processes` — the M5-A dashboard (spec §10).
@@ -44,12 +64,44 @@ import type { Process } from "@/lib/processes/types";
  * written — showing an empty chart now would read as "no runs" rather than
  * "not measured yet".
  */
-function DeployBadge({ process }: { process: Process }) {
-  if (!process.current_revision) {
-    return <Badge variant="secondary">No revision</Badge>;
-  }
-  if (!process.enabled) return <Badge variant="outline">Disabled</Badge>;
-  return <Badge variant="default">Deployed</Badge>;
+/**
+ * One process at dashboard altitude (mockup 05): what it is, what it reads and
+ * writes, when it last ran and how it has been doing.
+ *
+ * ONE request per card (`useRuns`, polling off — see the hook): the run ledger
+ * answers status, last run, duration and the sparkline together. The 30-day
+ * daily strip is NOT here — it is per-source and belongs on the detail page,
+ * where the source it describes is visible.
+ */
+function ProcessLinks({
+  label,
+  ids,
+}: {
+  label: string;
+  ids: string[];
+}) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="w-8 shrink-0 text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">
+        {label}
+      </span>
+      {ids.length === 0 ? (
+        <span className="text-[12px] text-muted-foreground/60">none</span>
+      ) : (
+        <span className="flex flex-wrap gap-x-2 gap-y-0.5">
+          {ids.map((id) => (
+            <a
+              key={id}
+              href={`/collections/${encodeURIComponent(id)}`}
+              className="tech text-[11.5px] text-primary hover:underline"
+            >
+              {id}
+            </a>
+          ))}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function ProcessCard({
@@ -61,69 +113,118 @@ function ProcessCard({
   canMutate: boolean;
   onDelete: () => void;
 }) {
+  const { data: sources } = useSources(process.id);
+  const { data: outputs } = useOutputs(process.id);
+  const { data: runs } = useRuns(process.id, { poll: false });
+
+  const ledger = realRuns(runs);
+  const verdict = processVerdict(process, runs, sources?.length);
+  const { rate, counted } = successRateOverRuns(ledger);
+  const last = ledger.find((r) => r.started_at !== null) ?? ledger[0] ?? null;
+  const trigger = triggerSummary(sources);
+
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <CardTitle className="flex items-center gap-2">
-              <a href={`/processes/${process.id}`} className="hover:underline">
+    <Card
+      data-testid={`process-card-${process.id}`}
+      className="border-l-2"
+      style={{ borderLeftColor: `var(--color-${HEALTH_VAR[verdict.health]})` }}
+    >
+      <CardContent className="px-5 py-4">
+        <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
+          {/* identity + status */}
+          <div className="min-w-0 flex-1 basis-56">
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href={`/processes/${process.id}`}
+                className="truncate text-[15px] font-bold hover:underline"
+              >
                 {process.name}
               </a>
-              <DeployBadge process={process} />
-            </CardTitle>
-            <CardDescription>
-              {process.description || "No description"}
-            </CardDescription>
+            </div>
+            <p
+              className={`mt-0.5 text-[12px] text-muted-foreground ${trigger.mono ? "tech" : ""}`}
+            >
+              {trigger.text}
+            </p>
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <span
+                aria-hidden="true"
+                className={`h-2 w-2 shrink-0 rounded-full ${healthDotClass(verdict.health)}`}
+              />
+              <span
+                className={`text-[12.5px] font-semibold ${HEALTH_TEXT[verdict.health]}`}
+              >
+                {verdict.label}
+              </span>
+              {verdict.reason && (
+                <span className="truncate text-[11.5px] text-muted-foreground">
+                  · {verdict.reason}
+                </span>
+              )}
+            </div>
           </div>
+
+          {/* wiring */}
+          <div className="min-w-0 flex-1 basis-56 space-y-1">
+            <ProcessLinks
+              label="in"
+              ids={(sources ?? []).map((s) => s.collection_id)}
+            />
+            <ProcessLinks
+              label="out"
+              ids={(outputs ?? []).map((o) => o.collection_id)}
+            />
+          </div>
+
+          {/* recency + rate */}
+          <div className="min-w-0 basis-44 text-[12.5px]">
+            <div>
+              <span className="text-muted-foreground">Last run </span>
+              <span className="font-semibold">
+                {last ? timeAgo(last.started_at ?? last.created_at) : "never"}
+              </span>
+            </div>
+            {last && (
+              <div className="tech text-[11.5px] text-muted-foreground">
+                {formatDuration(runDurationMs(last))}
+              </div>
+            )}
+            <div className="mt-1 text-[11.5px] text-muted-foreground">
+              {rate === null
+                ? "no completed runs"
+                : `${rate.toFixed(1)}% success · last ${counted}`}
+            </div>
+          </div>
+
+          {/* history */}
+          <div className="shrink-0">
+            <RunSparkline runs={ledger} />
+          </div>
+
           {canMutate && (
-            <Button variant="ghost" size="sm" onClick={onDelete}>
-              <Trash2 className="h-4 w-4" />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-muted-foreground hover:text-destructive"
+              onClick={onDelete}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
               <span className="sr-only">Delete {process.name}</span>
             </Button>
           )}
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="text-sm text-muted-foreground flex flex-wrap gap-x-6 gap-y-1">
-          <span>Group: {process.group_id}</span>
-          <span>Ceiling: {process.max_runs_per_hour} runs/hour</span>
+
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-border pt-2.5 text-[11.5px] text-muted-foreground">
+          <span>
+            Group <span className="tech">{process.group_id}</span>
+          </span>
+          <span>Ceiling {process.max_runs_per_hour} runs/hour</span>
+          {process.description && (
+            <span className="min-w-0 truncate">{process.description}</span>
+          )}
         </div>
-        <ProcessSparkline processId={process.id} />
       </CardContent>
     </Card>
-  );
-}
-
-/**
- * A 30-day run strip for the process's FIRST source.
- *
- * `flow_stats_daily` is keyed per source, and a process usually has one. With
- * several, showing the first is honest at dashboard altitude — the detail
- * page is where per-source telemetry belongs — and summing them would hide a
- * dead source behind a busy sibling, which is the opposite of what a health
- * strip is for.
- */
-function ProcessSparkline({ processId }: { processId: string }) {
-  const { data: sources } = useSources(processId);
-  const first = sources?.[0]?.id ?? null;
-  const { data: history } = useFlowHistory("process", first);
-
-  if (!sources || sources.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        No source attached — this process never triggers.
-      </p>
-    );
-  }
-  return (
-    <div className="flex items-center gap-3">
-      <FlowStrip days={history ?? []} metric="runs" label="run history" />
-      <span className="text-xs text-muted-foreground">
-        30 days
-        {sources.length > 1 ? ` · ${sources[0].collection_id}` : ""}
-      </span>
-    </div>
   );
 }
 
