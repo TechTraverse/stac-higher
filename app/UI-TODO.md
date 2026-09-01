@@ -142,7 +142,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       the full `LineageStrip` visual language, health-colored nodes/edges,
       legend, mono ids. Same `/api/monitoring/graph` data. Page copy:
       "Pipeline graph".
-- [ ] **UI-8 · Monitoring + long-tail + terminology sweep.** [e2e-touch]
+- [x] **UI-8 · Monitoring + long-tail + terminology sweep.** [e2e-touch]
       `MonitoringPage.tsx` (+Alerts/Flows/Channels cards): visual alignment
       (cards, health tokens, mono accents). Catalogs / Search / Extensions
       pages + all forms: visual alignment pass only (spacing, cards,
@@ -330,3 +330,26 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
   asserts `heading { name: "Pipeline", level: 1 }` — still passes, since
   Playwright's name matching is substring-based, but it is now an inexact
   match worth tightening during the e2e run.
+
+**From UI-8:**
+- The Tailwind scan gap is FIXED via `app/src/styles/app.css` (imports the
+  shared `global.css`, adds `@source`). `Layout.astro` imports `app.css` now.
+  **Anything app-only in CSS belongs in `app.css`**, never in `global.css` —
+  that pair stays byte-identical for Storybook.
+- Storybook still loads `packages/shared/src/styles/global.css` directly and
+  therefore has NO `@source` for its own components. Shared-only classes may
+  be missing in Storybook even though they now work in the app. Worth a
+  `.storybook/preview` CSS entry mirroring `app.css` (also the natural place
+  for the `@fontsource` imports Storybook lacks — see the UI-1 follow-up).
+- `font-mono` (42 call sites) and the `tech` utility coexist. Both resolve to
+  IBM Plex Mono; `tech` adds ligature/tracking tuning. Deliberately NOT swept
+  — 42 mechanical edits for a subtle typographic delta, with test-selector
+  risk. If a future slice touches those files anyway, prefer `tech`.
+- Copy nouns now branch on `catalog.builtIn` in `CollectionList` and
+  `CollectionForm` (`catalogNoun`) and in `CollectionDetail`'s breadcrumb from
+  UI-4. If a third place needs it, lift `catalogNoun` into a shared module
+  rather than copying the ternary again.
+- The long-tail pages keep their `max-w-*` containers while home / processes /
+  graph / monitoring are full-width. That is deliberate (reading width for
+  lists and forms, full width for telemetry), but it is a judgment call a
+  designer may want to revisit.
