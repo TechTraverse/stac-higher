@@ -1,8 +1,8 @@
 # M3 — NOAA-scale readiness — design
 
 **Date:** 2026-09-01
-**Status:** decisions settled 2026-09-01; awaiting approval to open the
-implementation queue
+**Status:** **approved** (lead sign-off 2026-09-01). Implementation queue is
+live in `TODO.md`.
 **Scope source:** ROADMAP §9 "Named milestones" (M3), §2 (scale envelope), §10
 (Postgres-queue ceiling, scheduler/monitor HA, processes multiply throughput);
 Phase 9 spec §12 (the throughput arithmetic M3 consumes).
