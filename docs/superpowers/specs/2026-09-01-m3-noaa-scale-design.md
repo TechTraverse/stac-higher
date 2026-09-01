@@ -1,7 +1,8 @@
 # M3 — NOAA-scale readiness — design
 
 **Date:** 2026-09-01
-**Status:** awaiting lead approval
+**Status:** decisions settled 2026-09-01; awaiting approval to open the
+implementation queue
 **Scope source:** ROADMAP §9 "Named milestones" (M3), §2 (scale envelope), §10
 (Postgres-queue ceiling, scheduler/monitor HA, processes multiply throughput);
 Phase 9 spec §12 (the throughput arithmetic M3 consumes).
@@ -100,11 +101,11 @@ Worked top-down by the solo loop, one task per iteration, worktree off
 
 | # | Slice | Touches | Rationale |
 |---|---|---|---|
-| **M3-A** | **pgstac write path**: `use_queue = true`, a drainer (pg_cron in cloud, a pipeline job locally), a `query_queue` depth metric, and a decision on `update_collection_extent` — §4 | pipeline + deployment config | Finding 1. The single highest-leverage change measured; 7–10× on the real pipeline |
+| **M3-A** | **pgstac write path**: `use_queue` + `update_collection_extent` as session GUCs on the writer's connection, a drainer (pg_cron in cloud, a pipeline job locally), and a `query_queue` depth metric — §4 | pipeline | Finding 1. The single highest-leverage change measured; 7–10× on the real pipeline |
 | **M3-B** | **Connection pool** across the pipeline repos | pipeline | Finding 4. A *precondition* for M3-C, not an optimisation of it |
 | **M3-C** | **Bounded-memory byte path**: EXTRACT reads through a URI (`/vsis3`) not a buffer; FETCH does server-side copy when the gate allows, streamed multipart otherwise; memory bound made explicit and configured | pipeline | Findings 3, I-19, I-26. Must land **with or before** M3-D |
-| **M3-D** | **Concurrency**: worker concurrency as a setting; byte-heavy stages on their own queue with their own smaller concurrency; `ingest_files` compare-and-set claim | pipeline | Findings 2 and 7. The remaining ~5.5× |
-| **M3-E** | **Write batching**: batch the pgstac upsert in ITEMIZE and finalize; batch `flow_stats` per tick; batch `delivery_log` transitions via the existing `UNNEST` + `ON CONFLICT` shape; bound the dispatch drain with `max_batches` | pipeline | Finding S-D. Stacks with M3-A rather than replacing it |
+| **M3-D** | **Concurrency**: worker concurrency as a setting (**default 12**); byte-heavy stages on their own queue with their own smaller concurrency; `ingest_files` compare-and-set claim; `flow_stats` batching (§7.4 carve-out) | pipeline | Findings 2 and 7. The remaining ~5.5× |
+| ~~**M3-E**~~ | ~~**Write batching**~~ — **CUT from M3** (§7.4). The pgstac upsert, `delivery_log` transition batching and the dispatch drain bound defer; only the `flow_stats` half survives, inside M3-D | — | Optimisation, not a defect fix. After M3-A the pgstac path is 8× the target at batch 1 |
 | **M3-F** | **GC at rate**: raise `asset_collect`'s ceiling (batched `DeleteObjects`, envelope-sized batch), and alert on an open-mark backlog | pipeline + app | Finding 5. The quiet failure |
 | **M3-G** | **Queue-table retention**: `delete_jobs` policy on the worker (successful only) + a periodic `delete_old_jobs`, keeping failures | pipeline | Finding 6 |
 | **M3-H** | **Rehearsal driver**: `pipeline.loadgen` gains a process leg and a sustained-rate mode; gate-shaped verification (offered = catalogued = delivered) | pipeline | The gate needs it |
@@ -115,7 +116,7 @@ Worked top-down by the solo loop, one task per iteration, worktree off
 ```
 M3-A ─────────────────────────────────► (independent, do first — biggest win, no coupling)
 M3-B ──► M3-C ──► M3-D                  (pool, then bounded memory, then concurrency)
-                    └──► M3-E           (batching lands on the rows D's claim touches)
+                                        (M3-E cut; its flow_stats half is inside D)
 M3-F, M3-G ─────────────────────────────► (independent, may float)
 M3-H ──► M3-I                           (driver, then gate)
 ```
@@ -129,8 +130,9 @@ against the 250 MB size tier, versus ~1.8 GB after streaming.
 O(n²) behind a bigger constant and let it resurface at production partition
 sizes, where it is a far more expensive discovery.
 
-M3-D and M3-E touch the same rows and should be designed together even though
-they merge separately (S-C, S-D both say so).
+M3-E is cut (§7.4); the one part of it that was never an optimisation — the
+`flow_stats` batching — is folded into M3-D, where it belongs, because
+concurrency is what makes that row lock hurt.
 
 ---
 
@@ -160,11 +162,61 @@ queue enabled and un-drained; what defers is the partition's *maintenance*.
 This is what makes the residual risk **staleness, not correctness** — verified
 here rather than assumed.
 
-### 4.2 The drainer: pg_cron in cloud, a pipeline job locally
+### 4.2 Where the settings are set: session-scoped, by the writer
+
+**Decision (lead delegated 2026-09-01): the pipeline's pgstac writer sets both
+settings as session GUCs on its own connection. Deployment configuration sets
+nothing.**
+
+`pgstac.get_setting` resolves in this order:
+
+```
+conf jsonb  →  current_setting('pgstac.<name>', TRUE)  →  pgstac_settings table
+```
+
+so a session GUC **overrides** the table — and `pypgstac` exposes this as a
+first-class seam rather than something we have to reach in and force:
+
+```python
+PgstacDB(dsn=..., use_queue=True)      # issues: SET pgstac.use_queue TO TRUE
+```
+
+`PgstacDB` also accepts an existing `connection` or `pool`, so both settings
+can be applied together on one connection — which is what the lead asked for
+("whatever sets `use_queue` should also set `update_collection_extent`") and
+what M3-B's pool makes natural: the two `SET`s belong in the pool's
+`on_connect` hook.
+
+Chosen over writing the `pgstac_settings` table because:
+
+1. **It ships with the release.** There is no deploy-time step to forget, so
+   the "a deployment silently runs 10× slower" failure mode does not exist.
+   That was the main argument *for* the table, and the session GUC removes it.
+2. **It is the library's own seam**, not a workaround — the parameter exists
+   precisely for bulk-load callers.
+3. **It is scoped to the writer that has the problem.** Our ITEMIZE/finalize
+   upsert path carries essentially all the volume; every other session —
+   search, app reads, `psql`, e2e — keeps pgstac's default behaviour and
+   fresh, inline statistics.
+
+**Deliberate property, not an oversight:** a low-volume write that does *not*
+go through our writer (an interactive BFF transaction, a direct-to-proxy push)
+still updates stats inline. That is the right trade — those writes are rare,
+they are the ones a human is waiting on, and fresh stats are worth ~250 ms
+there. Only the bulk path defers.
+
+The one thing the table form would have bought — visibility from outside the
+process — is covered by the `query_queue` depth metric in §4.5 instead.
+
+### 4.3 The drainer: pg_cron in cloud, a pipeline job locally
+
+The *producer* is session-scoped; the **queue and its drain are global**, and
+that pairing is coherent — `query_queue` is a work list, and which session
+enqueued a statement does not matter to draining it.
 
 pgstac's intended mechanism is **pg_cron** calling `run_queued_queries`, and
-that is the right answer wherever it exists — it keeps the drain in the
-database with the queue, and it runs whether or not the pipeline is up.
+that is the right answer wherever it exists: it keeps the drain in the database
+with the queue, and it runs whether or not the pipeline is up.
 
 **But pg_cron is not in our image.** Verified on
 `ghcr.io/stac-utils/pgstac:v0.9.11`: `pg_available_extensions` offers only
@@ -184,31 +236,32 @@ database-side drainer is already configured, so the two cannot fight.
 `SELECT`** (a `SELECT` errors outright, so a wrong drainer fails loudly rather
 than silently no-opping).
 
-### 4.3 `update_collection_extent` — decide it here, and the coupling is helpful
+### 4.4 `update_collection_extent` — on, alongside `use_queue`
 
-It is a **separate pgstac setting**, currently `false`, and it gates a queued
-`UPDATE collections SET content = jsonb_set(…, collection_extent(…))` fired
-from inside `update_partition_stats`.
+**Decision (lead 2026-09-01): `true`, set on the same connection as
+`use_queue`.**
 
-Worth deciding in this slice for a reason that predates M3: **nothing
-maintains collection extents today.** Every collection sits at the extent it
-was created with — locally, all of them are still `[-180,-90,180,90]`. The
-platform's only `collection_extent` code is the ingest *geometry fallback*
-(reading a collection's declared extent to stamp an item's geometry), never a
-writer. So the advertised extent of every collection is operator-declared and
-permanently stale.
+It gates a queued `UPDATE collections SET content = jsonb_set(…,
+collection_extent(…))` fired from inside `update_partition_stats`.
 
-The cost is smaller than it looks, and runs the helpful way:
-`collection_extent(coll, FALSE)` — the form the queued statement uses —
-aggregates `partitions_view`, i.e. the per-partition stats, **not the items**.
-It is O(partitions), not O(items). So it is cheap *given* stats are being
-maintained, and `use_queue` is precisely what makes maintaining them
-affordable. On the write path it never would have been.
+It closes a gap that predates M3: **nothing maintains collection extents
+today.** Every collection sits at the extent it was created with — locally, all
+of them are still `[-180,-90,180,90]`. The platform's only `collection_extent`
+code is the ingest *geometry fallback* (reading a collection's declared extent
+to stamp an item's geometry), never a writer. So the advertised extent of every
+collection is operator-declared and permanently stale.
 
-**Recommend turning it on together with `use_queue`**, and measuring — it
-closes a real gap at a cost the queue already absorbs.
+The cost runs the helpful way: `collection_extent(coll, FALSE)` — the form the
+queued statement uses — aggregates `partitions_view`, i.e. the per-partition
+stats, **not the items**. It is O(partitions), not O(items). Cheap *given*
+stats are being maintained, and `use_queue` is precisely what makes maintaining
+them affordable. On the write path it never would have been.
 
-### 4.4 Where the database cost actually lands
+Because it is session-scoped alongside `use_queue`, extents are refreshed by
+the bulk writer's activity and by nothing else — which is the same trade as
+§4.2 and for the same reason.
+
+### 4.5 Where the database cost actually lands
 
 Inside `update_partition_stats`, alongside the scan and `ANALYZE`, are two
 `REFRESH MATERIALIZED VIEW` calls (`partitions`, `partition_steps`). Those
@@ -218,13 +271,9 @@ number to *measure* in this slice, not to guess. Deferring this work does not
 make it free; it makes it batched and deduped, which is a different and better
 shape, but the slice should report what it costs.
 
-### 4.5 Remaining obligations
+### 4.6 Remaining obligations
 
-1. **Ownership of the settings row.** The app owns migrations (ADR 0001), the
-   `pgstac` schema is pypgstac's, and — now that pg_cron may own the drain —
-   the setting and its drainer can live in different components entirely.
-   **Open decision for the lead** — see §7, revised.
-2. **A staleness bound.** The queue dedupes by query text
+1. **A staleness bound.** The queue dedupes by query text
    (`ON CONFLICT DO NOTHING`), so its depth is bounded by the number of
    distinct partitions, not by write volume. The drainer's cadence therefore
    sets how stale a partition's stats may get, and that is the number to state
@@ -297,50 +346,42 @@ Stated so the gate is not read as a broader claim than it is:
 
 ---
 
-## 7. Open decisions for the lead
+## 7. Decisions — settled
 
-*Revised 2026-09-01 after lead input on pg_cron and `update_collection_extent`
-(§4.2–4.4). Decision 1 is narrowed; decision 3 is provisionally settled.*
+All four were settled by the lead on 2026-09-01. Recorded here rather than
+deleted, because the *reasoning* is what a later reader needs.
 
-1. **Who owns the `use_queue` setting, now that pg_cron may own the drain?**
-   The setting and its drainer can live in different components: pg_cron in
-   cloud, a pipeline job locally (§4.2). That rules out the earlier
-   recommendation of having `services/pipeline` assert the setting at startup
-   — it would be asserting an invariant it does not own. Remaining options:
-   (a) **deployment configuration** — a documented SQL step (compose init for
-   local, the RDS/Terraform path for cloud), honest that it is an operational
-   choice, at the cost that a deployment which skips it silently runs ~10×
-   slower; (b) **an app migration** that writes the row — guaranteed, but
-   crosses the ADR 0001 boundary into pgstac's schema; (c) **assert-and-warn
-   from whichever component is present** — the pipeline checks the setting and
-   the queue depth at startup and logs loudly plus surfaces it on `/health`,
-   without writing it. **Recommend (a) + (c)**: configuration sets it,
-   observability makes a missed step loud rather than silent. This may deserve
-   an ADR, since it is the first deliberate platform dependency on a pgstac
-   *setting* rather than its schema.
+1. **Who sets `use_queue` — SETTLED (delegated).** Session GUC, set by the
+   pipeline's pgstac writer, alongside `update_collection_extent`, via
+   `pypgstac`'s own `PgstacDB(use_queue=True)` seam and the M3-B pool's
+   `on_connect`. Deployment configuration sets nothing. Full reasoning in
+   §4.2. **This reverses the earlier draft**, which recommended deployment
+   config plus a pipeline startup assert — on the mistaken belief that
+   pypgstac gave no hook for a session-scoped setting. It does; checking cost
+   one query and changed the answer.
 
-2. **The concurrency default.** S-C's arithmetic says 12–16 for the
-   byte-realistic mix; a conservative default (4?) that deployments raise is
-   safer but leaves the box idle. Recommend defaulting low and documenting the
-   sizing formula from S-E's envelope.
+2. **Concurrency default — SETTLED: 12.** In S-C's 12–16 band for the
+   byte-realistic mix, at the conservative end. It remains a setting, and
+   S-E's envelope (`255 MiB + (GDAL_CACHEMAX + transfer buffers) ×
+   concurrency`) is the documented formula for sizing it per deployment.
 
-3. **Whether M3-E (batching) is in M3 at all.** *Lead's read: it is not a
-   defect fix, and speed can be optimised later.* Agreed, and after M3-A the
-   pgstac path is ~4 ms/item at batch 1 — 8× the target — so the gate does not
-   need it. **Provisionally: M3-E is the cut line.** Two things to weigh before
-   dropping it outright: the write-amplification count is ≈16 statements per
-   item (S-D), which Phase 8's cloud costs will feel more than a local box
-   does; and batching `flow_stats` removes a per-association *serialization*
-   point that concurrency (M3-D) makes worse, so a small part of M3-E is
-   arguably an M3-D concern rather than an optimisation. Suggest keeping the
-   `flow_stats` batching inside M3-D and cutting the rest.
+3. **`update_collection_extent` — SETTLED: `true`**, on the same connection as
+   `use_queue` (§4.4).
 
-4. **Should `update_collection_extent` go on with `use_queue`?** New, from
-   §4.3. Recommend yes: nothing maintains collection extents today, the queued
-   form is O(partitions) rather than O(items), and the queue is what makes it
-   affordable. But it is a behaviour change to what the API advertises for
-   every collection, so it is the lead's call rather than an implementation
-   detail.
+4. **Is M3-E (batching) in M3 — SETTLED: it is the cut line**, per the lead's
+   read that it is an optimisation rather than a defect fix and that speed can
+   be revisited later. After M3-A the pgstac path is ~4 ms/item at batch 1 —
+   8× the target — so the gate does not need it.
+
+   **One carve-out, on the implementer's judgement:** batching the `flow_stats`
+   bump stays *inside M3-D*, not cut with the rest. It is not an optimisation
+   there — it removes a per-association row lock (~460 bumps/s, flat past
+   concurrency 4, measured in S-D) that M3-D's concurrency raise makes strictly
+   worse, since every ITEMIZE on one association would queue behind the others.
+   Cutting it would mean shipping a concurrency slice with a known
+   serialization point in it. Everything else in M3-E — the pgstac upsert
+   batching, `delivery_log` transition batching, the dispatch drain bound —
+   defers to Phase 8 or a later M3 slice.
 
 ---
 
