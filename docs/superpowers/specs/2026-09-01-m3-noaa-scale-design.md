@@ -100,7 +100,7 @@ Worked top-down by the solo loop, one task per iteration, worktree off
 
 | # | Slice | Touches | Rationale |
 |---|---|---|---|
-| **M3-A** | **pgstac write path**: set `pgstac_settings.use_queue = true` and add a periodic `CALL pgstac.run_queued_queries()` drainer | pipeline + app DDL | Finding 1. The single highest-leverage change measured; 7–10× on the real pipeline |
+| **M3-A** | **pgstac write path**: `use_queue = true`, a drainer (pg_cron in cloud, a pipeline job locally), a `query_queue` depth metric, and a decision on `update_collection_extent` — §4 | pipeline + deployment config | Finding 1. The single highest-leverage change measured; 7–10× on the real pipeline |
 | **M3-B** | **Connection pool** across the pipeline repos | pipeline | Finding 4. A *precondition* for M3-C, not an optimisation of it |
 | **M3-C** | **Bounded-memory byte path**: EXTRACT reads through a URI (`/vsis3`) not a buffer; FETCH does server-side copy when the gate allows, streamed multipart otherwise; memory bound made explicit and configured | pipeline | Findings 3, I-19, I-26. Must land **with or before** M3-D |
 | **M3-D** | **Concurrency**: worker concurrency as a setting; byte-heavy stages on their own queue with their own smaller concurrency; `ingest_files` compare-and-set claim | pipeline | Findings 2 and 7. The remaining ~5.5× |
@@ -141,24 +141,96 @@ they merge separately (S-C, S-D both say so).
 upsert cost goes from 13→654 ms (rising with partition size) to a **flat
 3–4 ms**, and the live pipeline from 2–3.5 to 22 items/s.
 
-Three things this slice owns, because the setting alone is not safe:
+### 4.1 What actually defers
 
-1. **A drainer.** Nothing calls `run_queued_queries` in either runtime today.
-   Without one, partition stats and constraints go permanently stale, which
-   degrades pgstac's partition pruning on *search*. A periodic pipeline job,
-   cadence sized so the queue never grows across a tick.
-   **`pgstac.run_queued_queries()` is a PROCEDURE — it needs `CALL`, not
-   `SELECT`** (a `SELECT` errors outright, so this fails loudly rather than
-   silently no-opping).
-2. **Ownership of the settings row.** The app owns migrations (ADR 0001) but
-   the `pgstac` schema is pypgstac's. Writing a row into
-   `pgstac.pgstac_settings` from an app migration crosses that boundary.
-   **Open decision for the lead** — see §7.
-3. **A staleness bound.** The queue dedupes by query text
+All five `run_or_queue` call sites in pgstac 0.9.11, verified against the
+pinned migration:
+
+| queued work | fired from |
+|---|---|
+| `update_partition_stats` (the O(partition) scan + `ANALYZE`) | item write, via `update_partition_stats_q` |
+| table CHECK constraints (`create_table_constraints`) | partition creation |
+| partition maintenance (`maintain_partitions`) | partition creation |
+| constraint validation | `validate_constraints` |
+| **collection extent** — an `UPDATE collections` — but only when the separate `update_collection_extent` setting is on | inside `update_partition_stats` |
+
+**Partition `CREATE TABLE … PARTITION OF` is `EXECUTE`d inline**, not queued
+(`check_partition`). So an item still lands in the right partition with the
+queue enabled and un-drained; what defers is the partition's *maintenance*.
+This is what makes the residual risk **staleness, not correctness** — verified
+here rather than assumed.
+
+### 4.2 The drainer: pg_cron in cloud, a pipeline job locally
+
+pgstac's intended mechanism is **pg_cron** calling `run_queued_queries`, and
+that is the right answer wherever it exists — it keeps the drain in the
+database with the queue, and it runs whether or not the pipeline is up.
+
+**But pg_cron is not in our image.** Verified on
+`ghcr.io/stac-utils/pgstac:v0.9.11`: `pg_available_extensions` offers only
+`pg_partman`; installed are `plpgsql`, `postgis`, `btree_gist`, `unaccent`. It
+*is* a parameter-group option on RDS/Aurora, so the split is:
+
+- **Cloud (Phase 8):** pg_cron. The paved path.
+- **Local / any Postgres without pg_cron (the M3 gate):** a periodic pipeline
+  job. Portable, needs no extension, and is the fallback a self-hosted
+  deployment will want anyway.
+
+The spec deliberately keeps **both**, rather than picking one and leaving the
+other deployment shape unserved. The pipeline job must be a no-op when a
+database-side drainer is already configured, so the two cannot fight.
+
+**`pgstac.run_queued_queries()` is a PROCEDURE — it needs `CALL`, not
+`SELECT`** (a `SELECT` errors outright, so a wrong drainer fails loudly rather
+than silently no-opping).
+
+### 4.3 `update_collection_extent` — decide it here, and the coupling is helpful
+
+It is a **separate pgstac setting**, currently `false`, and it gates a queued
+`UPDATE collections SET content = jsonb_set(…, collection_extent(…))` fired
+from inside `update_partition_stats`.
+
+Worth deciding in this slice for a reason that predates M3: **nothing
+maintains collection extents today.** Every collection sits at the extent it
+was created with — locally, all of them are still `[-180,-90,180,90]`. The
+platform's only `collection_extent` code is the ingest *geometry fallback*
+(reading a collection's declared extent to stamp an item's geometry), never a
+writer. So the advertised extent of every collection is operator-declared and
+permanently stale.
+
+The cost is smaller than it looks, and runs the helpful way:
+`collection_extent(coll, FALSE)` — the form the queued statement uses —
+aggregates `partitions_view`, i.e. the per-partition stats, **not the items**.
+It is O(partitions), not O(items). So it is cheap *given* stats are being
+maintained, and `use_queue` is precisely what makes maintaining them
+affordable. On the write path it never would have been.
+
+**Recommend turning it on together with `use_queue`**, and measuring — it
+closes a real gap at a cost the queue already absorbs.
+
+### 4.4 Where the database cost actually lands
+
+Inside `update_partition_stats`, alongside the scan and `ANALYZE`, are two
+`REFRESH MATERIALIZED VIEW` calls (`partitions`, `partition_steps`). Those
+scale with **partition count**, not with write rate. So the drain cadence
+should be tuned against partition count, not ingest rate — and that is a
+number to *measure* in this slice, not to guess. Deferring this work does not
+make it free; it makes it batched and deduped, which is a different and better
+shape, but the slice should report what it costs.
+
+### 4.5 Remaining obligations
+
+1. **Ownership of the settings row.** The app owns migrations (ADR 0001), the
+   `pgstac` schema is pypgstac's, and — now that pg_cron may own the drain —
+   the setting and its drainer can live in different components entirely.
+   **Open decision for the lead** — see §7, revised.
+2. **A staleness bound.** The queue dedupes by query text
    (`ON CONFLICT DO NOTHING`), so its depth is bounded by the number of
    distinct partitions, not by write volume. The drainer's cadence therefore
    sets how stale a partition's stats may get, and that is the number to state
    and monitor.
+3. **A depth metric on `query_queue`.** A drainer that silently stops is
+   otherwise invisible (§5).
 
 ---
 
@@ -185,9 +257,12 @@ Three things this slice owns, because the setting alone is not safe:
   GDAL session. Nothing new is exposed (the worker already decrypts them via
   `build_adapter`) but it is a new place they live, and it belongs in the
   slice's review rather than its footnotes.
-- **M3-A is third, and its risk is invisible.** A drainer that silently stops
-  leaves search planning degrading with no error anywhere. The slice should
-  ship a metric on `query_queue` depth, not just the drainer.
+- **M3-A is third, and its risk is invisible in two ways.** A drainer that
+  silently stops leaves search planning degrading with no error anywhere; and
+  a deployment that never sets `use_queue` runs ~10× slower with nothing to
+  say so. The slice ships a `query_queue` depth metric *and* a startup
+  assert-and-warn on the setting (§7 decision 1) — the observability is the
+  mitigation for both, and is not optional garnish.
 - **M3-F deletes real bytes at a raised rate.** ADR 0011's mark-first-then-
   collect ordering and grace window are unchanged; only the batch size moves.
   The added risk is a bulk `DeleteObjects` with a wrong prefix, so the slice
@@ -224,29 +299,48 @@ Stated so the gate is not read as a broader claim than it is:
 
 ## 7. Open decisions for the lead
 
-Three, and only the first blocks a slice:
+*Revised 2026-09-01 after lead input on pg_cron and `update_collection_extent`
+(§4.2–4.4). Decision 1 is narrowed; decision 3 is provisionally settled.*
 
-1. **Who writes `pgstac.pgstac_settings.use_queue`?** The app owns migrations
-   (ADR 0001); the `pgstac` schema belongs to pypgstac. Options: (a) an app
-   migration that writes the row — simplest, crosses the ownership line;
-   (b) the pipeline asserts it at startup — keeps the app out of pgstac's
-   schema, but makes a *setting* a runtime side effect; (c) compose/deployment
-   configuration — honest about it being an operational choice, but then it is
-   not guaranteed and the platform's throughput depends on a step someone can
-   forget. **Recommend (b)**, with a loud startup log and a `/health` field, on
-   the grounds that a platform whose throughput silently drops 10× when a
-   setting is missing should say so. This may deserve an ADR.
+1. **Who owns the `use_queue` setting, now that pg_cron may own the drain?**
+   The setting and its drainer can live in different components: pg_cron in
+   cloud, a pipeline job locally (§4.2). That rules out the earlier
+   recommendation of having `services/pipeline` assert the setting at startup
+   — it would be asserting an invariant it does not own. Remaining options:
+   (a) **deployment configuration** — a documented SQL step (compose init for
+   local, the RDS/Terraform path for cloud), honest that it is an operational
+   choice, at the cost that a deployment which skips it silently runs ~10×
+   slower; (b) **an app migration** that writes the row — guaranteed, but
+   crosses the ADR 0001 boundary into pgstac's schema; (c) **assert-and-warn
+   from whichever component is present** — the pipeline checks the setting and
+   the queue depth at startup and logs loudly plus surfaces it on `/health`,
+   without writing it. **Recommend (a) + (c)**: configuration sets it,
+   observability makes a missed step loud rather than silent. This may deserve
+   an ADR, since it is the first deliberate platform dependency on a pgstac
+   *setting* rather than its schema.
+
 2. **The concurrency default.** S-C's arithmetic says 12–16 for the
    byte-realistic mix; a conservative default (4?) that deployments raise is
    safer but leaves the box idle. Recommend defaulting low and documenting the
    sizing formula from S-E's envelope.
-3. **Whether M3-E is in M3 at all.** After M3-A the pgstac path is ~4 ms/item
-   at batch 1, which is 8× the target. Batching is real headroom and removes a
-   serialization point, but it is the one slice here that is an *optimisation*
-   rather than a defect fix. It could defer to Phase 8 without endangering the
-   gate. Recommend keeping it — the write-amplification count (≈16 statements
-   per item) is high enough that Phase 8's cloud costs would feel it — but
-   flagging it as the cut line if M3 needs to shrink.
+
+3. **Whether M3-E (batching) is in M3 at all.** *Lead's read: it is not a
+   defect fix, and speed can be optimised later.* Agreed, and after M3-A the
+   pgstac path is ~4 ms/item at batch 1 — 8× the target — so the gate does not
+   need it. **Provisionally: M3-E is the cut line.** Two things to weigh before
+   dropping it outright: the write-amplification count is ≈16 statements per
+   item (S-D), which Phase 8's cloud costs will feel more than a local box
+   does; and batching `flow_stats` removes a per-association *serialization*
+   point that concurrency (M3-D) makes worse, so a small part of M3-E is
+   arguably an M3-D concern rather than an optimisation. Suggest keeping the
+   `flow_stats` batching inside M3-D and cutting the rest.
+
+4. **Should `update_collection_extent` go on with `use_queue`?** New, from
+   §4.3. Recommend yes: nothing maintains collection extents today, the queued
+   form is O(partitions) rather than O(items), and the queue is what makes it
+   affordable. But it is a behaviour change to what the API advertises for
+   every collection, so it is the lead's call rather than an implementation
+   detail.
 
 ---
 
@@ -319,6 +413,17 @@ lost. What it cannot establish: cloud network behaviour, real NOAA data shapes,
 multi-day steady state, or the S-B size model. §6 says so. If the lead wants
 the *name* to mean more, the gate needs Phase 8's cloud test — which is a
 sequencing decision, not something this spec can fix.
+
+**"You have two drainer mechanisms. That is one more thing to keep working
+than a design should have."** Fair, and the honest answer is that the
+deployment shapes genuinely differ: pg_cron is not in the pgstac image
+(verified) but is a parameter-group option on RDS, so picking pg_cron alone
+would leave the local gate — and every self-hosted deployment — without a
+drainer, while picking the pipeline job alone would ignore pgstac's own paved
+path in the environment that matters most. The mitigation is that the two must
+not both run: the pipeline job no-ops when a database-side drainer is
+configured, and the `query_queue` depth metric is the single check that either
+one is working, regardless of which is in play.
 
 **"Six findings, six slices, and no slice is a re-architecture. Isn't that
 suspiciously convenient?"** It is the finding, and it is worth stating plainly
