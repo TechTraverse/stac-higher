@@ -138,9 +138,20 @@ interface CollectionFormInnerProps {
   existingCollection?: StacCollection;
 }
 
+/**
+ * Copy noun. The built-in catalog holds PRODUCTS; an external catalog is a
+ * STAC browser, where "collection" is the right word (ADR 0017 §3).
+ */
+function catalogNoun(builtIn: boolean | undefined) {
+  return builtIn
+    ? { singular: "product", plural: "Products" }
+    : { singular: "collection", plural: "Collections" };
+}
+
 function CollectionFormInner({ existingCollection }: CollectionFormInnerProps) {
   const catalog = useStore($activeCatalog);
   const endpointUrl = catalog?.url ?? "";
+  const noun = catalogNoun(catalog?.builtIn);
   const isEdit = !!existingCollection;
 
   const createMutation = useCreateCollection(endpointUrl);
@@ -242,16 +253,16 @@ function CollectionFormInner({ existingCollection }: CollectionFormInnerProps) {
         <div className="flex items-center gap-2 mb-4 text-sm text-muted-foreground">
           <a href="/collections" className="hover:text-foreground transition-colors inline-flex items-center gap-1">
             <ArrowLeft className="h-3.5 w-3.5" />
-            Collections
+            {noun.plural}
           </a>
           <span>/</span>
           <span className="text-foreground">
-            {isEdit ? `Edit ${existingCollection.id}` : "New Collection"}
+            {isEdit ? `Edit ${existingCollection.id}` : `New ${noun.singular}`}
           </span>
         </div>
 
-        <h1 className="text-2xl font-bold mb-6">
-          {isEdit ? "Edit Collection" : "Create Collection"}
+        <h1 className="mb-6 text-2xl font-bold tracking-tight">
+          {isEdit ? `Edit ${noun.singular}` : `Create ${noun.singular}`}
         </h1>
 
         <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
@@ -604,7 +615,7 @@ function CollectionFormInner({ existingCollection }: CollectionFormInnerProps) {
                   ? "Saving..."
                   : isEdit
                     ? "Update Collection"
-                    : "Create Collection"}
+                    : `Create ${noun.singular}`}
               </Button>
               <a href="/collections">
                 <Button type="button" variant="outline">

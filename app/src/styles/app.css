@@ -1,0 +1,15 @@
+/* App Tailwind entry.
+ *
+ * `global.css` is byte-identical to packages/shared/src/styles/global.css
+ * (Storybook loads that copy), so anything APP-SPECIFIC has to live here
+ * instead of diverging the pair.
+ *
+ * The `@source` line is the reason this file exists. Tailwind v4 infers its
+ * scan roots from the CSS entry's own directory, which covers `app/` but not
+ * `packages/shared/`. Without this, a utility class used ONLY inside a shared
+ * component is never generated — the existing shared components only render
+ * correctly because their classes happen to appear in app code too (UI-7 hit
+ * this when the graph legend painted transparent).
+ */
+@import "./global.css";
+@source "../../../packages/shared/src";

@@ -51,17 +51,21 @@ test.describe("Pipeline graph", () => {
     await page.goto("/catalogs");
     await page.getByRole("link", { name: "Pipeline graph" }).click();
     await expect(
-      page.getByRole("heading", { name: "Pipeline", level: 1 }),
+      page.getByRole("heading", { name: "Pipeline graph", level: 1 }),
     ).toBeVisible();
   });
 
-  test("renders the three columns or the nothing-wired empty state", async ({
+  test("renders the pipeline columns or the nothing-wired empty state", async ({
     page,
   }) => {
     await page.goto("/graph");
+    // UI-7 renamed the columns to the five-stage pipeline; the empty state is
+    // still the other legal outcome on a bare database.
     await expect(
       page
-        .getByText(/Nothing wired yet|Connections|Collections|Processes/)
+        .getByText(
+          /Nothing wired yet|Source connections|Source products|Processes|Derived products|Destinations/,
+        )
         .first(),
     ).toBeVisible();
   });

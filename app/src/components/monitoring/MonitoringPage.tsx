@@ -19,14 +19,14 @@ function MonitoringInner() {
 
   return (
     <>
-      <main className="mx-auto w-full max-w-5xl flex-1 p-6">
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold">Monitoring</h1>
+      <main className="w-full flex-1 space-y-5 p-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Monitoring</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Alerts, per-flow telemetry, and the channels that get notified
           </p>
         </div>
-        <div className="grid gap-6">
+        <div className="grid gap-5">
           <AlertsCard canAct={canAct} />
           <FlowsCard />
           <ChannelsCard canAct={canAct} groups={identity?.groups ?? []} />

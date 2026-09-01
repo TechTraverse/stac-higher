@@ -40,7 +40,7 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
         message={
           associations.error instanceof Error
             ? associations.error.message
-            : "Failed to load associations"
+            : "Failed to load sources and destinations"
         }
         onRetry={() => associations.refetch()}
       />
@@ -49,7 +49,7 @@ export function DataFlowTab({ collectionId }: DataFlowTabProps) {
 
   return (
     <div className="space-y-8">
-      {/* Lineage first: "what is this collection wired to" before "how do I
+      {/* Lineage first: "what is this product wired to" before "how do I
           wire it", which is the question an operator arrives with. */}
       <LineagePanel collectionId={collectionId} />
 
