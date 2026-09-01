@@ -38,7 +38,7 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
 
 ## Queue
 
-- [ ] **UI-1 · NOAA theme tokens + light default + fonts.**
+- [x] **UI-1 · NOAA theme tokens + light default + fonts.**
       Rebuild the palette in `app/src/styles/global.css` (`@theme` block,
       Tailwind v4 CSS-first) around the brief's anchors: navy `#0D2A47`,
       federal blue `#005EA2` primary, `#F5F8FB` background / white cards /
@@ -160,3 +160,26 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
 ## Discovered follow-ups
 
 (append here during iterations)
+
+**From UI-1:**
+- The `tech` utility (`@utility tech` in both `global.css` copies) is defined
+  but applied nowhere yet — UI-3…UI-8 apply it to IDs, hrefs, crons and
+  counts as those pages are reworked.
+- `--color-navy`, `--color-sidebar-*` and the `warning` / `danger` /
+  `*-subtle` / `*-border` health tokens are defined but unconsumed until the
+  shell (UI-2) and the health chips (UI-3, UI-6) land. Don't "clean them up".
+- The old `Header` reads flat under the new palette (uniform navy nav, badge
+  variants used as health signals — e.g. the blue `OK` chip on
+  `/connections`). Superseded by UI-2's `AppShell` and UI-6's health chips;
+  deliberately not patched in UI-1.
+- IBM Plex Mono has no `@fontsource-variable` package — the static
+  `@fontsource/ibm-plex-mono` 400/500/600 faces are imported instead. If a
+  later slice needs another weight, add its `NNN.css` import to
+  `Layout.astro`.
+- Storybook loads `packages/shared/src/styles/global.css` but nothing imports
+  the `@fontsource` packages on that side, so stories render with the system
+  fallback stack. Worth a `.storybook/preview` font import in UI-8's polish
+  pass (fonts are an `app` dependency today).
+- The dev-server `optimizeDeps` fix carried in from the working tree
+  (c99346b) lists client island deps explicitly; **CodeMirror 6 must be added
+  to that list in UI-5**, or the editor island will 504 on first load.
