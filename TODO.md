@@ -162,8 +162,8 @@ resolves it per AGENTS.md; neither queue waits for the other.
 
 Slices G-1, G-2 and G-4 are independent and may run concurrently in separate
 worktrees. Detailed task plans exist for those three
-(`docs/superpowers/plans/2026-09-01-goes-g{1,2,4}-*.md`); G-3, G-5, G-6 and
-G-7 get their plans when their dependencies have merged.
+(`docs/superpowers/plans/2026-09-01-goes-g{1,2,4}-*.md`), and for G-3 and G-5
+(`2026-09-02-goes-g{3,5}-*.md`); G-6 and G-7 get theirs when G-3 has merged.
 
 - [x] **G-1 · Anonymous S3 connections.** Spec §8. `anonymous` flag on the s3
       config; credentials optional when set (UI hides the key fields); the
@@ -179,12 +179,13 @@ G-7 get their plans when their dependencies have merged.
       `PROCESS_NETWORK_MAX` cap (`isolated` only at the write gate); new fixture
       `process-input-manifest.json`; ADR 0018; `docs/processes.md`. Plan:
       `2026-09-01-goes-g2-process-inputs.md`.
-- [ ] **G-3 · Latency posture.** Spec §5. Immediate enqueue at the three hops
-      (ITEMIZE/finalize → `dispatch_poll`; `trigger_run` → `process_run_now`);
+- [ ] **G-3 · Latency posture.** Spec §5. The item-write → dispatcher hop is
+      ALREADY NOTIFY-driven (2026-09-02 finding); remaining: `trigger_run` →
+      immediate `process_run_now` (claim by id);
       queued-run coalescing (widen the partial unique index to all queued runs
       per `(process_id, source_id)`); `settle: "immediate"` for s3 ingest
-      sources. Depends on G-2 (shares `enqueue_run`). Exercise with the loadgen
-      at M3-D's concurrency.
+      sources (migration 025 merges duplicates first). Plan:
+      `2026-09-02-goes-g3-latency.md`. Lead runs the loadgen check (plan Task 6).
 - [x] **G-4 · Tile server href mapping.** Spec §7.1. Derived image
       `infra/titiler/` wrapping both readers' `_get_asset_info` to map
       `/api/assets/{c}/{i}/{f}` → `s3://{PLATFORM_ASSET_BUCKET}/assets/{c}/{i}/{f}`;
@@ -193,7 +194,8 @@ G-7 get their plans when their dependencies have merged.
 - [ ] **G-5 · Raster preview layer on the item page.** Spec §7.2. Shared
       `RasterTileLayer` over the tile server's item TileJSON (`assets=visual`
       when present), shown when `serving_enabled` and the item `info` call
-      succeeds; silent otherwise. Depends on G-4.
+      succeeds; silent otherwise. Depends on G-4. Plan:
+      `2026-09-02-goes-g5-raster-preview.md`.
 - [ ] **G-6 · Extractors.** Spec §6. `processes.kind` (`transform` |
       `extractor`, immutable); `metadata.strategy: "extractor"` +
       `metadata.extractor.process_id` on ingest associations (group-owned,

@@ -404,6 +404,12 @@ when changing shared components.
   form resolvers — this is a known pattern, not a bug to fix.
 - `extensions.spec.ts` and `proxy.spec.ts` (e2e) require the Docker backend on
   :8082. Full e2e preconditions and selector gotchas: `run-e2e` skill.
+- The repo-root `.dockerignore` excludes `infra/`, `services/`, `docs/` and
+  `tests/` to keep the app image's context small. A new repo-root-context
+  derived image (the pattern of `infra/proxy-policy`, `infra/titiler`) must
+  re-include exactly the path it `COPY`s (`!services/proxy-policy`,
+  `!infra/titiler/stac_higher_titiler`) or its build fails with
+  `"/<path>": not found` on an almost-empty context.
 - Theme is **light** by default (ADR 0017); `Layout.astro` applies the theme
   class pre-hydration in `<head>` to prevent flash. That inline script and the
   `$theme` persistentAtom default in `packages/shared/src/stores/uiStore.ts`
