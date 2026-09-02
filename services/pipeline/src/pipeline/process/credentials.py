@@ -2,8 +2,10 @@
 
 The settled mechanic: mint **STS session credentials with an inline session
 policy** that restricts S3 to the run's own staging prefix
-(``staging/runs/{run_id}/``) and nothing else. The run can write its outputs
-and read them back; it cannot see another run's bytes, the canonical
+(``staging/runs/{run_id}/``) plus read-only access to the canonical prefixes
+of its SOURCE collections (GOES spec §3.2) and nothing else. The run can
+write its outputs and read them back, read the platform-held inputs it was
+triggered by, and cannot see another run's bytes, the rest of the canonical
 ``assets/`` tree, or any other bucket.
 
 Two properties are load-bearing and worth stating plainly:
@@ -24,6 +26,7 @@ credential ages out on its own.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import boto3
@@ -35,6 +38,11 @@ from pipeline.storage.platform import pinned_endpoint_url
 
 #: STS minimum is 900s; a shorter ask is rejected by AWS outright.
 MIN_DURATION_SECONDS = 900
+
+#: Real STS caps an inline session policy at 2048 characters; each read
+#: prefix costs two ARN-ish strings. Eight keeps a worst-case policy under the
+#: cap with room for long collection ids (GOES spec §14, ISSUES I-90).
+MAX_READ_PREFIXES = 8
 
 
 class RunCredentialsError(Exception):
@@ -75,32 +83,42 @@ class RunCredentials:
         return env
 
 
-def session_policy(bucket: str, prefix: str) -> dict:
+def session_policy(bucket: str, prefix: str, read_prefixes: Sequence[str] = ()) -> dict:
     """The inline policy bounding one run.
 
-    Object actions are scoped to the run's prefix. ListBucket is granted on
-    the BUCKET resource — that is where S3 evaluates it — but conditioned on
-    the same prefix, so a run can enumerate its own outputs without
-    discovering that anything else exists.
+    Object actions are scoped to the run's prefix. ``read_prefixes`` — the
+    canonical ``assets/{collection}/`` prefixes of the run's SOURCE collections
+    (GOES spec §3.2) — get ``s3:GetObject`` only. ListBucket is granted on the
+    BUCKET resource — that is where S3 evaluates it — conditioned on the run
+    prefix plus the read prefixes, so a run can enumerate its own outputs and
+    its inputs without discovering that anything else exists.
     """
-    return {
-        "Version": "2012-10-17",
-        "Statement": [
+    list_prefixes = [f"{prefix}*", *(f"{p}*" for p in read_prefixes)]
+    statements = [
+        {
+            "Sid": "RunPrefixObjects",
+            "Effect": "Allow",
+            "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+            "Resource": [f"arn:aws:s3:::{bucket}/{prefix}*"],
+        },
+        {
+            "Sid": "RunPrefixList",
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket"],
+            "Resource": [f"arn:aws:s3:::{bucket}"],
+            "Condition": {"StringLike": {"s3:prefix": list_prefixes}},
+        },
+    ]
+    if read_prefixes:
+        statements.append(
             {
-                "Sid": "RunPrefixObjects",
+                "Sid": "SourceCollectionsRead",
                 "Effect": "Allow",
-                "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
-                "Resource": [f"arn:aws:s3:::{bucket}/{prefix}*"],
-            },
-            {
-                "Sid": "RunPrefixList",
-                "Effect": "Allow",
-                "Action": ["s3:ListBucket"],
-                "Resource": [f"arn:aws:s3:::{bucket}"],
-                "Condition": {"StringLike": {"s3:prefix": [f"{prefix}*"]}},
-            },
-        ],
-    }
+                "Action": ["s3:GetObject"],
+                "Resource": [f"arn:aws:s3:::{bucket}/{p}*" for p in read_prefixes],
+            }
+        )
+    return {"Version": "2012-10-17", "Statement": statements}
 
 
 def build_sts_client(settings: Settings):  # pragma: no cover - thin boto3 wrapper
@@ -125,12 +143,19 @@ def mint_run_credentials(
     timeout_seconds: int,
     *,
     sts_client=None,
+    read_prefixes: Sequence[str] = (),
 ) -> RunCredentials:
-    """Mint credentials good only for ``staging/runs/{run_id}/``.
+    """Mint credentials good only for ``staging/runs/{run_id}/`` plus read
+    access to ``read_prefixes`` (the source collections' canonical prefixes).
 
     Raises :class:`RunCredentialsError` on any STS failure — the caller must
     fail the run rather than start it with wider access.
     """
+    if len(read_prefixes) > MAX_READ_PREFIXES:
+        raise RunCredentialsError(
+            f"run would need {len(read_prefixes)} read prefixes; the inline session "
+            f"policy supports at most {MAX_READ_PREFIXES} source collections"
+        )
     prefix = run_staging_prefix(run_id)
     bucket = settings.staging_bucket
     duration = max(
@@ -144,7 +169,7 @@ def mint_run_credentials(
             # Session names are surfaced in access logs; the run id makes an
             # S3 audit trail directly attributable to a run row.
             RoleSessionName=f"stac-run-{run_id}"[:64],
-            Policy=json.dumps(session_policy(bucket, prefix)),
+            Policy=json.dumps(session_policy(bucket, prefix, read_prefixes)),
             DurationSeconds=duration,
         )
     # Deliberately broad: the contract here is "any STS failure means the run

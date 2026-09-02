@@ -328,6 +328,64 @@ def test_session_policy_is_bounded_to_the_run_prefix():
     )
 
 
+def test_session_policy_grants_read_only_on_source_collection_prefixes():
+    """GOES spec §3.2: platform-held inputs are not copied — the run reads
+    them in place, so the policy grants GetObject on each SOURCE collection's
+    canonical prefix and nothing wider."""
+    policy = session_policy(
+        "stac-higher", f"staging/runs/{RUN}/", ["assets/goes/", "assets/other/"]
+    )
+    sids = {s["Sid"]: s for s in policy["Statement"]}
+    read = sids["SourceCollectionsRead"]
+    assert read["Action"] == ["s3:GetObject"]
+    assert read["Resource"] == [
+        "arn:aws:s3:::stac-higher/assets/goes/*",
+        "arn:aws:s3:::stac-higher/assets/other/*",
+    ]
+    # The bucket-level ListBucket condition now names the read prefixes too.
+    prefixes = sids["RunPrefixList"]["Condition"]["StringLike"]["s3:prefix"]
+    assert f"staging/runs/{RUN}/*" in prefixes
+    assert "assets/goes/*" in prefixes and "assets/other/*" in prefixes
+    # Nothing grants Put/Delete outside the run prefix.
+    for st in policy["Statement"]:
+        if st["Sid"] != "RunPrefixObjects":
+            assert "s3:PutObject" not in st["Action"] and "s3:DeleteObject" not in st["Action"]
+
+
+def test_session_policy_without_read_prefixes_is_unchanged():
+    policy = session_policy("b", "staging/runs/x/")
+    assert [s["Sid"] for s in policy["Statement"]] == ["RunPrefixObjects", "RunPrefixList"]
+
+
+def test_too_many_read_prefixes_refuses_to_mint():
+    class Sts:
+        def assume_role(self, **kw):  # pragma: no cover - never reached
+            raise AssertionError("must not be called")
+
+    with pytest.raises(RunCredentialsError, match="read prefixes"):
+        mint_run_credentials(
+            settings(),
+            RUN,
+            60,
+            sts_client=Sts(),
+            read_prefixes=[f"assets/c{i}/" for i in range(9)],
+        )
+
+
+def test_mint_passes_read_prefixes_into_the_policy():
+    seen = {}
+
+    class Sts:
+        def assume_role(self, **kw):
+            seen.update(kw)
+            return {
+                "Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}
+            }
+
+    mint_run_credentials(settings(), RUN, 60, sts_client=Sts(), read_prefixes=["assets/goes/"])
+    assert "assets/goes/*" in seen["Policy"]
+
+
 class FakeSts:
     def __init__(self, response=None, error=None):
         self.response = response
