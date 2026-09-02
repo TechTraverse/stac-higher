@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from pipeline.config import Settings
 from pipeline.metrics import PROCESS_RUN_SECONDS
-from pipeline.process.config import EnvEntry, ProcessRuntime
+from pipeline.process.config import NETWORK_LEVELS, EnvEntry, ProcessRuntime
 from pipeline.process.credentials import RunCredentials, mint_run_credentials
 from pipeline.process.docker_executor import CODE_ENV_VAR, encode_code
 from pipeline.process.executor import Executor, ExitStatus, RunSpec
@@ -37,6 +37,24 @@ class SecretResolutionError(Exception):
     """A ``secret_ref`` env entry could not be resolved — the run must not
     start, because user code would otherwise silently see an unset variable
     where a credential was intended."""
+
+
+class NetworkCapExceeded(Exception):
+    """The revision asks for more network than this deployment permits —
+    configuration, so the run dies rather than retries."""
+
+
+def check_network_cap(runtime: ProcessRuntime, settings: Settings) -> None:
+    """GOES spec §4: a revision above ``PROCESS_NETWORK_MAX`` never launches
+    at a lower level silently — it fails, naming the level and the cap. The
+    pipeline enforces this independently of the app's write gate."""
+    if NETWORK_LEVELS.index(runtime.network_level) > NETWORK_LEVELS.index(
+        settings.process_network_max
+    ):
+        raise NetworkCapExceeded(
+            f"revision requests network level {runtime.network_level!r} but this "
+            f"deployment allows at most {settings.process_network_max!r} (PROCESS_NETWORK_MAX)"
+        )
 
 
 @dataclass(frozen=True)
@@ -108,6 +126,9 @@ def build_run_spec(
         env=run_env,
         memory_mb=runtime.memory_mb,
         timeout_seconds=runtime.timeout_seconds,
+        # Every accepted network profile level is realised as the deployment's
+        # process network today: levels above `isolated` are refused by
+        # `check_network_cap` until the egress proxy (GOES spec §11) exists.
         network=settings.process_network,
     )
 

@@ -13,7 +13,14 @@ import json
 import pytest
 
 from pipeline.config import Settings
-from pipeline.process.config import EnvEntry, ProcessRuntime, SecretRef
+from pipeline.process.config import (
+    NETWORK_LEVELS,
+    EnvEntry,
+    ProcessConfigError,
+    ProcessRuntime,
+    SecretRef,
+    parse_process_runtime,
+)
 from pipeline.process.credentials import (
     RunCredentials,
     RunCredentialsError,
@@ -31,8 +38,10 @@ from pipeline.process.docker_executor import (
 )
 from pipeline.process.executor import ExecutorUnavailable, ExitStatus, RunHandle
 from pipeline.process.launch import (
+    NetworkCapExceeded,
     SecretResolutionError,
     build_run_spec,
+    check_network_cap,
     execute_run,
     resolve_env,
 )
@@ -543,3 +552,49 @@ def test_input_asset_key_sanitizes_the_filename_and_refuses_bad_ids():
         run_input_asset_key(RUN, "b1", "a/b", "f.nc")
     with pytest.raises(InvalidKeySegment):
         run_input_manifest_key(RUN, "b 1")
+
+
+# ---------------------------------------------------------------------------
+# network profile (GOES spec §4)
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_network_defaults_to_isolated():
+    rt = parse_process_runtime({"kind": "inline_python"})
+    assert rt.network_level == "isolated" and rt.network_hosts == ()
+
+
+def test_runtime_network_hosts_level_requires_hosts_and_vice_versa():
+    rt = parse_process_runtime(
+        {"kind": "inline_python", "network": {"level": "hosts", "hosts": ["api.example.com"]}}
+    )
+    assert rt.network_hosts == ("api.example.com",)
+    with pytest.raises(ProcessConfigError):
+        parse_process_runtime({"kind": "inline_python", "network": {"level": "hosts", "hosts": []}})
+    with pytest.raises(ProcessConfigError):
+        parse_process_runtime(
+            {"kind": "inline_python", "network": {"level": "open", "hosts": ["x.y"]}}
+        )
+    with pytest.raises(ProcessConfigError):
+        parse_process_runtime({"kind": "inline_python", "network": {"level": "lan"}})
+    with pytest.raises(ProcessConfigError):
+        parse_process_runtime(
+            {"kind": "inline_python", "network": {"level": "hosts", "hosts": ["https://x.y"]}}
+        )
+
+
+def test_network_levels_are_ordered_lowest_first():
+    assert NETWORK_LEVELS == ("isolated", "inputs", "hosts", "open")
+
+
+def test_network_cap_refuses_a_level_above_the_deployment_maximum():
+    rt = parse_process_runtime({"kind": "inline_python", "network": {"level": "open"}})
+    with pytest.raises(NetworkCapExceeded, match="PROCESS_NETWORK_MAX"):
+        check_network_cap(rt, settings())  # default cap: isolated
+    check_network_cap(rt, settings(PROCESS_NETWORK_MAX="open"))
+    check_network_cap(parse_process_runtime({"kind": "inline_python"}), settings())
+
+
+def test_invalid_network_max_env_is_rejected_at_startup():
+    with pytest.raises(ValueError, match="PROCESS_NETWORK_MAX"):
+        settings(PROCESS_NETWORK_MAX="everything")
