@@ -179,7 +179,7 @@ worktrees. Detailed task plans exist for those three
       `PROCESS_NETWORK_MAX` cap (`isolated` only at the write gate); new fixture
       `process-input-manifest.json`; ADR 0018; `docs/processes.md`. Plan:
       `2026-09-01-goes-g2-process-inputs.md`.
-- [ ] **G-3 · Latency posture.** Spec §5. The item-write → dispatcher hop is
+- [x] **G-3 · Latency posture.** Spec §5. The item-write → dispatcher hop is
       ALREADY NOTIFY-driven (2026-09-02 finding); remaining: `trigger_run` →
       immediate `process_run_now` (claim by id);
       queued-run coalescing (widen the partial unique index to all queued runs
@@ -191,7 +191,7 @@ worktrees. Detailed task plans exist for those three
       `/api/assets/{c}/{i}/{f}` → `s3://{PLATFORM_ASSET_BUCKET}/assets/{c}/{i}/{f}`;
       compose switches to it; `containers.yml` builds it; `docs/serving.md` +
       I-68 (local half closed). Plan: `2026-09-01-goes-g4-titiler-hrefmap.md`.
-- [ ] **G-5 · Raster preview layer on the item page.** Spec §7.2. Shared
+- [x] **G-5 · Raster preview layer on the item page.** Spec §7.2. Shared
       `RasterTileLayer` over the tile server's item TileJSON (`assets=visual`
       when present), shown when `serving_enabled` and the item `info` call
       succeeds; silent otherwise. Depends on G-4. Plan:
@@ -248,5 +248,22 @@ object stores only).
   writes to them. If that matters for the UI or for clients filtering by
   collection bbox, a one-off backfill (`SELECT collection_extent(id, TRUE)`
   per collection) is the fix, and it is not in any slice above.
+
+- **Live-check findings, 2026-09-02 (lead, Docker).** Three defects the unit
+  suites could not see, all fixed and pinned:
+  1. The repo-root `.dockerignore` excluded `infra/`, so the derived titiler
+     image built from an almost-empty context and its `COPY` failed. Now a
+     documented gotcha in `AGENTS.md`.
+  2. The item preview's overlay named `beforeId: item-geometry-fill` while
+     rendering BEFORE that layer existed; maplibre refuses that outright, so
+     the layer was never added. Mocked map primitives accept any order —
+     the regression test now pins it and was confirmed to fail on the old code.
+  3. (Measured, not a defect.) After G-3 a triggered run is claimed **3–16 ms**
+     after its row is created, against up to 60 s before, and an 8-item burst
+     produced 2 runs — one immediate, one coalescing the other 7.
+- **G-3's loadgen concurrency check is still owed** (plan Task 6): confirm no
+  duplicate `process_run_now` executions at M3-D's worker concurrency, and
+  watch `procrastinate_jobs` for churn from the extra per-item enqueues. The
+  functional behaviour is verified; the throughput behaviour is not.
 
 (append here during iterations)
