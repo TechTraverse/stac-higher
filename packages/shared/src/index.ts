@@ -28,6 +28,8 @@ export {
   extentLineLayer,
   selectedFillLayer,
   selectedLineLayer,
+  RASTER_PREVIEW_SOURCE,
+  RASTER_PREVIEW_LAYER,
 } from "@shared/lib/map/styles";
 
 // Stores
@@ -60,6 +62,8 @@ export { LoadingState } from "@shared/components/shared/LoadingState";
 export { StacMap } from "@shared/components/map/StacMap";
 export { DrawingToolbar } from "@shared/components/map/DrawingToolbar";
 export { FootprintLayer } from "@shared/components/map/FootprintLayer";
+export { RasterTileLayer } from "@shared/components/map/RasterTileLayer";
+export type { RasterTileLayerProps } from "@shared/components/map/RasterTileLayer";
 export { ExtentLayer } from "@shared/components/map/ExtentLayer";
 
 // Layout components
