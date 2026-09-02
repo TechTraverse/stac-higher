@@ -35,7 +35,7 @@ from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
 from pipeline.process.docker_executor import DockerExecutor
 from pipeline.process.reaper import process_reap_tick
-from pipeline.process.repo import PgProcessRepo
+from pipeline.process.repo import PgProcessRepo, QueuedRun
 from pipeline.process.runner import run_one
 from pipeline.process.staging import build_remote_fetcher
 from pipeline.process.sweep import process_sweep_tick
@@ -48,14 +48,17 @@ logger = logging.getLogger(__name__)
 
 JOB_TRIGGER = "pipeline.process_trigger"
 JOB_RUN_TICK = "pipeline.process_run_tick"
+JOB_RUN_NOW = "pipeline.process_run_now"
 JOB_FINALIZE = "pipeline.process_finalize"
 JOB_CRON = "pipeline.process_cron"
 JOB_SWEEP = "pipeline.process_sweep"
 JOB_REAP = "pipeline.process_reap"
 
-#: The run tick and the cron tick are both minute-granular: cron schedules are
-#: minute-resolution, and a queued run should not wait longer than that to
-#: start.
+#: Since G-3 the run tick is the RECOVERY sweep, not the normal path: an
+#: undeferred trigger enqueues `process_run_now` for its own row, so a run
+#: starts in seconds. The tick still runs every minute to pick up deferred
+#: runs whose window elapsed, `failed` rows due for retry, and anything whose
+#: immediate job was lost.
 RUN_TICK_CRON = "* * * * *"
 CRON_TICK_CRON = "* * * * *"
 SWEEP_CRON = "*/5 * * * *"
@@ -73,6 +76,10 @@ SWEEP_BATCH = 200
 #: outbox event is already drained. The run tick needs none: its work is
 #: already durable in the ledger and the next tick picks it up.
 TRIGGER_RETRY = RetrySpec(max_attempts=4, wait_seconds=30)
+#: The immediate-run job (G-3). Short and few: the periodic tick is already the
+#: backstop, so a job that keeps failing to claim should give up quietly rather
+#: than pile up behind a tick that will pick the row up anyway.
+RUN_NOW_RETRY = RetrySpec(max_attempts=3, wait_seconds=15)
 
 
 def build_secret_resolver(settings: Settings):
@@ -150,6 +157,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             input_items=items or [],
             now=now,
             is_test=is_test,
+            enqueue_now=_enqueue_now,
         )
         logger.info(
             "process run queued",
@@ -162,18 +170,18 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             },
         )
 
-    async def process_run_tick(timestamp: int) -> None:
-        repo = _repo()
-        now = dt.datetime.now(dt.UTC)
-        runs = await repo.claim_due_runs(now, RUN_BATCH)
-        if not runs:
-            return
+    async def _execute_claimed(
+        runs: list[QueuedRun], repo: PgProcessRepo, now: dt.datetime
+    ) -> None:
+        """Run an already-claimed batch and enqueue publishing for the ones
+        that succeeded. Shared by the periodic tick and the immediate job so
+        the two cannot drift in what executing a run means."""
         executor = DockerExecutor(docker_host=settings.docker_host)
         storage_client = build_platform_client(settings)
         resolver = build_secret_resolver(settings)
         # GOES spec §3.2: remote inputs are staged through a matching
         # reference-mode association's adapter, else a public GET. A missing
-        # master key must NOT skip the tick — only private reference sources
+        # master key must NOT skip the work — only private reference sources
         # lose their adapter path (the fetcher falls back to public-only).
         master_key = load_key_or_skip(settings, JOB_RUN_TICK)
         fetch_remote = build_remote_fetcher(settings, master_key)
@@ -210,6 +218,36 @@ def register(queue: QueueBackend, settings: Settings) -> None:
 
         if finalize_payloads:
             await queue.enqueue_batch(JOB_FINALIZE, finalize_payloads)
+
+    async def process_run_tick(timestamp: int) -> None:
+        repo = _repo()
+        now = dt.datetime.now(dt.UTC)
+        runs = await repo.claim_due_runs(now, RUN_BATCH)
+        if not runs:
+            return
+        await _execute_claimed(runs, repo, now)
+
+    async def process_run_now(run_id: str) -> None:
+        """Execute one just-queued run without waiting for the tick (G-3).
+
+        Claiming by id is the same atomic UPDATE the tick uses, so whichever
+        path claims first wins and the other finds nothing — never a double
+        execution. Nothing to claim is the normal outcome of a race, not an
+        error.
+        """
+        repo = _repo()
+        now = dt.datetime.now(dt.UTC)
+        run = await repo.claim_run(run_id, now)
+        if run is None:
+            logger.debug(
+                "process_run_now: run was not claimable",
+                extra={"run_id": run_id},
+            )
+            return
+        await _execute_claimed([run], repo, now)
+
+    async def _enqueue_now(run_id: str) -> None:
+        await queue.enqueue(JOB_RUN_NOW, {"run_id": run_id})
 
     async def process_finalize(run_id: str, process_id: str) -> None:
         """Publish one successful run's outputs through the ADR 0014 seam."""
@@ -252,6 +290,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 # A cron run has no trigger items by definition (§6).
                 input_items=[],
                 now=now,
+                enqueue_now=_enqueue_now,
             )
 
     async def process_sweep(timestamp: int) -> None:
@@ -269,6 +308,10 @@ def register(queue: QueueBackend, settings: Settings) -> None:
 
     queue.register_task(process_trigger, name=JOB_TRIGGER, retry=TRIGGER_RETRY)
     queue.register_task(process_finalize, name=JOB_FINALIZE, retry=TRIGGER_RETRY)
+    # Infrastructure faults (executor down) come back as ExecutorUnavailable
+    # inside run_one, which requeues the ROW without spending an attempt; the
+    # job-level retry here covers the narrower window before the claim.
+    queue.register_task(process_run_now, name=JOB_RUN_NOW, retry=RUN_NOW_RETRY)
     queue.register_periodic(process_run_tick, name=JOB_RUN_TICK, cron=RUN_TICK_CRON)
     queue.register_periodic(process_cron, name=JOB_CRON, cron=CRON_TICK_CRON)
     queue.register_periodic(process_sweep, name=JOB_SWEEP, cron=SWEEP_CRON)

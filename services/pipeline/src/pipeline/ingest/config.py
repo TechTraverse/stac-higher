@@ -38,12 +38,19 @@ class Grouping:
     on_timeout: str = "ingest_partial"
 
 
+SETTLE_MODES = ("auto", "two_polls", "immediate")
+
+
 @dataclass(frozen=True)
 class IngestConfig:
     source_path: str
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
     poll_frequency_seconds: int = DEFAULT_POLL_FREQUENCY_SECONDS
+    #: When a discovered file becomes eligible for FETCH (G-3):
+    #: ``two_polls`` waits for an unchanged second poll, ``immediate`` takes it
+    #: on first sight, ``auto`` decides from the connection's protocol.
+    settle: str = "auto"
     storage_mode: str = "copy"
     grouping: Grouping = field(default_factory=Grouping)
     #: post-FETCH source action (leave|delete|move:<path>) — applied by the
@@ -98,6 +105,7 @@ def parse_ingest_config(raw: dict[str, Any]) -> IngestConfig:
         include=_str_list(raw.get("include")),
         exclude=_str_list(raw.get("exclude")),
         poll_frequency_seconds=poll,
+        settle=_enum(raw.get("settle"), SETTLE_MODES, "auto", "settle"),
         storage_mode=_enum(raw.get("storage_mode"), STORAGE_MODES, "copy", "storage_mode"),
         grouping=grouping,
         post_ingest=str(raw.get("post_ingest", "leave")),
@@ -153,3 +161,16 @@ def path_matches(relpath: str, include: Iterable[str], exclude: Iterable[str]) -
     if include and not any(_glob_to_regex(p).match(relpath) for p in include):
         return False
     return not any(_glob_to_regex(p).match(relpath) for p in exclude)
+
+
+def effective_settle(config: IngestConfig, protocol: str) -> str:
+    """Resolve ``auto`` against the source protocol (G-3).
+
+    An S3 key exists only once its PUT completed, so a partially written object
+    is never listed and the second poll buys nothing but a poll interval of
+    latency. FTP and SFTP uploads ARE visible while still being written, which
+    is what the settled window was built for — so they keep it.
+    """
+    if config.settle != "auto":
+        return config.settle
+    return "immediate" if protocol == "s3" else "two_polls"

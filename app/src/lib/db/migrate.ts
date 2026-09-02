@@ -1329,6 +1329,59 @@ const MIGRATIONS = [
         ON stac_higher.alerts (source_id);
     `,
   },
+  {
+    // G-3 (GOES spec §5): coalescing used to cover only RATE-DEFERRED queued
+    // runs (024's partial index on source_id). Once `trigger_run` dispatches
+    // immediately, two arrivals milliseconds apart become two runs — the
+    // 2026-09-02 live check saw exactly that — so the key widens to EVERY
+    // queued run per (process, source). A claim moves the row to `running`,
+    // which drops it out of this partial index, so a late arrival correctly
+    // starts a NEW run rather than joining one already executing.
+    //
+    // Pre-existing duplicates are merged first (the earliest row absorbs the
+    // others' input_items, the rest are deleted) — otherwise CREATE UNIQUE
+    // INDEX would fail on any database that has them.
+    name: "025_process_runs_queued_source_idx",
+    sql: `
+      WITH ranked AS (
+        SELECT id, process_id, source_id, input_items,
+               row_number() OVER (
+                 PARTITION BY process_id, source_id ORDER BY created_at, id
+               ) AS rn,
+               first_value(id) OVER (
+                 PARTITION BY process_id, source_id ORDER BY created_at, id
+               ) AS keep_id
+          FROM stac_higher.process_runs
+         WHERE status = 'queued' AND source_id IS NOT NULL
+      ),
+      merged AS (
+        SELECT keep_id, jsonb_agg(elem ORDER BY rn) AS items
+          FROM ranked, jsonb_array_elements(ranked.input_items) AS elem
+         WHERE rn > 1
+         GROUP BY keep_id
+      )
+      UPDATE stac_higher.process_runs r
+         SET input_items = r.input_items || m.items
+        FROM merged m
+       WHERE r.id = m.keep_id;
+
+      DELETE FROM stac_higher.process_runs
+       WHERE id IN (
+         SELECT id FROM (
+           SELECT id, row_number() OVER (
+                    PARTITION BY process_id, source_id ORDER BY created_at, id
+                  ) AS rn
+             FROM stac_higher.process_runs
+            WHERE status = 'queued' AND source_id IS NOT NULL
+         ) d WHERE d.rn > 1
+       );
+
+      DROP INDEX IF EXISTS stac_higher.process_runs_deferred_source_idx;
+      CREATE UNIQUE INDEX IF NOT EXISTS process_runs_queued_source_idx
+        ON stac_higher.process_runs (process_id, source_id)
+        WHERE status = 'queued' AND source_id IS NOT NULL;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

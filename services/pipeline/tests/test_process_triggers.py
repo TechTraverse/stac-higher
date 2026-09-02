@@ -596,3 +596,157 @@ async def test_an_item_event_trigger_resolves_the_deployed_revision():
 async def test_a_process_with_nothing_deployed_still_resolves_to_None():
     repo = FakeProcessRepo(deployed_revision=None)
     assert await repo.current_revision(PROC) is None
+
+
+# --------------------------------------------------------------------------- #
+# G-3: coalescing covers every QUEUED run for a source, not just deferred ones,
+# and an undeferred trigger asks for immediate execution.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_undeferred_queued_run_absorbs_a_second_trigger_for_the_same_source():
+    """The reason G-3 widened the index: with immediate dispatch, two arrivals
+    milliseconds apart used to become two runs (observed live 2026-09-02)."""
+    repo = FakeProcessRepo()
+    first = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[{"item_id": "a", "collection_id": "c", "op": "insert"}],
+        now=NOW,
+    )
+    second = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[{"item_id": "b", "collection_id": "c", "op": "insert"}],
+        now=NOW,
+    )
+
+    assert first.run_id == second.run_id
+    assert first.merged is False and second.merged is True
+    assert repo.enqueued[0]["input_items"] == [
+        {"item_id": "a", "collection_id": "c", "op": "insert"},
+        {"item_id": "b", "collection_id": "c", "op": "insert"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_claimed_run_is_not_a_coalescing_target():
+    """Claiming moves the row to `running`, out of the partial index — so a
+    later arrival starts a NEW run instead of joining one already executing."""
+    repo = FakeProcessRepo()
+    first = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[{"item_id": "a"}],
+        now=NOW,
+    )
+    assert await repo.claim_run(first.run_id, NOW) is not None
+
+    second = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[{"item_id": "b"}],
+        now=NOW,
+    )
+    assert second.run_id != first.run_id and second.merged is False
+
+
+@pytest.mark.asyncio
+async def test_claim_by_id_is_atomic_against_a_second_claimer():
+    repo = FakeProcessRepo()
+    result = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[{"item_id": "a"}],
+        now=NOW,
+    )
+    first = await repo.claim_run(result.run_id, NOW)
+    second = await repo.claim_run(result.run_id, NOW)
+
+    assert first is not None and first.id == result.run_id
+    assert second is None
+
+
+@pytest.mark.asyncio
+async def test_test_runs_never_coalesce():
+    """A test run is its own event: folding it into a pending batch would make
+    'run this now' silently mean 'maybe later, with other people's items'."""
+    repo = FakeProcessRepo()
+    a = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[],
+        now=NOW,
+        is_test=True,
+    )
+    b = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[],
+        now=NOW,
+        is_test=True,
+    )
+    assert a.run_id != b.run_id
+
+
+@pytest.mark.asyncio
+async def test_trigger_asks_for_immediate_execution_when_not_deferred():
+    repo = FakeProcessRepo()
+    asked: list[str] = []
+
+    async def enqueue_now(run_id: str) -> None:
+        asked.append(run_id)
+
+    result = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[{"item_id": "a"}],
+        now=NOW,
+        enqueue_now=enqueue_now,
+    )
+
+    assert result.enqueued_now is True
+    assert asked == [result.run_id]
+
+
+@pytest.mark.asyncio
+async def test_a_rate_deferred_trigger_is_not_dispatched_now():
+    """Immediate dispatch must not defeat the ceiling: a deferred run waits for
+    the tick that finds its deferral elapsed."""
+    repo = FakeProcessRepo(
+        windows={PROC: RateWindow(recent_runs=60, oldest_in_window=NOW, max_runs_per_hour=60)}
+    )
+    asked: list[str] = []
+
+    async def enqueue_now(run_id: str) -> None:
+        asked.append(run_id)
+
+    result = await trigger_run(
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=SRC,
+        input_items=[{"item_id": "a"}],
+        now=NOW,
+        enqueue_now=enqueue_now,
+    )
+
+    assert result.deferred is True
+    assert result.enqueued_now is False and asked == []

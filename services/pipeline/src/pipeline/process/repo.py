@@ -119,14 +119,53 @@ class ProcessRepo(abc.ABC):
         deferred_until: dt.datetime | None,
         is_test: bool = False,
     ) -> str | None:
-        """Queue a run, or FOLD the items into this source's already-deferred
-        run (§7 coalescing). Returns the run id, or None when the caller had
+        """Queue a run, or FOLD the items into this source's pending run
+        (§7 coalescing, widened by G-3 to every QUEUED run rather than only
+        rate-deferred ones). Returns the run id, or None when the caller had
         nothing to add.
 
         Coalescing is why this is one statement and not a read-then-write: two
-        dispatch ticks racing on the same source must not both see "no
-        deferred run" and create one each. The partial unique index is the
-        arbiter, and the ON CONFLICT path appends instead of failing.
+        dispatch wakes racing on the same source must not both see "no pending
+        run" and create one each. The partial unique index is the arbiter, and
+        the ON CONFLICT path appends instead of failing.
+        """
+
+    async def enqueue_run_detailed(
+        self,
+        *,
+        process_id: str,
+        revision_id: str,
+        source_id: str | None,
+        input_items: Sequence[dict[str, Any]],
+        deferred_until: dt.datetime | None,
+        is_test: bool = False,
+    ) -> tuple[str | None, bool]:
+        """:meth:`enqueue_run` plus whether the items were MERGED into a run
+        that already existed. The caller needs that to decide whether to ask
+        for immediate execution twice for the same row (harmless, but noisy).
+
+        Defaults to "inserted" over :meth:`enqueue_run` so an implementation
+        that has no notion of merging keeps working.
+        """
+        run_id = await self.enqueue_run(
+            process_id=process_id,
+            revision_id=revision_id,
+            source_id=source_id,
+            input_items=input_items,
+            deferred_until=deferred_until,
+            is_test=is_test,
+        )
+        return run_id, False
+
+    @abc.abstractmethod
+    async def claim_run(self, run_id: str, now: dt.datetime) -> QueuedRun | None:
+        """Claim ONE run by id, or None when it is not claimable (already
+        running, still deferred, or gone).
+
+        The same atomic UPDATE as :meth:`claim_due_runs` with a different
+        predicate, deliberately: the immediate-dispatch job (G-3) and the
+        periodic tick race by design, and whichever claims first wins while
+        the other simply finds nothing.
         """
 
     @abc.abstractmethod
@@ -320,25 +359,53 @@ class PgProcessRepo(ProcessRepo):
         deferred_until: dt.datetime | None,
         is_test: bool = False,
     ) -> str | None:
+        run_id, _merged = await self.enqueue_run_detailed(
+            process_id=process_id,
+            revision_id=revision_id,
+            source_id=source_id,
+            input_items=input_items,
+            deferred_until=deferred_until,
+            is_test=is_test,
+        )
+        return run_id
+
+    async def enqueue_run_detailed(  # pragma: no cover
+        self,
+        *,
+        process_id: str,
+        revision_id: str,
+        source_id: str | None,
+        input_items: Sequence[dict[str, Any]],
+        deferred_until: dt.datetime | None,
+        is_test: bool = False,
+    ) -> tuple[str | None, bool]:
         items = json.dumps(list(input_items))
         async with await self._connect() as conn:
-            if deferred_until is not None and source_id is not None:
-                # §7 coalescing. The partial unique index
-                # (process_runs_deferred_source_idx) is the arbiter: two ticks
-                # racing to defer the same source cannot both insert, and the
-                # loser APPENDS its items to the existing deferred run rather
-                # than failing. `||` on a jsonb array is concatenation.
+            if source_id is not None and not is_test:
+                # §7 coalescing, widened by G-3. The partial unique index
+                # (migration 025, process_runs_queued_source_idx) is the
+                # arbiter: two wakes racing on the same source cannot both
+                # insert, and the loser APPENDS its items to the pending run
+                # rather than failing. `||` on a jsonb array is concatenation.
+                #
+                # A claim flips the row to `running`, which takes it OUT of the
+                # index — so an arrival after the claim inserts a new run and
+                # its items are never lost to a batch already executing.
+                #
+                # `xmax = 0` on the returned row distinguishes an insert from
+                # an update; a test run is excluded above because folding it
+                # into a pending batch would make "run this now" mean
+                # something else.
                 cur = await conn.execute(
                     "INSERT INTO stac_higher.process_runs"
                     " (process_id, revision_id, source_id, input_items,"
                     "  rate_deferred_until, is_test)"
                     " VALUES (%s, %s, %s, %s::jsonb, %s, %s)"
-                    " ON CONFLICT (source_id)"
-                    "   WHERE rate_deferred_until IS NOT NULL"
-                    "     AND status = 'queued' AND source_id IS NOT NULL"
+                    " ON CONFLICT (process_id, source_id)"
+                    "   WHERE status = 'queued' AND source_id IS NOT NULL"
                     " DO UPDATE SET input_items ="
                     "   stac_higher.process_runs.input_items || EXCLUDED.input_items"
-                    " RETURNING id",
+                    " RETURNING id, (xmax = 0) AS inserted",
                     (
                         process_id,
                         revision_id,
@@ -348,25 +415,30 @@ class PgProcessRepo(ProcessRepo):
                         is_test,
                     ),
                 )
-            else:
-                cur = await conn.execute(
-                    "INSERT INTO stac_higher.process_runs"
-                    " (process_id, revision_id, source_id, input_items,"
-                    "  rate_deferred_until, is_test)"
-                    " VALUES (%s, %s, %s, %s::jsonb, %s, %s)"
-                    " RETURNING id",
-                    (
-                        process_id,
-                        revision_id,
-                        source_id,
-                        items,
-                        deferred_until,
-                        is_test,
-                    ),
-                )
+                row = await cur.fetchone()
+                await conn.commit()
+                if not row:
+                    return None, False
+                return str(row[0]), not bool(row[1])
+
+            cur = await conn.execute(
+                "INSERT INTO stac_higher.process_runs"
+                " (process_id, revision_id, source_id, input_items,"
+                "  rate_deferred_until, is_test)"
+                " VALUES (%s, %s, %s, %s::jsonb, %s, %s)"
+                " RETURNING id",
+                (
+                    process_id,
+                    revision_id,
+                    source_id,
+                    items,
+                    deferred_until,
+                    is_test,
+                ),
+            )
             row = await cur.fetchone()
             await conn.commit()
-        return str(row[0]) if row else None
+        return (str(row[0]) if row else None), False
 
     async def claim_due_runs(  # pragma: no cover
         self, now: dt.datetime, limit: int
@@ -411,6 +483,50 @@ class PgProcessRepo(ProcessRepo):
             )
             for r in rows
         ]
+
+    async def claim_run(  # pragma: no cover
+        self, run_id: str, now: dt.datetime
+    ) -> QueuedRun | None:
+        """The claim_due_runs statement with an id predicate (G-3).
+
+        Deliberately the same UPDATE ... RETURNING shape: the immediate job and
+        the periodic tick race by design, so the claim must be the single
+        atomic act that decides the winner. Only a `queued` row whose deferral
+        (if any) has elapsed is claimable — a `failed` row's retry stays the
+        tick's job, since its wait is a schedule, not an event.
+        """
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.process_runs r"
+                "    SET status = 'running', started_at = %(now)s,"
+                "        attempts = r.attempts + 1,"
+                "        rate_deferred_until = NULL"
+                "   FROM stac_higher.process_revisions rev"
+                "  WHERE r.id = %(run_id)s AND rev.id = r.revision_id"
+                "    AND r.status = 'queued'"
+                "    AND (r.rate_deferred_until IS NULL"
+                "         OR r.rate_deferred_until <= %(now)s)"
+                " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
+                "           r.attempts, r.input_items, rev.runtime, rev.code,"
+                "           rev.env, r.is_test",
+                {"now": now, "run_id": run_id},
+            )
+            row = await cur.fetchone()
+            await conn.commit()
+        if not row:
+            return None
+        return QueuedRun(
+            id=str(row[0]),
+            process_id=str(row[1]),
+            revision_id=str(row[2]),
+            source_id=str(row[3]) if row[3] else None,
+            attempts=int(row[4]),
+            input_items=list(row[5] or []),
+            runtime=dict(row[6] or {}),
+            code=row[7],
+            env=list(row[8] or []),
+            is_test=bool(row[9]),
+        )
 
     async def finish_run(  # pragma: no cover
         self,

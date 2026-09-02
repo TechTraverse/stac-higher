@@ -30,14 +30,19 @@ class FakeProcessRepo(ProcessRepo):
     source_collections: list[str] = field(default_factory=list)
     #: What `current_revision` reports; None models "nothing deployed".
     deployed_revision: str | None = "rev-1"
+    #: The revision payload `claim_run` returns with a claimed row.
+    runtime: dict[str, Any] = field(default_factory=lambda: {"kind": "inline_python"})
+    code: str | None = "pass"
 
     #: recorded writes
     enqueued: list[dict[str, Any]] = field(default_factory=list)
     finished: list[dict[str, Any]] = field(default_factory=list)
     source_runs: list[tuple[str, bool]] = field(default_factory=list)
     stalled_reset: int = 0
-    #: mirrors the partial unique index: source_id → deferred run id
-    _deferred: dict[str, str] = field(default_factory=dict)
+    #: mirrors migration 025's partial unique index: (process, source) → the
+    #: QUEUED run id. A claim removes the entry, exactly as flipping the row to
+    #: `running` drops it out of the partial index.
+    _queued: dict[tuple[str, str], str] = field(default_factory=dict)
     _next_id: int = 0
 
     async def list_item_event_sources(self, collection_id: str) -> list[ProcessSource]:
@@ -64,15 +69,36 @@ class FakeProcessRepo(ProcessRepo):
         deferred_until: dt.datetime | None,
         is_test: bool = False,
     ) -> str | None:
-        # Model the migration-022 partial unique index: at most one deferred
-        # queued run per source, and a second defer APPENDS to it.
-        if deferred_until is not None and source_id is not None:
-            existing = self._deferred.get(source_id)
+        run_id, _merged = await self.enqueue_run_detailed(
+            process_id=process_id,
+            revision_id=revision_id,
+            source_id=source_id,
+            input_items=input_items,
+            deferred_until=deferred_until,
+            is_test=is_test,
+        )
+        return run_id
+
+    async def enqueue_run_detailed(
+        self,
+        *,
+        process_id: str,
+        revision_id: str,
+        source_id: str | None,
+        input_items: Sequence[dict[str, Any]],
+        deferred_until: dt.datetime | None,
+        is_test: bool = False,
+    ) -> tuple[str | None, bool]:
+        # Model migration 025: at most one QUEUED run per (process, source),
+        # and a second trigger APPENDS to it. Test runs are excluded, as in the
+        # real statement.
+        if source_id is not None and not is_test:
+            existing = self._queued.get((process_id, source_id))
             if existing is not None:
                 for row in self.enqueued:
                     if row["run_id"] == existing:
                         row["input_items"] = list(row["input_items"]) + list(input_items)
-                return existing
+                return existing, True
         self._next_id += 1
         run_id = f"run-{self._next_id}"
         self.enqueued.append(
@@ -84,11 +110,36 @@ class FakeProcessRepo(ProcessRepo):
                 "input_items": list(input_items),
                 "deferred_until": deferred_until,
                 "is_test": is_test,
+                "status": "queued",
             }
         )
-        if deferred_until is not None and source_id is not None:
-            self._deferred[source_id] = run_id
-        return run_id
+        if source_id is not None and not is_test:
+            self._queued[(process_id, source_id)] = run_id
+        return run_id, False
+
+    async def claim_run(self, run_id: str, now: dt.datetime) -> QueuedRun | None:
+        for row in self.enqueued:
+            if row["run_id"] != run_id or row["status"] != "queued":
+                continue
+            deferred = row["deferred_until"]
+            if deferred is not None and deferred > now:
+                return None
+            row["status"] = "running"
+            # Out of the partial index, so a later trigger starts a new run.
+            self._queued.pop((row["process_id"], row["source_id"]), None)
+            return QueuedRun(
+                id=run_id,
+                process_id=row["process_id"],
+                revision_id=row["revision_id"],
+                source_id=row["source_id"],
+                attempts=1,
+                input_items=list(row["input_items"]),
+                runtime=self.runtime,
+                code=self.code,
+                env=[],
+                is_test=row["is_test"],
+            )
+        return None
 
     async def claim_due_runs(self, now: dt.datetime, limit: int) -> list[QueuedRun]:
         batch = self.due_runs[:limit]

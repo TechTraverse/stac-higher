@@ -26,7 +26,7 @@ import posixpath
 from dataclasses import dataclass
 
 from pipeline.connections.adapters.base import FileEntry, StorageAdapter
-from pipeline.ingest.config import IngestConfig, path_matches
+from pipeline.ingest.config import IngestConfig, effective_settle, path_matches
 from pipeline.ingest.repo import (
     STATUS_FAILED,
     STATUS_FETCHING,
@@ -106,6 +106,9 @@ async def discover_stage(
     """Reconcile the live listing against the ledger. Idempotent per file."""
     entries = await adapter.list(config.source_path)
     result = DiscoverResult()
+    # G-3: whether a first sighting is already settled, decided once per tick
+    # from the config and the source protocol.
+    immediate = effective_settle(config, adapter.protocol) == "immediate"
     for entry in entries:
         result.listed += 1
         if entry.is_dir:
@@ -125,7 +128,9 @@ async def discover_stage(
             )
             continue
         latest = await repo.get_latest_ledger(association.id, relpath)
-        await _reconcile(repo, association.id, relpath, entry, fingerprint, latest, result)
+        await _reconcile(
+            repo, association.id, relpath, entry, fingerprint, latest, result, immediate
+        )
     logger.info(
         "ingest discover tick",
         extra={
@@ -148,17 +153,25 @@ async def _reconcile(
     fingerprint: str,
     latest: LedgerEntry | None,
     result: DiscoverResult,
+    immediate: bool,
 ) -> None:
     if latest is None:
+        # `immediate` (G-3): an S3 object is whole or absent, so the first
+        # sight is already the settled state. The settled→seen guard below
+        # still catches a key that is overwritten before FETCH.
         await repo.insert_ledger_version(
             association_id,
             relpath,
             version=1,
-            status=STATUS_SEEN,
+            status=STATUS_SETTLED if immediate else STATUS_SEEN,
             size=entry.size,
             fingerprint=fingerprint,
         )
-        result.new_seen += 1
+        if immediate:
+            result.settled += 1
+            result.settled_bytes += entry.size or 0
+        else:
+            result.new_seen += 1
         return
 
     if latest.status == STATUS_SEEN:

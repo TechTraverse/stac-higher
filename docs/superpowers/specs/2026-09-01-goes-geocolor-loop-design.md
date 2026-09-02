@@ -227,10 +227,10 @@ as a recovery sweep.
 
 | Hop | Today | Change |
 |---|---|---|
-| DISCOVER finds the file | `ingest_poll` cron (1 min) + a second poll to confirm the object stopped changing | Keep the poll. Add `settle: "immediate"` to the ingest config for S3 sources (default for `s3`, forbidden for ssh/ftp): S3 objects appear whole, so the second poll only adds a poll interval. Existing associations keep `settle: "two_polls"`. |
-| Item write → dispatcher | `dispatch_poll` cron (1 min) | The pipeline's writers (ingest ITEMIZE, finalize upsert) enqueue `dispatch_poll` immediately after commit; events from app-side writes still wait for the cron, which stays. The dispatcher is already idempotent over claimed events. |
-| Dispatcher → run claim | `process_run_tick` cron (1 min) | `trigger_run` enqueues `process_run_now(run_id)` when the run is not rate-deferred. The job claims that row by id with the same `FOR UPDATE SKIP LOCKED` idiom; the tick still sweeps anything missed. |
-| Extractor run (new) | — | Same immediate path, plus queued-run coalescing (§6.4). |
+| DISCOVER finds the file | `ingest_poll` cron (1 min) + a second poll to confirm the object stopped changing | **Done (G-3).** `settle: auto \| two_polls \| immediate` on the ingest config, default `auto`, resolved against the connection protocol by `effective_settle`: immediate for s3, two polls for ftp/sftp. The settled-then-changed guard still catches a key overwritten before FETCH. |
+| Item write → dispatcher | — | **Already event-driven; no change needed** (found in the 2026-09-02 live check). The outbox trigger's payload-less `pg_notify('item_events')` wakes `dispatcher/listener.py`, which drains until empty; the minute poll is the fallback for a dropped notification or a dead listener. Two items inserted at 06:19:12 had run rows in the same second. |
+| Dispatcher → run claim | `process_run_tick` cron (1 min) | **Done (G-3).** `trigger_run` enqueues `process_run_now(run_id)` when the run is not rate-deferred; the job claims that row by id through the same atomic UPDATE the tick uses, so the two race safely and the tick becomes the recovery sweep. |
+| Extractor run (new) | — | Same immediate path. Queued-run coalescing (§6.4) landed with G-3: migration 025 widens the key from rate-deferred runs to EVERY queued run per (process, source), which the live check showed was needed — two events 30 ms apart had become two runs. |
 
 Floor after the change, locally: ingest poll interval (≥ 60 s, operator-set)
 + fetch + one container start (~0.5 s). Everything after DISCOVER is

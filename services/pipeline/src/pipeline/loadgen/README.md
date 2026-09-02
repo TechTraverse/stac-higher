@@ -33,7 +33,8 @@ uv run python -m pipeline.loadgen --label run1 feed --rate 0 --count 2000 --asse
 # sustained probe: hold a target rate
 uv run python -m pipeline.loadgen --label run1 feed --rate 30 --count 1800
 
-sleep 60   # DISCOVER polls every 60s and needs TWO polls to settle a file
+sleep 60   # DISCOVER polls every 60s; since G-3 an s3 source settles on
+           # FIRST sight (settle: auto), so one poll is enough
 uv run python -m pipeline.loadgen --label run1 watch --seconds 300 --interval 20
 
 uv run python -m pipeline.loadgen --label run1 teardown
