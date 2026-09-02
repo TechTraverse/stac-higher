@@ -18,6 +18,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
+# rasterio's manylinux wheel bundles GDAL but NOT libexpat, which GDAL's driver
+# registry links against — on this slim base `import rasterio` died with
+# `libexpat.so.1: cannot open shared object file`, so EVERY process using the
+# blessed raster stack failed at import (found 2026-09-02 by the demo pipeline;
+# nothing in the unit suites imports rasterio inside this image). Installed
+# without recommends and with the apt lists dropped in the same layer.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libexpat1 \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir \
       "boto3==1.43.49" \
       "pystac==1.15.1" \
