@@ -165,7 +165,7 @@ worktrees. Detailed task plans exist for those three
 (`docs/superpowers/plans/2026-09-01-goes-g{1,2,4}-*.md`); G-3, G-5, G-6 and
 G-7 get their plans when their dependencies have merged.
 
-- [ ] **G-1 · Anonymous S3 connections.** Spec §8. `anonymous` flag on the s3
+- [x] **G-1 · Anonymous S3 connections.** Spec §8. `anonymous` flag on the s3
       config; credentials optional when set (UI hides the key fields); the
       adapter signs nothing (`botocore.UNSIGNED`); new contract fixture
       `s3-connection-config.json`. Plan: `2026-09-01-goes-g1-anonymous-s3.md`.
@@ -185,7 +185,7 @@ G-7 get their plans when their dependencies have merged.
       per `(process_id, source_id)`); `settle: "immediate"` for s3 ingest
       sources. Depends on G-2 (shares `enqueue_run`). Exercise with the loadgen
       at M3-D's concurrency.
-- [ ] **G-4 · Tile server href mapping.** Spec §7.1. Derived image
+- [x] **G-4 · Tile server href mapping.** Spec §7.1. Derived image
       `infra/titiler/` wrapping both readers' `_get_asset_info` to map
       `/api/assets/{c}/{i}/{f}` → `s3://{PLATFORM_ASSET_BUCKET}/assets/{c}/{i}/{f}`;
       compose switches to it; `containers.yml` builds it; `docs/serving.md` +
