@@ -241,6 +241,7 @@ function CodeCard({
             memory_mb: memoryMb,
             timeout_seconds: timeoutSeconds,
             retry: { max_attempts: 3, backoff: "exponential" },
+            network: { level: "isolated", hosts: [] },
           },
           code,
           env,

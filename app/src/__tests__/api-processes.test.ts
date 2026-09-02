@@ -72,6 +72,7 @@ import {
   GET as getRoute,
   PUT as updateRoute,
 } from "@/pages/api/processes/[id]";
+import { NETWORK_LEVEL_NOT_YET_AVAILABLE } from "@/lib/processes/schemas";
 import { POST as deployRoute } from "@/pages/api/processes/[id]/revisions";
 import { POST as createSourceRoute } from "@/pages/api/processes/[id]/sources/index";
 import { POST as createOutputRoute } from "@/pages/api/processes/[id]/outputs/index";
@@ -303,6 +304,44 @@ describe("POST /api/processes/[id]/revisions (deploy)", () => {
       body: { runtime: INLINE, code: "   " },
     });
     expect(res.status).toBe(400);
+    expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it("deploys an explicitly isolated network profile (GOES spec §4)", async () => {
+    vi.mocked(deployRevision).mockResolvedValue({
+      id: REVISION_ID,
+      process_id: PROCESS_ID,
+      runtime: INLINE,
+      code: "print(1)",
+      env: [],
+      created_by: "user-1",
+      created_at: "2026-08-30T00:00:00.000Z",
+    });
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: {
+        runtime: { ...INLINE, network: { level: "isolated", hosts: [] } },
+        code: "print(1)",
+      },
+    });
+    expect(res.status).toBe(201);
+    const stored = vi.mocked(deployRevision).mock.calls[0][0].runtime as {
+      network: unknown;
+    };
+    expect(stored.network).toEqual({ level: "isolated", hosts: [] });
+  });
+
+  it("refuses a network level above isolated this slice", async () => {
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: { ...INLINE, network: { level: "open" } }, code: "print(1)" },
+    });
+    expect(res.status).toBe(400);
+    // Slice 1: the WRITE GATE refuses first, with its own message. Once the
+    // gate opens (egress proxy, GOES spec §11) the PROCESS_NETWORK_MAX cap
+    // message from `@/lib/processes/network` becomes the reachable refusal.
+    const body = (await res.json()) as { details: { message: string }[] };
+    expect(body.details.map((d) => d.message)).toContain(NETWORK_LEVEL_NOT_YET_AVAILABLE);
     expect(deployRevision).not.toHaveBeenCalled();
   });
 

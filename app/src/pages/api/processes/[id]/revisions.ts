@@ -16,7 +16,10 @@
  * `runtime` is validated by the WRITE gate (`processRuntimeSchema`), which
  * refuses the `container` arm this slice — the contract carries it and the
  * pipeline parses it, but user-supplied images stay out of the first
- * accreditation scope (spec §4, ADR 0013).
+ * accreditation scope (spec §4, ADR 0013). The same gate accepts only
+ * `network.level: isolated` this slice; the deployment cap
+ * (`PROCESS_NETWORK_MAX`, GOES spec §4) is checked here as well so that once
+ * the gate opens, a level above the cap is still refused at the form.
  */
 import type { APIRoute } from "astro";
 import { jsonResponse } from "@/lib/http/response";
@@ -26,6 +29,11 @@ import {
   processNotFound,
   secretRefOutOfScope,
 } from "@/lib/processes/access";
+import {
+  NETWORK_CAP_MESSAGE,
+  getNetworkMax,
+  networkLevelWithinCap,
+} from "@/lib/processes/network";
 import { processRevisionCreateSchema } from "@/lib/processes/schemas";
 import { deployRevision, listRevisions } from "@/lib/processes/storage";
 
@@ -56,6 +64,15 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       });
     }
     const data = parsed.data;
+
+    // GOES spec §4: the deployment maximum, enforced independently by the
+    // pipeline at launch; checked here so the refusal lands at deploy time.
+    const cap = getNetworkMax();
+    if (!networkLevelWithinCap(data.runtime.network.level, cap)) {
+      return jsonResponse(400, {
+        error: NETWORK_CAP_MESSAGE(data.runtime.network.level, cap),
+      });
+    }
 
     const unresolvable = await findUnresolvableSecretRef(
       data.env,

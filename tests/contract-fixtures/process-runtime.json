@@ -1,6 +1,6 @@
 {
   "style": "discriminated-union",
-  "$comment": "Golden fixture for the §5.6 process `runtime` shape (Phase 9 / M5-0), stored in stac_higher.process_revisions.runtime. Consumed by app/src/__tests__/contract-fixtures.test.ts (processRuntimeSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_process_runtime). THE SLICE-1 ASYMMETRY IS DELIBERATE AND PINNED HERE: the shape CARRIES the `container` arm so nothing is foreclosed, and the pipeline reader accepts it, while the app's write gate REJECTS it — user-supplied images are a supply-chain review surface that stays out of the first accreditation scope (spec §4). Every `container` case below is therefore app: reject / pipeline: accept. `memory_mb` and `timeout_seconds` become the executor's per-run HostConfig limits and wall-clock kill (ADR 0013); `retry` reuses the queue RetrySpec shape from §5.1's delivery config verbatim.",
+  "$comment": "Golden fixture for the §5.6 process `runtime` shape (Phase 9 / M5-0), stored in stac_higher.process_revisions.runtime. Consumed by app/src/__tests__/contract-fixtures.test.ts (processRuntimeSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_process_runtime). THE SLICE-1 ASYMMETRY IS DELIBERATE AND PINNED HERE: the shape CARRIES the `container` arm so nothing is foreclosed, and the pipeline reader accepts it, while the app's write gate REJECTS it — user-supplied images are a supply-chain review surface that stays out of the first accreditation scope (spec §4). Every `container` case below is therefore app: reject / pipeline: accept. `memory_mb` and `timeout_seconds` become the executor's per-run HostConfig limits and wall-clock kill (ADR 0013); `retry` reuses the queue RetrySpec shape from §5.1's delivery config verbatim. `network` (GOES spec §4, ADR 0018) is the egress profile — `level` in isolated|inputs|hosts|open with `hosts` non-empty iff level is `hosts` — and carries a SECOND slice-1 asymmetry of the same kind: the reader accepts every level (so no revision changes meaning when the egress proxy lands) while the app's write gate accepts only `isolated` until then; malformed network blocks are reject/reject on both sides.",
   "discriminator": "kind",
   "variants": {
     "inline_python": {
@@ -10,7 +10,8 @@
         "image": null,
         "memory_mb": 512,
         "timeout_seconds": 900,
-        "retry": { "max_attempts": 3, "backoff": "exponential" }
+        "retry": { "max_attempts": 3, "backoff": "exponential" },
+        "network": { "level": "isolated", "hosts": [] }
       }
     },
     "container": {
@@ -20,7 +21,8 @@
         "image": "ghcr.io/example/proc:1.2.3",
         "memory_mb": 512,
         "timeout_seconds": 900,
-        "retry": { "max_attempts": 3, "backoff": "exponential" }
+        "retry": { "max_attempts": 3, "backoff": "exponential" },
+        "network": { "level": "isolated", "hosts": [] }
       }
     }
   },
@@ -159,6 +161,54 @@
     {
       "name": "empty object",
       "config": {},
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "network isolated explicitly",
+      "config": { "kind": "inline_python", "network": { "level": "isolated" } },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "network inputs (slice 1: writer refuses, reader accepts)",
+      "config": { "kind": "inline_python", "network": { "level": "inputs" } },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "network hosts with a list (slice 1: writer refuses, reader accepts)",
+      "config": { "kind": "inline_python", "network": { "level": "hosts", "hosts": ["api.example.com"] } },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "network open (slice 1: writer refuses, reader accepts)",
+      "config": { "kind": "inline_python", "network": { "level": "open" } },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "hosts level without hosts",
+      "config": { "kind": "inline_python", "network": { "level": "hosts", "hosts": [] } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "hosts listed on a non-hosts level",
+      "config": { "kind": "inline_python", "network": { "level": "open", "hosts": ["x.y"] } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unknown network level",
+      "config": { "kind": "inline_python", "network": { "level": "lan" } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "host with a scheme",
+      "config": { "kind": "inline_python", "network": { "level": "hosts", "hosts": ["https://x.y"] } },
       "app": "reject",
       "pipeline": "reject"
     }

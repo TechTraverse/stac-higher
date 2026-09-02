@@ -89,12 +89,51 @@ const TIMEOUT_SECONDS_MAX = 86_400;
 /** The §5.1 RetrySpec, with a process's smaller attempt budget. */
 export const processRetrySchema = retrySpecSchema(3);
 
+/**
+ * Network profile levels (GOES spec §4, ADR 0018), ORDERED lowest first — the
+ * `PROCESS_NETWORK_MAX` cap compares positions. Mirrors `NETWORK_LEVELS` in
+ * `services/pipeline/src/pipeline/process/config.py`.
+ */
+export const PROCESS_NETWORK_LEVELS = ["isolated", "inputs", "hosts", "open"] as const;
+export type NetworkLevel = (typeof PROCESS_NETWORK_LEVELS)[number];
+
+/** A `hosts` entry is a bare hostname: no scheme, no port, no wildcard. */
+const HOSTNAME_RE = /^[A-Za-z0-9.-]+$/;
+
+export const processNetworkSchema = z
+  .object({
+    level: z.enum(PROCESS_NETWORK_LEVELS).default("isolated"),
+    hosts: z
+      .array(z.string().regex(HOSTNAME_RE, "hosts entries must be bare hostnames"))
+      .default([]),
+  })
+  .strict()
+  .superRefine((network, ctx) => {
+    if (network.level === "hosts" && network.hosts.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["hosts"],
+        message: "network level 'hosts' requires a non-empty hosts list",
+      });
+    }
+    if (network.level !== "hosts" && network.hosts.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["hosts"],
+        message: "hosts are only allowed with network level 'hosts'",
+      });
+    }
+  });
+
+export type ProcessNetwork = z.infer<typeof processNetworkSchema>;
+
 const runtimeLimits = {
   memory_mb: z.number().int().min(MEMORY_MB_MIN).default(512),
   timeout_seconds: z.number().int().min(1).max(TIMEOUT_SECONDS_MAX).default(900),
   // Function default so an omitted object is PARSED through its schema
   // (applying the inner defaults) instead of stored as a bare `{}`.
   retry: processRetrySchema.default(() => processRetrySchema.parse({})),
+  network: processNetworkSchema.default(() => processNetworkSchema.parse({})),
 };
 
 const inlinePythonRuntimeSchema = z
@@ -139,6 +178,12 @@ export const CONTAINER_RUNTIME_REFUSAL =
   "executor image (inline_python). User-supplied images are a supply-chain " +
   "review surface deferred past the first accreditation scope (ADR 0013).";
 
+/** The GOES slice-1 refusal for network levels above `isolated`. */
+export const NETWORK_LEVEL_NOT_YET_AVAILABLE =
+  "network levels above 'isolated' arrive with the egress proxy; see the GOES " +
+  "spec §11. Every process runs isolated this slice — inputs are staged into " +
+  "the run.";
+
 /**
  * The WRITE gate (M5 slice 1, spec §4) — and the default name, so this is what
  * a route author gets by reaching for the obvious import. The contract carries
@@ -146,10 +191,25 @@ export const CONTAINER_RUNTIME_REFUSAL =
  * the app refuses to store one. The golden fixture pins every `container` case
  * as `app: reject` / `pipeline: accept` — that asymmetry is the decision, not
  * an oversight.
+ *
+ * The same asymmetry applies to `network.level` (GOES spec §4): the shape and
+ * the pipeline reader carry every level, the write gate stores only
+ * `isolated` until the egress proxy exists — so no revision written this
+ * slice changes meaning when the higher levels become real.
  */
-export const processRuntimeSchema = processRuntimeReadSchema.refine(
-  (runtime) => runtime.kind !== "container",
-  { path: ["kind"], message: CONTAINER_RUNTIME_REFUSAL },
+export const processRuntimeSchema = processRuntimeReadSchema.superRefine(
+  (runtime, ctx) => {
+    if (runtime.kind === "container") {
+      ctx.addIssue({ code: "custom", path: ["kind"], message: CONTAINER_RUNTIME_REFUSAL });
+    }
+    if (runtime.network.level !== "isolated") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["network", "level"],
+        message: NETWORK_LEVEL_NOT_YET_AVAILABLE,
+      });
+    }
+  },
 );
 
 // ---------------------------------------------------------------------------

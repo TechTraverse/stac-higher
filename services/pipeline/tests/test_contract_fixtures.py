@@ -240,6 +240,8 @@ def test_process_runtime_defaults_match_golden():
         assert runtime.timeout_seconds == golden["timeout_seconds"]
         assert runtime.max_attempts == golden["retry"]["max_attempts"]
         assert runtime.backoff == golden["retry"]["backoff"]
+        assert runtime.network_level == golden["network"]["level"]
+        assert tuple(runtime.network_hosts) == tuple(golden["network"]["hosts"])
 
     # The module constants ARE those defaults — a drift here would let the
     # dataclass and the fixture disagree without any case failing.
