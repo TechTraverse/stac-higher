@@ -1,4 +1,5 @@
-"""Turning a trigger into a queued run (spec §6/§7).
+"""Turning a trigger into a queued — and immediately dispatched — run
+(spec §6/§7; GOES spec §5 for the dispatch half).
 
 One function, because both legs — the dispatcher's item_event batches and the
 scheduler's cron ticks — must go through the SAME rate ceiling. Splitting them
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +28,10 @@ class TriggerResult:
     deferred: bool
     recent_runs: int = 0
     ceiling: int = 0
+    #: The items joined a run that was already queued for this source.
+    merged: bool = False
+    #: An immediate-execution job was asked for (G-3).
+    enqueued_now: bool = False
 
 
 async def trigger_run(
@@ -38,6 +43,7 @@ async def trigger_run(
     input_items: Sequence[dict[str, Any]],
     now: dt.datetime,
     is_test: bool = False,
+    enqueue_now: Callable[[str], Awaitable[None]] | None = None,
 ) -> TriggerResult:
     """Queue a run, deferring (and coalescing) when the §7 ceiling is spent.
 
@@ -55,7 +61,7 @@ async def trigger_run(
         oldest_in_window=window.oldest_in_window,
     )
 
-    run_id = await repo.enqueue_run(
+    run_id, merged = await repo.enqueue_run_detailed(
         process_id=process_id,
         revision_id=revision_id,
         source_id=source_id,
@@ -63,6 +69,16 @@ async def trigger_run(
         deferred_until=verdict.deferred_until,
         is_test=is_test,
     )
+
+    # G-3: don't make the run wait for the next minute tick. The tick stays
+    # registered as the recovery sweep, and both paths claim through the same
+    # atomic UPDATE, so the loser simply finds nothing. A DEFERRED run is
+    # deliberately not dispatched — immediate execution must not defeat the
+    # ceiling the verdict just applied.
+    enqueued_now = False
+    if run_id is not None and not verdict.deferred and enqueue_now is not None:
+        await enqueue_now(run_id)
+        enqueued_now = True
 
     if verdict.deferred:
         PROCESS_RATE_DEFERRALS.inc()
@@ -87,4 +103,6 @@ async def trigger_run(
         deferred=verdict.deferred,
         recent_runs=verdict.recent_runs,
         ceiling=verdict.ceiling,
+        merged=merged,
+        enqueued_now=enqueued_now,
     )
