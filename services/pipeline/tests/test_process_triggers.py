@@ -347,7 +347,7 @@ def queued(**overrides) -> QueuedRun:
         "revision_id": REV,
         "source_id": SRC,
         "attempts": 1,
-        "input_items": [{"item_id": "i1"}],
+        "input_items": [{"item_id": "i1", "collection_id": "c", "op": "insert"}],
         "runtime": {"kind": "inline_python", "retry": {"max_attempts": 3}},
         "code": "print(1)",
         "env": [],
@@ -367,16 +367,17 @@ class FakeSts:
         }
 
 
-async def _run(run, executor, repo):
+async def _run(run, executor, repo, *, storage_client=None, fetch_remote=None):
     return await run_one(
         run,
         repo=repo,
         executor=executor,
         settings=Settings.from_env({}),
-        storage_client=FakeStore(),
+        storage_client=storage_client or FakeStore(),
         resolve_secret=lambda ref: "x",
         now=NOW,
         sts_client=FakeSts(),
+        fetch_remote=fetch_remote,
     )
 
 
@@ -422,6 +423,94 @@ async def test_a_revision_with_no_code_dies_rather_than_running_nothing():
     repo = FakeProcessRepo()
     result = await _run(queued(code=None), MemoryExecutor(), repo)
     assert result.status == "dead"
+
+
+# ---------------------------------------------------------------------------
+# inputs are planned, staged and granted BEFORE launch (GOES spec §3)
+# ---------------------------------------------------------------------------
+
+
+class RecordingStore:
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def put_object(self, Bucket, Key, Body, **kwargs):
+        self.objects[Key] = Body
+
+
+def _remote_input_repo() -> FakeProcessRepo:
+    return FakeProcessRepo(
+        source_collections=["src"],
+        items={
+            ("src", "i1"): {
+                "id": "i1",
+                "collection": "src",
+                "assets": {"d": {"href": "https://h/x.nc"}},
+            }
+        },
+    )
+
+
+def _remote_input_run(**overrides) -> QueuedRun:
+    return queued(
+        input_items=[{"item_id": "i1", "collection_id": "src", "op": "insert"}], **overrides
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_one_plans_stages_and_grants_before_launch():
+    repo = _remote_input_repo()
+    store = RecordingStore()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    fetched: list[str] = []
+
+    async def fetch(href: str) -> bytes:
+        fetched.append(href)
+        return b"bytes"
+
+    result = await _run(
+        _remote_input_run(), executor, repo, storage_client=store, fetch_remote=fetch
+    )
+    assert result.status == "succeeded"
+    assert fetched == ["https://h/x.nc"]
+    assert any(k.endswith("/manifest.json") for k in store.objects)
+    spec = executor.launched[-1]
+    assert spec.env["STAC_HIGHER_INPUT_MANIFEST"].endswith("/manifest.json")
+    assert spec.env["STAC_HIGHER_INPUT_PREFIX"] == "staging/runs/run-1/inputs/"
+
+
+@pytest.mark.asyncio
+async def test_run_one_marks_staging_failure_as_a_failed_attempt_and_never_launches():
+    repo = _remote_input_repo()
+    store = RecordingStore()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+
+    async def fetch(href: str) -> bytes:
+        raise OSError("boom")
+
+    result = await _run(
+        _remote_input_run(), executor, repo, storage_client=store, fetch_remote=fetch
+    )
+    assert result.status in ("failed", "dead")
+    assert "could not stage" in (result.error or "")
+    # A staging failure means NO container ever existed.
+    assert executor.launched == []
+    # ...and it spends an attempt (retry path), unlike an infrastructure fault.
+    assert repo.finished[0]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_run_one_dies_when_the_network_level_exceeds_the_cap():
+    repo = _remote_input_repo()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    result = await _run(
+        _remote_input_run(runtime={"kind": "inline_python", "network": {"level": "open"}}),
+        executor,
+        repo,
+    )
+    assert result.status == "dead"
+    assert "PROCESS_NETWORK_MAX" in (result.error or "")
+    assert executor.launched == []
 
 
 # ---------------------------------------------------------------------------

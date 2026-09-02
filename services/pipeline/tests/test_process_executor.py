@@ -37,6 +37,7 @@ from pipeline.process.docker_executor import (
     encode_code,
 )
 from pipeline.process.executor import ExecutorUnavailable, ExitStatus, RunHandle
+from pipeline.process.inputs import input_env
 from pipeline.process.launch import (
     NetworkCapExceeded,
     SecretResolutionError,
@@ -598,3 +599,45 @@ def test_network_cap_refuses_a_level_above_the_deployment_maximum():
 def test_invalid_network_max_env_is_rejected_at_startup():
     with pytest.raises(ValueError, match="PROCESS_NETWORK_MAX"):
         settings(PROCESS_NETWORK_MAX="everything")
+
+
+# ---------------------------------------------------------------------------
+# inputs reach the run (GOES spec §3)
+# ---------------------------------------------------------------------------
+
+
+def test_run_env_includes_the_input_variables_and_platform_values_still_win():
+    creds = RunCredentials("a", "s", "t", "stac-higher", f"staging/runs/{RUN}/", None, "us-east-1")
+    spec = build_run_spec(
+        settings(),
+        run_id=RUN,
+        process_id=PROC,
+        runtime=ProcessRuntime(kind="inline_python"),
+        code="print(1)",
+        env={"STAC_HIGHER_INPUT_MANIFEST": "spoofed", "MINE": "1"},
+        credentials=creds,
+        extra_env=input_env(RUN, f"staging/runs/{RUN}/inputs/b/manifest.json"),
+    )
+    assert spec.env["STAC_HIGHER_INPUT_PREFIX"] == f"staging/runs/{RUN}/inputs/"
+    assert spec.env["STAC_HIGHER_INPUT_MANIFEST"] == f"staging/runs/{RUN}/inputs/b/manifest.json"
+    assert spec.env["MINE"] == "1"
+
+
+def test_execute_run_mints_with_read_prefixes():
+    sts = FakeSts(
+        {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}}
+    )
+    execute_run(
+        MemoryExecutor(),
+        settings(),
+        FakeStore(),
+        run_id=RUN,
+        process_id=PROC,
+        runtime=ProcessRuntime(kind="inline_python"),
+        code="pass",
+        env_entries=(),
+        resolve_secret=lambda ref: "",
+        sts_client=sts,
+        read_prefixes=["assets/goes/"],
+    )
+    assert "assets/goes/*" in sts.kwargs["Policy"]

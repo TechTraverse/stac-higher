@@ -30,12 +30,14 @@ from pipeline.finalize.process_run import build_process_request
 from pipeline.finalize.repo import PgFinalizeRepo
 from pipeline.finalize.steps import run_finalize
 from pipeline.finalize.store import PlatformObjectStore
+from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
 from pipeline.process.docker_executor import DockerExecutor
 from pipeline.process.reaper import process_reap_tick
 from pipeline.process.repo import PgProcessRepo
 from pipeline.process.runner import run_one
+from pipeline.process.staging import build_remote_fetcher
 from pipeline.process.sweep import process_sweep_tick
 from pipeline.process.trigger import trigger_run
 from pipeline.queue.interface import QueueBackend, RetrySpec
@@ -169,6 +171,12 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         executor = DockerExecutor(docker_host=settings.docker_host)
         storage_client = build_platform_client(settings)
         resolver = build_secret_resolver(settings)
+        # GOES spec §3.2: remote inputs are staged through a matching
+        # reference-mode association's adapter, else a public GET. A missing
+        # master key must NOT skip the tick — only private reference sources
+        # lose their adapter path (the fetcher falls back to public-only).
+        master_key = load_key_or_skip(settings, JOB_RUN_TICK)
+        fetch_remote = build_remote_fetcher(settings, master_key)
         finalize_payloads: list[dict[str, Any]] = []
         for run in runs:
             # Per-run isolation: one run's failure must never abandon the rest
@@ -183,6 +191,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     storage_client=storage_client,
                     resolve_secret=resolver,
                     now=now,
+                    fetch_remote=fetch_remote,
                 )
             except Exception:
                 logger.exception(

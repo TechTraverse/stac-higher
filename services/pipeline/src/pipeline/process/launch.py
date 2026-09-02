@@ -20,6 +20,7 @@ without a database and the ledger be tested without Docker.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from pipeline.config import Settings
@@ -103,14 +104,17 @@ def build_run_spec(
     code: str,
     env: dict[str, str],
     credentials: RunCredentials,
+    extra_env: Mapping[str, str] | None = None,
 ) -> RunSpec:
     """The COMPLETE environment of a run, assembled in one place.
 
     Order matters: platform-controlled values are applied AFTER the revision's
-    own env, so a revision cannot shadow its storage credentials or its code
-    by declaring variables with those names.
+    own env, so a revision cannot shadow its storage credentials, its code,
+    or the input pointers (``STAC_HIGHER_INPUT_*``, passed as ``extra_env``
+    — GOES spec §3.1) by declaring variables with those names.
     """
     run_env = dict(env)
+    run_env.update(extra_env or {})  # platform-provided input pointers
     run_env.update(credentials.as_env())
     run_env[CODE_ENV_VAR] = encode_code(code)
     run_env["STAC_HIGHER_RUN_ID"] = run_id
@@ -145,11 +149,21 @@ def execute_run(
     env_entries: tuple[EnvEntry, ...],
     resolve_secret,
     sts_client=None,
+    read_prefixes: Sequence[str] = (),
+    extra_env: Mapping[str, str] | None = None,
 ) -> RunOutcome:
-    """Mint credentials, launch, wait, capture the log, reap. Always reap."""
+    """Mint credentials, launch, wait, capture the log, reap. Always reap.
+
+    ``read_prefixes`` are the source collections' canonical prefixes the
+    session policy grants read on; ``extra_env`` is the input env (§3.1).
+    """
     env = resolve_env(env_entries, resolve_secret)
     credentials = mint_run_credentials(
-        settings, run_id, runtime.timeout_seconds, sts_client=sts_client
+        settings,
+        run_id,
+        runtime.timeout_seconds,
+        sts_client=sts_client,
+        read_prefixes=read_prefixes,
     )
     spec = build_run_spec(
         settings,
@@ -159,6 +173,7 @@ def execute_run(
         code=code,
         env=env,
         credentials=credentials,
+        extra_env=extra_env,
     )
 
     import time

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import uuid
 from dataclasses import dataclass
 
 from pipeline.config import Settings
@@ -23,9 +24,16 @@ from pipeline.metrics import PROCESS_RUNS
 from pipeline.process.config import ProcessConfigError, parse_process_env, parse_process_runtime
 from pipeline.process.credentials import RunCredentialsError
 from pipeline.process.executor import Executor, ExecutorUnavailable
-from pipeline.process.launch import SecretResolutionError, execute_run
+from pipeline.process.inputs import KIND_TRANSFORM, InputPlanError, input_env, plan_inputs
+from pipeline.process.launch import (
+    NetworkCapExceeded,
+    SecretResolutionError,
+    check_network_cap,
+    execute_run,
+)
 from pipeline.process.ledger import infrastructure_transition, outcome_transition
 from pipeline.process.repo import ProcessRepo, QueuedRun
+from pipeline.process.staging import InputStagingError, RemoteFetcher, stage_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +60,15 @@ async def run_one(
     resolve_secret,
     now: dt.datetime | None = None,
     sts_client=None,
+    fetch_remote: RemoteFetcher | None = None,
 ) -> RunResult:
     """Execute a claimed run and write its outcome. Never raises for a run
-    that merely failed — that is a result, recorded in the ledger."""
+    that merely failed — that is a result, recorded in the ledger.
+
+    Order (GOES spec §3.2): parse → network cap → plan inputs (repo reads) →
+    stage remote inputs → mint credentials + launch. A failure anywhere
+    before launch means no container ever existed.
+    """
     at = now or dt.datetime.now(dt.UTC)
 
     # A revision whose stored documents no longer parse is a CONTRACT
@@ -73,6 +87,73 @@ async def run_one(
         )
         return RunResult(run.id, "dead", error="no code")
 
+    # A revision above the deployment's network cap is configuration, not a
+    # fault: it dies naming the level and the cap, never launches lower.
+    try:
+        check_network_cap(runtime, settings)
+    except NetworkCapExceeded as err:
+        await _finish(repo, run, "dead", None, str(err), None, at)
+        return RunResult(run.id, "dead", error=str(err))
+
+    # GOES spec §3: describe the inputs, stage the remote ones, THEN mint+launch.
+    source_collections = await repo.list_source_collections(run.process_id)
+    documents: dict[tuple[str, str], dict] = {}
+    for ref in run.input_items:
+        coll = ref.get("collection_id") or (
+            source_collections[0] if len(source_collections) == 1 else None
+        )
+        item_id = ref.get("item_id")
+        if coll and item_id and (coll, item_id) not in documents:
+            doc = await repo.get_item(coll, item_id)
+            if doc is not None:
+                documents[(coll, item_id)] = doc
+    try:
+        plan = plan_inputs(
+            run_id=run.id,
+            process_id=run.process_id,
+            # Slice 1: exactly one batch per run (§3.1).
+            batch_id=uuid.uuid4().hex,
+            kind=KIND_TRANSFORM,
+            refs=run.input_items,
+            documents=documents,
+            source_collections=source_collections,
+            bucket=settings.staging_bucket,
+            asset_href_base=settings.asset_href_base,
+        )
+    except InputPlanError as err:
+        await _finish(repo, run, "dead", None, f"unusable inputs: {err}", None, at)
+        return RunResult(run.id, "dead", error=str(err))
+
+    if fetch_remote is None:
+
+        async def fetch_remote(href: str) -> bytes:
+            raise InputStagingError(f"no remote fetcher configured for {href!r}")
+
+    try:
+        await stage_inputs(
+            plan,
+            storage_client=storage_client,
+            bucket=settings.staging_bucket,
+            fetch_remote=fetch_remote,
+            concurrency=settings.process_input_stage_concurrency,
+        )
+    except InputStagingError as err:
+        # The run's inputs could not be fetched — a per-run outcome that spends
+        # an attempt (the source may be flaky), then goes dead on budget.
+        transition = outcome_transition(
+            exit_code=1,
+            timed_out=False,
+            attempts=run.attempts,
+            max_attempts=runtime.max_attempts,
+            now=at,
+            retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS,
+            error=str(err),
+        )
+        await _finish(
+            repo, run, transition.status, None, transition.error, transition.next_attempt_at, at
+        )
+        return RunResult(run.id, transition.status, error=transition.error)
+
     try:
         outcome = execute_run(
             executor,
@@ -85,6 +166,8 @@ async def run_one(
             env_entries=env_entries,
             resolve_secret=resolve_secret,
             sts_client=sts_client,
+            read_prefixes=plan.read_prefixes,
+            extra_env=input_env(run.id, plan.manifest_key),
         )
     except (ExecutorUnavailable, RunCredentialsError) as err:
         # OUR failure, not the process's: back to `queued` without spending an
