@@ -38,7 +38,14 @@ from pipeline.process.launch import (
 )
 from pipeline.process.logs import TRUNCATION_MARKER, cap, store_run_log
 from pipeline.process.memory_executor import MemoryExecutor
-from pipeline.storage.keys import InvalidKeySegment, run_log_key, run_staging_prefix
+from pipeline.storage.keys import (
+    InvalidKeySegment,
+    run_input_asset_key,
+    run_input_manifest_key,
+    run_inputs_prefix,
+    run_log_key,
+    run_staging_prefix,
+)
 
 RUN = "11111111-1111-4111-8111-111111111111"
 PROC = "22222222-2222-4222-8222-222222222222"
@@ -456,3 +463,25 @@ def test_execute_run_never_launches_when_credentials_fail():
             sts_client=FakeSts(error=RuntimeError("no sts")),
         )
     assert executor.launched == []
+
+
+# ---------------------------------------------------------------------------
+# the run's inputs area (GOES spec §3)
+# ---------------------------------------------------------------------------
+
+
+def test_input_keys_nest_under_the_run_prefix():
+    assert run_inputs_prefix(RUN) == f"staging/runs/{RUN}/inputs/"
+    assert run_input_manifest_key(RUN, "b1") == f"staging/runs/{RUN}/inputs/b1/manifest.json"
+    assert (
+        run_input_asset_key(RUN, "b1", "item-1", "OR_ABI.nc")
+        == f"staging/runs/{RUN}/inputs/b1/item-1/OR_ABI.nc"
+    )
+
+
+def test_input_asset_key_sanitizes_the_filename_and_refuses_bad_ids():
+    assert run_input_asset_key(RUN, "b1", "i", "../x y.nc").endswith("/i/x_y.nc")
+    with pytest.raises(InvalidKeySegment):
+        run_input_asset_key(RUN, "b1", "a/b", "f.nc")
+    with pytest.raises(InvalidKeySegment):
+        run_input_manifest_key(RUN, "b 1")

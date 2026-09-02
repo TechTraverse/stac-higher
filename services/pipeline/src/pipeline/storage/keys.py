@@ -116,6 +116,33 @@ def run_staging_prefix(run_id: str) -> str:
     return f"{STAGING_PREFIX}/runs/{run_id}/"
 
 
+INPUTS_SEGMENT = "inputs"
+
+
+def run_inputs_prefix(run_id: str) -> str:
+    """``staging/runs/{run_id}/inputs/`` — where the PLATFORM stages what a run
+    consumes (GOES spec §3). Inside the run prefix so the run's own credentials
+    can read it and the TTL sweep ages it out; finalize skips it."""
+    return f"{run_staging_prefix(run_id)}{INPUTS_SEGMENT}/"
+
+
+def run_input_manifest_key(run_id: str, batch_id: str) -> str:
+    """``staging/runs/{run_id}/inputs/{batch_id}/manifest.json``."""
+    if not _SAFE_IDENTITY.match(batch_id):
+        raise InvalidKeySegment(f"batch id is not a safe path segment: {batch_id!r}")
+    return f"{run_inputs_prefix(run_id)}{batch_id}/manifest.json"
+
+
+def run_input_asset_key(run_id: str, batch_id: str, item_id: str, filename: str) -> str:
+    """``staging/runs/{run_id}/inputs/{batch_id}/{item_id}/{filename}`` — a
+    remote asset staged for the run. The item id keeps same-named files of
+    different items apart; the filename is sanitized like every other key."""
+    if not _SAFE_IDENTITY.match(batch_id):
+        raise InvalidKeySegment(f"batch id is not a safe path segment: {batch_id!r}")
+    item_id = _safe_segment(item_id, field="item_id")
+    return f"{run_inputs_prefix(run_id)}{batch_id}/{item_id}/{sanitize_filename(filename)}"
+
+
 def run_log_key(process_id: str, run_id: str) -> str:
     """``logs/runs/{process_id}/{run_id}.log`` — the captured run log (§9,
     I-62), referenced from ``process_runs.log_ref``."""
