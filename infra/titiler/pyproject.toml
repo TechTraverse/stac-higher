@@ -8,8 +8,10 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.8"]
-# Only needed for tests/test_readers.py, which is skipped when absent.
-titiler = ["titiler.pgstac==1.7.2", "psycopg[binary]>=3.2"]
+# Only needed for tests/test_readers.py, which is skipped when absent. The
+# upstream `psycopg-binary` extra is psycopg[binary,pool]; titiler.pgstac.main
+# imports psycopg_pool at module load, so the bare psycopg is not enough.
+titiler = ["titiler.pgstac[psycopg-binary]==1.7.2"]
 
 [build-system]
 requires = ["hatchling"]
@@ -24,3 +26,16 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+
+[tool.ruff.lint]
+# Same explicit set as services/proxy-policy — ruff's defaults moved a lot in
+# 0.16 and would otherwise decide the rule surface per installed version.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
