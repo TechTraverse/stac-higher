@@ -1,8 +1,10 @@
 """S3 adapter — boto3 driven, run off the event loop via ``asyncio.to_thread``.
 
 Honors a custom ``endpoint`` (e.g. MinIO), ``region``, and
-``force_path_style``. ``test()`` performs a HEAD-bucket (falling back to a
-1-key list) so it proves both reachability and auth without listing the world.
+``force_path_style``. ``anonymous: true`` in the config (G-1) sends unsigned
+requests — public buckets such as NODD's need no credentials. ``test()``
+performs a HEAD-bucket (falling back to a 1-key list) so it proves both
+reachability and auth without listing the world.
 
 Egress hardening: :func:`resolve_pinned` resolves+validates the endpoint host
 once (fail-closed on any internal/metadata address). For a **custom http**
@@ -23,6 +25,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import boto3
+from botocore import UNSIGNED
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -93,10 +96,12 @@ class S3Adapter(StorageAdapter):
         credentials: dict[str, Any],
         allow_hosts: frozenset[str] = frozenset(),
     ) -> None:
-        self._bucket = config["bucket"]
-        self._region = config.get("region")
-        self._endpoint = config.get("endpoint")
-        self._force_path_style = bool(config.get("force_path_style", False))
+        cfg = parse_s3_config(config)
+        self._bucket = cfg.bucket
+        self._region = cfg.region
+        self._endpoint = cfg.endpoint
+        self._force_path_style = cfg.force_path_style
+        self._anonymous = cfg.anonymous
         self._creds = credentials
         self._allow_hosts = allow_hosts
 
@@ -133,12 +138,24 @@ class S3Adapter(StorageAdapter):
         return self._endpoint
 
     def _make_client(self, endpoint_url: str | None) -> Any:
-        boto_config = Config(
-            s3={"addressing_style": "path" if self._force_path_style else "auto"},
-            connect_timeout=10,
-            read_timeout=30,
-            retries={"max_attempts": 2},
-        )
+        config_kwargs: dict[str, Any] = {
+            "s3": {"addressing_style": "path" if self._force_path_style else "auto"},
+            "connect_timeout": 10,
+            "read_timeout": 30,
+            "retries": {"max_attempts": 2},
+        }
+        if self._anonymous:
+            # Public bucket (NODD): botocore skips signing entirely. Keys are
+            # deliberately NOT passed even if the envelope has some — an
+            # "anonymous" connection must behave identically whatever was
+            # stored, or the flag would lie.
+            config_kwargs["signature_version"] = UNSIGNED
+            return boto3.client(
+                "s3",
+                region_name=self._region,
+                endpoint_url=endpoint_url,
+                config=Config(**config_kwargs),
+            )
         return boto3.client(
             "s3",
             region_name=self._region,
@@ -146,7 +163,7 @@ class S3Adapter(StorageAdapter):
             aws_access_key_id=self._creds.get("access_key_id"),
             aws_secret_access_key=self._creds.get("secret_access_key"),
             aws_session_token=self._creds.get("session_token"),
-            config=boto_config,
+            config=Config(**config_kwargs),
         )
 
     async def test(self) -> TestResult:
