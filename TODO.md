@@ -169,7 +169,7 @@ G-7 get their plans when their dependencies have merged.
       config; credentials optional when set (UI hides the key fields); the
       adapter signs nothing (`botocore.UNSIGNED`); new contract fixture
       `s3-connection-config.json`. Plan: `2026-09-01-goes-g1-anonymous-s3.md`.
-- [ ] **G-2 · Process inputs + network profile (isolated only).** Spec §3, §4.
+- [x] **G-2 · Process inputs + network profile (isolated only).** Spec §3, §4.
       Staged `inputs/{batch_id}/` with `manifest.json`; platform-held assets
       granted read-only by source-collection prefix in the STS session policy,
       remote assets fetched through the matching reference-mode association's
