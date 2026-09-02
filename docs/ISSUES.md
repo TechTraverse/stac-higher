@@ -411,7 +411,9 @@ credentials see everything (I-1).
 the collection page advertises the titiler/tipg endpoints, not whether those
 services answer for the collection. Real gating needs the per-collection
 read-visibility layer (I-1) applied at/in front of the serving services. The
-UI copy says so. Revisit when I-1 lands.
+UI copy says so. Revisit when I-1 lands. The G-5 item preview obeys the same
+toggle and is not a gate either — it decides whether the page ASKS the tile
+server, not whether the tile server would answer.
 - Tracked in: `docs/serving.md`, migration 019; depends on I-1.
 
 ---

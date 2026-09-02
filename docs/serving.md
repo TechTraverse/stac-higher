@@ -32,6 +32,17 @@ Version pins follow eoAPI's tested combination for pgstac 0.9.x.
     (`{PUBLIC_TIPG_URL}/`). tipg serves database tables and functions, not
     STAC collections, so this is a stack-wide surface, linked for the OGC
     Features/Tiles API story rather than per-collection data.
+- **Item preview (G-5).** When a collection has serving on and an item carries
+  a `visual`-role (or GeoTIFF/COG-typed) asset, the product item page's
+  Geometry tab overlays that item's tiles beneath its footprint, taken from
+  the tile server's item TileJSON
+  (`{PUBLIC_TITILER_URL}/collections/{c}/items/{i}/WebMercatorQuad/tilejson.json?assets={asset}`),
+  with a link to titiler's own viewer. The read-only catalog browser never
+  does this. Every failure is silent — no tile server, no serving, no
+  previewable asset, or a tiler that cannot open the asset all mean "no
+  layer", never an error on the item page. URL builders and the asset picker
+  live in `app/src/lib/serving/`; the overlay is the shared
+  `RasterTileLayer`.
 - **Canonical hrefs are mapped in the tile server.** Items keep their
   app-relative `/api/assets/{collection}/{item}/{filename}` hrefs (ADR 0005 —
   bytes are only reachable through the app); the derived image rewrites them

@@ -2,6 +2,9 @@ import type { LayerSpecification } from "maplibre-gl";
 
 export const FOOTPRINT_SOURCE = "stac-footprints";
 export const EXTENT_SOURCE = "stac-extent";
+/** Raster preview overlay (G-5): tiles served by titiler-pgstac. */
+export const RASTER_PREVIEW_SOURCE = "stac-raster-preview";
+export const RASTER_PREVIEW_LAYER = "stac-raster-preview-layer";
 
 export const footprintFillLayer: LayerSpecification = {
   id: "stac-footprint-fill",

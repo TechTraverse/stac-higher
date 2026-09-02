@@ -41,6 +41,13 @@ export const collectionSettingsKeys = {
     [...collectionSettingsKeys.all(), collectionId] as const,
 };
 
+/** Tile-server (titiler-pgstac) reads — the item raster preview (G-5). */
+export const servingKeys = {
+  all: () => ["serving"] as const,
+  itemTileJson: (collectionId: string, itemId: string, assetKey: string) =>
+    [...servingKeys.all(), "item-tilejson", collectionId, itemId, assetKey] as const,
+};
+
 /** Alerts + monitoring surfaces (M2-B/M2-D). */
 export const alertKeys = {
   all: () => ["alerts"] as const,

@@ -18,6 +18,10 @@ import {
 } from "@/components/ui/dialog";
 import { Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { useCollectionSettings } from "@/lib/collections/settings-client";
+import { useItemTileJson } from "@/lib/serving/queries";
+import { pickPreviewAsset } from "@/lib/serving/preview";
+import { itemViewerUrl } from "@/lib/serving/urls";
 
 interface ItemDetailInnerProps {
   collectionId: string;
@@ -30,6 +34,27 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
   const { data: item, isLoading, error, refetch } = useItem(endpointUrl, collectionId, itemId);
   const deleteMutation = useDeleteItem(endpointUrl, collectionId);
   const [deleteOpen, setDeleteOpen] = useState(false);
+
+  // Raster preview (G-5). Hooks run unconditionally — above the loading and
+  // error returns — and the tile server is asked only when the collection
+  // advertises serving AND the item carries something a tiler can open. A
+  // failure here is silent by design: no tile server, no layer.
+  const { data: settings } = useCollectionSettings(collectionId);
+  const previewAsset = item ? pickPreviewAsset(item) : null;
+  const { data: tileJson } = useItemTileJson(
+    collectionId,
+    itemId,
+    previewAsset,
+    settings?.servingEnabled === true,
+  );
+  const rasterPreview =
+    tileJson && previewAsset
+      ? {
+          tiles: tileJson.tiles,
+          bounds: tileJson.bounds,
+          viewerUrl: itemViewerUrl(collectionId, itemId, previewAsset),
+        }
+      : undefined;
 
   const handleDelete = () => {
     deleteMutation.mutate(itemId, {
@@ -137,7 +162,7 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
           </div>
         </div>
 
-        <ItemDetailView item={item} />
+        <ItemDetailView item={item} rasterPreview={rasterPreview} />
 
         <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
           <DialogContent>

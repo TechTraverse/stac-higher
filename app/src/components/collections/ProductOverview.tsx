@@ -35,6 +35,7 @@ import {
   successRate,
   unanchoredAlerts,
 } from "@/components/layout/overview";
+import { collectionInfoUrl } from "@/lib/serving/urls";
 
 const HEALTH_LABEL: Record<LineageHealth, string> = {
   ok: "Healthy",
@@ -50,9 +51,8 @@ const HEALTH_BADGE: Record<LineageHealth, string> = {
   unknown: "border-border bg-muted text-muted-foreground",
 };
 
-/** Browser-facing OGC bases; defaults match the compose stack (docs/serving.md). */
-const TITILER_URL =
-  import.meta.env.PUBLIC_TITILER_URL ?? "http://localhost:8084";
+/** Browser-facing OGC bases; defaults match the compose stack (docs/serving.md).
+ *  The titiler base lives in lib/serving/urls (one definition, three surfaces). */
 const TIPG_URL = import.meta.env.PUBLIC_TIPG_URL ?? "http://localhost:8085";
 
 function EndpointRow({
@@ -242,7 +242,7 @@ export function ProductOverview({
               <>
                 <EndpointRow
                   label="Raster tiles"
-                  href={`${TITILER_URL}/collections/${encodeURIComponent(collectionId)}/info`}
+                  href={collectionInfoUrl(collectionId)}
                   note="titiler-pgstac"
                 />
                 <EndpointRow
