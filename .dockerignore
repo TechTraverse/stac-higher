@@ -30,5 +30,9 @@ services/proxy-policy/tests
 services/proxy-policy/uv.lock
 tests
 infra
+# The derived titiler image (-f infra/titiler/Dockerfile, repo-root context)
+# COPYs its package from infra/ — re-include just that package, nothing else
+# under infra/ (its tests, lockfile and README stay out).
+!infra/titiler/stac_higher_titiler
 *.md
 *.pptx
