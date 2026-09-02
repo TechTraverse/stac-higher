@@ -175,6 +175,7 @@ def test_s3_public_object_url_path_style_custom_endpoint():
         a.public_object_url("products/scene.tif")
         == "http://minio:9000/src-bucket/products/scene.tif"
     )
+    assert a.public_object_url("") == "http://minio:9000/src-bucket/"
 
 
 def test_s3_public_object_url_virtual_hosted_default_aws():
@@ -188,6 +189,9 @@ def test_s3_public_object_url_virtual_hosted_default_aws():
         a.public_object_url("products/scene.tif")
         == "https://src-bucket.s3.us-west-2.amazonaws.com/products/scene.tif"
     )
+    # The empty path is the BASE the process-input stager matches hrefs
+    # against (GOES spec §3.2) — it must end with the separator.
+    assert a.public_object_url("") == "https://src-bucket.s3.us-west-2.amazonaws.com/"
 
 
 def test_base_adapter_public_object_url_raises():
