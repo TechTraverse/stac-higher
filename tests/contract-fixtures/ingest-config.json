@@ -1,11 +1,14 @@
 {
-  "$comment": "Golden fixtures for the §5.1 ingest config cross-runtime contract (ISSUE I-53). Consumed by app/src/__tests__/contract-fixtures.test.ts (Zod, the strict write gatekeeper) and services/pipeline/tests/test_contract_fixtures.py (lenient reader that re-applies defaults). See README.md for the format and the accept/reject semantics.",
-  "minimal": { "source_path": "/out" },
+  "$comment": "Golden fixtures for the \u00a75.1 ingest config cross-runtime contract (ISSUE I-53). Consumed by app/src/__tests__/contract-fixtures.test.ts (Zod, the strict write gatekeeper) and services/pipeline/tests/test_contract_fixtures.py (lenient reader that re-applies defaults). See README.md for the format and the accept/reject semantics. `settle` (G-3) decides when a discovered file becomes eligible for FETCH; `auto` resolves against the connection protocol in the pipeline's effective_settle().",
+  "minimal": {
+    "source_path": "/out"
+  },
   "defaults": {
     "source_path": "/out",
     "include": [],
     "exclude": [],
     "poll_frequency_seconds": 300,
+    "settle": "auto",
     "storage_mode": "copy",
     "grouping": {
       "rule": "none",
@@ -21,7 +24,9 @@
   "cases": [
     {
       "name": "minimal",
-      "config": { "source_path": "/out" },
+      "config": {
+        "source_path": "/out"
+      },
       "app": "accept",
       "pipeline": "accept"
     },
@@ -38,7 +43,10 @@
           "timeout_seconds": 900,
           "on_timeout": "ingest_partial"
         },
-        "metadata": { "strategy": "raster_auto", "defaults": {} },
+        "metadata": {
+          "strategy": "raster_auto",
+          "defaults": {}
+        },
         "post_ingest": "leave"
       },
       "app": "accept",
@@ -48,8 +56,12 @@
       "name": "full-featured",
       "config": {
         "source_path": "/data/out",
-        "include": ["**/*.tif"],
-        "exclude": ["**/*.tmp"],
+        "include": [
+          "**/*.tif"
+        ],
+        "exclude": [
+          "**/*.tmp"
+        ],
         "poll_frequency_seconds": 600,
         "storage_mode": "copy",
         "grouping": {
@@ -59,8 +71,13 @@
         },
         "metadata": {
           "strategy": "sidecar",
-          "sidecar": { "pattern": "{basename}.xml", "parser": "generic_xml" },
-          "defaults": { "datetime": "2026-01-01T00:00:00Z" }
+          "sidecar": {
+            "pattern": "{basename}.xml",
+            "parser": "generic_xml"
+          },
+          "defaults": {
+            "datetime": "2026-01-01T00:00:00Z"
+          }
         },
         "post_ingest": "move:/archive"
       },
@@ -85,49 +102,75 @@
     },
     {
       "name": "empty source_path",
-      "config": { "source_path": "" },
+      "config": {
+        "source_path": ""
+      },
       "app": "reject",
       "pipeline": "reject"
     },
     {
       "name": "whitespace-only source_path",
-      "config": { "source_path": "   " },
+      "config": {
+        "source_path": "   "
+      },
       "app": "reject",
       "pipeline": "reject"
     },
     {
       "name": "unknown grouping rule",
-      "config": { "source_path": "/out", "grouping": { "rule": "bogus" } },
+      "config": {
+        "source_path": "/out",
+        "grouping": {
+          "rule": "bogus"
+        }
+      },
       "app": "reject",
       "pipeline": "reject"
     },
     {
       "name": "unknown grouping on_timeout",
-      "config": { "source_path": "/out", "grouping": { "on_timeout": "explode" } },
+      "config": {
+        "source_path": "/out",
+        "grouping": {
+          "on_timeout": "explode"
+        }
+      },
       "app": "reject",
       "pipeline": "reject"
     },
     {
       "name": "unknown storage_mode",
-      "config": { "source_path": "/out", "storage_mode": "s3" },
+      "config": {
+        "source_path": "/out",
+        "storage_mode": "s3"
+      },
       "app": "reject",
       "pipeline": "reject"
     },
     {
       "name": "include is not an array",
-      "config": { "source_path": "/out", "include": "*.tif" },
+      "config": {
+        "source_path": "/out",
+        "include": "*.tif"
+      },
       "app": "reject",
       "pipeline": "reject"
     },
     {
       "name": "unknown top-level key (writer strict, reader lenient)",
-      "config": { "source_path": "/out", "bogus": true },
+      "config": {
+        "source_path": "/out",
+        "bogus": true
+      },
       "app": "reject",
       "pipeline": "accept"
     },
     {
       "name": "poll below the 60s floor (writer-only constraint)",
-      "config": { "source_path": "/out", "poll_frequency_seconds": 30 },
+      "config": {
+        "source_path": "/out",
+        "poll_frequency_seconds": 30
+      },
       "app": "reject",
       "pipeline": "accept"
     },
@@ -143,15 +186,50 @@
     },
     {
       "name": "malformed post_ingest (writer validates the shape; reader carries it through)",
-      "config": { "source_path": "/out", "post_ingest": "shred" },
+      "config": {
+        "source_path": "/out",
+        "post_ingest": "shred"
+      },
       "app": "reject",
       "pipeline": "accept"
     },
     {
       "name": "grouping timeout as a numeric string (writer typed; reader coerces)",
-      "config": { "source_path": "/out", "grouping": { "timeout_seconds": "900" } },
+      "config": {
+        "source_path": "/out",
+        "grouping": {
+          "timeout_seconds": "900"
+        }
+      },
       "app": "reject",
       "pipeline": "accept"
+    },
+    {
+      "name": "settle immediate (s3 keys are atomically visible)",
+      "config": {
+        "source_path": "/out",
+        "settle": "immediate"
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "settle two_polls forced on any protocol",
+      "config": {
+        "source_path": "/out",
+        "settle": "two_polls"
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown settle mode",
+      "config": {
+        "source_path": "/out",
+        "settle": "sometimes"
+      },
+      "app": "reject",
+      "pipeline": "reject"
     }
   ]
 }

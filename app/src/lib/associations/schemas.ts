@@ -82,6 +82,11 @@ export const ingestConfigSchema = z
     // Procrastinate's periodic scheduler is 1-minute granular; a floor of 60s
     // keeps the poll interval meaningful (the pipeline models it as N ticks).
     poll_frequency_seconds: z.number().int().min(60).default(300),
+    // When a discovered file becomes eligible for FETCH (G-3). `auto` decides
+    // from the connection's protocol: s3 keys are atomically visible, so they
+    // settle on first sight; ftp/sftp uploads are visible mid-write and keep
+    // the unchanged-across-two-polls window.
+    settle: z.enum(["auto", "two_polls", "immediate"]).default("auto"),
     storage_mode: z.enum(STORAGE_MODES).default("copy"),
     // Function defaults so an omitted nested object is PARSED through its schema
     // (applying the inner field defaults) — `.default({})` would store a bare
