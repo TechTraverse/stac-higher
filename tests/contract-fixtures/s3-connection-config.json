@@ -1,0 +1,49 @@
+{
+  "$comment": "Golden fixture for the s3 connection `config` shape (connections.config jsonb for protocol = s3). Consumed by app/src/__tests__/contract-fixtures.test.ts (s3ConfigSchema — the strict writer) and services/pipeline/tests/test_contract_fixtures.py (parse_s3_config — the lenient reader). `anonymous` (G-1, GOES spec §8) means the pipeline sends UNSIGNED requests and the credentials envelope may be empty; the write gate makes credentials optional only when it is true (pinned in connections-schemas.test.ts, since credentials are not part of this document).",
+  "minimal": { "bucket": "noaa-goes19" },
+  "defaults": { "bucket": "noaa-goes19", "anonymous": false },
+  "cases": [
+    {
+      "name": "anonymous public bucket",
+      "config": { "bucket": "noaa-goes19", "region": "us-east-1", "anonymous": true },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "custom endpoint, path style, signed",
+      "config": { "bucket": "stac-higher", "endpoint": "http://minio:9000", "force_path_style": true, "anonymous": false },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "anonymous must be a boolean",
+      "config": { "bucket": "b", "anonymous": "yes" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "bucket is required",
+      "config": { "anonymous": true },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "blank bucket",
+      "config": { "bucket": "" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "endpoint must be a URL (writer); reader keeps it opaque",
+      "config": { "bucket": "b", "endpoint": "not a url" },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "unknown key (writer strict, reader lenient)",
+      "config": { "bucket": "b", "sse": "aws:kms" },
+      "app": "reject",
+      "pipeline": "accept"
+    }
+  ]
+}

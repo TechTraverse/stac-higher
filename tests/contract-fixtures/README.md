@@ -23,7 +23,10 @@ One JSON file per shape — the §5.1 configs (`ingest-config.json`,
 `schemas.ts`'s expectation schemas and `pipeline/flow/expectation.py`), and
 the webhook channel config since M2-C (`webhook-channel-config.json`,
 validated by `app/src/lib/notifications/schemas.ts` and
-`pipeline/notify/config.py`):
+`pipeline/notify/config.py`), and the s3 connection `config` since G-1
+(`s3-connection-config.json`, validated by `connections/schemas.ts`'s
+`s3ConfigSchema` and `pipeline/connections/adapters/s3.py`'s
+`parse_s3_config`):
 
 - `minimal` — the smallest valid document a client can submit.
 - `defaults` — the defaults-applied document the app writes for `minimal`

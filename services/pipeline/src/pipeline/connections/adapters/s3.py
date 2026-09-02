@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,6 +28,43 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from pipeline.connections.adapters.base import FileEntry, StorageAdapter, TestResult
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
+
+
+@dataclass(frozen=True)
+class S3Config:
+    """The parsed s3 connection ``config`` (cross-runtime contract —
+    ``tests/contract-fixtures/s3-connection-config.json``). Lenient reader:
+    unknown keys are ignored; the app's Zod schema is the strict writer."""
+
+    bucket: str
+    region: str | None = None
+    endpoint: str | None = None
+    force_path_style: bool = False
+    #: Public bucket: sign nothing, credentials may be empty (G-1).
+    anonymous: bool = False
+
+
+def parse_s3_config(raw: Any) -> S3Config:
+    if not isinstance(raw, dict):
+        raise ValueError("s3 config must be an object")
+    bucket = raw.get("bucket")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("s3 config.bucket is required")
+    anonymous = raw.get("anonymous", False)
+    if not isinstance(anonymous, bool):
+        raise ValueError("s3 config.anonymous must be a boolean")
+    force_path_style = raw.get("force_path_style", False)
+    if not isinstance(force_path_style, bool):
+        raise ValueError("s3 config.force_path_style must be a boolean")
+    region = raw.get("region")
+    endpoint = raw.get("endpoint")
+    return S3Config(
+        bucket=bucket,
+        region=str(region) if region else None,
+        endpoint=str(endpoint) if endpoint else None,
+        force_path_style=force_path_style,
+        anonymous=anonymous,
+    )
 
 
 def _endpoint_host(endpoint: str | None, region: str | None) -> str:

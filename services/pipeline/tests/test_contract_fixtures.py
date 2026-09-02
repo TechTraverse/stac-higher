@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from pipeline.connections.adapters.s3 import parse_s3_config
 from pipeline.delivery.config import parse_delivery_config
 from pipeline.finalize.status import StatusContractError, validate_status_doc
 from pipeline.flow.expectation import parse_delivery_expectation, parse_ingest_expectation
@@ -47,6 +48,7 @@ PROCESS_TRIGGER = _load("process-trigger.json")
 PROCESS_RUNTIME = _load("process-runtime.json")
 PROCESS_ENV = _load("process-env.json")
 PROCESS_EXPECTATION = _load("process-expectation.json")
+S3_CONFIG = _load("s3-connection-config.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -280,3 +282,13 @@ def test_process_alert_kinds_are_monitor_owned():
         assert kind in MONITOR_KINDS
         assert kind not in ALERT_KINDS["declared_kinds"]
 
+
+@pytest.mark.parametrize("case", S3_CONFIG["cases"], ids=lambda c: c["name"])
+def test_s3_config_cases(case):
+    _check(parse_s3_config, case)
+
+
+def test_s3_config_minimal_parses_to_defaults():
+    parsed = parse_s3_config(S3_CONFIG["minimal"])
+    for key, value in S3_CONFIG["defaults"].items():
+        assert getattr(parsed, key) == value
