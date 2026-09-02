@@ -287,7 +287,16 @@ through the ADR 0014 `finalize(process_run)` producer hooks
 event for free. A per-process `max_runs_per_hour` ceiling defers-and-coalesces
 rather than dropping (§7), and write-time cycle refusal over
 collection↔process edges (`lib/graph/edges.ts`, I-64) blocks the loops that
-ARE decidable. Process-author contract: **`docs/processes.md`**. Alerting (M5-E): the flow
+ARE decidable. **Inputs (G-2, ADR 0018)**: before launch the pipeline stages
+the triggering items into `staging/runs/{run_id}/inputs/{batch_id}/` with a
+`manifest.json` (fixture `process-input-manifest.json`; env
+`STAC_HIGHER_INPUT_PREFIX` / `STAC_HIGHER_INPUT_MANIFEST`) — platform-held
+assets are read in place via source-collection read grants in the STS session
+policy, remote ones are fetched through the owning reference-mode
+association's adapter (else an egress-checked public GET); finalize skips
+`inputs/`. Every revision carries `runtime.network` capped by
+`PROCESS_NETWORK_MAX` (slice 1: `isolated` only). Process-author contract:
+**`docs/processes.md`**. Alerting (M5-E): the flow
 monitor owns `process_stalled` (per SOURCE, I-63), `process_failed` and
 `process_rate_limited` (per process) — all three evaluated as observed
 conditions, anchored via migration 024's `alerts.process_id`/`source_id`.
