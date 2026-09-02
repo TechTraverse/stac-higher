@@ -573,3 +573,12 @@ parallel with M3. Slices G-1…G-7 in `TODO.md`.
 
 Cloud deployment, scale gate & visualization. See
 [`../ROADMAP.md`](../ROADMAP.md).
+
+**Planned (2026-09-02, ADR 0019 proposed):** process compute moves to
+**Kubernetes Jobs + Kueue** (Fargate has no GPU) with operator-chosen
+**hardware profiles** in the UI and a submit-then-reconcile executor. The
+local-buildable half (K-1…K-7: profile contract, UI picker, Docker parity,
+async executor + cancel, `KubernetesExecutor`, Kueue manifests + kind CI,
+CUDA image) is the K queue in `TODO.md`; the EKS deployment (K-8) and the
+gate (K-9) are Phase 8. Spec:
+`docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`.

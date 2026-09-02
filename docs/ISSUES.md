@@ -574,7 +574,15 @@ availability vs. a K8s Job. A backend pair that keeps local dev a single
 limits first-class), cloud ECS/Fargate RunTask in Phase 8 (available in
 GovCloud, ~30–45s cold start, vCPU quotas), K8s-Job-on-EKS fallback
 (EKS-on-Fargate absent in GovCloud). Details: ADR 0013 "Investigation".
-- Tracked in: ADR 0013 (accepted).
+**Cloud half RE-OPENED and re-decided 2026-09-02 (ADR 0019, proposed):**
+GPU/CUDA processes are a requirement and **Fargate has no GPU support**, so
+the ECS/Fargate recommendation is superseded — the cloud backend is
+Kubernetes Jobs + Kueue on EKS (Auto Mode, available in GovCloud), and the
+executor seam becomes submit-then-reconcile. The local `DockerExecutor`
+half stands. Closes again at the K-9 gate with measured queue-wait and
+cold-start numbers.
+- Tracked in: ADR 0013 (accepted; cloud half superseded), ADR 0019, the K
+  queue in `TODO.md`.
 
 ### I-62 · Run-log storage & retention 🟢 (settled 2026-08-29)
 **Settled by the approved Phase 9 spec (§9)**: `logs/runs/{process_id}/
@@ -687,6 +695,10 @@ the facade never fakes a verb the platform does not have.
 - Tracked in: here; [ADR 0016](decisions/0016-ogc-processes-conformance-posture.md);
   `services/pipeline/src/pipeline/process/docker_executor.py` (timeout is
   the existing kill path a cancel would reuse).
+- **Planned (2026-09-02):** lands with **K-4** (ADR 0019 spec §5.3) — the
+  submit-then-reconcile executor makes cancel a `cancel_requested_at` flag
+  the run watcher acts on; `cancelled` becomes a terminal status and the
+  audited verb + UI button ship with it. Status moves to 🟢 when K-4 merges.
 
 ### I-82 · The M3 byte-volume model is declared, not measured 🟡
 M3-S-B redid ROADMAP §2's arithmetic at 2.6M items/day against a **stated
@@ -825,6 +837,66 @@ used) or, once slice 2 lands, the `inputs` network level. Also: the public
 fetch connects by hostname after validation (the same TLS-endpoint rebind
 residual as I-2), and it buffers the object in memory like the adapters
 (I-19). Both are inherited, not new.
+
+## Process compute — Kubernetes + Kueue (K queue, 2026-09-02)
+
+Opened by `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`
+§15 and ADR 0019 (proposed). All five are design-time findings from
+primary-source research on 2026-09-02; none is measured yet.
+
+### I-92 · Kueue quota and Karpenter capacity are not linked 🟡
+Kueue's autoscaler admission check drives the ProvisioningRequest API,
+which cluster-autoscaler and GKE implement — **Karpenter does not** (its
+CapacityBuffer API is the intended replacement; kueue#9662 tracks the
+migration with no target release). On EKS, Kueue admits against its
+*nominal* quota, the pod goes Pending, and Karpenter reacts. So the
+ClusterQueue quota per flavor must be mirrored by hand to the NodePool
+`limits` (ADR 0019 invariant), and `waitForPodsReady` must evict an admitted
+job whose node never arrives back to the queue. A quota above the pool's
+ceiling admits jobs that never schedule.
+- Tracked in: ADR 0019; spec §7.3; K-6 (`waitForPodsReady`), K-8 (limits =
+  quota). Revisit when Kueue supports CapacityBuffer.
+
+### I-93 · Run credentials vs. queue wait 🟡
+Run-scoped STS credentials are minted before submit (they are in the Job's
+environment) and today last `max(900, timeout + grace)`. A run that waits
+two hours for a GPU would start with expired credentials. K-4 mints for
+`max_queue_wait + timeout + grace` and requeues (no attempt spent) any run
+still pending with less than `timeout + grace` left — losing its queue
+position. In EKS the pipeline's own credentials come from Pod Identity /
+IRSA, and `AssumeRole` from role credentials is **role chaining, capped at
+one hour**, which bounds cloud profiles' `max_queue_wait_seconds` unless the
+run role is assumed with web identity directly. Measure at K-9.
+- Tracked in: spec §5.4; K-4; K-9.
+
+### I-94 · Run logs are captured at exit only ⚪
+Both backends read the run's combined output once, at exit, capped at
+`process_log_max_bytes`. A Kubernetes pod lost to node failure loses its
+log entirely (`error = "log unavailable"`), and an hour-long GPU run has no
+live tail for the operator watching it. A rolling capture (periodic
+`pods/log` with `sinceTime`, appended to the `log_ref` object) is the
+follow-on; not in the K queue.
+- Tracked in: spec §6.1; here.
+
+### I-95 · GovCloud GPU families lag commercial regions 🟡
+Verified 2026-09-02 against the EC2 instance-type region table: neither
+GovCloud region has g5 (A10G), g6e (L40S) or g7/g7e (Blackwell RTX PRO);
+p4d/p5 are us-gov-west-1 only; p6-b300 is us-gov-east-1 only. Present in
+us-east-1 and both GovCloud regions: g4dn (T4), g6/gr6 (L4), p6-b200
+(B200). Profile files are therefore **per deployment/region** — the reason
+profiles are documents, not code. Also recorded here: PyTorch is not in the
+slice-1 CUDA image (cupy + numba only); demand for a `process-runtime-torch`
+variant is the signal to build one.
+- Tracked in: spec §10, §11.1; K-7, K-8.
+
+### I-96 · Per-group Kueue quotas deferred ⚪
+Slice 1 runs one ClusterQueue and one LocalQueue for every group; one
+group's burst can starve another's runs (priority classes separate test
+runs from triggered runs, not groups). Kueue's mapping is one ClusterQueue
+per group in a Cohort with fair-sharing weights (GA since v0.17); the
+profile's `queue` field and a per-run group label are in place so the split
+is a manifest + profile-file change.
+- Tracked in: spec §7.4; here.
 
 ## Resolved — archived
 

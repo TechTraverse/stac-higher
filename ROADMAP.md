@@ -498,9 +498,24 @@ existing rule, before any implementation.
   "image": null,                   // container kind only: user-supplied image reference
   "memory_mb": 512,
   "timeout_seconds": 900,
-  "retry": { "max_attempts": 3, "backoff": "exponential" }   // reuses the queue RetrySpec pattern
+  "retry": { "max_attempts": 3, "backoff": "exponential" },  // reuses the queue RetrySpec pattern
+  "network": { "level": "isolated", "hosts": [] },           // ADR 0018 (G-2)
+  "hardware": { "profile": "standard", "cpu": 1, "gpu_count": 0 }  // ADR 0019 (proposed 2026-09-02):
+                                   //   a named per-deployment hardware PROFILE plus
+                                   //   cpu / gpu_count within its bounds; memory_mb
+                                   //   is bounded by the profile too. Absent ⇒ "standard".
 }
 ```
+
+**Hardware profiles** (ADR 0019, proposed): the deployment publishes a
+profile document (`PROCESS_HARDWARE_PROFILES_FILE`, golden fixture
+`hardware-profiles.json`) — id, label, accelerator, cpu/memory/gpu bounds
+and defaults, a queue-wait promise, an optional runtime image, and a
+pipeline-only `backend` block (Kueue queue + node selector + tolerations,
+or Docker device requests + a concurrency cap). The app serves it at
+`GET /api/processes/hardware-profiles` and rejects deploys outside the
+bounds; the pipeline re-checks at launch. Nothing operator-facing names a
+cloud, an instance type or a Kubernetes selector.
 
 **Env secret-refs (extends §5.2):** `process_revisions.env` values that are
 secrets are **references** into the existing encrypted-credentials envelope —
@@ -676,6 +691,16 @@ flowchart LR
 - **Isolation:** user code never sees decrypted platform credentials, the DB,
   or canonical storage — it runs behind the ADR 0013 executor boundary and
   writes only to its run-scoped staging prefix (ADR 0014).
+- **Scheduling (ADR 0019, proposed 2026-09-02):** the executor is
+  **submit-then-reconcile** — the worker submits a run and returns; a
+  run watcher applies backend events (`pending_capacity` → `starting` →
+  `running` → exit) and the run tick reconciles stragglers. In cloud a run
+  is a **Kubernetes Job admitted by Kueue** (per-flavor quotas, priority
+  classes — test runs are `interactive` — and honest *waiting for
+  capacity* states); locally the Docker backend emulates the same states
+  with a per-profile concurrency cap. An audited **cancel** verb rides the
+  same seam (closes I-81). Design: `docs/superpowers/specs/
+  2026-09-02-process-compute-k8s-kueue-design.md`; queue: `TODO.md` K.
 - **Composition:** finalized output items emit ordinary outbox events, so
   they flow to delivery associations like any other item. A process whose
   output collection is also (transitively) a source is a **feedback loop** —
@@ -817,7 +842,7 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 5 — Delivery pipeline | ✅ Done (Slices A→D live/e2e-verified by 2026-07-25) | Outbox + NOTIFY dispatcher, delivery worker + payloads/policies, retry → dead-letter → redeliver, backfill bridge, Data-flow delivery UI. [FEATURES §Phase 5](docs/FEATURES.md). |
 | 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
 | 7 — Direct interaction | ✅ Done (gate met 2026-08-30) | All slices P7-B…P7-I merged (bearer auth, staged uploads, brokered BFF push path, finalize on the ADR 0014 seam, dispatcher gating, ADR 0015 proxy write policy, `push_rejected` alerting, `docs/push-ingest.md`); **P7-Z rehearsal closed the done-when live** (evidence under the Phase 7 entry below; two gate findings fixed — I-80). Open: the promotion PR (human) + human review of the provisionally-approved spec. [FEATURES §Phase 7](docs/FEATURES.md). |
-| 8 — Cloud, scale gate & viz | ⬜ Not started | — |
+| 8 — Cloud, scale gate & viz | ⬜ Not started | Process compute target re-decided 2026-09-02: **EKS + Kueue** (ADR 0019, proposed) replaces the ECS/Fargate run backend — Fargate has no GPU. The local-buildable half (profiles, UI, async executor, kind CI) is the K queue in `TODO.md`. |
 | 9 — Processes | ✅ **Gate met 2026-08-31** (M5-G) | All slices M5-0…M5-F merged and the §1 done-when rehearsed live on the auth-enforced stack — evidence below. Two findings fixed during the rehearsal (item_event revision resolution; the run network could not reach object storage). Remaining human work: the promotion PR. |
 
 ### Named milestones (2026-07-24)
@@ -1018,7 +1043,12 @@ there are no intermediate demos; the first demo is M1, complete:
   the workers in full copy mode, and reference mode corrected to a storage
   lever rather than a bandwidth one.
 - **M4 — Production deployment** (Phases 7–8 as required by the target
-  environment).
+  environment). **Process compute (added 2026-09-02, ADR 0019 proposed):**
+  runs execute as Kubernetes Jobs admitted by Kueue on EKS (Auto Mode),
+  one Karpenter NodePool per GPU flavor with limits equal to the Kueue
+  quota, operators choosing a **hardware profile** in the UI. The K queue's
+  gate (spec §2) has a local CPU-only leg and an EKS GPU leg; the latter is
+  M4 work.
 - **M5 — Processes** (Phase 9, proposed 2026-08-27): user-defined
   transformations as the third flow primitive — group-owned processes with
   immutable revisions, isolated execution (ADR 0013), staged-then-finalized
@@ -1080,9 +1110,25 @@ provisionally approved; human review of spec + code pending):
   M-gate style) and the promotion PR remain.
 
 ### Phase 8 — Cloud deployment, scale gate & visualization ⬜ **Not started**
-- AWS stack via eoapi-cdk extended: RDS (pgstac), S3, KMS, ECS/Fargate (app,
-  pipeline, proxies), Cognito-or-Keycloak decision per deployment
-  (GovCloud-compatible service choices).
+- AWS stack via eoapi-cdk extended: RDS (pgstac), S3, KMS, Cognito-or-
+  Keycloak decision per deployment (GovCloud-compatible service choices).
+  **Where the app, pipeline and proxies run is an open Phase 8 question**
+  (2026-09-02): ECS/Fargate as originally planned, or co-located on the
+  EKS cluster that process compute now requires (separate namespaces —
+  likely simpler than two orchestrators). Decide in the Phase 8 spec.
+- **Process compute: EKS + Kueue (ADR 0019, proposed 2026-09-02).** EKS
+  Auto Mode (managed Karpenter, NVIDIA driver + device plugin built in,
+  available in both GovCloud regions), Kueue v0.19+ on Kubernetes 1.34+,
+  one ResourceFlavor + Karpenter NodePool per GPU profile with **NodePool
+  limits = Kueue nominal quota** (Karpenter does not implement Kueue's
+  ProvisioningRequest — I-92), `waitForPodsReady` on, a dedicated
+  `stac-higher-runs` namespace with default-deny NetworkPolicy, the
+  pipeline on a namespaced Role via Pod Identity, ECR with mirrored base
+  images (no ECR Public in GovCloud), the CUDA runtime image. Portable
+  GPU profile set across us-east-1 and both GovCloud regions: `gpu-t4`
+  (g4dn), `gpu-l4` (g6), `gpu-b200` (p6-b200); `gpu-a100`/`gpu-h100` are
+  us-gov-west-1 only; g5/g6e/g7 are absent from GovCloud (I-95). The
+  executor/profile/UI half is local-buildable and precedes this (K-1…K-7).
 - **SQS queue backend** behind the Phase-0 interface; deployment config picks
   Procrastinate or SQS.
 - **Load-test gate:** drive the envelope (100k items/day ingest + delivery
@@ -1279,11 +1325,20 @@ Also exercised beyond the six:
   amplifier; per-process rate/backlog limits belong in the design spec.
 - **Untrusted user code in a FISMA-High-bound platform (Phase 9):** the
   executor boundary (ADR 0013) is a new, security-critical surface — local
-  dev (docker socket availability) and GovCloud (Fargate task quotas,
-  image-registry policy) may force different backends behind the interface
-  (I-61), and the container path adds image supply-chain review to the
-  compliance story. The inline-editor frontend dependency (CodeMirror vs.
+  dev (docker socket availability) and GovCloud (image-registry policy)
+  force different backends behind the interface (I-61; **the cloud backend
+  is now Kubernetes + Kueue, ADR 0019** — Fargate has no GPU), and the
+  container path adds image supply-chain review to the compliance story;
+  the CUDA runtime image (K-7) is the first addition to that surface. The inline-editor frontend dependency (CodeMirror vs.
   Monaco) needs its own supply-chain review before adoption (I-65).
+- **GPU capacity, cost and queue wait (ADR 0019, 2026-09-02):** Kueue
+  quota and Karpenter capacity are linked by hand (I-92); a GPU node from
+  zero takes minutes, a warm pool costs money per hour, and run
+  credentials must outlive the queue wait or the run requeues and loses
+  its place (I-93 — role chaining caps STS sessions at one hour in EKS).
+  GovCloud lacks the popular commercial GPU families (I-95). Per-group
+  fairness is deferred (I-96): one shared queue can let one group starve
+  another. All four are measured, not assumed, at the K-9 gate.
 - **Process feedback loops:** output→source cycles (direct, or transitive
   through delivery→re-ingest edges) can run away silently; the refusal
   check's scope is an open question (I-64) — too narrow misses real loops,

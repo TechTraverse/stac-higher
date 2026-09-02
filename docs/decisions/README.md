@@ -18,12 +18,13 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0010](0010-alerting-notifications.md) | Alerting & notification model | accepted | 6 (M2-B/C) |
 | [0011](0011-retention-gc.md) | Retention & GC: one marked-then-collected queue | accepted | 6 (M2-F) |
 | [0012](0012-table-hygiene.md) | High-volume table hygiene: partition two, sweep three | accepted | 6 (M2-G) |
-| [0013](0013-process-executor-isolation.md) | Process executor isolation | accepted (2026-08-29) | 9 (M5) |
+| [0013](0013-process-executor-isolation.md) | Process executor isolation | accepted (2026-08-29); cloud-backend recommendation superseded by 0019 | 9 (M5) |
 | [0014](0014-process-output-path.md) | Process output path: staging + platform finalize | accepted (2026-08-29) | 9 (M5) |
 | [0015](0015-proxy-write-policy.md) | Proxy write policy: custom filter factory enforcing `externally_writable` | accepted (2026-08-30) | 7 |
 | [0016](0016-ogc-processes-conformance-posture.md) | OGC API — Processes conformance posture | accepted (2026-08-31) | 9 (post-gate) |
 | [0017](0017-product-centric-ui-shell.md) | Product-centric UI shell, NOAA theme, terminology adoption | accepted (2026-08-31) | UI remodel |
 | [0018](0018-process-inputs-and-network-profiles.md) | Process inputs (staged manifest + source-collection read grants) and network profiles | accepted (2026-09-01) | GOES loop (G-2) |
+| [0019](0019-process-compute-kubernetes-kueue.md) | Process compute: Kubernetes Jobs + Kueue, hardware profiles as the portable vocabulary | proposed (2026-09-02; supersedes 0013's cloud-backend half) | K queue / Phase 8 |
 
 Proposed ADRs establish no invariants until accepted (via the Phase 9 design
 spec); their draft invariants live inside the documents.
@@ -43,10 +44,11 @@ spec); their draft invariants live inside the documents.
 - **0011** — `asset_gc` is the ONLY path by which canonical bytes are deleted, and every mark carries a grace window from `gc_grace_days`. Mark-first-then-delete ordering is invariant (a crash must never orphan bytes). Sweeps touch only collections with declared retention or `archived` — an unconfigured platform deletes nothing. Archive expires all items ("delete the data, keep the record"); reference-mode association delete removes its items (aligned with connection delete).
 - **0012** — `item_events`/`audit_log` are monthly-partitioned (attach-don't-copy; reconcile provisions two months ahead on every runMigrations). `delivery_log`/`ingest_files` are NEVER time-partitioned (their UNIQUE keys are the upsert model) — they age out via the conservative `history_retention` sweep, which only prunes soft-deleted-association rows and itemless terminal deliveries. Audit rows die ONLY by partition drop (DETACH+DROP — the sanctioned escape hatch past the append-only triggers).
 - **0018** — A run's read access outside its own prefix is limited to the canonical prefixes of its **source collections** (`assets/{collection}/*`), granted read-only in the STS session policy — never by platform keys; remote inputs are staged INTO the run prefix by the platform (through the owning reference-mode association's adapter, else an egress-checked public GET) before any container exists, and finalize never treats `inputs/` as output. A revision's `network.level` never exceeds `PROCESS_NETWORK_MAX`; the pipeline enforces the cap at launch independently of the app's write gate (slice 1: `isolated` only).
+- **0019** *(proposed)* — Hardware is expressed ONLY as a named **profile** plus CPU/memory/GPU counts within its bounds; nothing operator-facing names a cloud, instance type or Kubernetes selector. Bounds and profile existence are enforced at the app's write gate AND at launch. A run never holds a pipeline worker slot for its duration (submit-then-reconcile). Kueue nominal quota never exceeds the node pool's provisioning ceiling for the same flavor. Run credentials cover the promised queue wait plus the timeout, else the run requeues without spending an attempt — no credential endpoint is reachable from inside a run.
 
 ## Adding an ADR
 
 1. Copy the format of an existing record: a `# ADR NNNN — Title` heading, then **Status**, **Context**, **Decision**, **Consequences** (and **Revisit** if the choice is expected to be reconsidered).
-2. Number sequentially (next: `0019`).
+2. Number sequentially (next: `0020`).
 3. Add a row to the index above and, if it changes an invariant, note it in "Key invariants."
 4. ADRs are immutable once accepted — supersede with a new ADR rather than editing history; mark the old one `superseded by NNNN`.
