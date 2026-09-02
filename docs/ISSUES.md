@@ -800,6 +800,30 @@ private/loopback targets). Narrowing it is an `/api/*` change and needs the
 
 ---
 
+## GOES GeoColor loop (G queue, 2026-09-01)
+
+### I-90 · STS inline-policy size caps a run's source collections at 8 🟡
+A run's session policy (ADR 0018) grants read on each SOURCE collection's
+canonical prefix. Real STS caps an inline session policy at 2048 characters
+(MinIO is laxer), so `mint_run_credentials` refuses more than
+`MAX_READ_PREFIXES = 8` source collections with a clear error rather than
+minting a policy STS would reject. Typical processes have 1–3 sources. The
+cloud backend (Phase 8) must re-measure against real STS with long collection
+ids and either raise the bound, move to a managed policy per process, or grant
+by tag.
+
+### I-91 · Remote inputs without a matching association use an unauthenticated public GET 🟡
+When a triggering item's asset href is absolute and no **enabled**
+reference-mode ingest association's connection claims it
+(`adapter.public_object_url("")` prefix match), the pipeline stages it with
+`connections/http_fetch.fetch_public_url` — HTTPS only, `resolve_pinned`
+first, no redirects, size-capped, but **no credentials**. A private
+reference source therefore needs its association enabled (so its adapter is
+used) or, once slice 2 lands, the `inputs` network level. Also: the public
+fetch connects by hostname after validation (the same TLS-endpoint rebind
+residual as I-2), and it buffers the object in memory like the adapters
+(I-19). Both are inherited, not new.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

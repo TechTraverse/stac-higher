@@ -39,7 +39,16 @@ import {
   useSources,
   useUpdateProcess,
 } from "@/lib/processes/queries";
-import type { ProcessEnv } from "@/lib/processes/schemas";
+import {
+  PROCESS_NETWORK_LEVELS,
+  type NetworkLevel,
+  type ProcessEnv,
+} from "@/lib/processes/schemas";
+import {
+  DEFAULT_NETWORK_MAX,
+  getNetworkMax,
+  networkLevelWithinCap,
+} from "@/lib/processes/network";
 import type {
   Process,
   ProcessCheck,
@@ -194,7 +203,38 @@ function SettingsCard({
 // code + deploy
 // ---------------------------------------------------------------------------
 
-function CodeCard({
+/**
+ * Network profile options (GOES spec §4). Slice 1 realises `isolated` only:
+ * the other levels are shown, disabled, so the operator can see what is
+ * coming — and the cap (`PUBLIC_PROCESS_NETWORK_MAX`, the UI mirror of the
+ * pipeline's `PROCESS_NETWORK_MAX`) is read now so nothing changes shape
+ * when the egress proxy lands.
+ */
+const NETWORK_LEVEL_LABELS: Record<NetworkLevel, string> = {
+  isolated: "Isolated (platform storage only)",
+  inputs: "Inputs (hosts of the input assets)",
+  hosts: "Named hosts",
+  open: "Open internet",
+};
+
+/** The write gate stores only `isolated` this slice (see `schemas.ts`). */
+const NETWORK_LEVELS_AVAILABLE: readonly NetworkLevel[] = ["isolated"];
+
+function readUiNetworkMax(): NetworkLevel {
+  try {
+    return getNetworkMax({
+      PROCESS_NETWORK_MAX: import.meta.env.PUBLIC_PROCESS_NETWORK_MAX as
+        | string
+        | undefined,
+    });
+  } catch {
+    // A misconfigured mirror must not break the page; the pipeline enforces
+    // the real cap at launch regardless of what the form offered.
+    return DEFAULT_NETWORK_MAX;
+  }
+}
+
+export function CodeCard({
   id,
   groupId,
   currentCode,
@@ -213,6 +253,8 @@ function CodeCard({
   const [env, setEnv] = useState<ProcessEnv>(currentEnv);
   const [memoryMb, setMemoryMb] = useState(512);
   const [timeoutSeconds, setTimeoutSeconds] = useState(900);
+  const [networkLevel, setNetworkLevel] = useState<NetworkLevel>("isolated");
+  const networkMax = readUiNetworkMax();
   const deployMutation = useDeployRevision();
   // Every connection the caller can see; EnvEditor narrows to the PROCESS's
   // group, which is the scope a secret_ref may name.
@@ -241,6 +283,9 @@ function CodeCard({
             memory_mb: memoryMb,
             timeout_seconds: timeoutSeconds,
             retry: { max_attempts: 3, backoff: "exponential" },
+            // Slice 1: `hosts` is only meaningful at the `hosts` level, which
+            // the write gate does not accept yet.
+            network: { level: networkLevel, hosts: [] },
           },
           code,
           env,
@@ -302,6 +347,37 @@ function CodeCard({
               onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
             />
           </div>
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="network-level">Network access</Label>
+          {/* Plain <select>, like the env and trigger-kind pickers on this
+              page: a small native control with disabled options. */}
+          <select
+            id="network-level"
+            aria-label="Network access"
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-sm"
+            value={networkLevel}
+            disabled={!canMutate}
+            onChange={(e) => setNetworkLevel(e.target.value as NetworkLevel)}
+          >
+            {PROCESS_NETWORK_LEVELS.map((level) => (
+              <option
+                key={level}
+                value={level}
+                disabled={
+                  !NETWORK_LEVELS_AVAILABLE.includes(level) ||
+                  !networkLevelWithinCap(level, networkMax)
+                }
+              >
+                {NETWORK_LEVEL_LABELS[level]}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            Slice 1 runs every process isolated; inputs are staged into the run.
+            Higher levels arrive with the egress proxy and are enabled per
+            deployment (PROCESS_NETWORK_MAX).
+          </p>
         </div>
         {canMutate && (
           <div className="flex items-center gap-3">

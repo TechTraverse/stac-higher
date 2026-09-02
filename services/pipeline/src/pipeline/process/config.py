@@ -43,6 +43,15 @@ DEFAULT_MEMORY_MB = 512
 DEFAULT_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_ATTEMPTS = 3
 
+#: Network profile levels (GOES spec §4), ORDERED lowest first — the
+#: PROCESS_NETWORK_MAX cap compares positions. Slice 1 realises only
+#: ``isolated``; the others are carried so no revision changes meaning when
+#: the egress proxy (spec §11) lands.
+NETWORK_LEVELS = ("isolated", "inputs", "hosts", "open")
+DEFAULT_NETWORK_LEVEL = "isolated"
+#: A `hosts` entry is a bare hostname: no scheme, no port, no whitespace.
+_HOST_FORBIDDEN = set("/: \t\n")
+
 #: Structural five-field cron, matching ``cronScheduleSchema``. Deliberately
 #: not semantic: the scheduler is the authority on whether a structurally valid
 #: schedule ever fires.
@@ -156,6 +165,32 @@ class ProcessRuntime:
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     backoff: str = "exponential"
+    #: GOES spec §4 — one of NETWORK_LEVELS; `hosts` is non-empty iff the
+    #: level is "hosts".
+    network_level: str = DEFAULT_NETWORK_LEVEL
+    network_hosts: tuple[str, ...] = ()
+
+
+def _parse_network(raw: Any) -> tuple[str, tuple[str, ...]]:
+    if raw is None:
+        return DEFAULT_NETWORK_LEVEL, ()
+    doc = _obj(raw, "runtime.network")
+    level = _enum(
+        doc.get("level"), NETWORK_LEVELS, "runtime.network.level", default=DEFAULT_NETWORK_LEVEL
+    )
+    hosts_raw = doc.get("hosts", [])
+    if hosts_raw is None:
+        hosts_raw = []
+    if not isinstance(hosts_raw, list) or not all(isinstance(h, str) for h in hosts_raw):
+        raise ProcessConfigError("runtime.network.hosts must be a list of strings")
+    hosts = tuple(h.strip() for h in hosts_raw)
+    if any(not h or _HOST_FORBIDDEN & set(h) for h in hosts):
+        raise ProcessConfigError("runtime.network.hosts entries must be bare hostnames")
+    if level == "hosts" and not hosts:
+        raise ProcessConfigError("runtime.network.level 'hosts' requires a non-empty hosts list")
+    if level != "hosts" and hosts:
+        raise ProcessConfigError("runtime.network.hosts is only allowed with level 'hosts'")
+    return level, hosts
 
 
 def parse_process_runtime(raw: Any) -> ProcessRuntime:
@@ -170,10 +205,13 @@ def parse_process_runtime(raw: Any) -> ProcessRuntime:
     if retry_raw is None:
         retry_raw = {}
     retry = _obj(retry_raw, "runtime.retry")
+    network_level, network_hosts = _parse_network(doc.get("network"))
 
     return ProcessRuntime(
         kind=kind,
         image=image,
+        network_level=network_level,
+        network_hosts=network_hosts,
         memory_mb=_int_in_range(
             doc.get("memory_mb"),
             "runtime.memory_mb",

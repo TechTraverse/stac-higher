@@ -13,7 +13,14 @@ import json
 import pytest
 
 from pipeline.config import Settings
-from pipeline.process.config import EnvEntry, ProcessRuntime, SecretRef
+from pipeline.process.config import (
+    NETWORK_LEVELS,
+    EnvEntry,
+    ProcessConfigError,
+    ProcessRuntime,
+    SecretRef,
+    parse_process_runtime,
+)
 from pipeline.process.credentials import (
     RunCredentials,
     RunCredentialsError,
@@ -30,15 +37,25 @@ from pipeline.process.docker_executor import (
     encode_code,
 )
 from pipeline.process.executor import ExecutorUnavailable, ExitStatus, RunHandle
+from pipeline.process.inputs import input_env
 from pipeline.process.launch import (
+    NetworkCapExceeded,
     SecretResolutionError,
     build_run_spec,
+    check_network_cap,
     execute_run,
     resolve_env,
 )
 from pipeline.process.logs import TRUNCATION_MARKER, cap, store_run_log
 from pipeline.process.memory_executor import MemoryExecutor
-from pipeline.storage.keys import InvalidKeySegment, run_log_key, run_staging_prefix
+from pipeline.storage.keys import (
+    InvalidKeySegment,
+    run_input_asset_key,
+    run_input_manifest_key,
+    run_inputs_prefix,
+    run_log_key,
+    run_staging_prefix,
+)
 
 RUN = "11111111-1111-4111-8111-111111111111"
 PROC = "22222222-2222-4222-8222-222222222222"
@@ -321,6 +338,64 @@ def test_session_policy_is_bounded_to_the_run_prefix():
     )
 
 
+def test_session_policy_grants_read_only_on_source_collection_prefixes():
+    """GOES spec §3.2: platform-held inputs are not copied — the run reads
+    them in place, so the policy grants GetObject on each SOURCE collection's
+    canonical prefix and nothing wider."""
+    policy = session_policy(
+        "stac-higher", f"staging/runs/{RUN}/", ["assets/goes/", "assets/other/"]
+    )
+    sids = {s["Sid"]: s for s in policy["Statement"]}
+    read = sids["SourceCollectionsRead"]
+    assert read["Action"] == ["s3:GetObject"]
+    assert read["Resource"] == [
+        "arn:aws:s3:::stac-higher/assets/goes/*",
+        "arn:aws:s3:::stac-higher/assets/other/*",
+    ]
+    # The bucket-level ListBucket condition now names the read prefixes too.
+    prefixes = sids["RunPrefixList"]["Condition"]["StringLike"]["s3:prefix"]
+    assert f"staging/runs/{RUN}/*" in prefixes
+    assert "assets/goes/*" in prefixes and "assets/other/*" in prefixes
+    # Nothing grants Put/Delete outside the run prefix.
+    for st in policy["Statement"]:
+        if st["Sid"] != "RunPrefixObjects":
+            assert "s3:PutObject" not in st["Action"] and "s3:DeleteObject" not in st["Action"]
+
+
+def test_session_policy_without_read_prefixes_is_unchanged():
+    policy = session_policy("b", "staging/runs/x/")
+    assert [s["Sid"] for s in policy["Statement"]] == ["RunPrefixObjects", "RunPrefixList"]
+
+
+def test_too_many_read_prefixes_refuses_to_mint():
+    class Sts:
+        def assume_role(self, **kw):  # pragma: no cover - never reached
+            raise AssertionError("must not be called")
+
+    with pytest.raises(RunCredentialsError, match="read prefixes"):
+        mint_run_credentials(
+            settings(),
+            RUN,
+            60,
+            sts_client=Sts(),
+            read_prefixes=[f"assets/c{i}/" for i in range(9)],
+        )
+
+
+def test_mint_passes_read_prefixes_into_the_policy():
+    seen = {}
+
+    class Sts:
+        def assume_role(self, **kw):
+            seen.update(kw)
+            return {
+                "Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}
+            }
+
+    mint_run_credentials(settings(), RUN, 60, sts_client=Sts(), read_prefixes=["assets/goes/"])
+    assert "assets/goes/*" in seen["Policy"]
+
+
 class FakeSts:
     def __init__(self, response=None, error=None):
         self.response = response
@@ -456,3 +531,113 @@ def test_execute_run_never_launches_when_credentials_fail():
             sts_client=FakeSts(error=RuntimeError("no sts")),
         )
     assert executor.launched == []
+
+
+# ---------------------------------------------------------------------------
+# the run's inputs area (GOES spec §3)
+# ---------------------------------------------------------------------------
+
+
+def test_input_keys_nest_under_the_run_prefix():
+    assert run_inputs_prefix(RUN) == f"staging/runs/{RUN}/inputs/"
+    assert run_input_manifest_key(RUN, "b1") == f"staging/runs/{RUN}/inputs/b1/manifest.json"
+    assert (
+        run_input_asset_key(RUN, "b1", "item-1", "OR_ABI.nc")
+        == f"staging/runs/{RUN}/inputs/b1/item-1/OR_ABI.nc"
+    )
+
+
+def test_input_asset_key_sanitizes_the_filename_and_refuses_bad_ids():
+    assert run_input_asset_key(RUN, "b1", "i", "../x y.nc").endswith("/i/x_y.nc")
+    with pytest.raises(InvalidKeySegment):
+        run_input_asset_key(RUN, "b1", "a/b", "f.nc")
+    with pytest.raises(InvalidKeySegment):
+        run_input_manifest_key(RUN, "b 1")
+
+
+# ---------------------------------------------------------------------------
+# network profile (GOES spec §4)
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_network_defaults_to_isolated():
+    rt = parse_process_runtime({"kind": "inline_python"})
+    assert rt.network_level == "isolated" and rt.network_hosts == ()
+
+
+def test_runtime_network_hosts_level_requires_hosts_and_vice_versa():
+    rt = parse_process_runtime(
+        {"kind": "inline_python", "network": {"level": "hosts", "hosts": ["api.example.com"]}}
+    )
+    assert rt.network_hosts == ("api.example.com",)
+    with pytest.raises(ProcessConfigError):
+        parse_process_runtime({"kind": "inline_python", "network": {"level": "hosts", "hosts": []}})
+    with pytest.raises(ProcessConfigError):
+        parse_process_runtime(
+            {"kind": "inline_python", "network": {"level": "open", "hosts": ["x.y"]}}
+        )
+    with pytest.raises(ProcessConfigError):
+        parse_process_runtime({"kind": "inline_python", "network": {"level": "lan"}})
+    with pytest.raises(ProcessConfigError):
+        parse_process_runtime(
+            {"kind": "inline_python", "network": {"level": "hosts", "hosts": ["https://x.y"]}}
+        )
+
+
+def test_network_levels_are_ordered_lowest_first():
+    assert NETWORK_LEVELS == ("isolated", "inputs", "hosts", "open")
+
+
+def test_network_cap_refuses_a_level_above_the_deployment_maximum():
+    rt = parse_process_runtime({"kind": "inline_python", "network": {"level": "open"}})
+    with pytest.raises(NetworkCapExceeded, match="PROCESS_NETWORK_MAX"):
+        check_network_cap(rt, settings())  # default cap: isolated
+    check_network_cap(rt, settings(PROCESS_NETWORK_MAX="open"))
+    check_network_cap(parse_process_runtime({"kind": "inline_python"}), settings())
+
+
+def test_invalid_network_max_env_is_rejected_at_startup():
+    with pytest.raises(ValueError, match="PROCESS_NETWORK_MAX"):
+        settings(PROCESS_NETWORK_MAX="everything")
+
+
+# ---------------------------------------------------------------------------
+# inputs reach the run (GOES spec §3)
+# ---------------------------------------------------------------------------
+
+
+def test_run_env_includes_the_input_variables_and_platform_values_still_win():
+    creds = RunCredentials("a", "s", "t", "stac-higher", f"staging/runs/{RUN}/", None, "us-east-1")
+    spec = build_run_spec(
+        settings(),
+        run_id=RUN,
+        process_id=PROC,
+        runtime=ProcessRuntime(kind="inline_python"),
+        code="print(1)",
+        env={"STAC_HIGHER_INPUT_MANIFEST": "spoofed", "MINE": "1"},
+        credentials=creds,
+        extra_env=input_env(RUN, f"staging/runs/{RUN}/inputs/b/manifest.json"),
+    )
+    assert spec.env["STAC_HIGHER_INPUT_PREFIX"] == f"staging/runs/{RUN}/inputs/"
+    assert spec.env["STAC_HIGHER_INPUT_MANIFEST"] == f"staging/runs/{RUN}/inputs/b/manifest.json"
+    assert spec.env["MINE"] == "1"
+
+
+def test_execute_run_mints_with_read_prefixes():
+    sts = FakeSts(
+        {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}}
+    )
+    execute_run(
+        MemoryExecutor(),
+        settings(),
+        FakeStore(),
+        run_id=RUN,
+        process_id=PROC,
+        runtime=ProcessRuntime(kind="inline_python"),
+        code="pass",
+        env_entries=(),
+        resolve_secret=lambda ref: "",
+        sts_client=sts,
+        read_prefixes=["assets/goes/"],
+    )
+    assert "assets/goes/*" in sts.kwargs["Policy"]

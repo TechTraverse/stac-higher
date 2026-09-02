@@ -49,6 +49,7 @@ PROCESS_RUNTIME = _load("process-runtime.json")
 PROCESS_ENV = _load("process-env.json")
 PROCESS_EXPECTATION = _load("process-expectation.json")
 S3_CONFIG = _load("s3-connection-config.json")
+PROCESS_INPUT_MANIFEST = _load("process-input-manifest.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -241,6 +242,8 @@ def test_process_runtime_defaults_match_golden():
         assert runtime.timeout_seconds == golden["timeout_seconds"]
         assert runtime.max_attempts == golden["retry"]["max_attempts"]
         assert runtime.backoff == golden["retry"]["backoff"]
+        assert runtime.network_level == golden["network"]["level"]
+        assert tuple(runtime.network_hosts) == tuple(golden["network"]["hosts"])
 
     # The module constants ARE those defaults — a drift here would let the
     # dataclass and the fixture disagree without any case failing.
@@ -292,3 +295,11 @@ def test_s3_config_minimal_parses_to_defaults():
     parsed = parse_s3_config(S3_CONFIG["minimal"])
     for key, value in S3_CONFIG["defaults"].items():
         assert getattr(parsed, key) == value
+
+
+def test_process_input_manifest_fixture_is_registered():
+    """Producer-golden (GOES spec §3.1): the pipeline is the only writer, so
+    the real assertion lives in test_process_inputs.py. This keeps the file
+    loaded where the README says every fixture is loaded."""
+    assert PROCESS_INPUT_MANIFEST["style"] == "producer-golden"
+    assert PROCESS_INPUT_MANIFEST["version"] == 1

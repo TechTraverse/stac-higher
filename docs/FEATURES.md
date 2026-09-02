@@ -556,6 +556,16 @@ believing either).
 
 ---
 
+## GOES GeoColor loop (G queue, 2026-09-01) 🔄
+
+Design spec approved 2026-09-01
+(`docs/superpowers/specs/2026-09-01-goes-geocolor-loop-design.md`); runs in
+parallel with M3. Slices G-1…G-7 in `TODO.md`.
+
+| Slice | Status | Notes |
+|---|---|---|
+| G-2 · Process inputs + network profile | ✅ | ADR 0018. The dispatcher records `{item_id, collection_id, op}` per triggering item; `run_one` plans (`process/inputs.py`, pure) → stages (`process/staging.py`: remote hrefs through the owning reference-mode association's adapter, else `connections/http_fetch.py`'s egress-checked public GET; manifest written LAST) → mints with **source-collection read grants** (`credentials.session_policy(read_prefixes)`, ≤ 8, I-90) → launches with `STAC_HIGHER_INPUT_PREFIX` / `STAC_HIGHER_INPUT_MANIFEST`. Producer-golden fixture `process-input-manifest.json`. Finalize skips `inputs/`; a relative output href that is not a plain filename now REJECTS the item. `runtime.network {level, hosts}` on both sides (fixture cases), `PROCESS_NETWORK_MAX` cap enforced by the route AND at launch (`check_network_cap`), deploy-card control with the higher levels disabled; slice 1 stores `isolated` only. Author contract: `docs/processes.md` |
+
 ## Phase 8 — Not started ⬜
 
 Cloud deployment, scale gate & visualization. See

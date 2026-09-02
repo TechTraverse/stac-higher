@@ -12,12 +12,13 @@ Phase 9 design spec.
 
 In its own container, on a platform-built image, with:
 
-- **no network by default.** A process that needs egress is a deployment
-  decision (`PROCESS_NETWORK`), not something it inherits.
+- **no network.** Every process runs `isolated` this slice — platform
+  storage only; the items that triggered you are staged in (see "What your
+  run receives" and "Network access" below).
 - **no platform credentials.** No database URL, no master key, no
   platform object-store keys. Your environment contains exactly: the env
-  entries on your revision, storage credentials scoped to your own run, and
-  the two variables below.
+  entries on your revision, storage credentials scoped to your own run and
+  to reading your source collections, and the variables below.
 - **memory and wall-clock limits** from your revision's runtime settings,
   enforced by the platform. Exceeding the timeout kills the run.
 
@@ -38,8 +39,67 @@ run's output prefix, named in:
 | `STAC_HIGHER_OUTPUT_BUCKET` | The bucket to write to |
 | `STAC_HIGHER_OUTPUT_PREFIX` | `staging/runs/{run_id}/` — the only place you may write |
 
-You can list, read and write inside that prefix and nowhere else. Attempting
-anything outside it fails as a permissions error, not a silent no-op.
+You can list, read and write inside that prefix, and **read** the canonical
+prefixes of your process's source collections (`assets/{collection}/…`) —
+nowhere else. Attempting anything outside that fails as a permissions error,
+not a silent no-op.
+
+## What your run receives
+
+Before your container starts, the platform stages the items that triggered
+the run and writes a manifest describing them:
+
+| Variable | Meaning |
+|---|---|
+| `STAC_HIGHER_INPUT_PREFIX` | `staging/runs/{run_id}/inputs/` — read-only from your point of view |
+| `STAC_HIGHER_INPUT_MANIFEST` | the key of this batch's `manifest.json` |
+
+```python
+import json, os, boto3
+s3 = boto3.client("s3")
+bucket = os.environ["STAC_HIGHER_OUTPUT_BUCKET"]
+manifest = json.loads(
+    s3.get_object(Bucket=bucket, Key=os.environ["STAC_HIGHER_INPUT_MANIFEST"])["Body"].read()
+)
+for entry in manifest["items"]:
+    item = entry["item"]                      # the full STAC item
+    for name, asset in entry["assets"].items():
+        obj = s3.get_object(Bucket=asset["bucket"], Key=asset["key"])   # or rasterio: /vsis3/{bucket}/{key}
+```
+
+Every asset has a `bucket` and `key` your credentials can read, whether the
+bytes are platform-held (`staged: false`, the canonical object) or were
+fetched from elsewhere for this run (`staged: true`, a copy under your inputs
+prefix). `href` is the catalog's own href, for provenance. `op` is the event
+that triggered the run (`insert` | `update`). An item deleted between trigger
+and run appears under `skipped`, not `items`. A cron run has an empty
+`items` list. Assets with a relative or missing href are omitted from
+`assets` — they are not locations you can read.
+
+The manifest shape is pinned by
+`tests/contract-fixtures/process-input-manifest.json` and ADR 0018; new keys
+may appear in later versions, so ignore what you do not know.
+
+## Network access
+
+A revision's runtime carries a `network` block:
+
+```json
+"network": { "level": "isolated", "hosts": [] }
+```
+
+| Level | Meaning |
+|---|---|
+| `isolated` | Platform storage only. Inputs are staged in. **The only level accepted this slice, and the default.** |
+| `inputs` | `isolated` plus egress to the hosts of the input assets' hrefs (derived at launch; inputs no longer staged). Arrives with the egress proxy. |
+| `hosts` | `isolated` plus the `hosts` you list (bare hostnames). Arrives with the egress proxy. |
+| `open` | Unrestricted egress. Arrives with the egress proxy. |
+
+`hosts` must be non-empty for `hosts` and empty otherwise. The deployment
+sets a ceiling, `PROCESS_NETWORK_MAX` (default `isolated`): a deploy above it
+is refused at the form, and the pipeline refuses to launch a revision above
+it regardless — it fails the run naming the level and the cap rather than
+silently running with less network than you asked for.
 
 ## How to publish an item
 
@@ -160,8 +220,12 @@ silently receive an empty string where a credential was intended.
 - **If every output is rejected, the run is marked dead** even though your code
   exited 0 — otherwise the flow would report as healthy while publishing
   nothing.
-- **Relative hrefs cannot escape your prefix.** `../x.tif` and `a/b.tif` are
-  not treated as your files.
+- **Relative hrefs must be plain filenames.** `../x.tif` and `a/b.tif` are
+  not treated as your files — an item naming one is **rejected**, because
+  publishing it verbatim would put a dangling href in the catalog.
+- **Inputs are not outputs.** Nothing under `inputs/` is published, and an
+  output item cannot name an input file (`inputs/…`) as its asset — copy the
+  bytes if you need them published.
 
 ## Rate ceiling
 
@@ -173,7 +237,10 @@ limited" badge on the run.
 ## Failure and retry
 
 A failed run retries on its revision's `retry.max_attempts` budget, then goes
-`dead`. A dead run can be re-run from the UI — which re-executes **the same
+`dead`. A run whose inputs could not be staged (a remote file unreachable)
+fails the same way — the ledger `error` names the item and asset — and no
+container ever started. A revision whose `network.level` exceeds the
+deployment cap dies immediately: that is configuration, not a fault. A dead run can be re-run from the UI — which re-executes **the same
 revision that failed**, not whatever is current. If you deployed a fix, trigger
 a new run; re-running an old row will run the old code.
 

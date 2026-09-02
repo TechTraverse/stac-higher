@@ -159,6 +159,18 @@ class ProcessRepo(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def list_source_collections(self, process_id: str) -> tuple[str, ...]:
+        """The distinct collections wired as this process's SOURCES (GOES
+        spec §3.2): the run's session policy gets read access to exactly
+        their canonical prefixes, and a legacy input ref with no collection
+        falls back to the single one."""
+
+    @abc.abstractmethod
+    async def get_item(self, collection_id: str, item_id: str) -> dict[str, Any] | None:
+        """The pgstac document for one triggering item, or None when it has
+        been deleted since the trigger (the planner records a skip)."""
+
+    @abc.abstractmethod
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
         """Return runs stranded `running` by a crashed worker to `queued`.
 
@@ -443,6 +455,28 @@ class PgProcessRepo(ProcessRepo):
             )
             rows = await cur.fetchall()
         return tuple(r[0] for r in rows)
+
+    async def list_source_collections(  # pragma: no cover
+        self, process_id: str
+    ) -> tuple[str, ...]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT DISTINCT collection_id FROM stac_higher.process_sources"
+                " WHERE process_id = %s ORDER BY collection_id",
+                (process_id,),
+            )
+            rows = await cur.fetchall()
+        return tuple(r[0] for r in rows)
+
+    async def get_item(  # pragma: no cover
+        self, collection_id: str, item_id: str
+    ) -> dict[str, Any] | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT pgstac.get_item(%s, %s)", (item_id, collection_id)
+            )
+            row = await cur.fetchone()
+        return dict(row[0]) if row and row[0] else None
 
     async def reset_stalled_runs(  # pragma: no cover
         self, older_than: dt.datetime, limit: int

@@ -25,6 +25,9 @@ class FakeProcessRepo(ProcessRepo):
     due_runs: list[QueuedRun] = field(default_factory=list)
     checks: list[ProcessCheckRequest] = field(default_factory=list)
     output_collections: list[str] = field(default_factory=list)
+    #: GOES spec §3: what the planner reads before launch.
+    items: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    source_collections: list[str] = field(default_factory=list)
     #: What `current_revision` reports; None models "nothing deployed".
     deployed_revision: str | None = "rev-1"
 
@@ -114,6 +117,12 @@ class FakeProcessRepo(ProcessRepo):
 
     async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
         return tuple(self.output_collections)
+
+    async def list_source_collections(self, process_id: str) -> tuple[str, ...]:
+        return tuple(sorted(set(self.source_collections)))
+
+    async def get_item(self, collection_id: str, item_id: str) -> dict[str, Any] | None:
+        return self.items.get((collection_id, item_id))
 
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
         return self.stalled_reset

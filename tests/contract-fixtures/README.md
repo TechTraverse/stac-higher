@@ -133,6 +133,31 @@ environment. A `value` + `secret_ref` collision is `reject`/`reject` on both
 sides rather than a precedence rule, because a plaintext secret sitting beside
 a reference is a leak a precedence rule would quietly preserve.
 
+## Additional fixture styles (GOES loop, G-2)
+
+### `producer-golden` — `process-input-manifest.json`
+
+The manifest the pipeline writes to
+`staging/runs/{run_id}/inputs/{batch_id}/manifest.json` before a process run
+starts (GOES spec §3.1, ADR 0018). It is *cross-runtime* in the sense that
+matters — user code inside the run container reads it — but the app never
+touches it, so **only the pytest suite consumes this file**:
+`services/pipeline/tests/test_process_inputs.py` asserts that
+`plan_inputs()` produces exactly `expected` from `given`. The document has:
+
+- `given` — the planner's inputs: run/process/batch ids, the bucket, the
+  asset href base, the process's source collections, the run's `input_items`
+  refs, and the pgstac documents keyed `"{collection}/{item_id}"`.
+- `expected` — `manifest_key`, the sorted `read_prefixes` (one canonical
+  `assets/{collection}/` prefix per source collection), the `fetches` the
+  launcher must perform, and the `manifest` itself.
+- **`$ref` convention**: an `item` inside `expected.manifest.items[]` is
+  written as `{ "$ref": "given.documents.<key>" }` and the test substitutes the
+  named `given.documents` entry — the manifest carries the document verbatim,
+  so repeating it would only invite drift.
+
+`version` bumps are additive: a reader must ignore keys it does not know.
+
 ## Why `app` and `pipeline` expectations can differ
 
 The contract is deliberately asymmetric. Zod is the **strict write gatekeeper**

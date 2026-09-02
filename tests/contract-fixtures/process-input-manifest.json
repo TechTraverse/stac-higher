@@ -1,0 +1,78 @@
+{
+  "style": "producer-golden",
+  "$comment": "The manifest the pipeline stages at staging/runs/{run_id}/inputs/{batch_id}/manifest.json before a process run starts (GOES spec §3.1, ADR 0018). Producer-golden: the PIPELINE is the only writer (pipeline/process/inputs.py) and user code inside the run is the reader, so only the pytest suite consumes this file — it asserts plan_inputs() produces exactly `expected` from `given`. An `item` in `expected.manifest.items[]` is a `$ref` to the `given.documents` entry it names (the test substitutes it). `read_prefixes` are sorted. Version bumps are additive: a reader must ignore unknown keys.",
+  "version": 1,
+  "given": {
+    "run_id": "11111111-1111-4111-8111-111111111111",
+    "process_id": "22222222-2222-4222-8222-222222222222",
+    "batch_id": "b1",
+    "bucket": "stac-higher",
+    "asset_href_base": "/api/assets",
+    "source_collections": ["goes19-abi-l2-mcmipc", "cloud-masks"],
+    "refs": [
+      { "item_id": "OR_ABI-L2-MCMIPC_M6_G19_s20262431201", "collection_id": "goes19-abi-l2-mcmipc", "op": "insert" },
+      { "item_id": "mask-7", "collection_id": "cloud-masks", "op": "update" },
+      { "item_id": "gone", "collection_id": "cloud-masks", "op": "insert" }
+    ],
+    "documents": {
+      "goes19-abi-l2-mcmipc/OR_ABI-L2-MCMIPC_M6_G19_s20262431201": {
+        "type": "Feature", "stac_version": "1.0.0",
+        "id": "OR_ABI-L2-MCMIPC_M6_G19_s20262431201", "collection": "goes19-abi-l2-mcmipc",
+        "geometry": null, "bbox": null, "properties": { "datetime": "2026-08-31T12:01:00Z" }, "links": [],
+        "assets": { "data": { "href": "https://noaa-goes19.s3.us-east-1.amazonaws.com/ABI-L2-MCMIPC/2026/243/12/OR_ABI-L2-MCMIPC_M6_G19_s20262431201.nc" } }
+      },
+      "cloud-masks/mask-7": {
+        "type": "Feature", "stac_version": "1.0.0", "id": "mask-7", "collection": "cloud-masks",
+        "geometry": null, "bbox": null, "properties": { "datetime": "2026-08-31T00:00:00Z" }, "links": [],
+        "assets": {
+          "mask": { "href": "/api/assets/cloud-masks/mask-7/mask.tif", "type": "image/tiff" },
+          "thumb": { "href": "/api/assets/cloud-masks/mask-7/thumb%20nail.png" }
+        }
+      }
+    }
+  },
+  "expected": {
+    "manifest_key": "staging/runs/11111111-1111-4111-8111-111111111111/inputs/b1/manifest.json",
+    "read_prefixes": ["assets/cloud-masks/", "assets/goes19-abi-l2-mcmipc/"],
+    "fetches": [
+      {
+        "href": "https://noaa-goes19.s3.us-east-1.amazonaws.com/ABI-L2-MCMIPC/2026/243/12/OR_ABI-L2-MCMIPC_M6_G19_s20262431201.nc",
+        "key": "staging/runs/11111111-1111-4111-8111-111111111111/inputs/b1/OR_ABI-L2-MCMIPC_M6_G19_s20262431201/OR_ABI-L2-MCMIPC_M6_G19_s20262431201.nc",
+        "item_id": "OR_ABI-L2-MCMIPC_M6_G19_s20262431201",
+        "asset_key": "data"
+      }
+    ],
+    "manifest": {
+      "version": 1,
+      "run_id": "11111111-1111-4111-8111-111111111111",
+      "process_id": "22222222-2222-4222-8222-222222222222",
+      "batch_id": "b1",
+      "kind": "transform",
+      "items": [
+        {
+          "collection": "goes19-abi-l2-mcmipc",
+          "op": "insert",
+          "item": { "$ref": "given.documents.goes19-abi-l2-mcmipc/OR_ABI-L2-MCMIPC_M6_G19_s20262431201" },
+          "assets": {
+            "data": {
+              "bucket": "stac-higher",
+              "key": "staging/runs/11111111-1111-4111-8111-111111111111/inputs/b1/OR_ABI-L2-MCMIPC_M6_G19_s20262431201/OR_ABI-L2-MCMIPC_M6_G19_s20262431201.nc",
+              "staged": true,
+              "href": "https://noaa-goes19.s3.us-east-1.amazonaws.com/ABI-L2-MCMIPC/2026/243/12/OR_ABI-L2-MCMIPC_M6_G19_s20262431201.nc"
+            }
+          }
+        },
+        {
+          "collection": "cloud-masks",
+          "op": "update",
+          "item": { "$ref": "given.documents.cloud-masks/mask-7" },
+          "assets": {
+            "mask": { "bucket": "stac-higher", "key": "assets/cloud-masks/mask-7/mask.tif", "staged": false, "href": "/api/assets/cloud-masks/mask-7/mask.tif" },
+            "thumb": { "bucket": "stac-higher", "key": "assets/cloud-masks/mask-7/thumb nail.png", "staged": false, "href": "/api/assets/cloud-masks/mask-7/thumb%20nail.png" }
+          }
+        }
+      ],
+      "skipped": [ { "item_id": "gone", "collection": "cloud-masks", "reason": "not_found" } ]
+    }
+  }
+}

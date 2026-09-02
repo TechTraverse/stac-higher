@@ -120,6 +120,12 @@ DEFAULT_PROCESS_STS_ROLE_ARN = "arn:aws:iam::000000000000:role/stac-higher-proce
 #: (M5-C, the M2-0 sweep pattern). Comfortably above the default run timeout
 #: so a legitimately slow run is never mistaken for a stranded one.
 DEFAULT_PROCESS_RUN_STALL_SECONDS = 3600
+#: GOES spec §4: the highest `runtime.network.level` this deployment permits.
+#: `isolated` until the egress proxy (spec §11) exists; the pipeline enforces
+#: it at launch independently of the app's write gate.
+DEFAULT_PROCESS_NETWORK_MAX = "isolated"
+#: GOES spec §3.4: remote input files staged concurrently per run.
+DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY = 4
 #: How long the daily flow-stats history is kept (P9-E: ~400 days, so a
 #: year-over-year comparison always has a full prior year to compare against).
 #: A bounded DELETE — the row count is subjects x days.
@@ -130,6 +136,16 @@ def _parse_bool(raw: str | None, default: bool) -> bool:
     if raw is None:
         return default
     return raw == "1" or raw.strip().lower() == "true"
+
+
+def _parse_network_max(value: str) -> str:
+    # Local import: config must not import the process package at module load.
+    from pipeline.process.config import NETWORK_LEVELS
+
+    v = (value or "").strip().lower()
+    if v not in NETWORK_LEVELS:
+        raise ValueError(f"PROCESS_NETWORK_MAX must be one of {NETWORK_LEVELS}, got {value!r}")
+    return v
 
 
 def _parse_allow_hosts(raw: str | None) -> frozenset[str]:
@@ -193,6 +209,8 @@ class Settings:
     #: resolve. None => fall back to the pipeline's staging endpoint.
     process_run_s3_endpoint: str | None = None
     process_run_stall_seconds: int = DEFAULT_PROCESS_RUN_STALL_SECONDS
+    process_network_max: str = DEFAULT_PROCESS_NETWORK_MAX
+    process_input_stage_concurrency: int = DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY
     flow_stats_retention_days: int = DEFAULT_FLOW_STATS_RETENTION_DAYS
 
     @classmethod
@@ -305,6 +323,15 @@ class Settings:
                 env.get(
                     "PROCESS_RUN_STALL_SECONDS",
                     str(DEFAULT_PROCESS_RUN_STALL_SECONDS),
+                )
+            ),
+            process_network_max=_parse_network_max(
+                env.get("PROCESS_NETWORK_MAX", DEFAULT_PROCESS_NETWORK_MAX)
+            ),
+            process_input_stage_concurrency=int(
+                env.get(
+                    "PROCESS_INPUT_STAGE_CONCURRENCY",
+                    str(DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY),
                 )
             ),
             flow_stats_retention_days=int(

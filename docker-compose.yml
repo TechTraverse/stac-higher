@@ -287,6 +287,12 @@ services:
       # The run reaches storage on its OWN network, where the pipeline's
       # endpoint hostname may not resolve; separate knob, same default here.
       - PROCESS_RUN_S3_ENDPOINT=${PROCESS_RUN_S3_ENDPOINT:-http://minio:9000}
+      # GOES spec §4: the highest `runtime.network.level` a revision may ask
+      # for. `isolated` until the egress proxy exists; the pipeline refuses
+      # anything higher at launch, independently of the app's write gate.
+      - PROCESS_NETWORK_MAX=${PROCESS_NETWORK_MAX:-isolated}
+      # GOES spec §3.4: remote input files staged concurrently per run.
+      - PROCESS_INPUT_STAGE_CONCURRENCY=${PROCESS_INPUT_STAGE_CONCURRENCY:-4}
     ports:
       - "8083:8083"
     depends_on:
