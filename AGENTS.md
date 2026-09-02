@@ -97,9 +97,10 @@ docker-compose runs the full local platform stack:
   Features/Tiles for vector tables in the shared PostGIS). LINK-LEVEL
   exposure: the Settings tab's per-collection `serving_enabled` toggle
   (migration 019) only controls whether the collection page advertises the
-  endpoints — nothing gates the services until I-1. Platform
-  `/api/assets/...` hrefs are not resolvable by the tiler (I-68). Full
-  design + caveats: `docs/serving.md`.
+  endpoints — nothing gates the services until I-1. The compose tiler is a
+  derived image (`infra/titiler/`) that maps platform `/api/assets/...`
+  hrefs to the bucket (G-4; I-68 keeps the cloud half). Full design +
+  caveats: `docs/serving.md`.
 
 Users configure additional catalogs in the `/catalogs` page (localStorage).
 The same PostgreSQL instance (port 5433) backs the Astro app's extension
