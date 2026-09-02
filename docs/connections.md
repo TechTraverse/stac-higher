@@ -27,7 +27,7 @@ pipeline, which codes against them and never creates them (ADR 0001):
 
 | Protocol | Shape |
 |---|---|
-| `s3` | `{bucket, region?, endpoint?, force_path_style?}` |
+| `s3` | `{bucket, region?, endpoint?, force_path_style?, anonymous (default false)}` — `anonymous`: public bucket, unsigned requests, credentials optional; e.g. NOAA NODD `noaa-goes19` (G-1) |
 | `ssh` / `sftp` | `{host, port (default 22), root_path (default "/")}` |
 | `ftp` | `{host, port (default 21), root_path (default "/")}` |
 | `ftps` | ftp + `{implicit (default false)}` |
@@ -40,6 +40,14 @@ pipeline, which codes against them and never creates them (ADR 0001):
 | `s3` | `{access_key_id, secret_access_key, session_token?}` |
 | `ssh` / `sftp` | `{username, password?, private_key?, passphrase?}` — at least one of password/private_key |
 | `ftp` / `ftps` | `{username, password}` |
+
+For s3 with `anonymous: true` the credentials are optional and, if present,
+ignored by the adapter. Worked example (no `credentials` key at all):
+
+```json
+{ "protocol": "s3", "name": "NOAA NODD GOES-19", "group_id": "…",
+  "config": { "bucket": "noaa-goes19", "region": "us-east-1", "anonymous": true } }
+```
 
 ## Credential encryption (ROADMAP §5.2)
 
@@ -107,6 +115,9 @@ The Python pipeline (`services/pipeline`) is the only runtime that decrypts
 - **Adapters + TOFU** — `connections/adapters/` (`s3`, `sftp`/`ssh`, `ftp`,
   `ftps`; `stac-api` reserved). SSH-family `test()` surfaces the server host
   key; `adapters/tofu.py` decides first-pin / match / hard-fail mismatch.
+  `S3Adapter` builds an unsigned boto3 client (`botocore.UNSIGNED`) when
+  `anonymous` is set; the egress policy still vets the endpoint host. The s3
+  `config` shape is pinned by the `s3-connection-config.json` contract fixture.
 - **Bridge jobs** — `pipeline.connection_check_drain` (drains
   `connection_checks`) and `pipeline.connection_health_sweep` (tests enabled
   connections). Both update only health/pin columns, never `updated_at`. Drain
