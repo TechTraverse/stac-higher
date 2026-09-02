@@ -28,6 +28,11 @@ jobs:
           - name: pipeline
             dockerfile: services/pipeline/Dockerfile
             context: services/pipeline
+          - name: titiler
+            dockerfile: infra/titiler/Dockerfile
+            context: .
+            # upstream base is linux/amd64 only
+            platforms: linux/amd64
     env:
       # Publish only from main and version tags; every other ref build-verifies.
       PUSH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
@@ -59,7 +64,7 @@ jobs:
         with:
           context: ${{ matrix.image.context }}
           file: ${{ matrix.image.dockerfile }}
-          platforms: ${{ env.PUSH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          platforms: ${{ matrix.image.platforms || (env.PUSH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64') }}
           push: ${{ env.PUSH == 'true' }}
           load: ${{ env.PUSH != 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
