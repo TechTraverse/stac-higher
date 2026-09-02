@@ -1,7 +1,9 @@
 # GOES GeoColor loop — process inputs, extractors, tiling — design
 
 **Date:** 2026-09-01
-**Status:** draft for lead review.
+**Status:** **approved** (lead sign-off 2026-09-01; runs in PARALLEL with the M3
+queue — the lead's call). Implementation queue: `TODO.md` "G queue"; per-slice
+plans in `docs/superpowers/plans/2026-09-01-goes-*.md`.
 **Scope source:** the lead's request for a real end-to-end use case: consume
 GOES ABI data from the NOAA Open Data Dissemination (NODD) buckets, produce a
 GeoColor-style Cloud-Optimized GeoTIFF (COG) with an operator-authored

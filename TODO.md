@@ -1,4 +1,4 @@
-# TODO — M3 implementation queue (NOAA-scale readiness)
+# TODO — implementation queues (M3 NOAA-scale readiness · G GOES loop)
 
 The solo agent loop (AGENTS.md) works this file top-down: pick the **first
 unchecked item**, one task per iteration, worktree off `ai/main`, `npm run
@@ -147,6 +147,70 @@ load report recorded M-gate style in ROADMAP §9.
       stack — the gate must not be the first time the enforced overlay sees
       this rate). Write the load report, record it M-gate style in ROADMAP §9,
       then open the `ai/main → main` promotion PR.
+
+## G queue — GOES GeoColor loop (runs in PARALLEL with M3)
+
+**Read first:** `docs/superpowers/specs/2026-09-01-goes-geocolor-loop-design.md`
+(approved 2026-09-01). This queue is independent of the M3 queue above and is
+worked by a SECOND agent in its own worktrees; the "first unchecked item" rule
+applies within each queue, not across them. The two meet in exactly two places
+(spec §13): M3-C replaces the EXTRACT byte-source seam with a URI (G-6's
+extractor receives a location, never a buffer), and G-3's immediate enqueues
+must be exercised at M3-D's concurrency before either is declared done. When a
+G slice and an M3 slice touch the same file, the later merge into `ai/main`
+resolves it per AGENTS.md; neither queue waits for the other.
+
+Slices G-1, G-2 and G-4 are independent and may run concurrently in separate
+worktrees. Detailed task plans exist for those three
+(`docs/superpowers/plans/2026-09-01-goes-g{1,2,4}-*.md`); G-3, G-5, G-6 and
+G-7 get their plans when their dependencies have merged.
+
+- [ ] **G-1 · Anonymous S3 connections.** Spec §8. `anonymous` flag on the s3
+      config; credentials optional when set (UI hides the key fields); the
+      adapter signs nothing (`botocore.UNSIGNED`); new contract fixture
+      `s3-connection-config.json`. Plan: `2026-09-01-goes-g1-anonymous-s3.md`.
+- [ ] **G-2 · Process inputs + network profile (isolated only).** Spec §3, §4.
+      Staged `inputs/{batch_id}/` with `manifest.json`; platform-held assets
+      granted read-only by source-collection prefix in the STS session policy,
+      remote assets fetched through the matching reference-mode association's
+      adapter (public GET fallback); `STAC_HIGHER_INPUT_PREFIX` /
+      `STAC_HIGHER_INPUT_MANIFEST`; finalize skips `inputs/`; dispatcher batch
+      entries gain `collection_id` + `op`; `runtime.network` block with
+      `PROCESS_NETWORK_MAX` cap (`isolated` only at the write gate); new fixture
+      `process-input-manifest.json`; ADR 0018; `docs/processes.md`. Plan:
+      `2026-09-01-goes-g2-process-inputs.md`.
+- [ ] **G-3 · Latency posture.** Spec §5. Immediate enqueue at the three hops
+      (ITEMIZE/finalize → `dispatch_poll`; `trigger_run` → `process_run_now`);
+      queued-run coalescing (widen the partial unique index to all queued runs
+      per `(process_id, source_id)`); `settle: "immediate"` for s3 ingest
+      sources. Depends on G-2 (shares `enqueue_run`). Exercise with the loadgen
+      at M3-D's concurrency.
+- [ ] **G-4 · Tile server href mapping.** Spec §7.1. Derived image
+      `infra/titiler/` wrapping both readers' `_get_asset_info` to map
+      `/api/assets/{c}/{i}/{f}` → `s3://{PLATFORM_ASSET_BUCKET}/assets/{c}/{i}/{f}`;
+      compose switches to it; `containers.yml` builds it; `docs/serving.md` +
+      I-68 (local half closed). Plan: `2026-09-01-goes-g4-titiler-hrefmap.md`.
+- [ ] **G-5 · Raster preview layer on the item page.** Spec §7.2. Shared
+      `RasterTileLayer` over the tile server's item TileJSON (`assets=visual`
+      when present), shown when `serving_enabled` and the item `info` call
+      succeeds; silent otherwise. Depends on G-4.
+- [ ] **G-6 · Extractors.** Spec §6. `processes.kind` (`transform` |
+      `extractor`, immutable); `metadata.strategy: "extractor"` +
+      `metadata.extractor.process_id` on ingest associations (group-owned,
+      kind-checked both ways); ledger status `extracting`; ITEMIZE splits at
+      the `build_item` → `validate_item` seam and triggers the extractor run
+      with the draft in `input_items`; finalize's extract branch validates
+      id/collection/href immutability and calls the shared ITEMIZE continuation;
+      run failure fails every ledger row in the batch (no fallback); defaults
+      600 runs/h and 120 s; display-only `extractor` graph edge; UI (kind badge,
+      association picker); loadgen `--extractor` profile. Depends on G-2, G-3.
+- [ ] **G-7 · GOES worked example + live-gated e2e.** Spec §2, §9, §10. The
+      `goes-abi-metadata` extractor and `goes-geocolor` process on the CURRENT
+      runtime image (rasterio `NETCDF:` subdatasets, numpy true colour + night
+      IR, GDAL COG driver, rio-stac item); `docs/processes.md` worked example;
+      `app/e2e/goes-loop.spec.ts` skipped unless `E2E_LIVE_NODD=1`, scoping the
+      association's `include` to the newest `ABI-L2-MCMIPC` key listed over
+      plain HTTPS; `run-e2e` skill update. Depends on G-1…G-6.
 
 ## Parked (do not start without the lead)
 
