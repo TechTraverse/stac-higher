@@ -399,7 +399,12 @@ between absolute asset hrefs at ingest (`ASSET_HREF_BASE` set to an absolute
 base — couples items to a deployment hostname), a titiler-side href rewrite,
 or serving-path presign integration — a Phase 8 cloud-deployment decision,
 not a local one. The Settings-tab serving panel states the limitation.
-- Tracked in: `docs/serving.md`; decide in Phase 8.
+**2026-09 (G-4):** the local half is closed — the compose tile server is a
+derived image that maps canonical hrefs to the platform bucket
+(`infra/titiler/`, GOES spec §7.1). Remaining: the cloud deployment's choice
+(same mapping vs presign integration) and the fact that the tiler's bucket
+credentials see everything (I-1).
+- Tracked in: `docs/serving.md`, `infra/titiler/README.md`; cloud half decided in Phase 8.
 
 ### I-69 · Serving toggle is advisory until I-1 🟡
 `collection_settings.serving_enabled` is LINK-LEVEL only: it controls whether

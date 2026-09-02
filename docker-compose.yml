@@ -320,8 +320,13 @@ services:
   titiler:
     # rasterio/psycopg wheels are not published for arm64 (eoAPI does the same)
     platform: linux/amd64
-    image: ghcr.io/stac-utils/titiler-pgstac:1.7.2
-    command: uvicorn titiler.pgstac.main:app --host 0.0.0.0 --port 8084
+    # Derived image: upstream 1.7.2 + the /api/assets -> s3:// href mapper
+    # (infra/titiler, GOES spec §7.1). Context is the repo root.
+    build:
+      context: .
+      dockerfile: infra/titiler/Dockerfile
+    image: stac-higher-titiler:local
+    command: uvicorn stac_higher_titiler.main:app --host 0.0.0.0 --port 8084
     environment:
       - POSTGRES_USER=username
       - POSTGRES_PASS=password
@@ -342,6 +347,10 @@ services:
       - AWS_S3_ENDPOINT=minio:9000
       - AWS_HTTPS=NO
       - AWS_VIRTUAL_HOSTING=FALSE
+      # Platform href mapping: mirror the pipeline's STAGING_BUCKET /
+      # ASSET_HREF_BASE so the tiler resolves the same objects the app serves.
+      - PLATFORM_ASSET_BUCKET=${STAGING_BUCKET:-stac-higher}
+      - ASSET_HREF_BASE=${ASSET_HREF_BASE:-/api/assets}
     ports:
       - "8084:8084"
     depends_on:
