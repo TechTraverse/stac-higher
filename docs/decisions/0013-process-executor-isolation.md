@@ -2,6 +2,13 @@
 
 **Status:** accepted (2026-08-29, by the Phase 9 design spec — Option B, `DockerExecutor` locally per the P9-A investigation; cloud backends in Phase 8)
 
+> **Amended 2026-09-02 by [ADR 0019](0019-process-compute-kubernetes-kueue.md):** the
+> cloud-backend recommendation below (ECS/Fargate RunTask primary, K8s Job
+> fallback) is **superseded** — Fargate has no GPU support, and GPU/CUDA
+> processes are now a requirement. The cloud backend is Kubernetes Jobs +
+> Kueue on EKS; the executor seam becomes submit-then-reconcile. Every
+> isolation invariant in this record stands unchanged.
+
 ## Context
 
 Phase 9 (ROADMAP §6.7, §9) introduces **processes**: user-defined

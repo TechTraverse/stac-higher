@@ -1,4 +1,4 @@
-# TODO — implementation queues (M3 NOAA-scale readiness · G GOES loop)
+# TODO — implementation queues (M3 NOAA-scale readiness · G GOES loop · K process compute)
 
 The solo agent loop (AGENTS.md) works this file top-down: pick the **first
 unchecked item**, one task per iteration, worktree off `ai/main`, `npm run
@@ -213,6 +213,107 @@ worktrees. Detailed task plans exist for those three
       `app/e2e/goes-loop.spec.ts` skipped unless `E2E_LIVE_NODD=1`, scoping the
       association's `include` to the newest `ABI-L2-MCMIPC` key listed over
       plain HTTPS; `run-e2e` skill update. Depends on G-1…G-6.
+
+## K queue — process compute: Kubernetes + Kueue + hardware profiles (AFTER G-6/G-7)
+
+**Read first:** `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`
+— **draft, awaiting lead approval; do not start K-1 until the spec's status
+line says approved.** ADR 0019 (proposed) records the decision: GPU/CUDA
+processes need hardware the Fargate backend ADR 0013 recommended cannot
+provide, so the cloud backend is **Kubernetes Jobs admitted by Kueue**,
+operators pick a **hardware profile** in the UI, and the executor becomes
+**submit-then-reconcile** (today `execute_run` blocks the worker's event loop
+for the whole run at worker concurrency 1). Spec §13 lists eight decisions
+the agent took without a lead answer — confirm or overturn them at approval.
+
+Sequencing: the K queue is worked by the process agent after G-6/G-7 (same
+files). K-4 changes the worker's job model and must **coordinate with M3-D**
+(the later merge into `ai/main` resolves; neither queue waits). K-7 is
+independent and may run in parallel with anything. K-8/K-9 are Phase 8 work
+and need a cloud account — lead-gated.
+
+- [ ] **K-1 · Hardware-profile contract + runtime `hardware` block.** Spec
+      §3, §4. New fixture `hardware-profiles.json` + a loader in both
+      runtimes (`PROCESS_HARDWARE_PROFILES_FILE`; in-repo default sets under
+      `infra/hardware-profiles/`); `runtimeLimits` in
+      `app/src/lib/processes/schemas.ts` gains `hardware {profile, cpu,
+      gpu_count}` (absent ⇒ `standard`, lenient reader on the Python side —
+      every stored revision lacks it); `ProcessRuntime` gains the flattened
+      fields; write-gate AND launch-time bounds checks (the
+      `PROCESS_NETWORK_MAX` dual-enforcement pattern; unknown profile ⇒ dead
+      run); `RunSpec` gains `cpu`, `gpu_count`, `profile`, `priority`;
+      `GET /api/processes/hardware-profiles` (member+, `backend` block
+      stripped). `process-runtime.json` gains cases. No executor change.
+- [ ] **K-2 · Hardware picker in the UI.** Spec §9. `CodeCard` gains a
+      Hardware fieldset: profile `<select>` grouped by tier, description +
+      accelerator badge, CPU/memory inputs bounded by the profile (replacing
+      the hard-coded `128`/`86400` literals), GPU count only when the profile
+      has one, a one-line summary. Sync the current revision's `hardware`,
+      `memory_mb` and `timeout_seconds` into the form (today only `code`/`env`
+      are — every deploy form starts at 512/900). Run rows show the pinned
+      hardware. `docs/processes.md` gains a "Hardware" section. Depends on K-1.
+- [ ] **K-3 · DockerExecutor honours the profile.** Spec §8. `NanoCpus` from
+      `cpu`; `DeviceRequests` from the profile's docker block (only when the
+      host exposes an NVIDIA runtime — Docker Desktop on macOS has no GPU);
+      per-profile `capacity`: the claim path counts `running` rows on the
+      profile and, when full, releases the run back to `queued` with
+      `phase = pending_capacity` and `next_attempt_at = now + 15 s`, no
+      attempt spent. Migration **026** lands the `executor_backend`,
+      `executor_handle`, `phase`, `phase_detail`, `submitted_at`,
+      `cancel_requested_at` columns (the `cancelled` status waits for K-4).
+      Depends on K-1.
+- [ ] **K-4 · Submit-then-reconcile executor + cancel.** Spec §5. New ABC
+      (`submit / status / cancel / logs / reap / list_launched`, optional
+      `watch()`); `wait` removed; the Docker backend's `watch()` off the
+      Engine `/events` stream filtered by the run-id label; the **run
+      watcher** singleton asyncio task in the worker (dispatcher-listener
+      pattern) applies events; the 1-minute run tick reconciles every
+      `running` row via `status()`; **credential-expiry requeue** (mint for
+      `max_queue_wait + timeout + grace`; a still-pending run with less than
+      `timeout + grace` left is cancelled and requeued without spending an
+      attempt); `cancelled` status + `POST /api/processes/[id]/runs/[runId]/
+      cancel` (operator+, audited `cancel`) + the UI button and badge
+      (closes I-81; ADR 0016's `dismiss` gap closes with it). Verify: a
+      worker restart mid-run and the run still finalizes. **Coordinate with
+      M3-D.** Depends on K-3.
+- [ ] **K-5 · KubernetesExecutor + `build_executor` + `/health` executor
+      key.** Spec §6. `PROCESS_EXECUTOR=docker|kubernetes` through a factory
+      replacing the two inline `DockerExecutor(...)` constructions in
+      `jobs/process.py`; one Job + one Secret per run in `stac-higher-runs`
+      (labels `stac-higher.run-id`, `kueue.x-k8s.io/queue-name`,
+      `kueue.x-k8s.io/priority-class`; `backoffLimit: 0`,
+      `activeDeadlineSeconds = timeout`, requests = limits, no SA token,
+      non-root, `RuntimeDefault`, read-only root); `status()` off the Job +
+      the Kueue Workload (`QuotaReserved` reason/message → `pending_capacity`
+      detail); `watch()` = Job + Workload watches; `logs` via `pods/log`;
+      `cancel` = foreground delete after logs; `list_launched` raises
+      `ExecutorUnavailable` on any API error. RBAC manifests under
+      `infra/kubernetes/`. Unit tests against a fake API server. Depends on
+      K-4.
+- [ ] **K-6 · Kueue manifests + kind CI leg.** Spec §7, §8. `infra/kueue/`:
+      a ResourceFlavor per profile family, ClusterQueue `process-runs`
+      (BestEffortFIFO, `withinClusterQueue: LowerPriority` preemption),
+      LocalQueue, `WorkloadPriorityClass` `interactive` > `triggered`,
+      `waitForPodsReady`, the ValidatingAdmissionPolicy rejecting label-less
+      Jobs; `infra/hardware-profiles/kind.json` (CPU flavors, a 1-CPU quota
+      so `pending_capacity` is exercised); a CI job that creates a kind
+      cluster, installs Kueue (server-side apply) and runs the executor's
+      integration tests. Depends on K-5.
+- [ ] **K-7 · CUDA runtime image.** Spec §10. `services/process-runtime/
+      Dockerfile.cuda` (CUDA 13 runtime base, Python 3.12, the blessed raster
+      stack, **cupy + numba — no PyTorch**), built in `containers.yml`,
+      selected by a profile's `image`; a cupy smoke process in
+      `pipeline.demo`. Independent.
+- [ ] **K-8 · EKS deployment (Phase 8, LEAD-GATED).** Spec §11. Auto Mode
+      cluster, one NodePool per GPU flavor (`eks.amazonaws.com/instance-gpu-
+      name`, taint `nvidia.com/gpu`, **limits = Kueue quota**), ECR mirrors,
+      `infra/hardware-profiles/eks.json`, NetworkPolicy, pipeline
+      ServiceAccount + Pod Identity. Depends on K-5, K-6, K-7.
+- [ ] **K-9 · Gate rehearsal (LEAD ONLY).** Spec §2. Local leg (compose,
+      capacity 1, cancel, worker restart) and cluster leg (`gpu-l4` cupy run,
+      visible wait for a `g6` node, quota wait, `interactive` admitted
+      first). Record queue-wait and cold-start numbers M-gate style in
+      ROADMAP §9; close I-61's cloud half; measure I-93.
 
 ## Parked (do not start without the lead)
 
