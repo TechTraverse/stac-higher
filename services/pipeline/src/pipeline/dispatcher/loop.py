@@ -262,7 +262,15 @@ async def dispatch_once(
                             "items": [],
                         },
                     )
-                    batch["items"].append({"item_id": pm.item_id})
+                    # GOES spec §3: the run needs the collection (to look the
+                    # document up) and the op (surfaced in the manifest).
+                    batch["items"].append(
+                        {
+                            "item_id": pm.item_id,
+                            "collection_id": event.collection_id,
+                            "op": event.op,
+                        }
+                    )
 
             if event.collection_id not in assoc_cache:
                 assoc_cache[event.collection_id] = await repo.list_deliver_associations(

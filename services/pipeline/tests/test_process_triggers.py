@@ -136,6 +136,25 @@ async def test_many_items_produce_ONE_run_per_source():
 
 
 @pytest.mark.asyncio
+async def test_process_batch_entries_carry_collection_and_op():
+    """GOES spec §3: the run must know WHICH collection each triggering item
+    came from and the outbox op that fired, so the planner can look the
+    document up and the manifest can say `op`."""
+    repo = FakeDispatchRepo(
+        events=[ItemEvent(id=1, collection_id="c", item_id="i1", op="insert")],
+        items={("c", "i1"): item("i1")},
+        process_sources={"c": [source({"kind": "item_event"})]},
+    )
+    batches: list = []
+
+    async def enqueue(payloads):
+        batches.extend(payloads)
+
+    await _dispatch(repo, enqueue)
+    assert batches[0]["items"] == [{"item_id": "i1", "collection_id": "c", "op": "insert"}]
+
+
+@pytest.mark.asyncio
 async def test_process_sources_are_looked_up_once_per_collection():
     repo = FakeDispatchRepo(
         events=[
