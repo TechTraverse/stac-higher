@@ -227,12 +227,27 @@ silently receive an empty string where a credential was intended.
   output item cannot name an input file (`inputs/…`) as its asset — copy the
   bytes if you need them published.
 
+## When does a run start?
+
+Within seconds of the triggering item landing. The catalog write wakes the
+dispatcher over a Postgres `NOTIFY`, the dispatcher queues your run, and the
+run is handed straight to the executor — no clock in between. A one-minute
+sweep still exists, but only to recover a run whose immediate job was lost, to
+release one the rate ceiling deferred, and to retry a failed one.
+
+Items that arrive for the same source while a run is still **queued** join
+that run's batch rather than starting another. Once a run is claimed it is
+out of reach, so anything arriving after that starts the next run — you never
+lose items to a batch already executing, and you never see the same item in
+two runs.
+
 ## Rate ceiling
 
 Each process has a `max_runs_per_hour`. A trigger over the ceiling does not
 drop work: the run is **deferred**, and further triggers **coalesce** into that
-one deferred run rather than queueing more. A sustained breach shows as a "rate
-limited" badge on the run.
+one deferred run rather than queueing more. A deferred run is deliberately NOT
+dispatched immediately — that is the ceiling doing its job. A sustained breach
+shows as a "rate limited" badge on the run.
 
 ## Failure and retry
 
