@@ -549,3 +549,48 @@ def test_adapter_for_stac_api_reserved():
 def test_adapter_for_unknown_protocol():
     with pytest.raises(ValueError, match="unknown connection protocol"):
         adapter_for({"protocol": "gopher", "config": {}}, {})
+
+
+def test_s3_anonymous_client_is_unsigned_and_keyless(monkeypatch):
+    from botocore import UNSIGNED
+
+    captured: dict = {}
+
+    def fake_client(service, **kwargs):
+        captured.update(kwargs)
+        return _FakeS3Client()
+
+    monkeypatch.setattr(s3_mod, "resolve_pinned", _PinSpy())
+    monkeypatch.setattr(s3_mod.boto3, "client", fake_client)
+
+    adapter = S3Adapter({"bucket": "noaa-goes19", "region": "us-east-1", "anonymous": True}, {})
+    adapter._make_client(None)
+
+    assert captured["config"].signature_version is UNSIGNED
+    assert captured.get("aws_access_key_id") is None
+    assert captured.get("aws_secret_access_key") is None
+
+
+def test_s3_signed_client_keeps_keys(monkeypatch):
+    from botocore import UNSIGNED
+
+    captured: dict = {}
+
+    def fake_client(service, **kwargs):
+        captured.update(kwargs)
+        return _FakeS3Client()
+
+    monkeypatch.setattr(s3_mod.boto3, "client", fake_client)
+    adapter = S3Adapter({"bucket": "b"}, {"access_key_id": "x", "secret_access_key": "y"})
+    adapter._make_client(None)
+
+    assert captured["aws_access_key_id"] == "x"
+    assert captured["config"].signature_version is not UNSIGNED
+
+
+async def test_s3_anonymous_test_probe_succeeds_without_credentials(monkeypatch):
+    monkeypatch.setattr(s3_mod, "resolve_pinned", _PinSpy())
+    monkeypatch.setattr(s3_mod.boto3, "client", lambda *a, **k: _FakeS3Client())
+    adapter = S3Adapter({"bucket": "noaa-goes19", "anonymous": True}, {})
+    result = await adapter.test()
+    assert result["ok"] is True

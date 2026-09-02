@@ -171,3 +171,45 @@ describe("ConnectionForm — edit (write-only credentials)", () => {
     expect(screen.getByRole("radio", { name: "sftp" })).toBeDisabled();
   });
 });
+
+describe("ConnectionForm — s3 anonymous connections", () => {
+  it("hides credential fields and submits without credentials when anonymous is on", async () => {
+    render(<ConnectionForm open onOpenChange={() => {}} groups={["g1"]} />);
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "NOAA NODD GOES-19" },
+    });
+    fireEvent.change(screen.getByLabelText("Bucket"), {
+      target: { value: "noaa-goes19" },
+    });
+    fireEvent.click(screen.getByLabelText(/Anonymous \(public bucket\)/));
+
+    expect(screen.queryByLabelText("Access key ID")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Secret access key")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(createMock).toHaveBeenCalled());
+    const payload = createMock.mock.calls[0][0];
+    expect(payload.protocol).toBe("s3");
+    expect(payload.config.anonymous).toBe(true);
+    expect(payload.credentials).toBeUndefined();
+  });
+
+  it("still requires keys when anonymous is off", async () => {
+    render(<ConnectionForm open onOpenChange={() => {}} groups={["g1"]} />);
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Signed" },
+    });
+    fireEvent.change(screen.getByLabelText("Bucket"), {
+      target: { value: "b" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /access_key_id is required|required unless config\.anonymous/,
+        ),
+      ).toBeInTheDocument(),
+    );
+    expect(createMock).not.toHaveBeenCalled();
+  });
+});

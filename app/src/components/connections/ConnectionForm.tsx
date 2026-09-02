@@ -24,9 +24,11 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
+  S3_CREDENTIALS_REQUIRED_MESSAGE,
   STAC_API_RESERVED_MESSAGE,
   configSchemaFor,
   credentialsSchemaFor,
+  s3CredentialsSchema,
   type ConnectionProtocol,
   type WritableProtocol,
   type ConnectionCreateInput,
@@ -103,6 +105,13 @@ const CONFIG_FIELDS: Record<WritableProtocol, FieldDef[]> = {
       type: "switch",
       optional: true,
     },
+    {
+      name: "anonymous",
+      label: "Anonymous (public bucket)",
+      type: "switch",
+      optional: true,
+      help: "Public buckets such as NOAA NODD need no keys; requests are sent unsigned.",
+    },
   ],
   ssh: sshConfigFields,
   sftp: sshConfigFields,
@@ -156,7 +165,13 @@ const CRED_FIELDS: Record<WritableProtocol, FieldDef[]> = {
 function defaultConfig(protocol: WritableProtocol): Record<string, unknown> {
   switch (protocol) {
     case "s3":
-      return { bucket: "", region: "", endpoint: "", force_path_style: false };
+      return {
+        bucket: "",
+        region: "",
+        endpoint: "",
+        force_path_style: false,
+        anonymous: false,
+      };
     case "ssh":
     case "sftp":
       return { host: "", port: 22, root_path: "/" };
@@ -207,6 +222,15 @@ interface FormValues {
   credentials: Record<string, unknown>;
 }
 
+/** An s3 connection to a public bucket (G-1): the pipeline signs nothing, so
+ *  the credential fields are hidden and never validated or sent. */
+function isAnonymousS3(
+  protocol: WritableProtocol,
+  config: Record<string, unknown> | undefined,
+): boolean {
+  return protocol === "s3" && config?.anonymous === true;
+}
+
 function buildFormSchema(protocol: WritableProtocol, isEdit: boolean) {
   const base = {
     name: z.string().min(1, "Name is required").max(200),
@@ -217,10 +241,38 @@ function buildFormSchema(protocol: WritableProtocol, isEdit: boolean) {
   };
 
   if (!isEdit) {
-    return z.object({
-      ...base,
-      credentials: z.preprocess(cleanRecord, credentialsSchemaFor(protocol)),
-    });
+    if (protocol !== "s3") {
+      return z.object({
+        ...base,
+        credentials: z.preprocess(cleanRecord, credentialsSchemaFor(protocol)),
+      });
+    }
+    // s3: whether credentials are required depends on config.anonymous, so
+    // validate them in a refinement that can see the config.
+    return z
+      .object({
+        ...base,
+        credentials: z.record(z.string(), z.unknown()),
+      })
+      .superRefine((data, ctx) => {
+        if (isAnonymousS3(protocol, data.config as Record<string, unknown>)) {
+          return;
+        }
+        const creds = cleanRecord(data.credentials);
+        const parsed = s3CredentialsSchema.safeParse(creds);
+        if (parsed.success) return;
+        if (Object.keys(creds).length === 0) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["credentials", "access_key_id"],
+            message: S3_CREDENTIALS_REQUIRED_MESSAGE,
+          });
+          return;
+        }
+        for (const issue of parsed.error.issues) {
+          ctx.addIssue({ ...issue, path: ["credentials", ...issue.path] });
+        }
+      });
   }
 
   // Edit: credentials are write-only. Leaving every field blank keeps the
@@ -233,6 +285,9 @@ function buildFormSchema(protocol: WritableProtocol, isEdit: boolean) {
       credentials: z.record(z.string(), z.unknown()).optional(),
     })
     .superRefine((data, ctx) => {
+      if (isAnonymousS3(protocol, data.config as Record<string, unknown>)) {
+        return;
+      }
       const creds = cleanRecord(data.credentials);
       if (Object.keys(creds).length === 0) return;
       const parsed = credSchema.safeParse(creds);
@@ -421,8 +476,11 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
     register,
     control,
     handleSubmit,
+    watch,
     formState: { errors },
   } = form;
+
+  const anonymousS3 = isAnonymousS3(protocol, watch("config"));
 
   const isSaving = createMutation.isPending || updateMutation.isPending;
 
@@ -438,6 +496,7 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
   const onSubmit = (data: FormValues) => {
     const config = cleanRecord(data.config);
     const credentials = cleanRecord(data.credentials);
+    const anonymous = isAnonymousS3(protocol, config);
 
     if (isEdit && initial) {
       const input: ConnectionUpdateInput = {
@@ -453,7 +512,7 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
       if (!sameConfig(config, cleanRecord(initial.config ?? {}))) {
         input.config = config;
       }
-      if (Object.keys(credentials).length > 0) {
+      if (!anonymous && Object.keys(credentials).length > 0) {
         input.credentials = credentials;
       }
       updateMutation.mutate(
@@ -476,7 +535,7 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
       group_id: data.group_id,
       enabled: data.enabled,
       config,
-      credentials,
+      ...(anonymous ? {} : { credentials }),
     } as unknown as ConnectionCreateInput;
 
     createMutation.mutate(input, {
@@ -626,19 +685,21 @@ function ConnectionFormBody({ protocol, initial, groups, onDone }: BodyProps) {
         )}
       </fieldset>
 
-      <fieldset className="space-y-3 rounded-md border p-3">
-        <legend className="px-1 text-sm font-medium">Credentials</legend>
-        {isEdit && (
-          <p className="text-xs text-muted-foreground">
-            {initial?.credentials_set
-              ? "Credentials are set. Leave blank to keep them, or enter new values to replace."
-              : "No credentials stored yet. Enter values to add them."}
-          </p>
-        )}
-        {CRED_FIELDS[protocol].map((f) =>
-          renderField(f, "credentials", credErrors),
-        )}
-      </fieldset>
+      {!anonymousS3 && (
+        <fieldset className="space-y-3 rounded-md border p-3">
+          <legend className="px-1 text-sm font-medium">Credentials</legend>
+          {isEdit && (
+            <p className="text-xs text-muted-foreground">
+              {initial?.credentials_set
+                ? "Credentials are set. Leave blank to keep them, or enter new values to replace."
+                : "No credentials stored yet. Enter values to add them."}
+            </p>
+          )}
+          {CRED_FIELDS[protocol].map((f) =>
+            renderField(f, "credentials", credErrors),
+          )}
+        </fieldset>
+      )}
 
       <div className="flex items-center justify-between rounded-md border p-3">
         <div className="space-y-0.5">

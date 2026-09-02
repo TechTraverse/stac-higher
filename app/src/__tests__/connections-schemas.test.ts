@@ -162,6 +162,45 @@ describe("parseConnectionCreate — protocol matrix", () => {
       expect(result.error.issues[0].path).toEqual(["protocol"]);
     }
   });
+
+  it("accepts an anonymous s3 connection with no credentials", () => {
+    const result = create({
+      protocol: "s3",
+      config: { bucket: "noaa-goes19", region: "us-east-1", anonymous: true },
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.protocol === "s3") {
+      expect(result.data.config.anonymous).toBe(true);
+      expect(result.data.credentials).toBeUndefined();
+    }
+  });
+
+  it("still requires credentials when anonymous is false or absent", () => {
+    const absent = create({ protocol: "s3", config: { bucket: "b" } });
+    expect(absent.success).toBe(false);
+    if (!absent.success) {
+      expect(
+        absent.error.issues.some((i) => i.path.join(".") === "credentials"),
+      ).toBe(true);
+    }
+    const explicit = create({
+      protocol: "s3",
+      config: { bucket: "b", anonymous: false },
+    });
+    expect(explicit.success).toBe(false);
+  });
+
+  it("defaults anonymous to false on parse", () => {
+    const result = create({
+      protocol: "s3",
+      config: { bucket: "b" },
+      credentials: { access_key_id: "a", secret_access_key: "b" },
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.protocol === "s3") {
+      expect(result.data.config.anonymous).toBe(false);
+    }
+  });
 });
 
 describe("parseConnectionUpdate", () => {
