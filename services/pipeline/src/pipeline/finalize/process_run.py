@@ -47,7 +47,7 @@ from pipeline.finalize.seam import (
 from pipeline.finalize.store import ObjectStore
 from pipeline.metrics import PROCESS_OUTPUT_ITEMS
 from pipeline.process.repo import ProcessRepo
-from pipeline.storage.keys import run_staging_prefix, sanitize_filename
+from pipeline.storage.keys import INPUTS_SEGMENT, run_staging_prefix, sanitize_filename
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,12 @@ def build_process_request(
     )
 
 
+def _is_relative(href: object) -> bool:
+    """A href the run means to resolve against its own prefix: no scheme and
+    not root-relative. Anything else is reference-style and passes through."""
+    return isinstance(href, str) and bool(href) and "://" not in href and not href.startswith("/")
+
+
 def _relative_filename(href: object) -> str | None:
     """The sibling filename an href names, or None when it is not one.
 
@@ -118,6 +124,11 @@ class ProcessRunResolver(ProducerResolver):
     async def resolve(self, req: FinalizeRequest) -> Resolution:
         prefix = req.staging_prefix
         keys = self.store.list_keys(prefix)
+        # GOES spec §3.3: the platform stages a run's INPUTS under
+        # `inputs/` inside the same prefix. Nothing there is an output — the
+        # manifest is JSON and staged item documents may be too.
+        inputs_prefix = f"{prefix}{INPUTS_SEGMENT}/"
+        keys = [k for k in keys if not k.startswith(inputs_prefix)]
         document_keys = sorted(k for k in keys if k.endswith(ITEM_DOCUMENT_SUFFIX))
         available = set(keys)
 
@@ -207,9 +218,17 @@ class ProcessRunResolver(ProducerResolver):
             staged: list[StagedAsset] = []
             missing: list[str] = []
             for asset_key, entry in (document.get("assets") or {}).items():
-                filename = _relative_filename((entry or {}).get("href"))
-                if filename is None:
+                href = (entry or {}).get("href")
+                if not _is_relative(href):
                     continue  # absolute/external href — not ours to move
+                filename = _relative_filename(href)
+                if filename is None:
+                    # A relative href that is not a plain filename (`a/b.tif`,
+                    # `../x`, `inputs/…` — GOES spec §3.3). Publishing it
+                    # verbatim would put a dangling href in the catalog, so it
+                    # is refused like any other file the run did not write.
+                    missing.append(f"{asset_key} -> {href} (not a plain filename)")
+                    continue
                 staging_key = f"{prefix}{filename}"
                 if staging_key not in available:
                     missing.append(f"{asset_key} -> {filename}")

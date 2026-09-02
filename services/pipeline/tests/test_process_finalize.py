@@ -157,6 +157,59 @@ async def test_an_href_reaching_outside_the_run_prefix_is_never_moved(href):
 
 
 @pytest.mark.asyncio
+async def test_resolver_ignores_everything_under_inputs():
+    """GOES spec §3.3: the platform stages a run's INPUTS under `inputs/`
+    inside the same prefix — the manifest and any staged item documents are
+    JSON, and none of them is an output."""
+    from pipeline.storage.keys import run_inputs_prefix
+
+    inputs = run_inputs_prefix(RUN)
+    store = FakeStore(
+        {
+            f"{inputs}b1/manifest.json": b'{"version": 1, "items": []}',
+            f"{inputs}b1/i1/src.json": item_doc(item_id="src", collection="cloud-masks"),
+            f"{PREFIX}out.json": item_doc(item_id="out", assets={"data": {"href": "out.tif"}}),
+            f"{PREFIX}out.tif": b"tif",
+        }
+    )
+    resolution = await ProcessRunResolver(store=store).resolve(build_process_request(RUN, OUT))
+    assert [i.ref.item_id for i in resolution.items] == ["out"]
+    assert resolution.rejected == ()
+
+
+@pytest.mark.asyncio
+async def test_an_output_cannot_claim_an_input_file_as_its_asset():
+    """`inputs/…` is a relative href with a separator: it is REFUSED (the
+    item is rejected) rather than published as a dangling relative href —
+    an output that needs the input bytes copies them (spec §3.3)."""
+    from pipeline.storage.keys import run_inputs_prefix
+
+    store = FakeStore(
+        {
+            f"{run_inputs_prefix(RUN)}b1/i1/x.nc": b"nc",
+            f"{PREFIX}out.json": item_doc(
+                item_id="out", assets={"data": {"href": "inputs/b1/i1/x.nc"}}
+            ),
+        }
+    )
+    resolution = await ProcessRunResolver(store=store).resolve(build_process_request(RUN, OUT))
+    assert resolution.items == ()
+    assert resolution.rejected[0].reason == REASON_MISSING_ASSET
+    assert "inputs/b1/i1/x.nc" in resolution.rejected[0].detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("href", ["../../escape.tif", "nested/a.tif", "..\\win.tif"])
+async def test_a_relative_href_that_is_not_a_plain_filename_rejects_the_item(href):
+    """Publishing it verbatim would put a broken relative href in the catalog;
+    root-relative and scheme'd hrefs (reference-style outputs) still pass."""
+    doc = item_doc(assets={"data": {"href": href}})
+    resolution = await resolve({f"{PREFIX}i1.json": doc, f"{PREFIX}escape.tif": b"x"})
+    assert resolution.items == ()
+    assert resolution.rejected[0].reason == REASON_MISSING_ASSET
+
+
+@pytest.mark.asyncio
 async def test_unreadable_or_shapeless_documents_are_rejected_individually():
     resolution = await resolve(
         {
