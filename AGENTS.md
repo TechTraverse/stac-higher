@@ -28,6 +28,7 @@ Facts:
 - **Pipeline tests**: `uv run pytest` and `uv run ruff check .` (from `services/pipeline/` — run both whenever the pipeline is touched; `DATABASE_URL=…` enables the DB-gated integration tests. Full pipeline reference: `services/pipeline/README.md`)
 - **E2E**: `npm run test:e2e:ci` (from `app/` — list reporter, agent-friendly). Read the `run-e2e` skill first; the suite has real preconditions and gotchas.
 - **Proxy integration tests**: `npm run test:integration` (repo root — needs the Docker stack in auth-enforced mode, so lead/human only; skips cleanly otherwise. See `tests/integration/README.md`.)
+- **Demo pipeline**: `uv run python -m pipeline.demo seed` (from `services/pipeline`, stack up) — rebuilds the scene → process → thumbnail loop end to end after a `down -v`; `status` / `teardown` alongside it (`src/pipeline/demo/README.md`)
 - **Storybook**: `npm run storybook` (from `packages/shared/`, http://localhost:6006)
 - **Backend**: `docker compose up -d` (repo root — full local stack: pgstac (:5433), stac-fastapi (:8082), stac-auth-proxy (:8081, pass-through), Keycloak (:8180, admin/admin), MinIO (:9000 API / :9001 console), pipeline service (:8083 `/health`), titiler-pgstac (:8084) + tipg (:8085) OGC serving (`docs/serving.md`))
 
