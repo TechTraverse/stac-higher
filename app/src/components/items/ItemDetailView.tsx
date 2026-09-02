@@ -1,6 +1,6 @@
 import type { StacItem } from "@/lib/stac-api/types";
 import { JsonViewer } from "@stac-higher/shared";
-import { StacMap } from "@stac-higher/shared";
+import { StacMap, RasterTileLayer } from "@stac-higher/shared";
 import { Source, Layer } from "react-map-gl/maplibre";
 import { bboxToLngLatBounds } from "@/lib/map/bbox";
 import { Button } from "@stac-higher/shared";
@@ -28,7 +28,21 @@ import { ExternalLink, Download } from "lucide-react";
  * product item page (which adds edit/delete around it) and the read-only
  * catalog browser render the SAME view, so the two cannot drift.
  */
-export function ItemDetailView({ item }: { item: StacItem }) {
+/** Tiles for this item, when the tile server rendered it (G-5). */
+export interface ItemRasterPreview {
+  tiles: string[];
+  bounds?: [number, number, number, number];
+  /** titiler's own viewer for the same item + asset. */
+  viewerUrl?: string;
+}
+
+export function ItemDetailView({
+  item,
+  rasterPreview,
+}: {
+  item: StacItem;
+  rasterPreview?: ItemRasterPreview;
+}) {
   const properties = Object.entries(item.properties).filter(
     ([key]) => !key.startsWith("_"),
   );
@@ -144,6 +158,15 @@ export function ItemDetailView({ item }: { item: StacItem }) {
                   item.bbox ? bboxToLngLatBounds(item.bbox) : undefined
                 }
               >
+                {rasterPreview && (
+                  // Under the footprint: the outline must stay readable over
+                  // the imagery.
+                  <RasterTileLayer
+                    tiles={rasterPreview.tiles}
+                    bounds={rasterPreview.bounds}
+                    beforeId="item-geometry-fill"
+                  />
+                )}
                 <Source
                   id="item-geometry"
                   type="geojson"
@@ -177,6 +200,22 @@ export function ItemDetailView({ item }: { item: StacItem }) {
                 </Source>
               </StacMap>
             </div>
+          )}
+          {rasterPreview && (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Preview rendered by the tile server
+              {rasterPreview.viewerUrl && (
+                <a
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                  href={rasterPreview.viewerUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  Open viewer
+                </a>
+              )}
+            </p>
           )}
           {item.bbox && (
             <Card>
