@@ -158,15 +158,6 @@ export function ItemDetailView({
                   item.bbox ? bboxToLngLatBounds(item.bbox) : undefined
                 }
               >
-                {rasterPreview && (
-                  // Under the footprint: the outline must stay readable over
-                  // the imagery.
-                  <RasterTileLayer
-                    tiles={rasterPreview.tiles}
-                    bounds={rasterPreview.bounds}
-                    beforeId="item-geometry-fill"
-                  />
-                )}
                 <Source
                   id="item-geometry"
                   type="geojson"
@@ -198,6 +189,18 @@ export function ItemDetailView({
                     }}
                   />
                 </Source>
+                {rasterPreview && (
+                  // AFTER the geometry source, so `item-geometry-fill` exists
+                  // when maplibre inserts this: `beforeId` naming a layer that
+                  // has not been added yet is a hard error, not a no-op. Being
+                  // last in source order also keeps it correct when the tiles
+                  // arrive asynchronously, long after the footprint is drawn.
+                  <RasterTileLayer
+                    tiles={rasterPreview.tiles}
+                    bounds={rasterPreview.bounds}
+                    beforeId="item-geometry-fill"
+                  />
+                )}
               </StacMap>
             </div>
           )}

@@ -32,12 +32,13 @@ vi.mock("react-map-gl/maplibre", () => ({
     <div data-testid="map">{children}</div>
   ),
   Source: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-  Layer: (props: Record<string, unknown>) =>
-    props.type === "raster" ? (
-      <div data-testid="raster-layer" data-props={JSON.stringify(props)} />
-    ) : (
-      <div />
-    ),
+  Layer: (props: Record<string, unknown>) => (
+    <div
+      data-testid={props.type === "raster" ? "raster-layer" : "vector-layer"}
+      data-layer-id={String(props.id)}
+      data-props={JSON.stringify(props)}
+    />
+  ),
   NavigationControl: () => <div />,
   ScaleControl: () => <div />,
 }));
@@ -114,6 +115,29 @@ describe("item page raster preview", () => {
       beforeId: "item-geometry-fill",
     });
     expect(screen.getByText(/rendered by the tile server/i)).toBeInTheDocument();
+  });
+
+  it("adds the raster layer after the layer its beforeId names", () => {
+    // maplibre REFUSES `beforeId` naming a layer that does not exist yet
+    // ("Cannot add layer ... before non-existing layer"), which mocked
+    // primitives happily accept — so the order is pinned here. Found live on
+    // 2026-09-02: the raster rendered first and the layer was never added.
+    useItemTileJsonMock.mockReturnValue({
+      data: { tiles: ["http://t/{z}/{x}/{y}"], bounds: [-100, 30, -90, 40] },
+      error: null,
+    });
+
+    renderPage();
+
+    const ids = screen
+      .getAllByTestId(/^(raster|vector)-layer$/)
+      .map((el) => el.dataset.layerId);
+    const target = JSON.parse(
+      screen.getByTestId("raster-layer").dataset.props as string,
+    ).beforeId as string;
+
+    expect(ids).toContain(target);
+    expect(ids.indexOf(target)).toBeLessThan(ids.indexOf("stac-raster-preview-layer"));
   });
 
   it("asks for nothing and draws nothing when serving is off", () => {
