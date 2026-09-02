@@ -47,6 +47,7 @@ PROCESS_TRIGGER = _load("process-trigger.json")
 PROCESS_RUNTIME = _load("process-runtime.json")
 PROCESS_ENV = _load("process-env.json")
 PROCESS_EXPECTATION = _load("process-expectation.json")
+PROCESS_INPUT_MANIFEST = _load("process-input-manifest.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -280,3 +281,11 @@ def test_process_alert_kinds_are_monitor_owned():
         assert kind in MONITOR_KINDS
         assert kind not in ALERT_KINDS["declared_kinds"]
 
+
+
+def test_process_input_manifest_fixture_is_registered():
+    """Producer-golden (GOES spec §3.1): the pipeline is the only writer, so
+    the real assertion lives in test_process_inputs.py. This keeps the file
+    loaded where the README says every fixture is loaded."""
+    assert PROCESS_INPUT_MANIFEST["style"] == "producer-golden"
+    assert PROCESS_INPUT_MANIFEST["version"] == 1
