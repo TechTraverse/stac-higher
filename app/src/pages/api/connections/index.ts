@@ -74,8 +74,11 @@ export const POST: APIRoute = async ({ request, locals }) => {
       );
     }
 
+    // An anonymous s3 connection stores an EMPTY envelope rather than no
+    // envelope: the pipeline's build_adapter treats "no credentials" as a
+    // configuration error, and `{}` is exactly what an unsigned adapter needs.
     const envelope = getEncryptionProvider().encrypt(
-      JSON.stringify(data.credentials),
+      JSON.stringify(data.credentials ?? {}),
     );
     const connection = await createConnection({
       name: data.name,

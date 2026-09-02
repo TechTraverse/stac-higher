@@ -5,7 +5,8 @@
  * contract — the Python pipeline parses the same JSON, so these shapes must
  * not drift:
  *
- *   config      s3        {bucket, region?, endpoint?, force_path_style?}
+ *   config      s3        {bucket, region?, endpoint?, force_path_style?,
+ *                          anonymous (default false)}
  *               ssh/sftp  {host, port (default 22), root_path (default "/")}
  *               ftp       {host, port (default 21), root_path (default "/")}
  *               ftps      ftp + {implicit (default false)}
@@ -13,6 +14,9 @@
  *               ssh/sftp  {username, password?, private_key?, passphrase?}
  *                         (at least one of password / private_key)
  *               ftp/ftps  {username, password}
+ *
+ * credentials are OPTIONAL for s3 when config.anonymous is true (public
+ * buckets — NODD); the pipeline signs nothing.
  *
  * `stac-api` is RESERVED: it exists in the DB CHECK and in
  * CONNECTION_PROTOCOLS (the adapter model must not foreclose it — ROADMAP
@@ -41,6 +45,9 @@ export type WritableProtocol = (typeof WRITABLE_PROTOCOLS)[number];
 export const STAC_API_RESERVED_MESSAGE =
   "The 'stac-api' protocol is reserved for a future release and cannot be used yet";
 
+export const S3_CREDENTIALS_REQUIRED_MESSAGE =
+  "access_key_id and secret_access_key are required unless config.anonymous is true";
+
 /** SSH-family protocols carry TOFU-pinned host keys (ROADMAP §5.2). */
 export function isSshFamily(protocol: string): protocol is "ssh" | "sftp" {
   return protocol === "ssh" || protocol === "sftp";
@@ -56,6 +63,10 @@ export const s3ConfigSchema = z
     region: z.string().min(1).optional(),
     endpoint: z.string().url("endpoint must be a URL").optional(),
     force_path_style: z.boolean().optional(),
+    // Public buckets (NODD): the pipeline sends unsigned requests and the
+    // credentials envelope may be empty. Default false so every stored config
+    // written before this field reads the same as before.
+    anonymous: z.boolean().default(false),
   })
   .strict();
 
@@ -184,16 +195,12 @@ const baseCreateFields = {
   enabled: z.boolean().default(true),
 };
 
-/**
- * POST /api/connections body — discriminated on protocol so config and
- * credentials are validated against the right per-protocol shape.
- */
-export const connectionCreateSchema = z.discriminatedUnion("protocol", [
+const connectionCreateUnion = z.discriminatedUnion("protocol", [
   z.object({
     protocol: z.literal("s3"),
     ...baseCreateFields,
     config: s3ConfigSchema,
-    credentials: s3CredentialsSchema,
+    credentials: s3CredentialsSchema.optional(),
   }),
   z.object({
     protocol: z.literal("ssh"),
@@ -221,6 +228,23 @@ export const connectionCreateSchema = z.discriminatedUnion("protocol", [
     credentials: ftpCredentialsSchema,
   }),
 ]);
+
+/**
+ * POST /api/connections body — discriminated on protocol so config and
+ * credentials are validated against the right per-protocol shape. s3 is the
+ * one protocol whose credentials may be absent: only when `config.anonymous`.
+ */
+export const connectionCreateSchema = connectionCreateUnion.superRefine(
+  (data, ctx) => {
+    if (data.protocol === "s3" && !data.config.anonymous && !data.credentials) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["credentials"],
+        message: S3_CREDENTIALS_REQUIRED_MESSAGE,
+      });
+    }
+  },
+);
 
 export type ConnectionCreateInput = z.infer<typeof connectionCreateSchema>;
 
