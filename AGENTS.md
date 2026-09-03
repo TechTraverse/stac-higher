@@ -308,6 +308,26 @@ NOTE the four-place lockstep for that identity: the CHECK, the open-dedup
 index, both pipeline `ON CONFLICT` targets, AND `sync_alerts`' auto-resolve
 comparison.
 
+**Extractors (G-6, GOES spec §6/§15)**: a process has a create-only `kind`
+(`transform` | `extractor`, migration 027). An extractor has no sources or
+outputs (both POSTs 409, re-run 409); it is named by an ingest association's
+`metadata.strategy: "extractor"` + `extractor.process_id` (must be
+`kind = 'extractor'` and owned by the connection's group; soft-delete is a
+409 while any association names it). ITEMIZE splits at the `build_item` →
+`validate_item` seam: the group's ledger rows are parked **`extracting`**
+(item id kept, `extract_run_id` stamped), the draft item rides in the run's
+`input_items` (manifest `kind: "extract"`), and runs coalesce per
+`(process_id, association_id)`. Finalize's extract branch
+(`finalize/extract_run.py`) checks id/collection/asset-set/href immutability
+plus non-null geometry and datetime, then calls the shared ITEMIZE tail
+`complete_item`. A run that reaches terminal `dead` fails every row in its
+batch with `reason`; `sweep_stuck_extracting` fails rows whose run vanished.
+`ingest_files.source_mtime` (the listed object mtime) now backs `file_mtime`
+(I-100). Defaults 600 runs/h and a 120 s deploy-form timeout. Worked example
++ live-gated e2e: `services/pipeline/src/pipeline/demo/goes/`,
+`pipeline.demo goes-seed`, `app/e2e/goes-loop.spec.ts` (`E2E_LIVE_NODD=1`,
+`run-e2e` skill). Author contract: `docs/processes.md` "Extractors".
+
 **Service telemetry (M2-H)**: Prometheus exposition at `GET :8083/metrics`
 (`pipeline/metrics.py`): per-job run/duration/outcome (wrapped centrally at
 Procrastinate registration), ingest stage counters at the flow-stats choke

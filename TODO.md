@@ -11,7 +11,7 @@ just a wasted read.
 | Queue | What it is | State |
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
-| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **G-1…G-7 done.** Live gate (Task 7) owed |
+| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-03** — G-1…G-7 merged, both live gates met against real NODD. Only the manual `goes-seed` recipe and the loadgen extractor run remain (follow-ups) |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved — G-6/G-7 are both done, so once approval lands the process agent is free to start K-1 |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
