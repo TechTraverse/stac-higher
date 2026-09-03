@@ -261,7 +261,12 @@ attributes (`dataset.tags()["NC_GLOBAL#scene_id"]`).
 
 **The process** is about sixty lines: read C01/C02/C03/C13 as reflectance
 and brightness temperature (`values = raw * scale + offset`, fill → NaN),
-compose, write, publish.
+compose, write, publish. Everything stays in **float32** — four float64 bands
+of a full-disk grid plus compose's intermediates run past the revision's
+declared memory, and every uint16 CMI value is exact in float32 anyway.
+
+Abridged (`geocolor.py` is the source of truth — it carries the explicit
+float32 casts this quote drops):
 
 ```python
 def compose(c01, c02, c03, c13):
@@ -283,6 +288,10 @@ with the relative href `{out_id}.tif` — a per-item filename, not a shared
 `visual.tif`, since a batch of more than one output would otherwise
 overwrite a shared name — and its collection is whatever the seeder
 substituted for `__OUTPUT_COLLECTION__`.
+
+The revision asks for 2048 MB, sized for MCMIP**C** (CONUS, 1500²). A
+full-disk product (MCMIPF, 5424²) is roughly thirteen times the pixels and
+needs a correspondingly larger `memory_mb`.
 
 This is the CIMSS/goes2go true-colour recipe, labelled "GeoColor-style":
 no Rayleigh correction, no city lights. CIRA's GeoColor proper needs lookup

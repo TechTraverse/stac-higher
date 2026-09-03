@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext, type APIResponse } from "@playwright/test";
-import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,6 +105,12 @@ async function poll<T>(label: string, fn: () => Promise<T | null>, everyMs = 10_
   throw new Error(`gate budget of ${GATE_MS / 1000}s exhausted waiting for: ${label}`);
 }
 
+const deliveryClient = () =>
+  new S3Client({
+    endpoint: MINIO, region: "us-east-1", forcePathStyle: true,
+    credentials: { accessKeyId: "minioadmin", secretAccessKey: "minioadmin" },
+  });
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 async function json<T = any>(res: APIResponse, what: string): Promise<T> {
   if (!res.ok()) throw new Error(`${what}: ${res.status()} ${await res.text()}`);
@@ -115,7 +121,7 @@ test.describe("GOES loop against live NODD", () => {
   test.skip(!LIVE, "set E2E_LIVE_NODD=1 (needs internet, Docker stack, pipeline, runtime image)");
   test.describe.configure({ timeout: GATE_MS + 5 * 60_000 });
 
-  const ids = { extractor: "", geocolor: "", nodd: "", dest: "", ingest: "", deliver: "" };
+  const ids = { extractor: "", geocolor: "", nodd: "", dest: "", ingest: "", deliver: "", out: "" };
 
   test.afterAll(async ({ request }) => {
     // Order matters: an extractor named by an association refuses deletion.
@@ -124,6 +130,14 @@ test.describe("GOES loop against live NODD", () => {
     for (const p of [ids.geocolor, ids.extractor]) if (p) await request.delete(`/api/processes/${p}`);
     for (const c of [ids.nodd, ids.dest]) if (c) await request.delete(`/api/connections/${c}`);
     for (const c of [OUT, SRC]) await request.delete(`/api/catalog/collections/${c}`);
+    // The delivered COG lives in a bucket nothing else cleans: the destination
+    // is somebody else's storage by construction, so the spec owns its own key.
+    if (ids.out) {
+      const s3 = deliveryClient();
+      await s3
+        .send(new DeleteObjectCommand({ Bucket: DEST_BUCKET, Key: `goes/${ids.out}/${ids.out}.tif` }))
+        .catch(() => undefined);
+    }
   });
 
   test("ingests one file, extracts, composes, tiles and delivers", async ({ request }) => {
@@ -220,6 +234,7 @@ test.describe("GOES loop against live NODD", () => {
 
     // --- gate 2: the GeoColor output item ---------------------------------
     const outId = `${source.id}-geocolor`;
+    ids.out = outId;
     const output = await poll("output item", async () => {
       const res = await request.get(`${STAC}/collections/${OUT}/items/${encodeURIComponent(outId)}`);
       return res.ok() ? await res.json() : null;
@@ -232,15 +247,24 @@ test.describe("GOES loop against live NODD", () => {
     expect(output.properties["proj:wkt2"]).toBeTruthy();
 
     // --- gate 3: a tile renders --------------------------------------------
-    const tilejson = await json(await request.get(
-      `${TILER}/collections/${OUT}/items/${encodeURIComponent(outId)}/WebMercatorQuad/tilejson.json?assets=visual`,
-    ), "tilejson");
-    const [lon, lat, z] = tilejson.center as [number, number, number];
-    const n = 2 ** z;
-    const x = Math.floor(((lon + 180) / 360) * n);
-    const y = Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * n);
-    const tileUrl = String(tilejson.tiles[0]).replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
-    const tile = await request.get(tileUrl);
+    // Polled like the other gates: the tiler builds its mosaic lazily, so a
+    // cold-start hiccup on the tilejson or the first tile is a warm-up, not a
+    // regression. Both hops retry inside the one shared budget.
+    const tile = await poll("tile", async () => {
+      const meta = await request.get(
+        `${TILER}/collections/${OUT}/items/${encodeURIComponent(outId)}/WebMercatorQuad/tilejson.json?assets=visual`,
+      );
+      if (!meta.ok()) return null;
+      const tilejson = await meta.json();
+      const [lon, lat, z] = tilejson.center as [number, number, number];
+      const n = 2 ** z;
+      const x = Math.floor(((lon + 180) / 360) * n);
+      const y = Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * n);
+      const tileUrl = String(tilejson.tiles[0]).replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
+      const res = await request.get(tileUrl);
+      if (!res.ok() || !/^image\//.test(res.headers()["content-type"] ?? "")) return null;
+      return res;
+    });
     expect(tile.ok()).toBeTruthy();
     expect(tile.headers()["content-type"]).toMatch(/^image\//);
 
@@ -252,11 +276,9 @@ test.describe("GOES loop against live NODD", () => {
       const rows: any[] = (await res.json()).deliveries ?? [];
       return rows.find((r) => r.item_id === outId && r.status === "delivered") ?? null;
     });
-    const s3 = new S3Client({
-      endpoint: MINIO, region: "us-east-1", forcePathStyle: true,
-      credentials: { accessKeyId: "minioadmin", secretAccessKey: "minioadmin" },
-    });
-    const head = await s3.send(new HeadObjectCommand({ Bucket: DEST_BUCKET, Key: `goes/${outId}/${outId}.tif` }));
+    const head = await deliveryClient().send(
+      new HeadObjectCommand({ Bucket: DEST_BUCKET, Key: `goes/${outId}/${outId}.tif` }),
+    );
     expect(head.ContentLength ?? 0).toBeGreaterThan(100_000);
   });
 });

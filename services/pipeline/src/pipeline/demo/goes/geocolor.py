@@ -28,34 +28,46 @@ IR_COLD_K, IR_WARM_K = 90.0, 313.0
 
 def read_band(path, name):
     """Physical values (reflectance, or K for C13) with fill -> NaN, plus the
-    band's CRS and transform. `name=None` opens `path` as a plain raster."""
+    band's CRS and transform. `name=None` opens `path` as a plain raster.
+
+    float32, not float64: four bands of a full-disk MCMIPF grid (5424^2) are
+    ~470 MB in float32 and ~940 MB in float64, and the intermediates in
+    compose() multiply that — more than the revision's declared memory. Every
+    uint16 CMI value is exact in float32, so nothing is lost.
+    """
     import rasterio
 
     source = path if name is None else f'NETCDF:"{path}":{name}'
     with rasterio.open(source) as src:
-        raw = src.read(1).astype("float64")
+        raw = src.read(1).astype("float32")
         scale = src.scales[0] if src.scales and src.scales[0] else 1.0
         offset = src.offsets[0] if src.offsets and src.offsets[0] else 0.0
-        values = raw * scale + offset
+        values = (raw * scale + offset).astype("float32")
         if src.nodata is not None:
             values[raw == src.nodata] = np.nan
         return values, src.crs, src.transform
 
 
 def compose(c01, c02, c03, c13):
-    """uint8 RGB [3, h, w] + uint8 mask [h, w] (255 = on-disk)."""
-    red = np.clip(np.nan_to_num(c02), 0.0, 1.0)
-    blue = np.clip(np.nan_to_num(c01), 0.0, 1.0)
-    veggie = np.clip(np.nan_to_num(c03), 0.0, 1.0)
-    green = np.clip(0.45 * red + 0.10 * veggie + 0.45 * blue, 0.0, 1.0)
-    rgb = np.stack([red, green, blue]) ** (1.0 / GAMMA)
+    """uint8 RGB [3, h, w] + uint8 mask [h, w] (255 = on-disk).
+
+    Held in float32 throughout — the explicit casts keep a Python-float
+    constant from silently promoting a full-disk grid back to float64.
+    """
+    red = np.clip(np.nan_to_num(c02), 0.0, 1.0).astype("float32")
+    blue = np.clip(np.nan_to_num(c01), 0.0, 1.0).astype("float32")
+    veggie = np.clip(np.nan_to_num(c03), 0.0, 1.0).astype("float32")
+    green = np.clip(0.45 * red + 0.10 * veggie + 0.45 * blue, 0.0, 1.0).astype("float32")
+    rgb = (np.stack([red, green, blue]) ** (1.0 / GAMMA)).astype("float32")
     # Night side: colder (higher cloud) -> brighter. Daylight always wins the max.
     kelvin = np.nan_to_num(c13, nan=IR_WARM_K)
-    night = 1.0 - np.clip((kelvin - IR_COLD_K) / (IR_WARM_K - IR_COLD_K), 0.0, 1.0)
+    night = (
+        1.0 - np.clip((kelvin - IR_COLD_K) / (IR_WARM_K - IR_COLD_K), 0.0, 1.0)
+    ).astype("float32")
     rgb = np.maximum(rgb, night[None, :, :])
     mask = np.isfinite(c02) & np.isfinite(c13)
-    out = np.where(mask[None, :, :], rgb * 255.0, 0.0).round().astype("uint8")
-    return out, (mask * 255).astype("uint8")
+    out = np.where(mask[None, :, :], rgb * np.float32(255.0), np.float32(0.0))
+    return out.round().astype("uint8"), (mask * 255).astype("uint8")
 
 
 def main():

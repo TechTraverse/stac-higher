@@ -111,8 +111,8 @@ def main():
     for entry in manifest["items"]:
         item = entry["item"]
         asset_key, asset = next(iter(entry["assets"].items()))
-        # The staged copy under the run's inputs/ prefix — never the href,
-        # which points at the origin the pipeline already fetched from.
+        # Download the STAGED COPY (bucket + key), not the href: the href
+        # points back at the origin the pipeline already fetched from.
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "scene.nc")
             s3.download_file(asset["bucket"], asset["key"], path)
@@ -121,9 +121,9 @@ def main():
             with rasterio.open(f'NETCDF:"{path}":CMI_C02') as band:
                 geometry, bbox = footprint(band)
 
-        # Draft assets are keyed by filename STEM; the href keeps the full
-        # filename. Both carry the _s token, but the href's tail is the name
-        # the scan-time contract is written against.
+        # The NAME, though, comes from the href — its tail is the original
+        # filename, which is what the scan-time contract is written against.
+        # (The draft's asset KEY is only the filename stem.)
         href = asset.get("href") or ""
         filename = href.split("?", 1)[0].rsplit("/", 1)[-1] or asset_key
         when = scan_time(filename)
