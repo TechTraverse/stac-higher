@@ -25,7 +25,9 @@ import logging
 from typing import Any
 
 from pipeline.config import Settings
+from pipeline.connections.build import build_adapter
 from pipeline.connections.envelope import decrypt, load_master_key
+from pipeline.finalize.extract_run import finalize_extract_run
 from pipeline.finalize.process_run import build_process_request
 from pipeline.finalize.repo import PgFinalizeRepo
 from pipeline.finalize.steps import run_finalize
@@ -273,6 +275,27 @@ def register(queue: QueueBackend, settings: Settings) -> None:
     async def process_finalize(run_id: str, process_id: str) -> None:
         """Publish one successful run's outputs through the ADR 0014 seam."""
         process_repo = _repo()
+        # G-6: an extractor's outputs go back to INGEST, not to the catalog.
+        # Branch before the output-collection guard — an extractor has none.
+        if await process_repo.process_kind(process_id) == "extractor":
+            master_key = load_key_or_skip(settings, JOB_FINALIZE)
+            if master_key is None:
+                return  # rows stay `extracting`; the stall sweep fails them
+            ingest_repo = PgIngestRepo(settings.database_url)
+            store = PlatformObjectStore(
+                client=build_platform_client(settings), bucket=settings.staging_bucket
+            )
+            await finalize_extract_run(
+                run_id,
+                process_repo=process_repo,
+                ingest_repo=ingest_repo,
+                writer=PgPgstacWriter(settings.database_url),
+                store=store,
+                adapter_for=lambda assoc: build_adapter(
+                    assoc.connection, master_key, settings.egress_allow_hosts
+                ),
+            )
+            return
         outputs = await process_repo.list_output_collections(process_id)
         if not outputs:
             logger.warning(
