@@ -446,20 +446,32 @@ object stores only).
   plan's Zod only checked shape — the token guards (≥ 1 known token, no
   unknown) are now mirrored in `ingestConfigSchema` so the form refuses them at
   write time. The bound GRAMMAR stays pipeline-only, as designed.
-- **W-1's live gate is still owed (lead, internet + Docker):** an anonymous
-  s3 connection to `noaa-goes19` with `source_path "ABI-L2-MCMIPC/"`,
-  `path_template "{Y}/{j}/{H}/"`, `window {begin: "-1h"}`,
-  `max_files_per_poll 4`, reference mode, `metadata.defaults.datetime:
-  "file_mtime"` — expect three listings, ~12 files found, four admitted per
-  poll (spec §2). Residuals I-97…I-99 are in ISSUES.md.
+- **W-1 live gate MET 2026-09-02 (lead, Docker, real NODD).** Anonymous s3
+  connection to `noaa-goes19`, collection `goes-abi-mcmipc`, reference-mode
+  association `source_path "ABI-L2-MCMIPC/"`, `path_template "{Y}/{j}/{H}/"`,
+  `window {begin: "-1h"}`, `max_files_per_poll 4`, 60 s polls. Measured
+  ticks: `prefixes_listed 2` (a -1h window floors to two hourly prefixes, not
+  the three the plan guessed), `listed 21`, `out_of_window 9`,
+  `deferred_by_cap 8 → 4 → 1`, `settled 4` per poll — 12 items catalogued in
+  three polls, oldest first, then steady state. Two findings for G-6/G-7
+  planning: `metadata.defaults.datetime: "file_mtime"` resolves to the ledger
+  SETTLE time (item datetime 03:49Z for a scan at 03:16Z whose object was
+  last-modified 03:19Z — I-100), and `raster_auto` on the MCMIPC netCDF fell
+  back to `collection_extent` geometry silently (I-101), so the association
+  was switched to `defaults_only` to stop downloading ~39 MB per file for
+  nothing. The association is left ENABLED as the seed for G-7.
+  Residuals I-97…I-99 are in ISSUES.md.
 
 - **W-2 landed 2026-09-02 (`ai/w2-retention`).** One naming deviation from
   the plan: the GC dataclass is `RetentionCollection` (existing name), not the
   plan's `GcCollection`. The assembled `list_expired_items` SQL was run against
   the live pgstac (offset 0 and a huge offset, plus the UNION) — syntax proven.
-  **Live check still owed (lead, Docker):** on the demo collection set
-  `retention_max_items: 1`, seed a second scene, and watch the sweep mark
-  (`asset_gc` reason `retention`) and then collect the older one after the
-  grace window.
+  **Live check MET 2026-09-02:** `demo-scene-002` (a copy of 001's COG under
+  its own prefix, newer datetime) + `retention_max_items: 1`, `gc_grace_days
+  0` → the impact dry-run said `1 of 2`; the next `retention_gc` tick marked
+  `assets/demo-scenes/demo-scene-001/` with reason `retention` and deleted
+  the item; `asset_collect` removed the object in the same minute
+  (`deleted_objects 1, errors 0`). `demo-scenes` now holds only 002 and keeps
+  the cap — run `pipeline.demo seed` to restore the original scene.
 
 (append here during iterations)
