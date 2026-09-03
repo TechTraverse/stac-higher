@@ -30,6 +30,7 @@ from pipeline.process.inputs import (
     KIND_TRANSFORM,
     InputPlanError,
     input_env,
+    parse_canonical_href,
     plan_inputs,
 )
 from pipeline.process.launch import (
@@ -130,16 +131,37 @@ async def run_one(
     else:
         source_collections = await repo.list_source_collections(run.process_id)
     documents: dict[tuple[str, str], dict] = {}
-    if not is_extract:
-        for ref in run.input_items:
-            coll = ref.get("collection_id") or (
-                source_collections[0] if len(source_collections) == 1 else None
-            )
-            item_id = ref.get("item_id")
-            if coll and item_id and (coll, item_id) not in documents:
-                doc = await repo.get_item(coll, item_id)
-                if doc is not None:
-                    documents[(coll, item_id)] = doc
+    for ref in run.input_items:
+        coll = ref.get("collection_id") or (
+            source_collections[0] if len(source_collections) == 1 else None
+        )
+        item_id = ref.get("item_id")
+        if not coll or not item_id or (coll, item_id) in documents:
+            continue
+        if is_extract:
+            # The draft the ref carries IS the document (§15) — the planner
+            # reads it from the ref, and it is collected here so both kinds
+            # go through the same reference-mode resolution below.
+            draft = ref.get("draft")
+            if isinstance(draft, dict):
+                documents[(coll, item_id)] = draft
+            continue
+        doc = await repo.get_item(coll, item_id)
+        if doc is not None:
+            documents[(coll, item_id)] = doc
+
+    # Reference-mode items are catalogued with canonical hrefs (the app resolves
+    # them through ingest_files.source_href at request time); the planner needs
+    # the same resolution or it grants a key that does not exist (G-6 Task 9b).
+    source_hrefs: dict[tuple[str, str], dict[str, str]] = {}
+    for (coll, item_id), doc in documents.items():
+        if any(
+            parse_canonical_href(a.get("href"), settings.asset_href_base)
+            for a in (doc.get("assets") or {}).values()
+            if isinstance(a, dict)
+        ):
+            source_hrefs[(coll, item_id)] = await repo.reference_source_hrefs(coll, item_id)
+
     try:
         plan = plan_inputs(
             run_id=run.id,
@@ -152,6 +174,7 @@ async def run_one(
             source_collections=source_collections,
             bucket=settings.staging_bucket,
             asset_href_base=settings.asset_href_base,
+            source_hrefs=source_hrefs,
         )
     except InputPlanError as err:
         await _finish(

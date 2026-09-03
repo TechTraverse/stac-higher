@@ -600,6 +600,58 @@ async def test_an_extractor_run_reads_its_draft_and_grants_its_own_collection():
 
 
 @pytest.mark.asyncio
+async def test_an_extractor_run_stages_a_reference_mode_asset_from_its_source():
+    """A reference-mode item is catalogued with a CANONICAL href even though
+    its bytes never entered the bucket; the runner resolves it through the
+    ingest ledger, exactly as the app's asset route does (G-6 Task 9b)."""
+    repo = FakeProcessRepo(
+        source_hrefs={("c", "a"): {"a.nc": "https://src.example/a.nc"}}
+    )
+    store = RecordingStore()
+    seen: list[str] = []
+
+    async def fetch_remote(href: str) -> bytes:
+        seen.append(href)
+        return b"bytes"
+
+    run = queued(
+        source_id=None,
+        association_id=ASSOC,
+        input_items=[
+            {
+                "item_id": "a",
+                "collection_id": "c",
+                "op": "insert",
+                "ledger_ids": ["1"],
+                "draft": {
+                    "id": "a",
+                    "collection": "c",
+                    "assets": {"d": {"href": "/api/assets/c/a/a.nc"}},
+                },
+            }
+        ],
+    )
+    result = await run_one(
+        run,
+        repo=repo,
+        executor=MemoryExecutor(results=[ExitStatus(0)]),
+        settings=Settings.from_env({}),
+        storage_client=store,
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=FakeSts(),
+        fetch_remote=fetch_remote,
+    )
+    assert result.status == "succeeded"
+    assert seen == ["https://src.example/a.nc"]
+    manifest_key = next(k for k in store.objects if k.endswith("/manifest.json"))
+    asset = json.loads(store.objects[manifest_key])["items"][0]["assets"]["d"]
+    assert asset["staged"] is True
+    # The manifest keeps the CATALOG href, not the source URL.
+    assert asset["href"] == "/api/assets/c/a/a.nc"
+
+
+@pytest.mark.asyncio
 async def test_run_one_dies_when_the_network_level_exceeds_the_cap():
     repo = _remote_input_repo()
     executor = MemoryExecutor(results=[ExitStatus(0)])

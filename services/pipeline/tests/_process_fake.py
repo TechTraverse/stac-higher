@@ -29,6 +29,9 @@ class FakeProcessRepo(ProcessRepo):
     #: GOES spec §3: what the planner reads before launch.
     items: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     source_collections: list[str] = field(default_factory=list)
+    #: G-6 Task 9b: what the ingest ledger says about reference-mode assets —
+    #: (collection, item) -> {filename: source href}.
+    source_hrefs: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)
     #: What `current_revision` reports; None models "nothing deployed".
     deployed_revision: str | None = "rev-1"
     #: What `process_kind` reports per process id; defaults to "transform".
@@ -206,6 +209,9 @@ class FakeProcessRepo(ProcessRepo):
 
     async def get_item(self, collection_id: str, item_id: str) -> dict[str, Any] | None:
         return self.items.get((collection_id, item_id))
+
+    async def reference_source_hrefs(self, collection_id: str, item_id: str) -> dict[str, str]:
+        return dict(self.source_hrefs.get((collection_id, item_id), {}))
 
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
         return self.stalled_reset

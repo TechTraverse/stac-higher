@@ -6,7 +6,10 @@ Two kinds of asset location, decided per asset:
 
 - a canonical ``/api/assets/{c}/{i}/{f}`` href → the object already sits at
   ``assets/{c}/{i}/{f}`` in the platform bucket. No copy; the run's session
-  policy is granted read on each SOURCE collection's prefix (§3.2).
+  policy is granted read on each SOURCE collection's prefix (§3.2) — UNLESS
+  the ingest ledger says the item is reference-mode, in which case the bytes
+  never entered the bucket and the asset is fetched from its ``source_href``
+  like any other remote asset.
 - any other absolute href → fetched by the launcher into the run's inputs
   area (``RemoteFetch``); the manifest points at the staged copy.
 
@@ -117,6 +120,7 @@ def plan_inputs(
     source_collections: Sequence[str],
     bucket: str,
     asset_href_base: str,
+    source_hrefs: Mapping[tuple[str, str], Mapping[str, str]] | None = None,
 ) -> InputPlan:
     """Turn the run's ``input_items`` refs plus their pgstac documents into a
     manifest, the remote fetches the launcher must perform, and the read
@@ -128,6 +132,10 @@ def plan_inputs(
     with a ``draft`` (extractor runs, GOES spec §6) is its own document. A ref
     whose document is missing (deleted between trigger and run) is skipped and
     recorded — not an error.
+
+    ``source_hrefs`` maps (collection, item_id) to the ingest ledger's
+    ``filename -> source_href`` for a reference-mode item, whose canonical
+    href names bytes the platform never stored.
     """
     items: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -163,6 +171,19 @@ def plan_inputs(
             canonical = parse_canonical_href(href, asset_href_base)
             if canonical is not None:
                 c, i, f = canonical
+                source = (source_hrefs or {}).get((collection, item_id), {}).get(f)
+                if source:
+                    # A reference-mode asset: the catalog href is canonical but
+                    # the bytes live at the source (ingest_files.source_href).
+                    # Stage from there; keep the CATALOG href for provenance.
+                    key = run_input_asset_key(run_id, batch_id, item_id, f)
+                    fetches.append(
+                        RemoteFetch(href=source, key=key, item_id=item_id, asset_key=asset_key)
+                    )
+                    assets[asset_key] = asdict(
+                        InputAsset(bucket=bucket, key=key, staged=True, href=href)
+                    )
+                    continue
                 # parse_canonical_href already refused traversal/separators,
                 # so InvalidKeySegment here would be a bug, not an input.
                 assets[asset_key] = asdict(

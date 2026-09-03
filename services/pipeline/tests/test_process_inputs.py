@@ -25,6 +25,12 @@ def _documents(given):
     return {tuple(k.split("/", 1)): v for k, v in given["documents"].items()}
 
 
+def _source_hrefs(given):
+    """`{collection}/{item_id}` → `{filename: source href}`, as the ledger
+    reports it for reference-mode assets."""
+    return {tuple(k.split("/", 1)): v for k, v in given.get("source_hrefs", {}).items()}
+
+
 def _at(fixture, path: str):
     """Walk a fixture `$ref` path (`given.documents.<key>`, `given.refs.0.draft`):
     dotted segments, integers indexing lists. Document keys hold a `/` but never
@@ -73,6 +79,7 @@ def test_extract_plan_matches_the_golden_fixture():
         source_collections=given["source_collections"],
         bucket=given["bucket"],
         asset_href_base=given["asset_href_base"],
+        source_hrefs=_source_hrefs(given),
     )
     assert plan.manifest_key == expected["manifest_key"]
     assert list(plan.read_prefixes) == expected["read_prefixes"]
@@ -172,3 +179,38 @@ def test_input_env_names_prefix_and_manifest():
         "STAC_HIGHER_INPUT_PREFIX": f"staging/runs/{FIXTURE['given']['run_id']}/inputs/",
         "STAC_HIGHER_INPUT_MANIFEST": "staging/runs/x/inputs/b/manifest.json",
     }
+
+
+def test_reference_mode_canonical_href_is_staged_from_its_source():
+    doc = {
+        "id": "i", "collection": "c",
+        "assets": {"scene": {"href": "/api/assets/c/i/scene.nc"}},
+    }
+    plan = plan_inputs(
+        run_id="r", process_id="p", batch_id="b", kind="transform",
+        refs=[{"item_id": "i", "collection_id": "c"}],
+        documents={("c", "i"): doc}, source_collections=["c"],
+        bucket="stac-higher", asset_href_base="/api/assets",
+        source_hrefs={("c", "i"): {"scene.nc": "https://src.example/x/scene.nc"}},
+    )
+    (fetch,) = plan.fetches
+    assert fetch.href == "https://src.example/x/scene.nc"
+    assert fetch.key == "staging/runs/r/inputs/b/i/scene.nc"
+    asset = plan.manifest["items"][0]["assets"]["scene"]
+    assert asset["staged"] is True and asset["key"] == fetch.key
+    # The manifest keeps the CATALOG href for provenance, not the source URL.
+    assert asset["href"] == "/api/assets/c/i/scene.nc"
+    # Still granted: the collection prefix (a copy-mode sibling may need it).
+    assert list(plan.read_prefixes) == ["assets/c/"]
+
+
+def test_canonical_href_without_a_source_href_stays_platform_held():
+    doc = {"id": "i", "collection": "c", "assets": {"a": {"href": "/api/assets/c/i/a.tif"}}}
+    plan = plan_inputs(
+        run_id="r", process_id="p", batch_id="b", kind="transform",
+        refs=[{"item_id": "i", "collection_id": "c"}], documents={("c", "i"): doc},
+        source_collections=["c"], bucket="stac-higher", asset_href_base="/api/assets",
+        source_hrefs={("c", "i"): {"other.tif": "https://src.example/other.tif"}},
+    )
+    assert plan.fetches == ()
+    assert plan.manifest["items"][0]["assets"]["a"]["key"] == "assets/c/i/a.tif"

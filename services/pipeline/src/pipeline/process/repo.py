@@ -241,6 +241,15 @@ class ProcessRepo(abc.ABC):
         been deleted since the trigger (the planner records a skip)."""
 
     @abc.abstractmethod
+    async def reference_source_hrefs(self, collection_id: str, item_id: str) -> dict[str, str]:
+        """filename -> source href for a `storage_mode: reference` item's
+        assets, from the ingest ledger (empty for copy-mode or manual items).
+        The catalog stores CANONICAL hrefs for reference items too; the app's
+        asset route resolves them through this same ledger column
+        (`storage/reference.ts`), and the run planner must do the same or it
+        grants a key that does not exist."""
+
+    @abc.abstractmethod
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
         """Return runs stranded `running` by a crashed worker to `queued`.
 
@@ -681,6 +690,25 @@ class PgProcessRepo(ProcessRepo):
             )
             row = await cur.fetchone()
         return dict(row[0]) if row and row[0] else None
+
+    async def reference_source_hrefs(  # pragma: no cover
+        self, collection_id: str, item_id: str
+    ) -> dict[str, str]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT DISTINCT ON (filename) filename, source_href FROM ("
+                "  SELECT regexp_replace(f.source_path, '^.*/', '') AS filename,"
+                "         f.source_href, f.version"
+                "    FROM stac_higher.ingest_files f"
+                "    JOIN stac_higher.collection_connections cc ON cc.id = f.association_id"
+                "   WHERE cc.collection_id = %s AND f.item_id = %s"
+                "     AND f.source_href IS NOT NULL"
+                "     AND f.reference_removed_at IS NULL"
+                ") x ORDER BY filename, version DESC",
+                (collection_id, item_id),
+            )
+            rows = await cur.fetchall()
+        return {str(r[0]): str(r[1]) for r in rows}
 
     async def reset_stalled_runs(  # pragma: no cover
         self, older_than: dt.datetime, limit: int
