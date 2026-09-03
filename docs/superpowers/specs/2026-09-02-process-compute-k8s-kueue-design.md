@@ -236,7 +236,7 @@ removed from the ABC; the Docker backend's long-poll becomes its `watch()`
 implementation (Engine `/events` filtered by the `stac-higher.run-id`
 label).
 
-### 5.2 Ledger changes (migration 026, app-owned per ADR 0001)
+### 5.2 Ledger changes (migration 027, app-owned per ADR 0001; 026 taken by W-2's retention cap, which landed first)
 
 `process_runs` gains:
 
@@ -619,7 +619,7 @@ per-profile platform images cover CUDA without lifting it.
   section. Depends on K-1.
 - **K-3 · DockerExecutor honours the profile.** §8. `NanoCpus`,
   `DeviceRequests`, per-profile capacity → `pending_capacity` requeue
-  (needs the `phase` columns — lands the migration 026 columns except
+  (needs the `phase` columns — lands the migration 027 columns except
   `cancelled`). Depends on K-1.
 - **K-4 · Submit-then-reconcile executor model + cancel.** §5. New ABC,
   Docker `watch()` off Engine events, the run watcher singleton, run-tick

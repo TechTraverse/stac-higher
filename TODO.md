@@ -292,7 +292,8 @@ and need a cloud account — lead-gated.
       per-profile `capacity`: the claim path counts `running` rows on the
       profile and, when full, releases the run back to `queued` with
       `phase = pending_capacity` and `next_attempt_at = now + 15 s`, no
-      attempt spent. Migration **026** lands the `executor_backend`,
+      attempt spent. Migration **027** (026 taken by W-2's retention cap,
+      which landed first) lands the `executor_backend`,
       `executor_handle`, `phase`, `phase_detail`, `submitted_at`,
       `cancel_requested_at` columns (the `cancelled` status waits for K-4).
       Depends on K-1.
