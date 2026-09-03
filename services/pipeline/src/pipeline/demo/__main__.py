@@ -14,6 +14,13 @@ It rebuilds, from nothing, the smallest thing that exercises the whole G queue:
     uv run python -m pipeline.demo status
     uv run python -m pipeline.demo teardown
 
+The same CLI carries the GOES worked example (G-7) — the same shapes against
+the live NODD bucket, needing the internet and the process runtime image:
+
+    uv run python -m pipeline.demo goes-seed
+    uv run python -m pipeline.demo goes-status
+    uv run python -m pipeline.demo goes-teardown
+
 `seed` is idempotent: re-running it replaces the scene and leaves one process
 deployed, so it is safe after a `docker compose down -v` **or** on a stack that
 already has the demo. It writes to pgstac through the STAC API and to
@@ -31,14 +38,10 @@ import datetime as dt
 import io
 import json
 import sys
-import urllib.error
-import urllib.request
 
-import boto3
 import numpy as np
 import psycopg
 import rasterio
-from botocore.client import Config
 from rasterio.transform import from_bounds
 
 from pipeline.demo.fixtures import (
@@ -57,6 +60,17 @@ from pipeline.demo.fixtures import (
     collection_document,
     scene_item,
 )
+from pipeline.demo.goes import seed as goes
+from pipeline.demo.platform import (
+    check_migrations,
+    enable_serving,
+    install_process,
+    put_collection,
+    remove_process,
+    request,
+    s3_client,
+    say,
+)
 from pipeline.storage.keys import canonical_asset_key
 
 DEFAULT_STAC_URL = "http://localhost:8082"
@@ -67,8 +81,10 @@ DEFAULT_BUCKET = "stac-higher"
 SCENE_ITEM_ID = "demo-scene-001"
 SCENE_FILENAME = "scene.tif"
 
-#: The one migration the demo's process path depends on (G-3 coalescing).
-REQUIRED_MIGRATION = "025_process_runs_queued_source_idx"
+#: The newest migration the demo's process path depends on. It was G-3's
+#: coalescing index (025); since G-6 the shared writer stamps `processes.kind`,
+#: which 027 adds — and 027 is strictly newer, so the G-3 guarantee still holds.
+REQUIRED_MIGRATION = "027_extractors"
 
 
 # --------------------------------------------------------------------------- #
@@ -76,54 +92,17 @@ REQUIRED_MIGRATION = "025_process_runs_queued_source_idx"
 # --------------------------------------------------------------------------- #
 
 
-def _say(message: str) -> None:
-    print(message, flush=True)
-
-
-def _request(url: str, *, method: str = "GET", body: dict | None = None) -> tuple[int, bytes]:
-    data = json.dumps(body).encode() if body is not None else None
-    headers = {"Content-Type": "application/json"} if data else {}
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as err:
-        return err.code, err.read()
-    except urllib.error.URLError as err:
-        raise SystemExit(f"cannot reach {url}: {err.reason}. Is the stack up?") from err
-
-
-def _s3(endpoint: str):
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id="minioadmin",
-        aws_secret_access_key="minioadmin",
-        region_name="us-east-1",
-        config=Config(s3={"addressing_style": "path"}),
-    )
+#: Thin aliases: the generic helpers now live in `demo/platform.py`, shared
+#: with the GOES seeder. Kept under their old names so this module reads the
+#: way it did.
+_say = say
+_request = request
+_s3 = s3_client
+_put_collection = put_collection
 
 
 def _check_migrations(database_url: str) -> None:
-    with psycopg.connect(database_url) as conn:
-        try:
-            row = conn.execute(
-                "SELECT count(*) FROM stac_higher.migrations WHERE name = %s",
-                (REQUIRED_MIGRATION,),
-            ).fetchone()
-        except psycopg.errors.UndefinedTable as err:
-            raise SystemExit(
-                "the stac_higher schema does not exist yet. The APP owns those\n"
-                "migrations and runs them on its first API request (ADR 0001):\n"
-                "  cd app && npm run dev     # then load any page, or\n"
-                "  curl -s localhost:4321/api/auth/me >/dev/null\n"
-                "then re-run this command."
-            ) from err
-    if not row or row[0] == 0:
-        raise SystemExit(
-            f"migration {REQUIRED_MIGRATION} is not applied — this database predates\n"
-            "G-3. Start the app once against it so it migrates, then re-run."
-        )
+    check_migrations(database_url, REQUIRED_MIGRATION)
 
 
 # --------------------------------------------------------------------------- #
@@ -173,18 +152,6 @@ def build_scene_cog(size: int = SCENE_SIZE) -> bytes:
 # --------------------------------------------------------------------------- #
 
 
-def _put_collection(stac_url: str, document: dict) -> None:
-    collection_id = document["id"]
-    status, payload = _request(f"{stac_url}/collections", method="POST", body=document)
-    if status == 409:
-        status, payload = _request(
-            f"{stac_url}/collections/{collection_id}", method="PUT", body=document
-        )
-    if status not in (200, 201):
-        raise SystemExit(f"collection {collection_id}: {status} {payload[:200]!r}")
-    _say(f"  collection {collection_id}")
-
-
 def _put_item(stac_url: str, item: dict) -> None:
     collection_id = item["collection"]
     status, payload = _request(
@@ -202,75 +169,28 @@ def _put_item(stac_url: str, item: dict) -> None:
 
 
 def _enable_serving(conn: psycopg.Connection, collection_id: str) -> None:
-    conn.execute(
-        "INSERT INTO stac_higher.collection_settings (collection_id, group_id, serving_enabled)"
-        " VALUES (%s, %s, true)"
-        " ON CONFLICT (collection_id) DO UPDATE SET serving_enabled = true",
-        (collection_id, GROUP),
-    )
+    enable_serving(conn, collection_id, GROUP)
 
 
 def _install_process(conn: psycopg.Connection) -> None:
-    """Create (or re-deploy) the demo process, its trigger and its output.
-
-    Written directly to `stac_higher` — the same split `pipeline.loadgen` uses:
-    pgstac through the API, platform tables through SQL. The app owns the DDL
-    either way (ADR 0001); nothing here creates or alters a table.
-    """
-    conn.execute(
-        "INSERT INTO stac_higher.processes"
-        " (id, name, description, group_id, enabled, max_runs_per_hour, created_by)"
-        " VALUES (%s, %s, %s, %s, true, 120, %s)"
-        " ON CONFLICT (id) DO UPDATE SET"
-        "   name = EXCLUDED.name, description = EXCLUDED.description,"
-        "   enabled = true, deleted_at = NULL",
-        (
-            PROCESS_ID,
-            PROCESS_NAME,
+    """Create (or re-deploy) the demo process, its trigger and its output."""
+    install_process(
+        conn,
+        process_id=PROCESS_ID,
+        revision_id=REVISION_ID,
+        name=PROCESS_NAME,
+        description=(
             "Demo: downscale each incoming scene into a thumbnail COG, "
-            "reading its input through the platform's input manifest.",
-            GROUP,
-            CREATED_BY,
+            "reading its input through the platform's input manifest."
         ),
-    )
-    # A revision is immutable, so re-seeding replaces its row wholesale rather
-    # than stacking a new one every run — this is a demo fixture, not history.
-    conn.execute(
-        "UPDATE stac_higher.processes SET current_revision = NULL WHERE id = %s",
-        (PROCESS_ID,),
-    )
-    conn.execute(
-        "DELETE FROM stac_higher.process_runs WHERE process_id = %s", (PROCESS_ID,)
-    )
-    conn.execute(
-        "DELETE FROM stac_higher.process_revisions WHERE process_id = %s", (PROCESS_ID,)
-    )
-    conn.execute(
-        "INSERT INTO stac_higher.process_revisions"
-        " (id, process_id, runtime, code, env, created_by)"
-        " VALUES (%s, %s, %s::jsonb, %s, '[]'::jsonb, %s)",
-        (REVISION_ID, PROCESS_ID, json.dumps(RUNTIME), PROCESS_CODE, CREATED_BY),
-    )
-    conn.execute(
-        "UPDATE stac_higher.processes SET current_revision = %s WHERE id = %s",
-        (REVISION_ID, PROCESS_ID),
-    )
-    conn.execute(
-        "INSERT INTO stac_higher.process_sources"
-        " (process_id, collection_id, trigger, flow_stats, enabled)"
-        " SELECT %s, %s, %s::jsonb, '{}'::jsonb, true"
-        "  WHERE NOT EXISTS ("
-        "    SELECT 1 FROM stac_higher.process_sources"
-        "     WHERE process_id = %s AND collection_id = %s)",
-        (PROCESS_ID, SOURCE_COLLECTION, json.dumps(TRIGGER), PROCESS_ID, SOURCE_COLLECTION),
-    )
-    conn.execute(
-        "INSERT INTO stac_higher.process_outputs (process_id, collection_id)"
-        " SELECT %s, %s"
-        "  WHERE NOT EXISTS ("
-        "    SELECT 1 FROM stac_higher.process_outputs"
-        "     WHERE process_id = %s AND collection_id = %s)",
-        (PROCESS_ID, OUTPUT_COLLECTION, PROCESS_ID, OUTPUT_COLLECTION),
+        group=GROUP,
+        created_by=CREATED_BY,
+        kind="transform",
+        max_runs_per_hour=120,
+        runtime=RUNTIME,
+        code=PROCESS_CODE,
+        sources=((SOURCE_COLLECTION, TRIGGER),),
+        outputs=(OUTPUT_COLLECTION,),
     )
 
 
@@ -368,21 +288,7 @@ def status(args: argparse.Namespace) -> int:
 
 def teardown(args: argparse.Namespace) -> int:
     with psycopg.connect(args.database_url, autocommit=True) as conn:
-        conn.execute(
-            "UPDATE stac_higher.processes SET current_revision = NULL WHERE id = %s",
-            (PROCESS_ID,),
-        )
-        for table in (
-            "process_runs",
-            "process_sources",
-            "process_outputs",
-            "process_checks",
-            "process_revisions",
-        ):
-            conn.execute(
-                f"DELETE FROM stac_higher.{table} WHERE process_id = %s", (PROCESS_ID,)
-            )
-        conn.execute("DELETE FROM stac_higher.processes WHERE id = %s", (PROCESS_ID,))
+        remove_process(conn, PROCESS_ID)
         conn.execute(
             "DELETE FROM stac_higher.collection_settings WHERE collection_id = ANY(%s)",
             ([SOURCE_COLLECTION, OUTPUT_COLLECTION],),
@@ -427,6 +333,41 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("status", help="recent runs + item counts").set_defaults(func=status)
     sub.add_parser("teardown", help="remove everything seed created").set_defaults(func=teardown)
+
+    goes_parser = sub.add_parser(
+        "goes-seed", help="build the GOES loop against the live NODD bucket (idempotent)"
+    )
+    goes_parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="restrict the ingest to matching keys (repeatable); default: the whole window",
+    )
+    goes_parser.add_argument(
+        "--window", default="-1h", help="ingest window begin (default: -1h)"
+    )
+    goes_parser.add_argument(
+        "--max-files", type=int, default=2, help="max new files per poll (default: 2)"
+    )
+    goes_parser.add_argument(
+        "--deliver",
+        action="store_true",
+        help="also deliver the output collection to MinIO (needs CREDENTIALS_MASTER_KEY)",
+    )
+    goes_parser.add_argument(
+        "--internal-s3-endpoint",
+        default="http://minio:9000",
+        help="how the PIPELINE reaches MinIO (default: http://minio:9000)",
+    )
+    goes_parser.set_defaults(func=goes.seed)
+
+    sub.add_parser("goes-status", help="GOES loop: runs, ingest ledger, item counts").set_defaults(
+        func=goes.status
+    )
+    sub.add_parser("goes-teardown", help="remove everything goes-seed created").set_defaults(
+        func=goes.teardown
+    )
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -126,3 +126,52 @@ def test_footprint_drops_off_disk_vertices(extractor):
     assert ring[0] == ring[-1]
     assert all(math.isfinite(x) and math.isfinite(y) for x, y in ring)
     assert -180 <= bbox[0] < bbox[2] <= 180 and -90 <= bbox[1] < bbox[3] <= 90
+
+
+# --------------------------------------------------------------------------- #
+# the seeder's config builders (G-7 task 2): the rows `goes-seed` writes have
+# to parse with the SAME readers the pipeline uses at runtime, or the loop is
+# only discovered to be misconfigured on a live stack.
+# --------------------------------------------------------------------------- #
+
+
+def test_goes_ingest_config_round_trips_both_readers():
+    from pipeline.demo.goes.seed import EXTRACTOR_ID, ingest_config
+    from pipeline.ingest.config import parse_ingest_config
+    from pipeline.ingest.extract import parse_metadata
+
+    cfg = ingest_config(include=("**/OR_ABI-L2-MCMIPC-M6_G19_s20262460401172*.nc",))
+    parsed = parse_ingest_config(cfg)
+    assert parsed.storage_mode == "reference"
+    assert parsed.path_template == "{Y}/{j}/{H}/" and parsed.window_begin == "-1h"
+    assert parsed.max_files_per_poll == 2
+    assert parsed.include == ("**/OR_ABI-L2-MCMIPC-M6_G19_s20262460401172*.nc",)
+    assert parse_metadata(parsed.metadata).extractor_process_id == EXTRACTOR_ID
+
+
+def test_goes_connection_config_is_anonymous():
+    from pipeline.connections.adapters.s3 import parse_s3_config
+    from pipeline.demo.goes.seed import nodd_connection_config
+
+    cfg = nodd_connection_config()
+    assert cfg["anonymous"] is True and cfg["bucket"] == "noaa-goes19"
+    parsed = parse_s3_config(cfg)  # the adapter accepts it without credentials
+    assert parsed.anonymous is True and parsed.endpoint is None
+
+
+def test_goes_deliver_config_round_trips_the_delivery_reader():
+    from pipeline.delivery.config import parse_delivery_config
+    from pipeline.demo.goes.seed import deliver_config
+
+    parsed = parse_delivery_config(deliver_config())
+    assert parsed.path_template == "goes/{item_id}/{filename}"
+
+
+def test_goes_collection_documents_cover_source_and_output():
+    from pipeline.demo.goes.seed import OUTPUT_COLLECTION, SOURCE_COLLECTION, collection_documents
+
+    docs = collection_documents()
+    assert [doc["id"] for doc in docs] == [SOURCE_COLLECTION, OUTPUT_COLLECTION]
+    for doc in docs:
+        assert doc["type"] == "Collection" and doc["description"]
+        assert doc["extent"]["spatial"]["bbox"][0][0] < doc["extent"]["spatial"]["bbox"][0][2]
