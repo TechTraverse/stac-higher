@@ -18,7 +18,7 @@ from _finalize_fake import (
 )
 from pipeline.finalize.push import PushRecorder, PushResolver, build_push_request
 from pipeline.finalize.seam import PRODUCER_PUSH_INGEST, ProducerHooks
-from pipeline.finalize.steps import run_finalize
+from pipeline.finalize.steps import etags_comparable, run_finalize
 from pipeline.metrics import REGISTRY
 
 UPLOAD = "0d9c2f64-8f3a-4a5e-9b7d-1c2e3f405060"
@@ -375,6 +375,63 @@ async def test_checksum_mismatch_after_partial_move_marks_before_delete():
     assert repo.sessions[UPLOAD].status == "rejected"
     # staged originals are left to the TTL sweep, never proactively deleted
     assert store.deleted == []
+
+
+# -- copy verification: multipart ETags (G-7 live-gate finding 2) --------------
+
+
+def test_etags_comparable_only_for_single_part_etags():
+    assert etags_comparable("abc") is True
+    assert etags_comparable('"abc"') is True
+    assert etags_comparable("abc-3") is False
+    assert etags_comparable('"abc-12"') is False
+
+
+async def test_multipart_source_etag_verifies_on_size_alone():
+    """A boto3 ``upload_file`` over the 8 MB threshold stages a MULTIPART
+    object whose ETag is ``md5(concat(part md5s))-N``; the server-side copy is
+    single-part, so its ETag is the plain content MD5 and can never match.
+    Same size ⇒ the item lands (verified by size + the step-3 sha256)."""
+    doc = _staged_doc("big.tif")
+    staging_key = f"staging/{UPLOAD}/big.tif"
+    repo, store, writer, hooks = _fixture(doc=doc, objects={staging_key: b"large-cog-bytes"})
+    store.etags[staging_key] = "9b2cf535f27731c974343645a3985328-3"
+
+    result = await _run(repo, store, writer, hooks)
+
+    assert result.rejected == ()
+    assert [(u.collection_id, u.item_id) for u in result.upserted] == [(COLLECTION, ITEM)]
+    assert (staging_key, f"assets/{COLLECTION}/{ITEM}/big.tif") in store.copied
+
+
+async def test_single_part_etag_divergence_still_rejects():
+    """The check is narrowed, not dropped: a single-part source whose copy has
+    a different ETag at the same size is still a checksum mismatch."""
+    doc = _staged_doc("B04.tif")
+    staging_key = f"staging/{UPLOAD}/B04.tif"
+    repo, store, writer, hooks = _fixture(doc=doc, objects={staging_key: b"x"})
+    store.etags[staging_key] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    store.etags[f"assets/{COLLECTION}/{ITEM}/B04.tif"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    result = await _run(repo, store, writer, hooks)
+
+    assert result.rejected[0].reason == "checksum_mismatch"
+    assert writer.upserted == []
+
+
+async def test_multipart_source_with_size_change_still_rejects():
+    """Size is checked unconditionally — a truncated/extended copy of a
+    multipart source is rejected even though its ETag is not comparable."""
+    doc = _staged_doc("big.tif")
+    staging_key = f"staging/{UPLOAD}/big.tif"
+    repo, store, writer, hooks = _fixture(doc=doc, objects={staging_key: b"large-cog-bytes"})
+    store.etags[staging_key] = "9b2cf535f27731c974343645a3985328-3"
+    store.corrupt_on_copy.add(staging_key)  # copy comes out one byte longer
+
+    result = await _run(repo, store, writer, hooks)
+
+    assert result.rejected[0].reason == "checksum_mismatch"
+    assert writer.upserted == []
 
 
 async def test_invalid_item_rejects_with_nothing_written():
