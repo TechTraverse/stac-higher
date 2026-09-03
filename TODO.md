@@ -13,13 +13,13 @@ just a wasted read.
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-5 done. **G-6 and G-7 have no plans yet** — brainstorm and write one before implementing |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved |
-| **W** | Ingest date window + retention cap | Spec approved, W-1 and W-2 both have task-level plans. Ready to execute |
+| **W** | Ingest date window + retention cap | Spec approved. **W-1 done 2026-09-02**; W-2 has a task-level plan and is ready to execute |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
 off `ai/main`, and `npm run verify` — plus the pipeline's `pytest` and `ruff`
 when the pipeline is touched — before merging. Slices name their dependencies
 within a queue; respect those. Slices in **different** queues never block each
-other (one exception: G-7 needs W-1 merged — see G-7), and when two touch the
+other (the one exception, G-7 needing W-1, is satisfied — W-1 is merged), and when two touch the
 same file the later merge into `ai/main` resolves it (AGENTS.md conflict rules).
 
 ---
@@ -363,7 +363,7 @@ The two slices are independent and may run in parallel in separate worktrees.
 Both have detailed plans. **W-2 takes migration 026**, so K-3's spec and its
 slice text below must be renumbered to 027 as part of W-2 Task 1.
 
-- [ ] **W-1 · Ingest date window + prefix expansion + per-poll cap.** Spec §3.
+- [x] **W-1 · Ingest date window + prefix expansion + per-poll cap.** Spec §3.
       New pure `ingest/window.py` (bound grammar `-<n>[smhd]` or RFC3339,
       window resolution against a supplied `now`, `{Y}{m}{d}{j}{H}` template
       expansion with a `max_prefixes` refusal); `window` / `path_template` /
@@ -436,5 +436,20 @@ object stores only).
   duplicate `process_run_now` executions at M3-D's worker concurrency, and
   watch `procrastinate_jobs` for churn from the extra per-item enqueues. The
   functional behaviour is verified; the throughput behaviour is not.
+
+- **W-1 landed 2026-09-02 (`ai/w1-window`), two plan deviations worth knowing:**
+  (1) the plan's year-rollover expansion test expected the prefix of the hour
+  the window ENDS on; with the half-open `[begin, end)` the spec chose, that
+  hour holds nothing admissible, so the test now expects two prefixes, not
+  three. (2) The fixture marks bad-template-token cases `app: reject`, but the
+  plan's Zod only checked shape — the token guards (≥ 1 known token, no
+  unknown) are now mirrored in `ingestConfigSchema` so the form refuses them at
+  write time. The bound GRAMMAR stays pipeline-only, as designed.
+- **W-1's live gate is still owed (lead, internet + Docker):** an anonymous
+  s3 connection to `noaa-goes19` with `source_path "ABI-L2-MCMIPC/"`,
+  `path_template "{Y}/{j}/{H}/"`, `window {begin: "-1h"}`,
+  `max_files_per_poll 4`, reference mode, `metadata.defaults.datetime:
+  "file_mtime"` — expect three listings, ~12 files found, four admitted per
+  poll (spec §2). Residuals I-97…I-99 are in ISSUES.md.
 
 (append here during iterations)

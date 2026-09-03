@@ -78,7 +78,13 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         adapter = build_adapter(
             association.connection, master_key, settings.egress_allow_hosts
         )
-        result = await discover_stage(repo, association, config, adapter)
+        result = await discover_stage(
+            repo,
+            association,
+            config,
+            adapter,
+            max_prefixes=settings.ingest_max_window_prefixes,
+        )
         if result.settled:
             # Flow telemetry (M2-A): a settle IS ingest activity — the M2-B
             # flow monitor evaluates expect_activity_within_seconds against

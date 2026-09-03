@@ -569,6 +569,20 @@ parallel with M3. Slices G-1…G-7 in `TODO.md`.
 | G-3 · Latency posture | ✅ | A triggered run now starts in seconds, not up to a minute. `trigger_run` enqueues `pipeline.process_run_now` for its own row (`repo.claim_run` — the claim_due_runs UPDATE with an id predicate, so the immediate job and the tick race safely); the tick becomes the recovery sweep for deferred, failed and lost rows. Migration **025** widens coalescing from rate-deferred to EVERY queued run per `(process_id, source_id)` (merging pre-existing duplicates first), pinned as a two-party text contract against the pipeline's `ON CONFLICT`. Ingest gains `settle` (`auto` \| `two_polls` \| `immediate`; `effective_settle` → immediate for s3, two polls for ftp/sftp), removing one poll interval from every s3 flow. The item-write → dispatcher hop needed nothing: it was already NOTIFY-driven |
 | G-5 · Item raster preview | ✅ | `app/src/lib/serving/{urls,preview,queries}.ts` (one definition of the titiler base + URL shapes; `pickPreviewAsset` prefers the STAC `visual` role) and the shared `RasterTileLayer` (`packages/shared/src/components/map/`, + story). The product item page's Geometry tab overlays the item's tiles beneath its footprint when the collection advertises serving AND the tiler rendered it, with an *Open viewer* link; `retry: false` and no error surface, so every miss is silent. The catalog browser is untouched |
 
+## Ingest window + retention cap (W queue, 2026-09-02) 🔄
+
+Design spec approved 2026-09-02
+(`docs/superpowers/specs/2026-09-02-ingest-window-and-retention-cap-design.md`).
+Measured that day: one GOES product on `noaa-goes19` is ~250,000 objects /
+~12 TB and nothing in the ingest path bounded a listing, a fetch, or what was
+kept. The window governs what comes **in** (W-1); retention governs what
+**stays** (W-2, ADR 0011) — the two rules never contend for the same object.
+
+| Slice | Status | Notes |
+|---|---|---|
+| W-1 · Ingest date window + prefix expansion + per-poll cap | ✅ | Three optional fields on the ingest `config` (cross-runtime: `ingestConfigSchema` ↔ `ingest/config.py` ↔ the `ingest-config.json` fixture; absent = today's behaviour). `window.begin`/`end` — RFC3339 or `-<n>[smhd]`, re-resolved every poll, half-open on `FileEntry.mtime`; `path_template` — `{Y}{m}{d}{j}{H}` expanded from the window into the prefixes to list (`INGEST_MAX_WINDOW_PREFIXES`, default 1000, refuses rather than truncates); `max_files_per_poll` — admits NEW files oldest-first. All the arithmetic is the pure `ingest/window.py` (takes `now`, no clock). DISCOVER lists per expanded prefix, gates on mtime (`undateable` entries skipped + logged once a window is set), caps admissions; counters `prefixes_listed`/`out_of_window`/`undateable`/`deferred_by_cap`. Zod checks shape + template tokens, the pipeline checks the bound grammar. Data flow form: a *Date window* fieldset + *Max files per poll*. NODD worked example: `source_path "ABI-L2-MCMIPC/"`, `path_template "{Y}/{j}/{H}/"`, `window {begin: "-6h"}` → six listings of ~12 keys instead of one of ~250,000. Live gate (spec §2, anonymous `noaa-goes19` association) is lead-only and still owed |
+| W-2 · Retention count cap | ⬜ | Spec §4: `collection_settings.retention_max_items` (migration 026); `list_expired_items` gains a "beyond the newest N" branch; Settings-tab control + impact dry-run |
+
 ## Phase 8 — Not started ⬜
 
 Cloud deployment, scale gate & visualization. See

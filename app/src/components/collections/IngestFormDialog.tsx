@@ -1,9 +1,9 @@
 /**
  * Create/edit dialog for an ingest source (Phase 4) — the §5.1 ingest config
  * surface: source path, include/exclude globs, poll frequency, storage mode,
- * grouping rule, metadata strategy, and the post-ingest action. Mirrors
- * `DeliveryFormDialog`'s plain useState form pattern; the Zod schema on the
- * server is the contract.
+ * grouping rule, metadata strategy, the post-ingest action, and (W-1) the
+ * date window, path template and per-poll cap. Mirrors `DeliveryFormDialog`'s
+ * plain useState form pattern; the Zod schema on the server is the contract.
  */
 import { useState } from "react";
 import {
@@ -47,6 +47,11 @@ interface IngestFormState {
   movePath: string;
   /** §5.1 expectation window (M2-A) — "" = no expectation declared. */
   expectActivity: string;
+  /** W-1 date window + listing bounds — "" = unset (absent from the config). */
+  windowBegin: string;
+  windowEnd: string;
+  pathTemplate: string;
+  maxFilesPerPoll: string;
 }
 
 function emptyForm(): IngestFormState {
@@ -62,6 +67,10 @@ function emptyForm(): IngestFormState {
     postIngest: "leave",
     movePath: "",
     expectActivity: "",
+    windowBegin: "",
+    windowEnd: "",
+    pathTemplate: "",
+    maxFilesPerPoll: "",
   };
 }
 
@@ -94,6 +103,11 @@ function formFromAssociation(a: Association): IngestFormState {
     postIngest: isMove ? "move" : c.post_ingest === "delete" ? "delete" : "leave",
     movePath: isMove ? c.post_ingest.slice("move:".length) : "",
     expectActivity,
+    windowBegin: c.window?.begin ?? "",
+    windowEnd: c.window?.end ?? "",
+    pathTemplate: c.path_template ?? "",
+    maxFilesPerPoll:
+      c.max_files_per_poll === undefined ? "" : String(c.max_files_per_poll),
   };
 }
 
@@ -101,6 +115,12 @@ function formFromAssociation(a: Association): IngestFormState {
 function buildConfig(form: IngestFormState) {
   const postIngest =
     form.postIngest === "move" ? `move:${form.movePath.trim()}` : form.postIngest;
+  // W-1: a blank field must be ABSENT, never an empty string — the schema is
+  // `.strict()` and the pipeline treats absence as "today's behaviour".
+  const windowBegin = form.windowBegin.trim();
+  const windowEnd = form.windowEnd.trim();
+  const pathTemplate = form.pathTemplate.trim();
+  const maxFiles = form.maxFilesPerPoll.trim();
   return {
     source_path: form.sourcePath.trim(),
     include: splitCsv(form.include),
@@ -110,6 +130,11 @@ function buildConfig(form: IngestFormState) {
     grouping: { rule: form.groupingRule },
     metadata: { strategy: form.metadataStrategy },
     post_ingest: postIngest,
+    ...(windowBegin
+      ? { window: { begin: windowBegin, ...(windowEnd ? { end: windowEnd } : {}) } }
+      : {}),
+    ...(pathTemplate ? { path_template: pathTemplate } : {}),
+    ...(maxFiles ? { max_files_per_poll: Number(maxFiles) } : {}),
   };
 }
 
@@ -265,7 +290,7 @@ export function IngestFormDialog({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="df-poll">Poll frequency (s)</Label>
               <Input
@@ -274,6 +299,17 @@ export function IngestFormDialog({
                 min={60}
                 value={form.pollFrequency}
                 onChange={(e) => update({ pollFrequency: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="df-max-files">Max files per poll</Label>
+              <Input
+                id="df-max-files"
+                type="number"
+                min={1}
+                value={form.maxFilesPerPoll}
+                onChange={(e) => update({ maxFilesPerPoll: e.target.value })}
+                placeholder="unlimited"
               />
             </div>
             <div className="space-y-1.5">
@@ -294,6 +330,51 @@ export function IngestFormDialog({
               </Select>
             </div>
           </div>
+
+          <fieldset className="space-y-3 rounded-md border p-3">
+            <legend className="px-1 text-sm font-medium">Date window</legend>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="df-window-begin">Window begin</Label>
+                <Input
+                  id="df-window-begin"
+                  value={form.windowBegin}
+                  onChange={(e) => update({ windowBegin: e.target.value })}
+                  placeholder="-6h"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="df-window-end">Window end</Label>
+                <Input
+                  id="df-window-end"
+                  value={form.windowEnd}
+                  onChange={(e) => update({ windowEnd: e.target.value })}
+                  placeholder="now"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Optional. Each bound is a timestamp (2026-08-01T00:00:00Z) or an
+              offset like -6h, re-resolved on every poll; only files modified
+              inside the window are ingested.
+            </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="df-path-template">Path template</Label>
+              <Input
+                id="df-path-template"
+                value={form.pathTemplate}
+                onChange={(e) => update({ pathTemplate: e.target.value })}
+                placeholder="{Y}/{j}/{H}/"
+              />
+              <p className="text-xs text-muted-foreground">
+                Appended to the source path and expanded from the window into
+                the prefixes worth listing ({"{Y} {m} {d} {j} {H}"}), so a huge
+                archive is not paged in full on every poll. The max files per
+                poll cap paces a wide window instead of ingesting it all at
+                once.
+              </p>
+            </div>
+          </fieldset>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">

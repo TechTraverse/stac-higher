@@ -58,6 +58,10 @@ DEFAULT_INGEST_FETCH_STALL_SECONDS = 1800  # 30 min
 DEFAULT_INGEST_FAILED_RETRY_SECONDS = 300  # 5 min cool-off
 DEFAULT_INGEST_MAX_RETRIES = 3
 DEFAULT_INGEST_STORED_STALL_SECONDS = 1800  # 30 min
+#: W-1: the most prefixes one DISCOVER tick may expand a `path_template` into.
+#: Exceeding it fails the tick loudly — a 90-day window at hourly granularity
+#: is a configuration mistake, not a workload.
+DEFAULT_INGEST_MAX_WINDOW_PREFIXES = 1000
 
 # Delivery crash recovery (M2-0). A delivery_log row still `pending`/`delivering`
 # this long after its last update is presumed crashed — the deliver job died
@@ -178,6 +182,8 @@ class Settings:
     ingest_failed_retry_seconds: int = DEFAULT_INGEST_FAILED_RETRY_SECONDS
     ingest_max_retries: int = DEFAULT_INGEST_MAX_RETRIES
     ingest_stored_stall_seconds: int = DEFAULT_INGEST_STORED_STALL_SECONDS
+    #: Ingest window prefix ceiling (W-1) — see DEFAULT_INGEST_MAX_WINDOW_PREFIXES.
+    ingest_max_window_prefixes: int = DEFAULT_INGEST_MAX_WINDOW_PREFIXES
     #: Delivery crash recovery (M2-0) — see DEFAULT_DELIVERY_STALL_SECONDS.
     delivery_stall_seconds: int = DEFAULT_DELIVERY_STALL_SECONDS
     #: Finalize crash recovery (Phase 7 §6.4) — see DEFAULT_FINALIZE_STALE_SECONDS.
@@ -254,6 +260,12 @@ class Settings:
             ),
             ingest_max_retries=int(
                 env.get("INGEST_MAX_RETRIES", str(DEFAULT_INGEST_MAX_RETRIES))
+            ),
+            ingest_max_window_prefixes=int(
+                env.get(
+                    "INGEST_MAX_WINDOW_PREFIXES",
+                    str(DEFAULT_INGEST_MAX_WINDOW_PREFIXES),
+                )
             ),
             delivery_stall_seconds=int(
                 env.get(

@@ -14,10 +14,13 @@ through as a raw dict.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from pipeline.ingest.window import WindowError, resolve_window, validate_template
 
 # Defaults mirror app/src/lib/associations/schemas.ts (§5.1). Keep in sync.
 DEFAULT_POLL_FREQUENCY_SECONDS = 300
@@ -58,6 +61,13 @@ class IngestConfig:
     post_ingest: str = "leave"
     #: EXTRACT-stage config (Slice B4) — carried through untouched.
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: W-1 (spec §3). Raw strings, resolved against `now` on every poll by
+    #: `ingest.window.resolve_window` — storing them resolved would freeze a
+    #: rolling window at the moment its config was parsed.
+    window_begin: str | None = None
+    window_end: str | None = None
+    path_template: str | None = None
+    max_files_per_poll: int | None = None
 
 
 def _str_list(raw: Any) -> tuple[str, ...]:
@@ -100,6 +110,42 @@ def parse_ingest_config(raw: dict[str, Any]) -> IngestConfig:
 
     poll = int(raw.get("poll_frequency_seconds", DEFAULT_POLL_FREQUENCY_SECONDS))
     metadata = raw.get("metadata")
+
+    window_raw = raw.get("window") or {}
+    if not isinstance(window_raw, dict):
+        raise IngestConfigError("window must be an object")
+    window_begin = window_raw.get("begin")
+    window_end = window_raw.get("end")
+    if window_end is not None and window_begin is None:
+        raise IngestConfigError("window.end without window.begin")
+
+    path_template = raw.get("path_template")
+    if path_template is not None:
+        if not isinstance(path_template, str) or not path_template.strip():
+            raise IngestConfigError("path_template must be a non-empty string")
+        if window_begin is None:
+            raise IngestConfigError("path_template needs a window to expand")
+        try:
+            validate_template(path_template)
+        except WindowError as err:
+            raise IngestConfigError(str(err)) from err
+
+    # Fail on a bad bound HERE, not on the first poll: a config that cannot
+    # produce a window is a configuration error, and the association's writer
+    # should learn about it at write time. This is a parse check, not the
+    # resolution DISCOVER does — the window is recomputed per poll there.
+    if window_begin is not None:
+        try:
+            resolve_window(window_begin, window_end, dt.datetime.now(dt.UTC))
+        except WindowError as err:
+            raise IngestConfigError(str(err)) from err
+
+    max_files = raw.get("max_files_per_poll")
+    if max_files is not None:
+        max_files = int(max_files)
+        if max_files < 1:
+            raise IngestConfigError("max_files_per_poll must be >= 1")
+
     return IngestConfig(
         source_path=source_path,
         include=_str_list(raw.get("include")),
@@ -110,6 +156,10 @@ def parse_ingest_config(raw: dict[str, Any]) -> IngestConfig:
         grouping=grouping,
         post_ingest=str(raw.get("post_ingest", "leave")),
         metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        window_begin=window_begin,
+        window_end=window_end,
+        path_template=path_template,
+        max_files_per_poll=max_files,
     )
 
 

@@ -17,14 +17,22 @@ Stripping a prefix that isn't there is a no-op, so the same code handles both
 conventions. Discovery is **non-recursive** this slice (one ``list`` of
 ``source_path``); S3's prefix listing is naturally deep, SFTP/FTP see one level —
 a recursive walk is a follow-up (ISSUES).
+
+The date window (W-1, spec §3) bounds what a tick takes in, in three places:
+with a ``path_template`` the stage lists only the prefixes the window touches
+(bounding the LISTING, not just its result); every entry's modified time is
+then gated by the window; and ``max_files_per_poll`` caps how many NEW files
+one tick admits, oldest first. All three are optional and absent by default.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import posixpath
 from dataclasses import dataclass
 
+from pipeline.config import DEFAULT_INGEST_MAX_WINDOW_PREFIXES
 from pipeline.connections.adapters.base import FileEntry, StorageAdapter
 from pipeline.ingest.config import IngestConfig, effective_settle, path_matches
 from pipeline.ingest.repo import (
@@ -38,6 +46,7 @@ from pipeline.ingest.repo import (
     IngestRepo,
     LedgerEntry,
 )
+from pipeline.ingest.window import expand_prefixes, in_window, resolve_window
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +104,23 @@ class DiscoverResult:
     unsettled: int = 0
     unchanged: int = 0
     reingest: int = 0
+    #: W-1 counters.
+    out_of_window: int = 0
+    #: listed, in-scope, but carrying no modified time to gate on.
+    undateable: int = 0
+    #: matched everything but was held back by max_files_per_poll.
+    deferred_by_cap: int = 0
+    prefixes_listed: int = 0
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """A listed file that passed every filter and is ready to reconcile."""
+
+    relpath: str
+    entry: FileEntry
+    fingerprint: str
+    latest: LedgerEntry | None
 
 
 async def discover_stage(
@@ -102,13 +128,35 @@ async def discover_stage(
     association: IngestAssociation,
     config: IngestConfig,
     adapter: StorageAdapter,
+    *,
+    now: dt.datetime | None = None,
+    max_prefixes: int = DEFAULT_INGEST_MAX_WINDOW_PREFIXES,
 ) -> DiscoverResult:
     """Reconcile the live listing against the ledger. Idempotent per file."""
-    entries = await adapter.list(config.source_path)
+    at = now or dt.datetime.now(dt.UTC)
     result = DiscoverResult()
+    window = resolve_window(config.window_begin, config.window_end, at)
+
+    # W-1: with a template, list only the prefixes the window touches; the
+    # window otherwise filters AFTER a full listing, which bounds the result
+    # but not the cost of getting it.
+    if config.path_template and window is not None:
+        prefixes = [
+            f"{config.source_path}{suffix}"
+            for suffix in expand_prefixes(config.path_template, window, max_prefixes=max_prefixes)
+        ]
+    else:
+        prefixes = [config.source_path]
+
+    entries: list[FileEntry] = []
+    for prefix in prefixes:
+        entries.extend(await adapter.list(prefix))
+    result.prefixes_listed = len(prefixes)
+
     # G-3: whether a first sighting is already settled, decided once per tick
     # from the config and the source protocol.
     immediate = effective_settle(config, adapter.protocol) == "immediate"
+    candidates: list[_Candidate] = []
     for entry in entries:
         result.listed += 1
         if entry.is_dir:
@@ -119,6 +167,20 @@ async def discover_stage(
         if not path_matches(relpath, config.include, config.exclude):
             result.skipped += 1
             continue
+        if window is not None:
+            if entry.mtime is None:
+                # Cannot be gated, so it is not admitted — the same posture the
+                # stage takes for an unfingerprintable file. Counted and logged
+                # so "my FTP source ingests nothing" is diagnosable.
+                result.undateable += 1
+                logger.warning(
+                    "ingest discover: no modified time, cannot apply the window",
+                    extra={"association_id": association.id, "source_path": relpath},
+                )
+                continue
+            if not in_window(window, entry.mtime):
+                result.out_of_window += 1
+                continue
         fingerprint = fingerprint_of(entry)
         if fingerprint is None:
             result.unfingerprinted += 1
@@ -128,15 +190,44 @@ async def discover_stage(
             )
             continue
         latest = await repo.get_latest_ledger(association.id, relpath)
+        candidates.append(_Candidate(relpath, entry, fingerprint, latest))
+
+    # W-1: oldest first, so a backfill advances forward in time and the ledger
+    # shows it progressing. Only NEW files count against the cap — a steady
+    # state of known files must not starve new arrivals.
+    candidates.sort(key=lambda c: (c.entry.mtime is None, c.entry.mtime or 0.0))
+    admitted = 0
+    for candidate in candidates:
+        is_new = candidate.latest is None
+        if (
+            config.max_files_per_poll is not None
+            and is_new
+            and admitted >= config.max_files_per_poll
+        ):
+            result.deferred_by_cap += 1
+            continue
+        if is_new:
+            admitted += 1
         await _reconcile(
-            repo, association.id, relpath, entry, fingerprint, latest, result, immediate
+            repo,
+            association.id,
+            candidate.relpath,
+            candidate.entry,
+            candidate.fingerprint,
+            candidate.latest,
+            result,
+            immediate,
         )
     logger.info(
         "ingest discover tick",
         extra={
             "association_id": association.id,
             "collection_id": association.collection_id,
+            "prefixes_listed": result.prefixes_listed,
             "listed": result.listed,
+            "out_of_window": result.out_of_window,
+            "undateable": result.undateable,
+            "deferred_by_cap": result.deferred_by_cap,
             "new_seen": result.new_seen,
             "settled": result.settled,
             "reingest": result.reingest,
@@ -182,9 +273,7 @@ async def _reconcile(
             result.settled_bytes += entry.size or 0
         else:
             # still changing (mid-upload) → record the new state, restart window.
-            await repo.set_ledger_fields(
-                latest.id, size=entry.size, fingerprint=fingerprint
-            )
+            await repo.set_ledger_fields(latest.id, size=entry.size, fingerprint=fingerprint)
             result.changed_while_seen += 1
         return
 

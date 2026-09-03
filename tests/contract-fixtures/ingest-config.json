@@ -1,5 +1,5 @@
 {
-  "$comment": "Golden fixtures for the \u00a75.1 ingest config cross-runtime contract (ISSUE I-53). Consumed by app/src/__tests__/contract-fixtures.test.ts (Zod, the strict write gatekeeper) and services/pipeline/tests/test_contract_fixtures.py (lenient reader that re-applies defaults). See README.md for the format and the accept/reject semantics. `settle` (G-3) decides when a discovered file becomes eligible for FETCH; `auto` resolves against the connection protocol in the pipeline's effective_settle().",
+  "$comment": "Golden fixtures for the \u00a75.1 ingest config cross-runtime contract (ISSUE I-53). Consumed by app/src/__tests__/contract-fixtures.test.ts (Zod, the strict write gatekeeper) and services/pipeline/tests/test_contract_fixtures.py (lenient reader that re-applies defaults). See README.md for the format and the accept/reject semantics. `settle` (G-3) decides when a discovered file becomes eligible for FETCH; `auto` resolves against the connection protocol in the pipeline's effective_settle(). W-1 adds `window` (begin/end: RFC3339 or -<n>[smhd]), `path_template` ({Y}{m}{d}{j}{H} prefix expansion, needs a window) and `max_files_per_poll` \u2014 all optional; Zod checks their SHAPE, the pipeline checks the bound GRAMMAR, which is why an unparseable bound is app-accept / pipeline-reject.",
   "minimal": {
     "source_path": "/out"
   },
@@ -227,6 +227,126 @@
       "config": {
         "source_path": "/out",
         "settle": "sometimes"
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "rolling window, open end",
+      "config": {
+        "source_path": "/out",
+        "window": {
+          "begin": "-6h"
+        }
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "absolute backfill window",
+      "config": {
+        "source_path": "/out",
+        "window": {
+          "begin": "2026-08-01T00:00:00Z",
+          "end": "2026-08-02T00:00:00Z"
+        }
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "window with a lagging end (skip partially-landed objects)",
+      "config": {
+        "source_path": "/out",
+        "window": {
+          "begin": "-2h",
+          "end": "-10m"
+        }
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "window.end without begin",
+      "config": {
+        "source_path": "/out",
+        "window": {
+          "end": "-10m"
+        }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "unparseable bound",
+      "config": {
+        "source_path": "/out",
+        "window": {
+          "begin": "yesterday"
+        }
+      },
+      "app": "accept",
+      "pipeline": "reject"
+    },
+    {
+      "name": "path_template with a window",
+      "config": {
+        "source_path": "ABI-L2-MCMIPC/",
+        "path_template": "{Y}/{j}/{H}/",
+        "window": {
+          "begin": "-6h"
+        }
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "path_template without a window has nothing to expand",
+      "config": {
+        "source_path": "/out",
+        "path_template": "{Y}/{j}/"
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "path_template with no date token",
+      "config": {
+        "source_path": "/out",
+        "path_template": "static/",
+        "window": {
+          "begin": "-6h"
+        }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "path_template with an unknown token",
+      "config": {
+        "source_path": "/out",
+        "path_template": "{Y}/{doy}/",
+        "window": {
+          "begin": "-6h"
+        }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "per-poll cap",
+      "config": {
+        "source_path": "/out",
+        "max_files_per_poll": 200
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "per-poll cap below one",
+      "config": {
+        "source_path": "/out",
+        "max_files_per_poll": 0
       },
       "app": "reject",
       "pipeline": "reject"
