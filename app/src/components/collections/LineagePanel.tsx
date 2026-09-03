@@ -72,8 +72,10 @@ export function LineagePanel({ collectionId }: { collectionId: string }) {
           | "association"
           | "process",
         // A process OUTPUT row has no flow_stats of its own (telemetry lives
-        // on the source that triggered the run), so it gets no strip.
-        hasHistory: edge.kind !== "process_output",
+        // on the source that triggered the run), so it gets no strip. An
+        // extractor edge shares its association id with the ingest edge that
+        // already carries the flow strip, so it must not draw a second one.
+        hasHistory: edge.kind !== "process_output" && edge.kind !== "extractor",
       }));
     return {
       upstream: decorate(inbound, "from"),
@@ -106,7 +108,7 @@ export function LineagePanel({ collectionId }: { collectionId: string }) {
           {upstream.map((edge) =>
             edge.hasHistory ? (
               <EdgeRow
-                key={edge.id}
+                key={`${edge.kind}:${edge.id}`}
                 label={edge.label}
                 kind={edge.kind}
                 subjectKind={edge.subjectKind}
@@ -114,7 +116,7 @@ export function LineagePanel({ collectionId }: { collectionId: string }) {
               />
             ) : (
               <div
-                key={edge.id}
+                key={`${edge.kind}:${edge.id}`}
                 className="flex items-center justify-between gap-4 rounded-md border border-border p-3"
               >
                 <span className="font-medium truncate">{edge.label}</span>
@@ -135,7 +137,7 @@ export function LineagePanel({ collectionId }: { collectionId: string }) {
           {downstream.map((edge) =>
             edge.hasHistory ? (
               <EdgeRow
-                key={edge.id}
+                key={`${edge.kind}:${edge.id}`}
                 label={edge.label}
                 kind={edge.kind}
                 subjectKind={edge.subjectKind}
@@ -143,7 +145,7 @@ export function LineagePanel({ collectionId }: { collectionId: string }) {
               />
             ) : (
               <div
-                key={edge.id}
+                key={`${edge.kind}:${edge.id}`}
                 className="flex items-center justify-between gap-4 rounded-md border border-border p-3"
               >
                 <span className="font-medium truncate">{edge.label}</span>

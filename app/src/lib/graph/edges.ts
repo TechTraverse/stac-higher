@@ -33,7 +33,8 @@ export type GraphEdgeKind =
   | "ingest"
   | "deliver"
   | "process_source"
-  | "process_output";
+  | "process_output"
+  | "extractor";
 
 export interface GraphEdge {
   from: string;
@@ -54,6 +55,9 @@ export interface GraphEdge {
  * connection stays POSSIBLE and documented, with the §7 run-rate ceiling as
  * the backstop. Refusing it here would block legitimate round-trip topologies
  * on a guess.
+ *
+ * An `extractor` edge (GOES spec §6.6 / §15) is display-only too — it
+ * produces no `process_output`, so it cannot close a collection↔process loop.
  */
 const TRAVERSABLE_KINDS: ReadonlySet<GraphEdgeKind> = new Set([
   "process_source",

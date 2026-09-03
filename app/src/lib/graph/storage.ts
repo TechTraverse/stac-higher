@@ -29,6 +29,12 @@ interface ProcessEdgeRow {
   collection_id: string;
 }
 
+interface ExtractorEdgeRow {
+  id: string;
+  collection_id: string;
+  process_id: string;
+}
+
 /**
  * Every live edge in the platform graph.
  *
@@ -40,7 +46,7 @@ interface ProcessEdgeRow {
 export async function loadGraphEdges(): Promise<GraphEdge[]> {
   await runMigrations();
 
-  const [associations, sources, outputs] = await Promise.all([
+  const [associations, sources, outputs, extractors] = await Promise.all([
     query<AssociationEdgeRow>(
       `SELECT cc.id, cc.collection_id, cc.connection_id, cc.direction
          FROM stac_higher.collection_connections cc
@@ -59,6 +65,18 @@ export async function loadGraphEdges(): Promise<GraphEdge[]> {
          FROM stac_higher.process_outputs o
          JOIN stac_higher.processes p ON p.id = o.process_id
         WHERE p.enabled AND p.deleted_at IS NULL`,
+    ),
+    query<ExtractorEdgeRow>(
+      `SELECT cc.id, cc.collection_id,
+              cc.config->'metadata'->'extractor'->>'process_id' AS process_id
+         FROM stac_higher.collection_connections cc
+         JOIN stac_higher.connections c ON c.id = cc.connection_id
+         JOIN stac_higher.processes p
+           ON p.id::text = cc.config->'metadata'->'extractor'->>'process_id'
+        WHERE cc.direction = 'ingest' AND cc.enabled AND c.enabled
+          AND cc.deleted_at IS NULL AND c.deleted_at IS NULL
+          AND p.enabled AND p.deleted_at IS NULL
+          AND cc.config->'metadata'->>'strategy' = 'extractor'`,
     ),
   ]);
 
@@ -95,6 +113,17 @@ export async function loadGraphEdges(): Promise<GraphEdge[]> {
       from: processNode(row.process_id),
       to: collectionNode(row.collection_id),
       kind: "process_output",
+      id: row.id,
+    });
+  }
+  for (const row of extractors.rows) {
+    // GOES spec §15: drawn from the extractor PROCESS to the collection it
+    // fixes items for, so the process appears in the picture and the
+    // collection's lineage. Same association id as its `ingest` twin.
+    edges.push({
+      from: processNode(row.process_id),
+      to: collectionNode(row.collection_id),
+      kind: "extractor",
       id: row.id,
     });
   }
