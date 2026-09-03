@@ -34,6 +34,7 @@ import hashlib
 import logging
 from copy import deepcopy
 
+from pipeline.delivery.transfer import is_multipart_etag
 from pipeline.finalize.seam import (
     FinalizeOutcome,
     FinalizeRequest,
@@ -79,10 +80,14 @@ def etags_comparable(src_etag: str) -> bool:
     upload above boto3's 8 MB threshold (``upload_file``) takes that path, so
     comparing the two rejects every large object as a mismatch. The ETag is
     therefore only a usable fingerprint when the source is single-part; size
-    (and the sha256 computed in step 3, which is what the item records) covers
-    the rest.
+    carries the rest of the copy check.
+
+    The multipart rule itself is the delivery path's ``is_multipart_etag``
+    (I-48) — one definition, two callers. The quote-strip is a defensive
+    normalisation: ``head_object`` already strips them, but a store returning
+    a quoted ETag must not read as multipart-free by accident.
     """
-    return "-" not in src_etag.strip('"')
+    return not is_multipart_etag(src_etag.strip('"'))
 
 
 def _rewrite_document(item: ResolvedItem, asset_href_base: str) -> dict:
