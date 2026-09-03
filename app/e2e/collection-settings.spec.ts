@@ -42,6 +42,7 @@ test.describe("Collection Settings tab", () => {
           group_id: null,
           externally_writable: false,
           retention_days: null,
+          retention_max_items: null,
           gc_grace_days: 30,
           archived: false,
           serving_enabled: false,
