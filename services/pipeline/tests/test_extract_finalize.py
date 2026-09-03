@@ -77,6 +77,22 @@ def test_check_refuses_id_collection_href_and_asset_set_changes():
     assert "asset" in check_extract_output(d, bad)
 
 
+def test_check_refuses_non_object_assets_and_properties_without_raising():
+    """An extractor is arbitrary operator code: a document that parses as JSON
+    can still be any shape. Every one of these must come back as a REASON —
+    an exception here escapes the per-item loop and strands the whole run."""
+    d = draft()
+    bad = fixed(d)
+    bad["assets"]["scene.nc"] = "oops"
+    assert "not an object" in check_extract_output(d, bad)
+    bad = fixed(d)
+    bad["assets"] = ["scene.nc"]
+    assert "not an object" in check_extract_output(d, bad)
+    bad = fixed(d)
+    bad["properties"] = ["x"]
+    assert "not an object" in check_extract_output(d, bad)
+
+
 def test_check_requires_geometry_and_datetime():
     d = draft()
     bad = fixed(d)
@@ -210,3 +226,38 @@ async def test_extract_branch_fails_the_batch_when_the_run_lost_its_association(
     assert ledger_row.status == STATUS_FAILED
     assert "deleted during extraction" in ledger_row.reason
     assert ingest.flow_stats == {}  # no association row left to bump
+
+
+async def test_malformed_documents_fail_only_their_own_item():
+    """The shape probes, driven through the branch: a string asset entry and a
+    list `properties` each fail their OWN rows, and the sibling item still
+    lands — no exception escapes to strand the batch in `extracting`."""
+    ingest, process, assoc, run_id = await _setup({}, rows=("a", "b", "c"))
+    prefix = run_staging_prefix(run_id)
+    bad_assets = fixed(draft("a"))
+    bad_assets["assets"]["scene.nc"] = "oops"
+    bad_props = fixed(draft("b"))
+    bad_props["properties"] = ["x"]
+    store = FakeStore({
+        f"{prefix}a.json": json.dumps(bad_assets).encode(),
+        f"{prefix}b.json": json.dumps(bad_props).encode(),
+        f"{prefix}c.json": json.dumps(fixed(draft("c"))).encode(),
+    })
+    writer = FakeWriter()
+
+    result = await finalize_extract_run(
+        run_id, process_repo=process, ingest_repo=ingest, writer=writer, store=store,
+        adapter_for=lambda a: FakeAdapter(),
+    )
+
+    assert (result.itemized, result.failed) == (1, 2)
+    for name in ("a", "b"):
+        row = await ingest.get_latest_ledger(assoc.id, f"{name}.nc")
+        assert row.status == STATUS_FAILED and "not an object" in row.reason
+    landed = await ingest.get_latest_ledger(assoc.id, "c.nc")
+    assert landed.status == STATUS_ITEMIZED and landed.item_id == "c"
+    assert [item["id"] for item in writer.items] == ["c"]
+    # partial rejection mirrors the transform recorder: the run keeps its
+    # status but records what it lost.
+    assert process.finished[-1]["status"] == "succeeded"
+    assert process.finished[-1]["error"] == "2 of 3 extracted items were rejected"

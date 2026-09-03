@@ -71,16 +71,30 @@ def check_extract_output(draft: dict[str, Any], document: dict[str, Any]) -> str
         )
     if document.get("collection") != draft.get("collection"):
         return "extractor changed the collection"
-    draft_assets = draft.get("assets") or {}
-    out_assets = document.get("assets") or {}
-    if not isinstance(out_assets, dict) or set(out_assets) != set(draft_assets):
+    draft_raw = draft.get("assets")
+    draft_assets: dict[str, Any] = draft_raw if isinstance(draft_raw, dict) else {}
+    out_assets = document.get("assets")
+    # Shape first, always as a REASON: an extractor is arbitrary operator code,
+    # so a document that parses as JSON can still be any shape. Raising here
+    # would escape the caller's per-item loop and abandon the whole run's rows
+    # in `extracting` — exactly what this branch exists to prevent.
+    if not isinstance(out_assets, dict):
+        return "extractor output assets is not an object"
+    if set(out_assets) != set(draft_assets):
         return "extractor changed the asset set (assets may gain metadata, not members)"
     for key, entry in draft_assets.items():
-        if (out_assets.get(key) or {}).get("href") != entry.get("href"):
+        out_entry = out_assets.get(key)
+        if not isinstance(out_entry, dict):
+            return f"extractor output asset {key!r} is not an object"
+        draft_href = entry.get("href") if isinstance(entry, dict) else None
+        if out_entry.get("href") != draft_href:
             return f"extractor changed the href of asset {key!r}"
     if document.get("geometry") is None:
         return "extractor left geometry null"
-    if not (document.get("properties") or {}).get("datetime"):
+    properties = document.get("properties")
+    if not isinstance(properties, dict):
+        return "extractor output properties is not an object"
+    if not properties.get("datetime"):
         return "extractor left properties.datetime unset"
     return None
 
@@ -197,11 +211,21 @@ async def finalize_extract_run(
         except Exception:  # pragma: no cover - best effort
             logger.warning("extract finalize: could not delete", extra={"key": key})
 
-    if failed and not itemized:
+    # Mirror the transform recorder (`finalize/process_run.py`): a run that
+    # published nothing is downgraded so "succeeded" cannot mean "published
+    # nothing", and a partially rejected run keeps its status but records WHAT
+    # it lost on the ledger row.
+    if failed:
         await process_repo.finish_run(
-            run_id, status="dead",
-            error=f"all {failed} extracted items were rejected",
-            log_ref=None, next_attempt_at=None,
+            run_id,
+            status="dead" if not itemized else "succeeded",
+            error=(
+                f"all {failed} extracted items were rejected"
+                if not itemized
+                else f"{failed} of {failed + itemized} extracted items were rejected"
+            ),
+            log_ref=None,
+            next_attempt_at=None,
         )
     logger.info(
         "extractor run finalized",
