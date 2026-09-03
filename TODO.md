@@ -11,7 +11,7 @@ just a wasted read.
 | Queue | What it is | State |
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
-| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-5 done. **G-6 and G-7 have no plans yet** — brainstorm and write one before implementing |
+| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-5 done. **G-6 and G-7 planned 2026-09-02** (spec §15 addendum + two plans) — implement G-6 first |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
@@ -190,10 +190,10 @@ resolves it per AGENTS.md; neither queue waits for the other.
 Slices G-1, G-2 and G-4 are independent and may run concurrently in separate
 worktrees. Detailed task plans exist for those three
 (`docs/superpowers/plans/2026-09-01-goes-g{1,2,4}-*.md`), and for G-3 and G-5
-(`2026-09-02-goes-g{3,5}-*.md`). **G-6 and G-7 have no plan yet.** Writing
-one (`superpowers:brainstorming` → `superpowers:writing-plans`, the G-1…G-5
-plans as the template) is the first step of that slice's iteration, not a
-separate task — do not implement from the slice text alone.
+(`2026-09-02-goes-g{3,5}-*.md`), and for G-6 and G-7
+(`2026-09-02-goes-g6-extractors.md`, `2026-09-02-goes-g7-worked-example.md`,
+written 2026-09-02 against the spec's §15 addendum). Read the plan, not the
+slice text, before implementing.
 
 - [x] **G-1 · Anonymous S3 connections.** Spec §8. `anonymous` flag on the s3
       config; credentials optional when set (UI hides the key fields); the
@@ -236,8 +236,9 @@ separate task — do not implement from the slice text alone.
       run failure fails every ledger row in the batch (no fallback); defaults
       600 runs/h and 120 s; display-only `extractor` graph edge; UI (kind badge,
       association picker); loadgen `--extractor` profile. Depends on G-2, G-3.
-      No plan yet — write `docs/superpowers/plans/2026-09-02-goes-g6-extractors.md`
-      first.
+      Plan: `2026-09-02-goes-g6-extractors.md` (spec §15 addendum records the
+      deviations: association-keyed coalescing, ledger reason/run/mtime
+      columns + the I-100 fix, process → collection graph edge, migration 027).
 - [ ] **G-7 · GOES worked example + live-gated e2e.** Spec §2, §9, §10. The
       `goes-abi-metadata` extractor and `goes-geocolor` process on the CURRENT
       runtime image (rasterio `NETCDF:` subdatasets, numpy true colour + night
@@ -246,7 +247,10 @@ separate task — do not implement from the slice text alone.
       association's `include` to the newest `ABI-L2-MCMIPC` key listed over
       plain HTTPS; `run-e2e` skill update. Depends on G-1…G-6 **and on W-1**
       (the only cross-queue dependency: without the ingest window the live
-      association would list the whole product). No plan yet — write it first.
+      association would list the whole product). Plan:
+      `2026-09-02-goes-g7-worked-example.md` (both scripts under
+      `pipeline/demo/goes/`, `pipeline.demo goes-seed`, inputs read from local
+      disk — the runtime image cannot open netCDF over `/vsi`).
 
 ## K queue — process compute: Kubernetes + Kueue + hardware profiles (AFTER G-6/G-7)
 
