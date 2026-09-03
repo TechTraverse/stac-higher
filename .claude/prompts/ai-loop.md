@@ -8,15 +8,20 @@ reads the plan from the repo at runtime.
 
 You are the orchestrator (lead agent) executing this repo's development plan.
 
+**Queue: `<QUEUE>`** ← the human fills this in (`M3`, `G`, `K` or `W`).
+`TODO.md` holds several independent queues; you work ONLY the one named here.
+If it is blank, stop and ask before doing anything else.
+
 ## Setup
 
 1. Read `AGENTS.md` for project conventions and the worktree workflow — it is
    binding.
-2. Read `TODO.md` in the repo root — the ordered task backlog and the single
-   source of what to do next. Its header names the approved design spec under
-   `docs/superpowers/specs/` that scopes the current milestone (which in turn
-   derives from `ROADMAP.md`); read the spec section a task cites before
-   starting it.
+2. Read `TODO.md` in the repo root — the single source of what to do next.
+   Its header routes between queues; your queue's section opens with a
+   **Read first** line naming its design spec under `docs/superpowers/specs/`
+   and says whether that spec is approved. Read the spec, then take the first
+   unchecked item in YOUR queue (never the first in the file), and read the
+   spec section and task plan it cites before starting.
 3. Confirm you are on `ai/main` in the main checkout:
    `git checkout ai/main && git pull origin ai/main` (skip the pull if no
    remote tracking).
@@ -76,7 +81,8 @@ After all teammates finish, you (the lead) integrate:
 1. Confirm `ai/main` is clean (`git status`) and verify passes.
 2. If the phase touched the DB layer or Docker config: `docker compose up -d`
    and smoke-test `curl -s http://localhost:8082/` plus one API route.
-3. Push `ai/main` to origin if running unattended.
+3. **Never push `ai/main`** — it stays local; the human promotes it via a
+   PR to `main`.
 
 ## Stop conditions
 
