@@ -663,3 +663,51 @@ async def test_complete_item_is_the_shared_tail():
     assert out.status == "itemized" and out.bytes == 3
     assert writer.items == [item]
     assert repo.rows[rid].status == STATUS_ITEMIZED and repo.rows[rid].item_id == "scene"
+
+
+async def test_parked_extracting_rows_keep_their_item_id():
+    """Critical: the run planner resolves reference-mode inputs via
+    `reference_source_hrefs(collection, item_id)`, which filters the ledger on
+    `item_id`. Blanking it while the group is `extracting` makes every
+    reference-mode input unresolvable on first ingest."""
+    repo = FakeIngestRepo()
+    assoc = _extractor_assoc()
+    await repo.insert_ledger_version(
+        assoc.id, "scene.nc", version=1, status=STATUS_STORED, size=7, fingerprint="f",
+        item_id="scene",
+    )
+
+    out = await run_itemize(
+        repo, FakeWriter(), FakeAdapter(), FakeS3(),
+        association=assoc, config=parse_ingest_config(assoc.config),
+        item_id="scene", source_paths=["scene.nc"], bucket="b", asset_href_base="/api/assets",
+        process_repo=FakeProcessRepo(kinds={PROC: "extractor"}),
+    )
+
+    assert out.status == "extracting"
+    row = await repo.get_latest_ledger(assoc.id, "scene.nc")
+    assert row.status == STATUS_EXTRACTING
+    assert row.item_id == "scene"
+
+
+async def test_extractor_strategy_fails_rows_when_the_process_is_disabled():
+    """A disabled extractor used to be reported as "no deployed revision"
+    (`current_revision` filters on `enabled`), which sends an operator to the
+    wrong screen."""
+    repo = FakeIngestRepo()
+    assoc = _extractor_assoc()
+    await repo.insert_ledger_version(
+        assoc.id, "scene.nc", version=1, status=STATUS_STORED, size=7, fingerprint="f"
+    )
+    process_repo = FakeProcessRepo(kinds={PROC: "extractor"}, disabled_processes={PROC})
+
+    out = await run_itemize(
+        repo, FakeWriter(), FakeAdapter(), FakeS3(),
+        association=assoc, config=parse_ingest_config(assoc.config),
+        item_id="scene", source_paths=["scene.nc"], bucket="b", asset_href_base="/api/assets",
+        process_repo=process_repo,
+    )
+
+    assert out.status == "failed" and "is disabled" in out.detail
+    row = await repo.get_latest_ledger(assoc.id, "scene.nc")
+    assert row.status == STATUS_FAILED and "is disabled" in row.reason

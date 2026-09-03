@@ -36,6 +36,8 @@ class FakeProcessRepo(ProcessRepo):
     deployed_revision: str | None = "rev-1"
     #: What `process_kind` reports per process id; defaults to "transform".
     kinds: dict[str, str] = field(default_factory=dict)
+    #: Process ids `process_is_enabled` reports False for; everything else True.
+    disabled_processes: set[str] = field(default_factory=set)
     #: The revision payload `claim_run` returns with a claimed row.
     runtime: dict[str, Any] = field(default_factory=lambda: {"kind": "inline_python"})
     code: str | None = "pass"
@@ -63,6 +65,9 @@ class FakeProcessRepo(ProcessRepo):
 
     async def process_kind(self, process_id: str) -> str | None:
         return self.kinds.get(process_id, "transform")
+
+    async def process_is_enabled(self, process_id: str) -> bool:
+        return process_id not in self.disabled_processes
 
     async def rate_window(self, process_id: str, since: dt.datetime) -> RateWindow:
         return self.windows.get(

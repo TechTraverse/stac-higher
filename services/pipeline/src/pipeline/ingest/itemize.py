@@ -245,6 +245,11 @@ async def _hand_to_extractor(
         return await fail(f"extractor process {process_id} does not exist")
     if kind != "extractor":
         return await fail(f"process {process_id} is a {kind}, not an extractor")
+    # Before the revision read: `current_revision` filters on `enabled`, so a
+    # disabled extractor would otherwise be reported as "no deployed revision"
+    # and send the operator to the wrong screen (G-6 final review).
+    if not await process_repo.process_is_enabled(process_id):
+        return await fail(f"extractor process {process_id} is disabled")
     revision_id = await process_repo.current_revision(process_id)
     if not revision_id:
         return await fail(f"extractor process {process_id} has no deployed revision")
@@ -253,7 +258,12 @@ async def _hand_to_extractor(
     # leaves rows `extracting` with no run id, which the extract-stall sweep
     # fails after its threshold. The reverse order could execute a run whose
     # rows a retry then rebuilds a second time.
-    await _mark(repo, stored, STATUS_EXTRACTING, None)
+    # Park WITH the item id: the run planner resolves reference-mode inputs
+    # through `reference_source_hrefs(collection, item_id)`, whose SQL filters
+    # the ledger on `item_id`. Blanking it here made every reference-mode input
+    # unresolvable on first ingest (G-6 final review). FETCH's convention is
+    # that a non-failed row carries its item id.
+    await _mark(repo, stored, STATUS_EXTRACTING, item_id)
     result = await trigger_run(
         process_repo,
         process_id=process_id,

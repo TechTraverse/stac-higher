@@ -603,7 +603,14 @@ async def test_an_extractor_run_reads_its_draft_and_grants_its_own_collection():
 async def test_an_extractor_run_stages_a_reference_mode_asset_from_its_source():
     """A reference-mode item is catalogued with a CANONICAL href even though
     its bytes never entered the bucket; the runner resolves it through the
-    ingest ledger, exactly as the app's asset route does (G-6 Task 9b)."""
+    ingest ledger, exactly as the app's asset route does (G-6 Task 9b).
+
+    NOTE the lookup is keyed on `(collection_id, item_id)` and the Pg query
+    filters `ingest_files.item_id`: the ledger rows MUST still carry their
+    item id while they sit in `extracting` for this to resolve. The fake is a
+    static dict and cannot see that coupling — `test_ingest_itemize.py::
+    test_parked_extracting_rows_keep_their_item_id` guards the other half.
+    """
     repo = FakeProcessRepo(
         source_hrefs={("c", "a"): {"a.nc": "https://src.example/a.nc"}}
     )

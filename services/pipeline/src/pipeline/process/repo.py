@@ -127,6 +127,13 @@ class ProcessRepo(abc.ABC):
         than carried on the run, so a process cannot change meaning mid-run
         (kind is create-only in the app anyway)."""
 
+    @abc.abstractmethod
+    async def process_is_enabled(self, process_id: str) -> bool:
+        """Whether the (live) process is enabled. `current_revision` filters on
+        `enabled`, so a disabled process is indistinguishable from an undeployed
+        one there; ITEMIZE reads this first so a disabled extractor fails its
+        rows with "is disabled" rather than "no deployed revision" (G-6)."""
+
     # -- the run ledger ------------------------------------------------------
 
     @abc.abstractmethod
@@ -378,6 +385,16 @@ class PgProcessRepo(ProcessRepo):
             )
             row = await cur.fetchone()
         return str(row[0]) if row else None
+
+    async def process_is_enabled(self, process_id: str) -> bool:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT enabled FROM stac_higher.processes"
+                " WHERE id = %s AND deleted_at IS NULL",
+                (process_id,),
+            )
+            row = await cur.fetchone()
+        return bool(row[0]) if row else False
 
     async def rate_window(  # pragma: no cover
         self, process_id: str, since: dt.datetime
