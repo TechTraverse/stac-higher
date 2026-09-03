@@ -32,7 +32,7 @@ from pipeline.finalize.process_run import build_process_request
 from pipeline.finalize.repo import PgFinalizeRepo
 from pipeline.finalize.steps import run_finalize
 from pipeline.finalize.store import PlatformObjectStore
-from pipeline.ingest.repo import STATUS_FAILED, PgIngestRepo
+from pipeline.ingest.repo import IngestRepo, PgIngestRepo
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
@@ -48,6 +48,31 @@ from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client
 
 logger = logging.getLogger(__name__)
+
+
+async def fail_extract_batch(
+    ingest_repo: IngestRepo, run: QueuedRun, error: str
+) -> int:
+    """G-6: a dead extractor run's ingest rows must not sit in `extracting`
+    forever — they carry the run's error instead.
+
+    Only the rows this run STILL OWNS are touched. `sweep_failed_for_retry`
+    re-settles the same row ids, so a row can already have been re-driven
+    through a new extractor run (or landed `itemized`) by the time a stale run
+    reaches `dead`; failing by id alone would clobber that work back to
+    `failed` with a null item id.
+    """
+    ids = [str(lid) for ref in run.input_items for lid in ref.get("ledger_ids", [])]
+    if not ids:
+        return 0
+    count = await ingest_repo.fail_extracting_rows(
+        ids, run_id=run.id, reason=f"extractor run {run.id}: {error}"[:500]
+    )
+    logger.warning(
+        "extractor run died; its ingest batch is failed",
+        extra={"run_id": run.id, "rows": count, "batch": len(ids)},
+    )
+    return count
 
 JOB_TRIGGER = "pipeline.process_trigger"
 JOB_RUN_TICK = "pipeline.process_run_tick"
@@ -191,21 +216,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         ingest_repo = PgIngestRepo(settings.database_url)
 
         async def _fail_extract_batch(run: QueuedRun, error: str) -> None:
-            """G-6: a dead extractor run's ingest rows must not sit in
-            `extracting` forever — they carry the run's error instead."""
-            ids = [str(lid) for ref in run.input_items for lid in ref.get("ledger_ids", [])]
-            if not ids:
-                return
-            await ingest_repo.set_ledger_status_many(
-                ids,
-                status=STATUS_FAILED,
-                item_id=None,
-                reason=f"extractor run {run.id}: {error}"[:500],
-            )
-            logger.warning(
-                "extractor run died; its ingest batch is failed",
-                extra={"run_id": run.id, "rows": len(ids)},
-            )
+            await fail_extract_batch(ingest_repo, run, error)
 
         finalize_payloads: list[dict[str, Any]] = []
         for run in runs:

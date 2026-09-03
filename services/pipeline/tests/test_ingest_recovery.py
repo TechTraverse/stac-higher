@@ -77,6 +77,18 @@ async def test_failed_retry_is_bounded():
     assert repo.rows["f"].status == "failed"
 
 
+async def test_failed_retry_clears_the_stale_failure_reason():
+    """The reason describes the failure the row is being retried out of;
+    carrying it into `settled` makes an operator read a stale cause."""
+    repo = FakeIngestRepo(now=EPOCH + dt.timedelta(hours=1))
+    repo.rows = {"f": _entry("f", "failed", EPOCH)}
+    repo.rows["f"].reason = "extractor run r1: boom"
+
+    assert await repo.sweep_failed_for_retry(3, older_than_seconds=300) == 1
+    assert repo.rows["f"].status == "settled"
+    assert repo.rows["f"].reason is None
+
+
 async def test_failed_retry_waits_for_cooloff():
     repo = FakeIngestRepo(now=EPOCH + dt.timedelta(seconds=60))
     repo.rows = {"f": _entry("f", "failed", EPOCH)}

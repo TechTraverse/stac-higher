@@ -261,3 +261,44 @@ async def test_malformed_documents_fail_only_their_own_item():
     # status but records what it lost.
     assert process.finished[-1]["status"] == "succeeded"
     assert process.finished[-1]["error"] == "2 of 3 extracted items were rejected"
+
+
+async def test_extract_branch_skips_rows_stamped_to_another_run():
+    """Ownership, not just status: a re-driven row can be `extracting` again
+    under a NEW run. Finalizing the stale run must leave it alone."""
+    ingest, process, _assoc, run_id = await _setup({})
+    (rid,) = list(ingest.rows)
+    await ingest.set_extract_run([rid], "another-run")
+    prefix = run_staging_prefix(run_id)
+    store = FakeStore({f"{prefix}scene.json": json.dumps(fixed(draft())).encode()})
+    writer = FakeWriter()
+
+    result = await finalize_extract_run(
+        run_id, process_repo=process, ingest_repo=ingest, writer=writer, store=store,
+        adapter_for=lambda a: FakeAdapter(),
+    )
+
+    assert (result.itemized, result.failed, result.skipped) == (0, 0, 1)
+    assert writer.items == []
+    assert ingest.rows[rid].status == STATUS_EXTRACTING
+    assert ingest.rows[rid].extract_run_id == "another-run"
+
+
+async def test_a_finalize_retry_that_only_skips_does_not_kill_the_run():
+    """On a retry the items a first pass published are `skipped`, not
+    `itemized`. Counting only `itemized` would downgrade a run that DID
+    publish to `dead`."""
+    ingest, process, assoc, run_id = await _setup({}, rows=("a", "b"))
+    landed = await ingest.get_latest_ledger(assoc.id, "a.nc")
+    await ingest.set_ledger_status_many([landed.id], status=STATUS_ITEMIZED, item_id="a")
+    prefix = run_staging_prefix(run_id)
+    store = FakeStore({f"{prefix}a.json": json.dumps(fixed(draft("a"))).encode()})
+    # b.json is absent → that item fails
+
+    result = await finalize_extract_run(
+        run_id, process_repo=process, ingest_repo=ingest, writer=FakeWriter(), store=store,
+        adapter_for=lambda a: FakeAdapter(),
+    )
+
+    assert (result.itemized, result.failed, result.skipped) == (0, 1, 1)
+    assert process.finished[-1]["status"] == "succeeded"

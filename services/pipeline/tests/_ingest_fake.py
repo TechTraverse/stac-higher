@@ -179,6 +179,7 @@ class FakeIngestRepo(IngestRepo):
                 and row.updated_at < cutoff
             ):
                 row.status = "settled"
+                row.reason = None
                 self.retries[entry_id] = self.retries.get(entry_id, 0) + 1
                 row.updated_at = self.now
                 count += 1
@@ -227,6 +228,21 @@ class FakeIngestRepo(IngestRepo):
     async def set_extract_run(self, entry_ids: Sequence[str], run_id: str) -> None:
         for entry_id in entry_ids:
             self.rows[entry_id].extract_run_id = run_id
+
+    async def fail_extracting_rows(
+        self, entry_ids: Sequence[str], *, run_id: str, reason: str
+    ) -> int:
+        count = 0
+        for entry_id in entry_ids:
+            row = self.rows.get(entry_id)
+            if row is None or row.status != "extracting" or row.extract_run_id != run_id:
+                continue
+            row.status = "failed"
+            row.reason = reason
+            row.item_id = None
+            row.updated_at = self.now
+            count += 1
+        return count
 
     async def sweep_stuck_extracting(self, older_than_seconds: int) -> int:
         cutoff = self.now - dt.timedelta(seconds=older_than_seconds)

@@ -959,3 +959,39 @@ async def test_get_run_returns_the_batch_for_finalize():
     assert rec is not None
     assert (rec.process_id, rec.association_id, rec.status) == (PROC, ASSOC, "queued")
     assert rec.input_items[0]["draft"] == {"id": "a"}
+
+
+@pytest.mark.asyncio
+async def test_failing_a_dead_extractor_batch_only_touches_rows_it_still_owns():
+    """`sweep_failed_for_retry` re-settles the SAME row ids, so a row can be
+    re-driven through a NEW extractor run while a stale run still exists. When
+    that stale run finally reaches `dead` it must not clobber the rows the new
+    run owns (or already itemized)."""
+    from _ingest_fake import FakeIngestRepo
+    from pipeline.jobs.process import fail_extract_batch
+
+    ingest = FakeIngestRepo()
+    mine = await ingest.insert_ledger_version(
+        ASSOC, "a.nc", version=1, status="extracting", size=1, fingerprint="f",
+        item_id="a",
+    )
+    theirs = await ingest.insert_ledger_version(
+        ASSOC, "b.nc", version=1, status="extracting", size=1, fingerprint="f",
+        item_id="b",
+    )
+    landed = await ingest.insert_ledger_version(
+        ASSOC, "c.nc", version=1, status="itemized", size=1, fingerprint="f",
+        item_id="c",
+    )
+    run = _extract_run()
+    run.input_items[0]["ledger_ids"] = [mine, theirs, landed]
+    await ingest.set_extract_run([mine], run.id)
+    await ingest.set_extract_run([theirs], "some-other-run")
+    await ingest.set_extract_run([landed], run.id)
+
+    count = await fail_extract_batch(ingest, run, "boom")
+
+    assert count == 1
+    assert ingest.rows[mine].status == "failed" and "boom" in ingest.rows[mine].reason
+    assert ingest.rows[theirs].status == "extracting"
+    assert ingest.rows[landed].status == "itemized" and ingest.rows[landed].item_id == "c"

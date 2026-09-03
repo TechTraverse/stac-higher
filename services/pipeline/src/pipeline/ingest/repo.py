@@ -143,8 +143,9 @@ class IngestRepo(abc.ABC):
         """Bounded retry (ISSUES I-52): reset ``failed`` rows with remaining
         retry budget (``retries < max_retries``) and a cooled-off updated_at
         back to ``settled``, incrementing ``retries``. Rows at the cap stay
-        ``failed`` (terminal until the Phase 8 operator backfill). Returns the
-        number of rows reset."""
+        ``failed`` (terminal until the Phase 8 operator backfill). Clears
+        ``reason`` so the failure text being retried out of does not outlive
+        it. Returns the number of rows reset."""
 
     @abc.abstractmethod
     async def sweep_stuck_stored(
@@ -185,6 +186,19 @@ class IngestRepo(abc.ABC):
     async def set_extract_run(self, entry_ids: Sequence[str], run_id: str) -> None:
         """Stamp the extractor run that owns these ``extracting`` rows, so the
         recovery sweep can tell a live run from a vanished one (G-6)."""
+
+    @abc.abstractmethod
+    async def fail_extracting_rows(
+        self, entry_ids: Sequence[str], *, run_id: str, reason: str
+    ) -> int:
+        """Fail only the rows this run STILL OWNS: ``status = 'extracting'``
+        AND ``extract_run_id = run_id``. Returns the number failed.
+
+        The retry sweep re-settles the same row ids, so a row can be re-driven
+        through a NEW extractor run (or already be ``itemized``) while a stale
+        run for the old batch is still alive. An unconditional fail by id would
+        clobber those (G-6 final review), so ownership is part of the WHERE.
+        """
 
     @abc.abstractmethod
     async def sweep_stuck_extracting(self, older_than_seconds: int) -> int:
@@ -417,7 +431,8 @@ class PgIngestRepo(IngestRepo):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "UPDATE stac_higher.ingest_files"
-                " SET status = 'settled', retries = retries + 1, updated_at = now()"
+                " SET status = 'settled', retries = retries + 1, reason = NULL,"
+                "     updated_at = now()"
                 " WHERE status = 'failed' AND retries < %s"
                 " AND updated_at < now() - make_interval(secs => %s)",
                 (max_retries, older_than_seconds),
@@ -493,6 +508,25 @@ class PgIngestRepo(IngestRepo):
                 (run_id, list(entry_ids)),
             )
             await conn.commit()
+
+    async def fail_extracting_rows(  # pragma: no cover
+        self, entry_ids: Sequence[str], *, run_id: str, reason: str
+    ) -> int:
+        ids = list(entry_ids)
+        if not ids:
+            return 0
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.ingest_files"
+                " SET status = 'failed', reason = %s, item_id = NULL, updated_at = now()"
+                " WHERE id = ANY(%s::uuid[])"
+                "   AND status = 'extracting'"
+                "   AND extract_run_id = %s",
+                (reason, ids, run_id),
+            )
+            count = cur.rowcount or 0
+            await conn.commit()
+        return count
 
     async def sweep_stuck_extracting(  # pragma: no cover
         self, older_than_seconds: int

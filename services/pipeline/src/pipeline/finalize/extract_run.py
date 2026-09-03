@@ -151,11 +151,13 @@ async def finalize_extract_run(
         ledger_ids = [str(x) for x in ref.get("ledger_ids", [])]
         rows = [
             r for r in await ingest_repo.get_ledger_entries(ledger_ids)
-            if r.status == STATUS_EXTRACTING
+            if r.status == STATUS_EXTRACTING and r.extract_run_id == run_id
         ]
         if not rows:
             # The idempotent guard ITEMIZE applies by path, applied by id: the
-            # rows moved on (a retry landed them, or the sweep failed them).
+            # rows moved on (a retry landed them, or the sweep failed them) —
+            # or they are `extracting` again under a NEWER run, which owns them
+            # now. Ownership is part of the guard, not just the status.
             skipped += 1
             continue
         if association_id is None:
@@ -215,14 +217,18 @@ async def finalize_extract_run(
     # published nothing is downgraded so "succeeded" cannot mean "published
     # nothing", and a partially rejected run keeps its status but records WHAT
     # it lost on the ledger row.
+    # `skipped` counts as landed here: on a finalize RETRY the items a first
+    # pass published come back skipped, and a run that published must never be
+    # downgraded to `dead`.
     if failed:
         await process_repo.finish_run(
             run_id,
-            status="dead" if not itemized else "succeeded",
+            status="dead" if not itemized and not skipped else "succeeded",
             error=(
                 f"all {failed} extracted items were rejected"
-                if not itemized
-                else f"{failed} of {failed + itemized} extracted items were rejected"
+                if not itemized and not skipped
+                else f"{failed} of {failed + itemized + skipped} extracted items"
+                     " were rejected"
             ),
             log_ref=None,
             next_attempt_at=None,
