@@ -925,19 +925,6 @@ on an MLSD-less FTP source sees silence.
 - Fix candidate: surface `undateable` (and `deferred_by_cap`) on the Data flow
   tab from the tick counters.
 
-### I-100 · `metadata.defaults.datetime: "file_mtime"` is the ledger SETTLE time, not the object's modified time 🟡
-Measured on the W-1 live gate (2026-09-02): a GOES object last-modified at
-03:19Z (scan 03:16Z) was catalogued with `datetime` 03:49Z — the moment
-DISCOVER admitted it. `resolve_datetime` documents `file_mtime` as "the
-member's ledger settle time (approximation)", and before W-1 the two were
-minutes apart. A rolling window plus a per-poll cap makes them drift by the
-whole backlog: DISCOVER sees `FileEntry.mtime` for every entry (it gates on
-it) and then throws it away.
-- Fix candidate: persist the listed `mtime` on the `ingest_files` row at
-  admission and have `file_mtime` prefer it over `observed_at`. Small and
-  contained. G-6's extractor supersedes it for GOES (scan time from the
-  filename), but every non-extractor association keeps the approximation.
-
 ### I-101 · `raster_auto` on GOES `ABI-L2-MCMIPC` netCDF yields no footprint (silent collection-extent fallback) 🟡
 The same live gate: with `metadata.strategy: raster_auto` every MCMIPC item
 carried `stac_higher:geometry_source: collection_extent` and no warning was
@@ -950,6 +937,25 @@ attributes, or `geometry_from_raster` learns the geostationary case — and
 the plan for those slices should start by reproducing this on one file.
 Until then a GOES association should use `defaults_only` with
 `geometry: "collection"` so it does not pay for a download it cannot use.
+
+**Cause (2026-09-02, G-6 planning):** the netCDF container dataset has no
+geotransform — only its subdatasets (`NETCDF:"file":CMI_C02`) are
+georeferenced, and `geometry_from_raster` opens the container. The GOES
+extractor (G-7) derives the footprint from the C02 subdataset; the built-in
+path is unchanged.
+
+### I-102 · The run planner issues one ledger query per canonical-href input item, and extract finalize's config parse runs inside the batch 🟡
+Two G-6 findings, both bounded rather than fixed:
+
+- `ProcessRepo.reference_source_hrefs` (Task 9b) is called once per input item
+  that carries a canonical href, to find out whether it is reference-mode —
+  an N+1 on the run-launch path. Batchable into one query per launch when it
+  matters.
+- In the extract finalize branch, `parse_ingest_config` and `build_adapter`
+  run once before the per-item loop, so a malformed association config or
+  unreadable credentials raises the whole batch out of the job rather than
+  failing item-by-item. Bounded: `TRIGGER_RETRY` retries the run, and the
+  `extracting` stall sweep fails ledger rows whose run never completes.
 
 ### I-99 · A small `max_files_per_poll` against a wide window leaves a long-lived `settled` backlog 🟡
 Files admitted but not yet fetched sit `settled` in the ledger; the cap paces
@@ -982,3 +988,4 @@ Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs her
 - **I-54** · pgstac 0.9.10 constraint parser vs fractional seconds — 🟢 resolved (`pgstac-migrate` one-shot, 2026-07-30)
 - **I-55** · No queue-level ingest retry / `stored` stall — 🟢 resolved (2026-07-30)
 - **I-56** · Delivery pre-record + stall sweep — 🟢 resolved (M2-0)
+- **I-100** · `file_mtime` was the ledger settle time, not the object's modified time — 🟢 resolved (G-6: DISCOVER persists `source_mtime`; `file_mtime` prefers it)
