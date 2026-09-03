@@ -25,7 +25,7 @@ import { CodeCard } from "@/components/processes/ProcessDetailPage";
 
 const PROCESS_ID = "3a9f1c2e-0000-4000-8000-0000000000a1";
 
-function setup() {
+function setup(kind: "transform" | "extractor" = "transform") {
   render(
     <CodeCard
       id={PROCESS_ID}
@@ -34,6 +34,7 @@ function setup() {
       currentEnv={[]}
       currentRevision={null}
       canMutate
+      kind={kind}
     />,
   );
 }
@@ -69,5 +70,26 @@ describe("CodeCard network access", () => {
       input: { runtime: { network: unknown } };
     };
     expect(input.runtime.network).toEqual({ level: "isolated", hosts: [] });
+  });
+});
+
+describe("CodeCard timeout default (G-6, GOES spec §6.5)", () => {
+  it("defaults an extractor's timeout to 120 s and a transform's to 900 s", async () => {
+    setup("extractor");
+    fireEvent.click(screen.getByRole("button", { name: /Deploy revision/ }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const extractorInput = mutateAsync.mock.calls[0][0] as unknown as {
+      input: { runtime: { timeout_seconds: number } };
+    };
+    expect(extractorInput.input.runtime.timeout_seconds).toBe(120);
+
+    mutateAsync.mockClear();
+    setup("transform");
+    fireEvent.click(screen.getAllByRole("button", { name: /Deploy revision/ })[1]);
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const transformInput = mutateAsync.mock.calls[0][0] as unknown as {
+      input: { runtime: { timeout_seconds: number } };
+    };
+    expect(transformInput.input.runtime.timeout_seconds).toBe(900);
   });
 });

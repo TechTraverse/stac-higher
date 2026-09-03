@@ -33,6 +33,7 @@ import {
 import type { Association } from "@/lib/associations/types";
 import { ingestConfigSchema } from "@/lib/associations/schemas";
 import { expectationSecondsField, parseExpectationSeconds, splitCsv } from "./shared";
+import { useProcesses } from "@/lib/processes/queries";
 
 interface IngestFormState {
   connectionId: string;
@@ -42,10 +43,9 @@ interface IngestFormState {
   pollFrequency: string;
   storageMode: "copy" | "reference";
   groupingRule: "none" | "shared_basename";
-  // "extractor" (G-6) has no picker option yet — a UI follow-up task adds it;
-  // this widening only keeps `formFromAssociation` type-safe when seeding the
-  // form from a config that already names an extractor.
   metadataStrategy: "raster_auto" | "sidecar" | "defaults_only" | "extractor";
+  /** The extractor process id, when `metadataStrategy` is "extractor". */
+  extractorProcessId: string;
   postIngest: "leave" | "delete" | "move";
   movePath: string;
   /** §5.1 expectation window (M2-A) — "" = no expectation declared. */
@@ -67,6 +67,7 @@ function emptyForm(): IngestFormState {
     storageMode: "copy",
     groupingRule: "none",
     metadataStrategy: "raster_auto",
+    extractorProcessId: "",
     postIngest: "leave",
     movePath: "",
     expectActivity: "",
@@ -103,6 +104,7 @@ function formFromAssociation(a: Association): IngestFormState {
     storageMode: c.storage_mode,
     groupingRule: c.grouping.rule,
     metadataStrategy: c.metadata.strategy,
+    extractorProcessId: c.metadata.extractor?.process_id ?? "",
     postIngest: isMove ? "move" : c.post_ingest === "delete" ? "delete" : "leave",
     movePath: isMove ? c.post_ingest.slice("move:".length) : "",
     expectActivity,
@@ -131,7 +133,12 @@ function buildConfig(form: IngestFormState) {
     poll_frequency_seconds: Number(form.pollFrequency),
     storage_mode: form.storageMode,
     grouping: { rule: form.groupingRule },
-    metadata: { strategy: form.metadataStrategy },
+    metadata: {
+      strategy: form.metadataStrategy,
+      ...(form.metadataStrategy === "extractor" && form.extractorProcessId
+        ? { extractor: { process_id: form.extractorProcessId } }
+        : {}),
+    },
     post_ingest: postIngest,
     ...(windowBegin
       ? { window: { begin: windowBegin, ...(windowEnd ? { end: windowEnd } : {}) } }
@@ -164,9 +171,18 @@ export function IngestFormDialog({
   const [form, setForm] = useState<IngestFormState>(() =>
     editing ? formFromAssociation(editing) : emptyForm(),
   );
+  const { data: processes } = useProcesses();
 
   const update = (patch: Partial<IngestFormState>) =>
     setForm((prev) => ({ ...prev, ...patch }));
+
+  // GOES spec §15: the association's group is the selected connection's —
+  // client-side filter over the already group-scoped list.
+  const connectionGroup =
+    connections.find((c) => c.id === form.connectionId)?.group_id ?? null;
+  const extractors = (processes ?? []).filter(
+    (p) => p.kind === "extractor" && p.group_id === connectionGroup,
+  );
 
   const submit = () => {
     if (!editing && !form.connectionId) {
@@ -179,6 +195,10 @@ export function IngestFormDialog({
     }
     if (form.postIngest === "move" && !form.movePath.trim()) {
       toast.error("A destination path is required for the move action");
+      return;
+    }
+    if (form.metadataStrategy === "extractor" && !form.extractorProcessId) {
+      toast.error("Pick an extractor process");
       return;
     }
     // The write contract validates the rest (numeric bounds included), so the
@@ -412,10 +432,34 @@ export function IngestFormDialog({
                   <SelectItem value="raster_auto">raster_auto</SelectItem>
                   <SelectItem value="sidecar">sidecar</SelectItem>
                   <SelectItem value="defaults_only">defaults only</SelectItem>
+                  <SelectItem value="extractor">extractor process</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
+
+          {form.metadataStrategy === "extractor" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="df-extractor">Extractor process</Label>
+              <Select
+                value={form.extractorProcessId}
+                onValueChange={(v) => update({ extractorProcessId: v })}
+              >
+                <SelectTrigger id="df-extractor" aria-label="Extractor process">
+                  <SelectValue placeholder={extractors.length ? "Pick an extractor" : "No extractor in this connection's group"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {extractors.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[12px] text-muted-foreground">
+                Each file's draft item is handed to this process before it is
+                catalogued. Reference-mode files are staged for the run.
+              </p>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">

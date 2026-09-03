@@ -19,6 +19,10 @@ vi.mock("@/lib/associations/queries", () => ({
   useUpdateAssociation: () => ({ mutate: updateMutate, isPending: false }),
 }));
 
+vi.mock("@/lib/processes/queries", () => ({
+  useProcesses: () => ({ data: [] }),
+}));
+
 import { IngestFormDialog } from "@/components/collections/IngestFormDialog";
 
 beforeAll(() => {
