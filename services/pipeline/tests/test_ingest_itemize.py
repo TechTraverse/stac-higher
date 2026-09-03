@@ -15,13 +15,16 @@ from _ingest_fake import (
     RaisingWriter,
     make_association,
 )
+from _process_fake import FakeProcessRepo
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.ingest.itemize import (
     ItemValidationError,
+    complete_item,
     run_itemize,
     validate_item,
 )
 from pipeline.ingest.repo import (
+    STATUS_EXTRACTING,
     STATUS_FAILED,
     STATUS_ITEMIZED,
     STATUS_STORED,
@@ -541,3 +544,122 @@ async def test_run_itemize_reference_reads_source_via_adapter_and_marks_itemized
     row = await repo.get_latest_ledger(assoc.id, "scene.tif")
     assert row.status == STATUS_ITEMIZED
     assert row.item_id == "scene"
+
+
+# --- GOES G-6: the extractor strategy branch + the shared `complete_item` tail ---
+
+PROC = "5c9f1c2e-0000-4000-8000-0000000000e1"
+
+
+def _extractor_assoc():
+    return _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {"strategy": "extractor", "extractor": {"process_id": PROC}},
+        }
+    )
+
+
+async def test_extractor_strategy_parks_rows_and_triggers_the_run():
+    repo = FakeIngestRepo()
+    assoc = _extractor_assoc()
+    rid = await repo.insert_ledger_version(
+        assoc.id, "scene.nc", version=1, status=STATUS_STORED, size=7, fingerprint="f"
+    )
+    process_repo = FakeProcessRepo(kinds={PROC: "extractor"})
+    enqueued: list[str] = []
+
+    async def enqueue_now(run_id: str) -> None:
+        enqueued.append(run_id)
+
+    out = await run_itemize(
+        repo, FakeWriter(), FakeAdapter(), FakeS3(),
+        association=assoc, config=parse_ingest_config(assoc.config),
+        item_id="scene", source_paths=["scene.nc"], bucket="b", asset_href_base="/api/assets",
+        process_repo=process_repo, enqueue_now=enqueue_now,
+    )
+
+    assert out.status == "extracting"
+    row = await repo.get_latest_ledger(assoc.id, "scene.nc")
+    assert row.status == STATUS_EXTRACTING
+    assert row.extract_run_id == out.detail == enqueued[0]
+    run = process_repo.enqueued[0]
+    assert run["association_id"] == assoc.id and run["source_id"] is None
+    (entry,) = run["input_items"]
+    assert entry["item_id"] == "scene" and entry["collection_id"] == "col"
+    assert entry["ledger_ids"] == [rid] and entry["op"] == "insert"
+    assert entry["draft"]["id"] == "scene" and entry["draft"]["collection"] == "col"
+    assert entry["draft"]["assets"]["scene"]["href"] == "/api/assets/col/scene/scene.nc"
+    # The draft is best-effort: no datetime default, so it is left for the extractor.
+    assert entry["draft"]["properties"]["datetime"] is None
+    assert entry["draft"]["geometry"] is None
+
+
+async def test_extractor_strategy_fails_rows_when_the_process_is_unusable():
+    repo = FakeIngestRepo()
+    assoc = _extractor_assoc()
+    await repo.insert_ledger_version(
+        assoc.id, "scene.nc", version=1, status=STATUS_STORED, size=7, fingerprint="f"
+    )
+    # wrong kind
+    out = await run_itemize(
+        repo, FakeWriter(), FakeAdapter(), FakeS3(),
+        association=assoc, config=parse_ingest_config(assoc.config),
+        item_id="scene", source_paths=["scene.nc"], bucket="b", asset_href_base="/api/assets",
+        process_repo=FakeProcessRepo(kinds={PROC: "transform"}),
+    )
+    assert out.status == "failed" and "not an extractor" in out.detail
+    row = await repo.get_latest_ledger(assoc.id, "scene.nc")
+    assert row.status == STATUS_FAILED and "not an extractor" in row.reason
+
+    # nothing deployed
+    repo2 = FakeIngestRepo()
+    await repo2.insert_ledger_version(
+        assoc.id, "scene.nc", version=1, status=STATUS_STORED, size=7, fingerprint="f"
+    )
+    out = await run_itemize(
+        repo2, FakeWriter(), FakeAdapter(), FakeS3(),
+        association=assoc, config=parse_ingest_config(assoc.config),
+        item_id="scene", source_paths=["scene.nc"], bucket="b", asset_href_base="/api/assets",
+        process_repo=FakeProcessRepo(kinds={PROC: "extractor"}, deployed_revision=None),
+    )
+    assert out.status == "failed" and "no deployed revision" in out.detail
+
+
+async def test_extractor_strategy_fails_rows_without_a_process_repository():
+    repo = FakeIngestRepo()
+    assoc = _extractor_assoc()
+    await repo.insert_ledger_version(
+        assoc.id, "scene.nc", version=1, status=STATUS_STORED, size=7, fingerprint="f"
+    )
+    out = await run_itemize(
+        repo, FakeWriter(), FakeAdapter(), FakeS3(),
+        association=assoc, config=parse_ingest_config(assoc.config),
+        item_id="scene", source_paths=["scene.nc"], bucket="b", asset_href_base="/api/assets",
+    )
+    assert out.status == "failed" and "no process repository" in out.detail
+    row = await repo.get_latest_ledger(assoc.id, "scene.nc")
+    assert row.status == STATUS_FAILED
+
+
+async def test_complete_item_is_the_shared_tail():
+    repo = FakeIngestRepo()
+    assoc = _assoc({"source_path": "/out", "metadata": {"strategy": "defaults_only",
+                    "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"}}})
+    rid = await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_EXTRACTING, size=3, fingerprint="f"
+    )
+    rows = await repo.get_ledger_entries([rid])
+    writer = FakeWriter()
+    item = _valid_item()
+    item["geometry"] = {"type": "Point", "coordinates": [0, 0]}
+    item["bbox"] = [0, 0, 0, 0]  # stac-pydantic: a non-null geometry needs a bbox
+
+    out = await complete_item(
+        repo, writer, FakeAdapter(), association=assoc,
+        config=parse_ingest_config(assoc.config), item_id="scene", members=rows, item_dict=item,
+    )
+
+    assert out.status == "itemized" and out.bytes == 3
+    assert writer.items == [item]
+    assert repo.rows[rid].status == STATUS_ITEMIZED and repo.rows[rid].item_id == "scene"

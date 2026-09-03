@@ -1,9 +1,13 @@
 """EXTRACT stage: build a STAC item dict from a group's stored members (§6.1).
 
-Three metadata strategies (§5.1): `raster_auto` (rio-stac over the primary
+Four metadata strategies (§5.1): `raster_auto` (rio-stac over the primary
 raster), `sidecar` (parse an adjacent XML/JSON file), `defaults_only` (no
-extraction — a null-geometry item from collection defaults). Member bytes are
-read via a `MemberByteSource` seam — `CanonicalByteSource` (copy mode: FETCH
+extraction — a null-geometry item from collection defaults) and `extractor`
+(GOES spec §6.1: only a best-effort DRAFT is built here — a process fills in
+what the platform cannot infer, so a missing datetime/geometry is `None`
+rather than an error).
+
+Member bytes are read via a `MemberByteSource` seam — `CanonicalByteSource` (copy mode: FETCH
 already wrote them to canonical storage) or `SourceAdapterByteSource`
 (reference mode: read in place from the source adapter) — so `build_item` is
 storage-mode-agnostic; raster reads go through an in-memory `rasterio.MemoryFile`
@@ -444,6 +448,34 @@ def build_defaults_only(
     return _base_item(collection_id, item_id, members, primary, when, asset_href_base)
 
 
+def build_extractor_draft(
+    collection_id: str,
+    item_id: str,
+    members: list[ExtractMember],
+    cfg: MetadataConfig,
+    asset_href_base: str,
+) -> dict[str, Any]:
+    """The DRAFT an extractor process starts from (GOES spec §6.1): the
+    defaults-only skeleton with every asset attached, but tolerant of a
+    missing datetime — the extractor's whole job is to supply what the
+    platform cannot infer, so an unresolved default is `None` here rather
+    than an error. Geometry is `None`; `build_item` may still layer the
+    opt-in collection-extent fallback on top."""
+    if not members:
+        raise ExtractError("no members to itemize")
+    primary = _primary(members)
+    try:
+        when: dt.datetime | None = resolve_datetime(None, cfg, primary)
+    except ExtractError:
+        when = None
+    item = _base_item(
+        collection_id, item_id, members, primary, when or dt.datetime.now(dt.UTC), asset_href_base
+    )
+    if when is None:
+        item["properties"]["datetime"] = None
+    return item
+
+
 def build_raster_auto(
     collection_id: str,
     item_id: str,
@@ -577,6 +609,20 @@ async def build_item(
     if not members:
         raise ExtractError("no members to itemize")
     cfg = cfg if cfg is not None else parse_metadata(metadata)
+
+    if cfg.strategy == "extractor":
+        item = build_extractor_draft(collection_id, item_id, members, cfg, asset_href_base)
+        if item.get("geometry") is None and collection_fallback is not None:
+            # Only the cheap layer: no best-effort GDAL read (the extractor
+            # will open the file itself), and no fail-fast — a null geometry
+            # is the extractor's to fill.
+            _set_geometry(
+                item,
+                collection_fallback["geometry"],
+                collection_fallback["bbox"],
+                collection_fallback["source"],
+            )
+        return item
 
     if cfg.strategy == "defaults_only":
         item = build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)

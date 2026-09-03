@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from _ingest_fake import FakeIngestRepo
 from pipeline.config import Settings
 from pipeline.ingest.config import parse_ingest_config
+from pipeline.ingest.itemize import ItemizeOutcome
 from pipeline.ingest.repo import IngestAssociation
 from pipeline.jobs import ingest
 from pipeline.jobs.ingest import (
@@ -103,3 +105,37 @@ async def test_fetch_handler_skips_itemize_when_nothing_stored(monkeypatch):
         association_id="a1", item_id="scene", source_paths=["scene.tif"]
     )
     assert not [j for j in queue.jobs if j.name == JOB_ITEMIZE]
+
+
+async def test_itemize_handler_bumps_nothing_when_the_group_goes_to_an_extractor(monkeypatch):
+    # G-6: "extracting" is not a terminal outcome — the extract finalize
+    # branch bumps the rollup when the item actually lands.
+    queue = InMemoryQueue()
+    settings = Settings.from_env(env={})
+    ingest.register(queue, settings)
+
+    assoc = IngestAssociation(
+        id="a1", collection_id="col", config={"source_path": "/o"}, connection=None
+    )
+    config = parse_ingest_config({"source_path": "/o"})
+    repo = FakeIngestRepo()
+
+    async def _fake_load(_settings, _aid):
+        return (repo, assoc, config)
+
+    async def _fake_run_itemize(*_a, **_k):
+        return ItemizeOutcome("extracting", "scene", "run-1")
+
+    monkeypatch.setattr(ingest, "load_key_or_skip", lambda _s, _j: b"key")
+    monkeypatch.setattr(ingest, "_load_association", _fake_load)
+    monkeypatch.setattr(ingest, "build_adapter", lambda *_a, **_k: object())
+    monkeypatch.setattr(ingest, "build_platform_client", lambda _s: object())
+    monkeypatch.setattr(ingest, "PgPgstacWriter", lambda _u: object())
+    monkeypatch.setattr(ingest, "PgProcessRepo", lambda _u: object())
+    monkeypatch.setattr(ingest, "run_itemize", _fake_run_itemize)
+
+    await queue.tasks[JOB_ITEMIZE](
+        association_id="a1", item_id="scene", source_paths=["scene.nc"]
+    )
+
+    assert repo.flow_stats == {}
