@@ -649,6 +649,65 @@ describe("the run ledger and the re-run verb (M5-C)", () => {
     expect(res.status).toBe(404);
     expect(rerunRun).not.toHaveBeenCalled();
   });
+
+  it("409s re-running an EXTRACTOR run — the ingest sweep owns that retry", async () => {
+    // An extractor run's rows are re-driven by the ingest failed-retry sweep.
+    // Flipping the row back to `queued` either collides with the newer queued
+    // run for the same association (23505 -> 500) or re-executes against rows
+    // it no longer owns.
+    vi.mocked(getProcess).mockResolvedValue(process({ kind: "extractor" }));
+    const res = await call(rerunRoute, operator, {
+      method: "POST",
+      params: { runId: RUN_ID },
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("extractor run");
+    expect(rerunRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("spec §6.5 kind-aware defaults", () => {
+  it("gives an extractor created through the API the 600/h ceiling", async () => {
+    vi.mocked(createProcess).mockResolvedValue(process({ kind: "extractor" }));
+    const res = await call(createRoute, operator, {
+      method: "POST",
+      body: { name: "goes-extract", group_id: EO, kind: "extractor" },
+    });
+    expect(res.status).toBe(201);
+    expect(vi.mocked(createProcess).mock.calls[0][0]).toMatchObject({
+      kind: "extractor",
+      maxRunsPerHour: 600,
+    });
+  });
+
+  it("leaves a transform at 60/h", async () => {
+    vi.mocked(createProcess).mockResolvedValue(process());
+    const res = await call(createRoute, operator, {
+      method: "POST",
+      body: { name: "cloud-mask", group_id: EO },
+    });
+    expect(res.status).toBe(201);
+    expect(vi.mocked(createProcess).mock.calls[0][0]).toMatchObject({
+      kind: "transform",
+      maxRunsPerHour: 60,
+    });
+  });
+
+  it("still honours an explicit ceiling", async () => {
+    vi.mocked(createProcess).mockResolvedValue(process({ kind: "extractor" }));
+    await call(createRoute, operator, {
+      method: "POST",
+      body: {
+        name: "goes-extract",
+        group_id: EO,
+        kind: "extractor",
+        max_runs_per_hour: 5,
+      },
+    });
+    expect(vi.mocked(createProcess).mock.calls[0][0]).toMatchObject({
+      maxRunsPerHour: 5,
+    });
+  });
 });
 
 describe("cycle refusal (I-64, M5-D)", () => {

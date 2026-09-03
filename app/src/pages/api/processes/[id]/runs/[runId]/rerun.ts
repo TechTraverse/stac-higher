@@ -24,6 +24,19 @@ export const POST: APIRoute = async ({ params, locals }) => {
     return jsonResponse(404, { error: "Run not found" });
   }
 
+  // GOES spec §6.2: an extractor run's ingest rows are re-driven by the ingest
+  // failed-retry sweep, not from here. Flipping the row back to `queued` would
+  // either collide with the newer queued run for the same association (the
+  // `process_runs_queued_association_idx` partial unique index) or re-execute
+  // against ledger rows the run no longer owns.
+  if (loaded.process.kind === "extractor") {
+    return jsonResponse(409, {
+      error:
+        "This is an extractor run. Its files are retried by the ingest sweep; " +
+        "re-run is not available for extractors.",
+    });
+  }
+
   try {
     const requeued = await rerunRun(loaded.process.id, params.runId);
     if (requeued) return jsonResponse(202, requeued);

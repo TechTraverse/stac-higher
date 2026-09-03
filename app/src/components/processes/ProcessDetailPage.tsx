@@ -736,10 +736,12 @@ function RunRow({
   run,
   processId,
   canMutate,
+  isExtractor,
 }: {
   run: ProcessRun;
   processId: string;
   canMutate: boolean;
+  isExtractor: boolean;
 }) {
   const rerunMutation = useRerunRun();
 
@@ -793,7 +795,9 @@ function RunRow({
             </a>
           </Button>
         )}
-      {canMutate && run.status === "dead" && (
+      {/* Extractor runs are not re-runnable: their ingest rows are re-driven
+          by the failed-retry sweep, and the route refuses the verb (409). */}
+      {canMutate && !isExtractor && run.status === "dead" && (
         <Button
           variant="outline"
           size="sm"
@@ -813,7 +817,15 @@ function RunRow({
   );
 }
 
-function RunsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
+function RunsCard({
+  id,
+  canMutate,
+  isExtractor,
+}: {
+  id: string;
+  canMutate: boolean;
+  isExtractor: boolean;
+}) {
   const { data: runs, isLoading } = useRuns(id);
 
   return (
@@ -821,8 +833,10 @@ function RunsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
       <CardHeader>
         <CardTitle>Recent runs</CardTitle>
         <CardDescription>
-          Each run pins the revision that executed it. A dead run can be
-          re-run — it re-executes that same revision, not whatever is current.
+          Each run pins the revision that executed it.{" "}
+          {isExtractor
+            ? "A dead extractor run is not re-run from here — its files go back through the ingest retry sweep."
+            : "A dead run can be re-run — it re-executes that same revision, not whatever is current."}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
@@ -833,7 +847,13 @@ function RunsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
           </p>
         )}
         {runs?.map((run) => (
-          <RunRow key={run.id} run={run} processId={id} canMutate={canMutate} />
+          <RunRow
+            key={run.id}
+            run={run}
+            processId={id}
+            canMutate={canMutate}
+            isExtractor={isExtractor}
+          />
         ))}
       </CardContent>
     </Card>
@@ -1021,7 +1041,11 @@ function ProcessDetailContent({ id }: { id: string }) {
       </div>
 
       <HistoryCard id={process.id} />
-      <RunsCard id={process.id} canMutate={canMutate} />
+      <RunsCard
+        id={process.id}
+        canMutate={canMutate}
+        isExtractor={process.kind === "extractor"}
+      />
     </main>
   );
 }

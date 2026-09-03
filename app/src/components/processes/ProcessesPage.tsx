@@ -127,7 +127,13 @@ function ProcessCard({
   const verdict = processVerdict(process, runs, sources?.length);
   const { rate, counted } = successRateOverRuns(ledger);
   const last = ledger.find((r) => r.started_at !== null) ?? ledger[0] ?? null;
-  const trigger = triggerSummary(sources);
+  // An extractor has no `process_sources` by design — it is selected on an
+  // ingest association — so the sources-derived summary would read "no
+  // trigger" and look broken. Name what actually drives it instead.
+  const trigger =
+    process.kind === "extractor"
+      ? { text: "ingest extractor", mono: false }
+      : triggerSummary(sources);
 
   return (
     <Card

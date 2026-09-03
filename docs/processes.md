@@ -185,8 +185,16 @@ refused too.
 **Failure.** If the run fails, times out, or dies, every file in its batch
 is marked `failed` on the ingest ledger with the run's error — there is no
 fallback to the draft — and the ingest retries the file like any other
-failure. Defaults for an extractor: 600 runs/hour and a 120 s timeout;
-back-to-back files coalesce into one run while a run is still queued.
+failure. A dead extractor run is **not** re-run from the process page — the
+re-run verb is refused for extractors (409), because the ingest sweep already
+owns that retry and re-running would execute against ledger rows the run no
+longer holds.
+
+Defaults for an extractor: **600 runs/hour** (applied whether you create the
+process through the UI or the API) and a **120 s timeout** — that one is a
+default of the deploy FORM only, so an API caller posting a revision should
+set `runtime.timeout_seconds` explicitly (the schema default is 900 s).
+Back-to-back files coalesce into one run while a run is still queued.
 
 A minimal extractor:
 
@@ -322,7 +330,9 @@ fails the same way — the ledger `error` names the item and asset — and no
 container ever started. A revision whose `network.level` exceeds the
 deployment cap dies immediately: that is configuration, not a fault. A dead run can be re-run from the UI — which re-executes **the same
 revision that failed**, not whatever is current. If you deployed a fix, trigger
-a new run; re-running an old row will run the old code.
+a new run; re-running an old row will run the old code. **Extractor** runs are
+the exception: re-run is refused for them, and their files are retried by the
+ingest failed-retry sweep instead (see "Extractors").
 
 A run stranded by a worker or executor crash is returned to `queued` by the
 stall sweep, so the crash direction is safe: a run may execute twice, never
