@@ -283,7 +283,16 @@ The COG is written in the file's native geostationary CRS (`driver="COG"`,
 deflate, 512 blocks, `overviews="AUTO"`, an internal mask for off-disk
 pixels — the tile server reprojects), and the item comes from rio-stac with
 `with_proj=True`, so `proj:wkt2` carries the WKT2 of a CRS that has no EPSG
-code. Its id is the source id plus `-geocolor`, its one asset is `visual`
+code. Its **footprint is the source item's**, not rio-stac's: rio-stac
+reprojects the raster's own bounds to make a geometry, and on the real
+geostationary grid that fails exactly the way the extractor's does (`Full
+reprojection failed, but partial is possible if you define
+OGR_ENABLE_PARTIAL_REPROJECTION`), so the call runs with that option set, and — because on some GDAL builds
+the option alone still raises — is retried with an identity `geographic_crs`
+when it does; either way the geometry and bbox the extractor already computed
+for the same pixel grid are substituted afterwards, so nothing rio-stac
+derived from the bounds ever reaches the catalog. Its id is the source id
+plus `-geocolor`, its one asset is `visual`
 with the relative href `{out_id}.tif` — a per-item filename, not a shared
 `visual.tif`, since a batch of more than one output would otherwise
 overwrite a shared name — and its collection is whatever the seeder
