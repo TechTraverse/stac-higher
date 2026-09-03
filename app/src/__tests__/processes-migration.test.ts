@@ -103,3 +103,35 @@ describe("migration 023 (flow_stats_daily)", () => {
     expect(sql).toContain("flow_stats_daily_day_idx");
   });
 });
+
+describe("migration 027 (extractors — G-6)", () => {
+  const sql = migrationEntry("027_extractors");
+
+  it("runs after W-2's 026", () => {
+    expect(migrate.indexOf('"027_extractors"')).toBeGreaterThan(
+      migrate.indexOf('"026_collection_settings_retention_max_items"'),
+    );
+  });
+
+  it("adds an immutable-by-omission process kind with a closed CHECK", () => {
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'transform'");
+    expect(sql).toContain("CHECK (kind IN ('transform', 'extractor'))");
+  });
+
+  it("widens the ledger status set with `extracting` and adds reason/run/mtime", () => {
+    expect(sql).toContain("DROP CONSTRAINT IF EXISTS ingest_files_status_check");
+    expect(sql).toContain(
+      "CHECK (status IN ('seen', 'settled', 'fetching', 'stored', 'extracting', 'itemized', 'failed'))",
+    );
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS reason text");
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS extract_run_id uuid");
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS source_mtime timestamptz");
+  });
+
+  it("coalesces extractor runs per (process, association), queued rows only", () => {
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS association_id uuid");
+    expect(sql).toContain("REFERENCES stac_higher.collection_connections(id) ON DELETE SET NULL");
+    expect(sql).toContain("CREATE UNIQUE INDEX IF NOT EXISTS process_runs_queued_association_idx");
+    expect(sql).toContain("WHERE status = 'queued' AND association_id IS NOT NULL");
+  });
+});
