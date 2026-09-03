@@ -555,8 +555,9 @@ object stores only).
     ruff); nothing here was run against the real NODD bucket.
   - **Live gate finding 2026-09-03**: rio-stac's `with_proj=True` bounds
     transform raises `Full reprojection failed` on the real MCMIPC grid;
-    `geocolor.py` now reuses the source footprint under
-    `OGR_ENABLE_PARTIAL_REPROJECTION` (the branch review had rated this a
-    minor).
+    `geocolor.py` now reuses the source footprint; `OGR_ENABLE_PARTIAL_REPROJECTION`
+    alone still raises on the installed GDAL, so the rio-stac call is retried
+    with an identity `geographic_crs` and the source geometry/bbox substituted
+    (the branch review had rated this a minor).
 
 (append here during iterations)
