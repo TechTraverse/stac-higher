@@ -146,6 +146,13 @@ canonical storage, rewrites the hrefs to the asset service, and upserts the
 item. You never write to the catalog directly, and the published href is
 always `/api/assets/{collection}/{item}/{filename}` — never a storage URL.
 
+Outputs may be **any size**, and a multipart upload (boto3's `upload_file`,
+which switches to multipart above 8 MB) is fine: the platform verifies the
+canonical copy by size — and by ETag equality when the source is a single-part
+upload, since a multipart ETag is not comparable with the copy's. A sha256 of
+the staged bytes is recorded separately for the item's checksum record; it is
+not used to re-verify the copy.
+
 An **absolute** href (`https://…`, `s3://…`) is left exactly as written: that
 is how you publish a reference-style item whose bytes live elsewhere.
 

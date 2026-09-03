@@ -559,5 +559,9 @@ object stores only).
     alone still raises on the installed GDAL, so the rio-stac call is retried
     with an identity `geographic_crs` and the source geometry/bbox substituted
     (the branch review had rated this a minor).
+  - **Live gate finding 2 (2026-09-03)**: finalize rejected every process
+    output over 8 MB as `checksum_mismatch` — the copy verification compared a
+    multipart-upload ETag with the copy's single-part ETag; fixed in
+    `finalize/steps.py` (size always, ETag only when single-part).
 
 (append here during iterations)

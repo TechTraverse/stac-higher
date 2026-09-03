@@ -205,12 +205,17 @@ class FakeObjectStore:
     corrupt_on_copy: set[str] = field(default_factory=set)
     #: raise on delete of these keys (non-fatal-delete path)
     fail_delete: set[str] = field(default_factory=set)
+    #: per-key ETag overrides — a multipart upload's ``<md5>-<n>`` ETag, or a
+    #: deliberately divergent single-part one, which the content MD5 cannot
+    #: express
+    etags: dict[str, str] = field(default_factory=dict)
 
     def head(self, key: str) -> ObjectStat | None:
         data = self.objects.get(key)
         if data is None:
             return None
-        return ObjectStat(etag=hashlib.md5(data).hexdigest(), size=len(data))
+        etag = self.etags.get(key, hashlib.md5(data).hexdigest())
+        return ObjectStat(etag=etag, size=len(data))
 
     def get(self, key: str) -> bytes:
         return self.objects[key]

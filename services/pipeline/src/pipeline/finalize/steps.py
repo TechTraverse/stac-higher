@@ -34,6 +34,7 @@ import hashlib
 import logging
 from copy import deepcopy
 
+from pipeline.delivery.transfer import is_multipart_etag
 from pipeline.finalize.seam import (
     FinalizeOutcome,
     FinalizeRequest,
@@ -66,6 +67,27 @@ logger = logging.getLogger(__name__)
 def item_canonical_prefix(collection_id: str, item_id: str) -> str:
     """The §5.3 canonical prefix holding ALL of one item's asset objects."""
     return f"assets/{collection_id}/{item_id}/"
+
+
+def etags_comparable(src_etag: str) -> bool:
+    """Is the source object's ETag comparable with a server-side copy's?
+
+    S3 gives a single-part object the plain MD5 of its content, but a
+    MULTIPART upload gets ``md5(concat(part md5s))-N`` — a digest of digests,
+    keyed to the part layout the *uploader* chose. A server-side ``CopyObject``
+    of such an object writes a single-part destination, so the copy's ETag is
+    the plain content MD5 and can NEVER equal the multipart source's. Any
+    upload above boto3's 8 MB threshold (``upload_file``) takes that path, so
+    comparing the two rejects every large object as a mismatch. The ETag is
+    therefore only a usable fingerprint when the source is single-part; size
+    carries the rest of the copy check.
+
+    The multipart rule itself is the delivery path's ``is_multipart_etag``
+    (I-48) — one definition, two callers. The quote-strip is a defensive
+    normalisation: ``head_object`` already strips them, but a store returning
+    a quoted ETag must not read as multipart-free by accident.
+    """
+    return not is_multipart_etag(src_etag.strip('"'))
 
 
 def _rewrite_document(item: ResolvedItem, asset_href_base: str) -> dict:
@@ -152,18 +174,30 @@ async def _finalize_item(
         checksums[staged.filename] = f"sha256:{hashlib.sha256(data).hexdigest()}"
         stats[staged.staging_key] = stat
 
-    # 4. Move: server-side copy + verify (ETag/size against the source we just
-    #    hashed). Deletes are deferred until after the upsert (module note).
+    # 4. Move: server-side copy + verify against the source we just hashed —
+    #    size always, ETag only when it is comparable (see etags_comparable).
+    #    Deletes are deferred until after the upsert (module note).
     for staged in item.staged_assets:
         canonical_key = canonical_asset_key(ref.collection_id, ref.item_id, staged.filename)
         await asyncio.to_thread(store.copy, staged.staging_key, canonical_key)
         moved_any = True
         src = stats[staged.staging_key]
         dest = await asyncio.to_thread(store.head, canonical_key)
-        if dest is None or dest.etag != src.etag or dest.size != src.size:
+        comparable = dest is not None and etags_comparable(src.etag)
+        if (
+            dest is None
+            or dest.size != src.size
+            or (comparable and dest.etag.strip('"') != src.etag.strip('"'))
+        ):
             return _reject(
                 REASON_CHECKSUM_MISMATCH,
                 f"canonical copy of {staged.filename} does not match the staged object",
+            )
+        if not comparable:
+            logger.info(
+                "finalize: multipart source ETag is not comparable with the copy's; "
+                "verified on size",
+                extra={"filename": staged.filename, "reason": "multipart_etag"},
             )
         bytes_moved += src.size
 
