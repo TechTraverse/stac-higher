@@ -32,6 +32,7 @@ from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _xml_fromstring
 
 from pipeline.connections.adapters.base import StorageAdapter
+from pipeline.ingest.config import extractor_process_id as _resolve_extractor_process_id
 from pipeline.ingest.discover import source_fetch_path
 from pipeline.storage import platform
 from pipeline.storage.keys import asset_href
@@ -73,8 +74,9 @@ class ExtractError(ValueError):
 @dataclass(frozen=True)
 class ExtractMember:
     """One stored group member EXTRACT reads. ``canonical_key`` is the object
-    key FETCH wrote; ``observed_at`` is the ledger's settle time (the
-    ``file_mtime`` datetime proxy — no durable source mtime exists)."""
+    key FETCH wrote; ``observed_at`` is the listed object's modified time when
+    DISCOVER recorded one (``source_mtime``, I-100), else the ledger's settle
+    time — the ``file_mtime`` datetime proxy."""
 
     source_path: str
     filename: str
@@ -106,7 +108,7 @@ def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
         raise ExtractError(f"unknown metadata.strategy {strategy!r}")
     extractor_process_id: str | None = None
     if strategy == "extractor":
-        extractor_process_id = str((raw.get("extractor") or {}).get("process_id") or "") or None
+        extractor_process_id = _resolve_extractor_process_id(raw)
         if extractor_process_id is None:
             raise ExtractError("metadata.strategy 'extractor' needs extractor.process_id")
     default_geometry = defaults.get("geometry")
@@ -146,7 +148,8 @@ def resolve_datetime(
     extracted: dt.datetime | None, cfg: MetadataConfig, primary: ExtractMember
 ) -> dt.datetime:
     """extracted → metadata.defaults.datetime → error. `file_mtime` uses the
-    member's ledger settle time (documented approximation)."""
+    listed object's modified time when DISCOVER recorded one (`source_mtime`,
+    I-100), else the member's ledger settle time."""
     if extracted is not None:
         return extracted if extracted.tzinfo else extracted.replace(tzinfo=dt.UTC)
     default = cfg.default_datetime
