@@ -103,10 +103,13 @@ the routes hit `stac_higher.*`).
 
 The **Settings** tab on built-in-catalog collection pages exposes
 `collection_settings`: owning group (ADR 0003 rules), `externally_writable`,
-`retention_days` (null = keep forever), `gc_grace_days`, `archived`
+`retention_days` (null = keep forever), `retention_max_items` (null = no
+count cap; keep the newest N by item datetime — W-2, migration 026; the two
+rules union, `archived` overrides both), `gc_grace_days`, `archived`
 (migration 016). `GET`/`PUT /api/collections/[id]/settings` (PUT operator+,
-audited); `GET .../settings/impact` is the counted dry-run behind the
-warn-and-proceed dialog.
+audited, full-document — every field including `retention_max_items` is
+required); `GET .../settings/impact?retention_days=N&retention_max_items=N`
+is the counted dry-run behind the warn-and-proceed dialog.
 
 `stac_higher.asset_gc` (migration 017) is the **only** path by which canonical
 bytes are deleted — marks are §5.3 key prefixes with
