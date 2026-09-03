@@ -175,9 +175,12 @@ is refused with the reason on its ingest ledger row:
 - `id` and `collection`;
 - the set of asset keys, and every asset `href`.
 
-Everything else is yours: `geometry`, `bbox`, `properties` (including
-`datetime`, which **must** be set), and any per-asset metadata. An input with
-no output document is refused too.
+Everything else is yours — with two exceptions that are also required:
+`geometry` and `properties.datetime` **must both be set (non-null)**; an
+output that leaves either null is refused with the reason on its ledger row,
+same as an immutability violation. `bbox`, any other `properties`, and
+per-asset metadata are all optional. An input with no output document is
+refused too.
 
 **Failure.** If the run fails, times out, or dies, every file in its batch
 is marked `failed` on the ingest ledger with the run's error — there is no
