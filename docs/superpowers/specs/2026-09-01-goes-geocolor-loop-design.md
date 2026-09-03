@@ -520,3 +520,60 @@ either is declared done.
 - **Geostationary CRS on the web map.** The tile server reprojects on the
   fly; off-disk pixels rely on the COG's mask. Verified by the e2e tile
   fetch, not by pixel inspection.
+
+## 15. G-6 / G-7 planning addendum (2026-09-02, lead-approved)
+
+Decisions taken while writing the G-6 and G-7 plans, after reading the code
+the slices touch and probing the runtime image. Where these differ from the
+sections above, this addendum wins.
+
+- **Extractor runs coalesce on the association, not a source.** §6.4 keys
+  coalescing on `(process_id, source_id)`, but §6.1 forbids `process_sources`
+  rows on an extractor, and `enqueue_run` only takes the `ON CONFLICT` path
+  with a source. Migration 027 adds a nullable `process_runs.association_id`
+  and a second partial unique index `(process_id, association_id) WHERE
+  status = 'queued'`; extractor triggers pass the association and coalesce
+  against it. Transform runs are untouched.
+- **Ledger rows carry a reason and a run id.** §6.2 says failed rows record
+  the reason; `ingest_files` had no such column. Migration 027 adds
+  `reason text`, `extract_run_id uuid`, and `source_mtime timestamptz` (the
+  I-100 fix: DISCOVER persists the listed modified time and `file_mtime`
+  prefers it over the settle time).
+- **Rows fail at terminal `dead`, not on the first failed attempt.** A run's
+  own retry may still succeed; ledger rows stay `extracting` through
+  retryable failures and fail (with the run's error) when the run reaches
+  `dead`. A sweep alongside `sweep_stuck_stored` fails `extracting` rows
+  whose run is dead or missing, or whose `extract_run_id` was never stamped.
+- **Read grants for extractor runs derive from the association's
+  collection.** The transform path grants `assets/{collection}/` per
+  `process_sources` row; an extractor has none, so the run planner uses the
+  collection ids in `input_items` instead. Copy-mode files are read in place;
+  reference-mode files are staged as §6.2 says.
+- **The graph edge is process → collection.** §6.6 drew connection →
+  collection, but graph nodes are minted only from edges, so the extractor
+  process would never appear on `/monitoring`. The display-only `extractor`
+  edge now runs from the extractor process node to the ingest collection;
+  still not traversable by the cycle check.
+- **The worked example downloads inputs to local disk.** §9's
+  `NETCDF:"/vsis3/…"` does not work in the runtime image: GDAL's netCDF
+  driver needs Linux userfaultfd for any `/vsi` path (verified 2026-09-02 on
+  `stac-higher-process-runtime:local`, rasterio 1.5.1 / GDAL 3.12.4). Both
+  GOES scripts fetch the staged object with boto3 to a temp file and open
+  `NETCDF:"{path}":CMI_Cxx`. netCDF, HDF5 and COG drivers, numpy and rio-stac
+  are all present, so §9's "no image change" holds.
+- **The extractor sets the footprint (I-101).** §9 assumed the built-in
+  netCDF path derives geometry; it does not for MCMIPC — the container
+  dataset has no georeferencing, only its subdatasets do. The extractor
+  reads the `CMI_C02` subdataset's bounds and CRS and reprojects them to
+  WGS84. The built-in `raster_auto` path is unchanged; I-101 stays open
+  annotated with the cause.
+- **One home for the GOES code.** `services/pipeline/src/pipeline/demo/goes/`
+  holds `extractor.py` and `geocolor.py`; `pipeline.demo goes` seeds the whole
+  loop against the live bucket (the manual full-hour recipe), the gated e2e
+  reads the same files, and `docs/processes.md` quotes them.
+- **Extractor policy in the app.** Create/update of an ingest association
+  with `strategy: extractor` verifies the process exists, has
+  `kind = 'extractor'`, and has the connection's `group_id` ("owned by the
+  association's group" in §6.1). Soft-deleting an extractor named by any
+  association is a 409. `kind` is create-only.
+- **Migration numbering.** G-6 takes **027**; K-3 moves to 028.
