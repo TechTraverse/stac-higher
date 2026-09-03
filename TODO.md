@@ -1,4 +1,4 @@
-# TODO — implementation queues (M3 NOAA-scale readiness · G GOES loop · K process compute)
+# TODO — implementation queues (M3 NOAA-scale readiness · G GOES loop · K process compute · W ingest bounds)
 
 The solo agent loop (AGENTS.md) works this file top-down: pick the **first
 unchecked item**, one task per iteration, worktree off `ai/main`, `npm run
@@ -314,6 +314,42 @@ and need a cloud account — lead-gated.
       visible wait for a `g6` node, quota wait, `interactive` admitted
       first). Record queue-wait and cold-start numbers M-gate style in
       ROADMAP §9; close I-61's cloud half; measure I-93.
+
+## W queue — ingest date window + retention cap (unblocks a real NODD association)
+
+**Read first:** `docs/superpowers/specs/2026-09-02-ingest-window-and-retention-cap-design.md`
+— **draft, awaiting lead approval.** Measured 2026-09-02: a single GOES product
+on `noaa-goes19` is ~250,000 objects / ~12 TB, and NOTHING in the ingest path
+bounds a listing, a fetch, or what is kept. G-3 made it more eager still (s3
+sources settle on first sight). This queue adds the three knobs that make
+pointing an association at a public archive a safe thing to do, which G-7's
+live e2e needs and the GOES loop spec §5 flagged as an unsettled gap.
+
+The two slices are independent and may run in parallel in separate worktrees.
+Both have detailed plans. **W-2 takes migration 026**, so K-3's spec and its
+slice text below must be renumbered to 027 as part of W-2 Task 1.
+
+- [ ] **W-1 · Ingest date window + prefix expansion + per-poll cap.** Spec §3.
+      New pure `ingest/window.py` (bound grammar `-<n>[smhd]` or RFC3339,
+      window resolution against a supplied `now`, `{Y}{m}{d}{j}{H}` template
+      expansion with a `max_prefixes` refusal); `window` / `path_template` /
+      `max_files_per_poll` on the ingest config (cross-runtime — Zod, the
+      Python reader and `ingest-config.json` together, all three optional so
+      existing associations are untouched); DISCOVER lists per expanded prefix,
+      filters on `FileEntry.mtime`, and admits at most N new files per tick
+      oldest-first; new counters `out_of_window` / `undateable` /
+      `deferred_by_cap` / `prefixes_listed`; the fields in the Data flow form.
+      Plan: `2026-09-02-w1-ingest-window.md`.
+- [ ] **W-2 · Retention count cap.** Spec §4. Migration **026** adds
+      `collection_settings.retention_max_items` (nullable, `>= 1`);
+      `list_gc_collections` widens its predicate and `list_expired_items` gains
+      a UNIONed "beyond the newest N by `datetime DESC, id DESC`" branch —
+      `archived` still overrides and ignores the cap; the existing `retention`
+      reason, the mark-then-collect ordering and the grace window are all
+      unchanged (ADR 0011 is not amended). Write path through the settings
+      schema, the impact dry-run (`?retention_max_items=N`, DISTINCT across
+      both rules) and a Maximum-items control on the Settings tab. Renumbers
+      K-3 to migration 027. Plan: `2026-09-02-w2-retention-cap.md`.
 
 ## Parked (do not start without the lead)
 
