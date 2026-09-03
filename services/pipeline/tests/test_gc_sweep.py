@@ -26,9 +26,18 @@ class FakeGcRepo(GcRepo):
     async def list_gc_collections(self) -> list[RetentionCollection]:
         return list(self.collections)
 
+    #: (collection_id, retention_days, limit, retention_max_items) per call
+    expired_calls: list[tuple[str, int | None, int, int | None]] = field(default_factory=list)
+
     async def list_expired_items(
-        self, collection_id: str, retention_days: int | None, limit: int
+        self,
+        collection_id: str,
+        retention_days: int | None,
+        limit: int,
+        *,
+        retention_max_items: int | None = None,
     ) -> list[str]:
+        self.expired_calls.append((collection_id, retention_days, limit, retention_max_items))
         return list(self.expired.get(collection_id, []))[:limit]
 
     async def mark_asset_prefix(
@@ -177,3 +186,68 @@ class TestDeletePrefixPrimitive:
 
     def test_item_prefix_shape(self):
         assert item_prefix("sentinel-2", "item-1") == "assets/sentinel-2/item-1/"
+
+
+# --- count cap (W-2) ------------------------------------------------------- #
+
+
+def test_retention_collection_carries_the_count_cap():
+    c = RetentionCollection(collection_id="c", retention_days=None, gc_grace_days=3, archived=False)
+    assert c.retention_max_items is None
+
+
+async def test_a_collection_with_only_a_count_cap_is_swept():
+    """Before W-2 the sweep only visited collections with retention_days or
+    archived, so a count-capped collection would never be looked at."""
+    repo = FakeGcRepo(
+        collections=[
+            RetentionCollection(
+                collection_id="c",
+                retention_days=None,
+                gc_grace_days=3,
+                archived=False,
+                retention_max_items=2,
+            )
+        ],
+        expired={"c": ["old-1"]},
+    )
+    result = await retention_tick(repo, batch_limit=100)
+    assert result.collections == 1
+    assert result.expired_items == 1
+    assert {m["reason"] for m in repo.marks} == {"retention"}
+
+
+async def test_the_cap_is_passed_to_the_expired_query():
+    repo = FakeGcRepo(
+        collections=[
+            RetentionCollection(
+                collection_id="c",
+                retention_days=7,
+                gc_grace_days=3,
+                archived=False,
+                retention_max_items=24,
+            )
+        ],
+        expired={"c": []},
+    )
+    await retention_tick(repo, batch_limit=100)
+    assert repo.expired_calls == [("c", 7, 100, 24)]
+
+
+async def test_archived_ignores_the_count_cap():
+    """Archived means empty the collection; keeping the newest N would be the
+    opposite of what the operator asked for (ADR 0009)."""
+    repo = FakeGcRepo(
+        collections=[
+            RetentionCollection(
+                collection_id="c",
+                retention_days=None,
+                gc_grace_days=3,
+                archived=True,
+                retention_max_items=None,
+            )
+        ],
+        expired={"c": []},
+    )
+    await retention_tick(repo, batch_limit=100)
+    assert repo.expired_calls == [("c", None, 100, None)]
