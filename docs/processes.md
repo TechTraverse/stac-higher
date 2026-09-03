@@ -215,6 +215,80 @@ for entry in manifest["items"]:
     s3.put_object(Bucket=bucket, Key=f"{prefix}{item['id']}.json", Body=json.dumps(item).encode())
 ```
 
+## The GOES worked example
+
+The loop the platform was built to run: GOES-19 ABI CONUS files from NOAA's
+open bucket, catalogued in place, fixed up by an extractor, turned into a
+true-colour COG by a process, served as tiles, delivered onward. The code is
+checked in and runnable:
+
+| Piece | Where |
+|---|---|
+| `goes-abi-metadata` (extractor) | `services/pipeline/src/pipeline/demo/goes/extractor.py` |
+| `goes-geocolor` (process) | `services/pipeline/src/pipeline/demo/goes/geocolor.py` |
+| Seed the whole loop on the local stack | `uv run python -m pipeline.demo goes-seed` (`services/pipeline/src/pipeline/demo/README.md`) |
+| The automated one-file proof | `app/e2e/goes-loop.spec.ts` with `E2E_LIVE_NODD=1` |
+
+**The source.** An anonymous s3 connection to `noaa-goes19`; a reference-mode
+ingest association over `ABI-L2-MCMIPC/` with `path_template {Y}/{j}/{H}/`,
+a `-1h` window and a per-poll cap, so a 250,000-object product is listed two
+prefixes at a time; `metadata.strategy: extractor` naming `goes-abi-metadata`.
+
+**The extractor** sets the three things the platform cannot infer from a
+GOES netCDF. The scan start is in the filename, not in any modified time:
+
+```python
+SCAN_TOKEN = re.compile(r"_s(\d{14})")          # _sYYYYDDDHHMMSSt
+
+def scan_time(filename):
+    digits = SCAN_TOKEN.search(filename).group(1)
+    base = dt.datetime.strptime(digits[:13], "%Y%j%H%M%S").replace(tzinfo=dt.UTC)
+    return base + dt.timedelta(milliseconds=100 * int(digits[13]))
+```
+
+The footprint comes from a band subdataset — the file itself carries no
+georeferencing, only `NETCDF:"file":CMI_C02` does — reprojected from the
+geostationary CRS with densified edges so the limb curves. GDAL fails the
+whole bulk reprojection the instant one vertex falls off the Earth's disk
+rather than returning it as infinities, so the extractor bisects the ring
+and retries each half until it isolates and drops just the off-limb
+vertices. And the file is downloaded to local disk first: **GDAL's netCDF
+driver cannot read `/vsis3` paths in the runtime image** (it needs Linux
+userfaultfd), so `s3.download_file(asset["bucket"], asset["key"], path)`
+then `rasterio.open(f'NETCDF:"{path}":CMI_C02')`. Everything else —
+platform, instruments, `goes:*` — is read off the container's global
+attributes (`dataset.tags()["NC_GLOBAL#scene_id"]`).
+
+**The process** is about sixty lines: read C01/C02/C03/C13 as reflectance
+and brightness temperature (`values = raw * scale + offset`, fill → NaN),
+compose, write, publish.
+
+```python
+def compose(c01, c02, c03, c13):
+    red, blue, veggie = (np.clip(np.nan_to_num(b), 0, 1) for b in (c02, c01, c03))
+    green = np.clip(0.45 * red + 0.10 * veggie + 0.45 * blue, 0, 1)   # synthetic green
+    rgb = np.stack([red, green, blue]) ** (1 / 2.2)                     # gamma
+    night = 1 - np.clip((np.nan_to_num(c13, nan=313.0) - 90.0) / (313.0 - 90.0), 0, 1)
+    rgb = np.maximum(rgb, night[None])                                  # night IR by max
+    mask = np.isfinite(c02) & np.isfinite(c13)
+    return np.where(mask[None], rgb * 255, 0).round().astype("uint8"), (mask * 255).astype("uint8")
+```
+
+The COG is written in the file's native geostationary CRS (`driver="COG"`,
+deflate, 512 blocks, `overviews="AUTO"`, an internal mask for off-disk
+pixels — the tile server reprojects), and the item comes from rio-stac with
+`with_proj=True`, so `proj:wkt2` carries the WKT2 of a CRS that has no EPSG
+code. Its id is the source id plus `-geocolor`, its one asset is `visual`
+with the relative href `{out_id}.tif` — a per-item filename, not a shared
+`visual.tif`, since a batch of more than one output would otherwise
+overwrite a shared name — and its collection is whatever the seeder
+substituted for `__OUTPUT_COLLECTION__`.
+
+This is the CIMSS/goes2go true-colour recipe, labelled "GeoColor-style":
+no Rayleigh correction, no city lights. CIRA's GeoColor proper needs lookup
+tables that are not published; a Satpy runtime image is the documented next
+step.
+
 ## Environment and secrets
 
 A revision carries an `env` list, edited on the process page and deployed with

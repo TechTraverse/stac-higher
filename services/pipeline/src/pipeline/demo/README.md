@@ -123,6 +123,17 @@ is not `goes-nodd`, `goes-seed` exits naming the association and connection ids
 rather than seeding beside it — two associations polling the same product into
 the same collection ingest every file twice. Disable the other one first.
 
+### `goes-teardown` has no guard
+
+`goes-teardown` deletes `goes-abi-mcmipc` and `goes-geocolor` straight
+through the STAC API by id, unconditionally — it does not check whether a
+poll is mid-flight, a run is queued, or anyone else is looking at either
+collection. Both are fixed, well-known names shared by every `goes-seed`
+invocation (the gated e2e spec is unaffected: it creates its own uniquely
+named `e2e-goes-*` collections and connections and tears down only those).
+Don't run `goes-teardown` while another `goes-seed` session, or a manual
+poke at the shared collections, is in progress.
+
 ### What to look at afterwards
 
 | Surface | Where |
