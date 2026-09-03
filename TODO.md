@@ -564,4 +564,26 @@ object stores only).
     multipart-upload ETag with the copy's single-part ETag; fixed in
     `finalize/steps.py` (size always, ETag only when single-part).
 
+- **G-7 live gate MET 2026-09-03 (lead, Docker + internet, real NODD).**
+  `E2E_LIVE_NODD=1 E2E_PORT=4322 npm run test:e2e:ci -- goes-loop` → 1 passed
+  in 1.5 min (run 4). Measured on the last run: file admitted 21:25:06Z →
+  extractor `succeeded` +33 s → GeoColor COG published +20 s → delivered to
+  `stac-higher-deliveries` within the same minute; tile rendered from the
+  tiler; source item carried the scan-time `datetime`, `platform goes-19`,
+  `goes:*` and an extractor-computed footprint. Three defects the unit suites
+  could not see, each fixed and pinned before the passing run: (1) rio-stac's
+  `with_proj=True` bounds transform raises on the real geostationary grid —
+  `geocolor.py` now reuses the source footprint (b7f6672); (2) finalize
+  rejected every process output over 8 MB as `checksum_mismatch` — a
+  multipart-upload ETag can never equal the copy's single-part ETag; the
+  move is now verified by size, ETag only for single-part uploads (da501ce);
+  (3) the new multipart INFO log used `filename` in `extra`, a reserved
+  LogRecord key, and raised on every finalize — renamed, and the test now
+  captures INFO so the log path executes (89ac324). Preconditions that bit:
+  the user's :4321 dev server has no `CREDENTIALS_MASTER_KEY` (the delivery
+  connection needs it), and Astro 7 refuses a second `astro dev` from the
+  same checkout — the gate ran from a detached worktree on :4322. Still owed:
+  the manual `pipeline.demo goes-seed --deliver` recipe against the full hour
+  (the W-1 seed association on `goes-abi-mcmipc` must be deleted first).
+
 (append here during iterations)
