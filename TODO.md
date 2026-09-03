@@ -500,4 +500,20 @@ object stores only).
   - The loadgen teardown removes extractor rows AFTER the association
     delete, not before as the brief said; no FK path makes the order matter.
 
+- **G-6 live gate MET 2026-09-03 (lead, Docker, real NODD, reference mode).** Merged
+  `ai/goes-g6` → `ai/main` (598c8ae); migration 027 applied on first app request.
+  A pass-through extractor (the loadgen `EXTRACTOR_CODE`) created through the API
+  got the 600/h default and a 409 on `POST …/sources`; the seeded reference-mode
+  `goes-abi-mcmipc` association was switched to it. Next NODD file: `stored →
+  extracting` (item id kept, run id stamped) at 16:45:01Z → run claimed the same
+  second → `succeeded` 16:45:18Z (17 s including staging the ~50 MB file from
+  NODD through the ledger's `source_href`) → row `itemized` 16:45:19Z with the
+  extractor's properties; `source_mtime` = the object's modified time (I-100
+  closed for real). Failure leg: a `raise SystemExit(1)` revision → attempt 1
+  `failed` (row stays `extracting`), attempt 2 → run `dead` → row `failed`,
+  `reason = "extractor run <id>: run exited 1"`, `item_id` cleared. The
+  association was restored to `defaults_only` and the check extractor
+  soft-deleted. Owed still: a copy-mode extractor pass (the live check was
+  reference-only) and the loadgen `--metadata extractor` run at M3-D concurrency.
+
 (append here during iterations)
