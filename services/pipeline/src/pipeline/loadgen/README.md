@@ -57,6 +57,25 @@ association's metadata strategy and the feed's profile have to match:
 Mismatch them and every item fails at EXTRACT, and the run measures the failure
 path at full speed. (The first S-A run did exactly this: 30 of 30 failed.)
 
+## Extractor profile (G-6)
+
+`setup --metadata extractor --deliver` (pairs with `feed --profile opaque`)
+installs a third profile: a fixed-id `processes` row plus one deployed
+revision — a pass-through extractor that copies each staged draft item back
+out with a `datetime` and a point geometry filled in when missing, changing
+nothing finalize forbids changing (id, collection, asset hrefs). Ingest routes
+every item through this process instead of the inline EXTRACT path, so the
+run measures the G-6 process-per-batch handoff rather than rio-stac.
+
+This profile needs the process-run container image to actually exist (the
+Docker executor, ADR 0013) — `setup` only writes rows, it does not build or
+pull an image. The number to read while a run is going is
+`ingest_files_extracting` staying bounded while `itemized` (and `catalog
+items`) keep climbing: a persistently growing `ingest_files_extracting` means
+runs are queueing faster than the executor drains them, not that ingest itself
+is slow. `teardown` removes the installed process (runs → revisions → the
+process row) alongside the usual association and connection cleanup.
+
 ## Isolating stages
 
 `seed-outbox` inserts `item_events` rows directly, so the dispatcher can be

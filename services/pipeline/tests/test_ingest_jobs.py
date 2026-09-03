@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 from _ingest_fake import FakeIngestRepo
 from pipeline.config import Settings
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.ingest.itemize import ItemizeOutcome
-from pipeline.ingest.repo import IngestAssociation
+from pipeline.ingest.repo import IngestAssociation, LedgerEntry
 from pipeline.jobs import ingest
 from pipeline.jobs.ingest import (
     CRON,
@@ -15,6 +17,7 @@ from pipeline.jobs.ingest import (
     JOB_GROUP,
     JOB_ITEMIZE,
     JOB_POLL,
+    JOB_RECOVERY_SWEEP,
 )
 from pipeline.main import build_queue
 from pipeline.queue.memory import InMemoryQueue
@@ -139,3 +142,36 @@ async def test_itemize_handler_bumps_nothing_when_the_group_goes_to_an_extractor
     )
 
     assert repo.flow_stats == {}
+
+
+async def test_recovery_sweep_fails_extracting_rows_whose_run_vanished(monkeypatch):
+    # G-6: recovery_sweep must also drive sweep_stuck_extracting — an
+    # `extracting` row whose process run never got queued (or closed without
+    # finalizing) has no other path back to a terminal status.
+    queue = InMemoryQueue()
+    settings = Settings.from_env(env={})
+    ingest.register(queue, settings)
+
+    repo = FakeIngestRepo()
+    stale = repo.now - dt.timedelta(seconds=settings.ingest_stored_stall_seconds + 1)
+    repo.rows["e1"] = LedgerEntry(
+        id="e1",
+        association_id="a1",
+        source_path="scene.nc",
+        version=1,
+        size=10,
+        fingerprint="f",
+        checksum=None,
+        status="extracting",
+        item_id="scene",
+        extract_run_id=None,
+        created_at=stale,
+        updated_at=stale,
+    )
+
+    monkeypatch.setattr(ingest, "PgIngestRepo", lambda _url: repo)
+
+    await queue.periodic[JOB_RECOVERY_SWEEP].func(timestamp=0)
+
+    assert repo.rows["e1"].status == "failed"
+    assert repo.rows["e1"].reason == "extractor run was never queued"

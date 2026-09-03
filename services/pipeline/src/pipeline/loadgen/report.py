@@ -31,6 +31,7 @@ HEADLINE = (
     ("BACKLOG settled", "ingest_files_settled"),
     ("BACKLOG fetching", "ingest_files_fetching"),
     ("BACKLOG stored", "ingest_files_stored"),
+    ("BACKLOG extracting", "ingest_files_extracting"),
     ("BACKLOG outbox", "item_events_pending"),
     ("BACKLOG delivery", "delivery_log_pending"),
     ("BACKLOG queue todo", "procrastinate_todo"),

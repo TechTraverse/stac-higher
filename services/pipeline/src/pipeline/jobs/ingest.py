@@ -217,7 +217,10 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         resettled, dead_ended = await repo.sweep_stuck_stored(
             settings.ingest_max_retries, settings.ingest_stored_stall_seconds
         )
-        if stuck or retried or resettled or dead_ended:
+        # G-6: `extracting` rows whose run vanished or closed without
+        # finalizing are failed; the failed-retry sweep re-drives the file.
+        extract_failed = await repo.sweep_stuck_extracting(settings.ingest_stored_stall_seconds)
+        if stuck or retried or resettled or dead_ended or extract_failed:
             logger.info(
                 "ingest recovery sweep",
                 extra={
@@ -225,6 +228,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     "failed_requeued": retried,
                     "stored_resettled": resettled,
                     "stored_dead_ended": dead_ended,
+                    "extracting_failed": extract_failed,
                     "scheduled_timestamp": timestamp,
                 },
             )

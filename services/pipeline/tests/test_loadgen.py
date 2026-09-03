@@ -329,3 +329,31 @@ def test_the_slowest_job_is_listed_first():
     after = {**_hist("fast", 1.0, 100.0), **_hist("slow", 10.0, 100.0)}
     rows = job_means(Sample(at=0.0, counters=counters), Sample(at=1.0, counters=after))
     assert [r[0] for r in rows] == ["slow", "fast"]
+
+
+# ---------------------------------------------------------------------------
+# extractor profile (G-6)
+# ---------------------------------------------------------------------------
+
+
+def test_extractor_profile_round_trips_and_names_the_process():
+    from pipeline.ingest.config import parse_ingest_config
+    from pipeline.ingest.extract import parse_metadata
+    from pipeline.loadgen.fixtures import EXTRACTOR_PROCESS_ID, ingest_config, metadata_config
+
+    cfg = ingest_config("load/x/", metadata=metadata_config("extractor"))
+    parsed = parse_ingest_config(cfg)
+    meta = parse_metadata(parsed.metadata)
+    assert meta.strategy == "extractor"
+    assert meta.extractor_process_id == EXTRACTOR_PROCESS_ID
+
+
+def test_extractor_code_is_a_pass_through():
+    """The loadgen extractor must be executable and must keep id/collection/
+    hrefs — the same rules finalize enforces — so the harness measures the
+    extractor PATH, not a rejection loop."""
+    from pipeline.loadgen.fixtures import EXTRACTOR_CODE
+
+    compile(EXTRACTOR_CODE, "<extractor>", "exec")
+    assert "STAC_HIGHER_INPUT_MANIFEST" in EXTRACTOR_CODE
+    assert '["id"]' in EXTRACTOR_CODE and "datetime" in EXTRACTOR_CODE

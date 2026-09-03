@@ -183,6 +183,9 @@ async def test_recovery_sweep_job_registered_and_calls_both_sweeps(monkeypatch):
         async def sweep_stuck_stored(self, max_retries, older_than_seconds):
             calls.append(("stored", max_retries, older_than_seconds))
             return (1, 0)
+        async def sweep_stuck_extracting(self, older_than_seconds):
+            calls.append(("extracting", older_than_seconds))
+            return 3
 
     monkeypatch.setattr(ingest_jobs, "PgIngestRepo", _Repo)
     await queue.periodic[JOB_RECOVERY_SWEEP].func(timestamp=0)
@@ -190,6 +193,7 @@ async def test_recovery_sweep_job_registered_and_calls_both_sweeps(monkeypatch):
         ("stuck", settings.ingest_fetch_stall_seconds),
         ("failed", settings.ingest_max_retries, settings.ingest_failed_retry_seconds),
         ("stored", settings.ingest_max_retries, settings.ingest_stored_stall_seconds),
+        ("extracting", settings.ingest_stored_stall_seconds),
     ]
 
 
