@@ -181,6 +181,8 @@ services:
       - process-runs
 
   # One-shot bootstrap: creates the default bucket, then exits.
+  # stac-higher-deliveries: the destination bucket the GOES e2e and
+  # `pipeline.demo goes-seed --deliver` deliver into (G-7).
   minio-init:
     image: minio/mc:latest
     depends_on:
@@ -191,7 +193,8 @@ services:
       - -c
       - |
         mc alias set local http://minio:9000 minioadmin minioadmin &&
-        mc mb --ignore-existing local/stac-higher
+        mc mb --ignore-existing local/stac-higher &&
+        mc mb --ignore-existing local/stac-higher-deliveries
     restart: "no"
 
   # Data plane (ROADMAP §3). Source lives in services/pipeline (separate

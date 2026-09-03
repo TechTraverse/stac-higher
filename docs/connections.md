@@ -49,6 +49,11 @@ ignored by the adapter. Worked example (no `credentials` key at all):
   "config": { "bucket": "noaa-goes19", "region": "us-east-1", "anonymous": true } }
 ```
 
+The compose stack also creates `stac-higher-deliveries`, an empty bucket for
+delivery tests; a delivery connection to it uses endpoint `http://minio:9000`
+(the pipeline's view), `force_path_style: true`, and the MinIO root
+credentials.
+
 ## Credential encryption (ROADMAP §5.2)
 
 Credentials are **write-only**: validated on create/update, sealed into an
