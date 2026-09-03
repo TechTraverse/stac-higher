@@ -161,7 +161,7 @@ Astro server routes:
 | `/api/processes/[id]/test` | POST | Request a test run (operator+, audited `test`) — inserts a `process_checks` row the pipeline drains (ADR 0004); 409 when nothing is deployed |
 | `/api/processes/[id]/checks/[checkId]` | GET | Poll a test-run request (member+ of the owning group) |
 | `/api/processes/[id]/runs` | GET | The run ledger (member+), newest first; `?limit` clamped server-side |
-| `/api/processes/[id]/runs/[runId]/rerun` | POST | Dead-run recovery (operator+, audited `rerun`): flip a `dead` row back to `queued` for the pipeline's run tick. Only dead rows; a non-dead run is a 409 naming its status. The pinned revision is NOT changed — a re-run re-executes what failed — M5-C |
+| `/api/processes/[id]/runs/[runId]/rerun` | POST | Dead-run recovery (operator+, audited `rerun`): flip a `dead` row back to `queued` for the pipeline's run tick. Only dead rows; a non-dead run is a 409 naming its status, and an EXTRACTOR run is a 409 outright (its files are retried by the ingest sweep — G-6). The pinned revision is NOT changed — a re-run re-executes what failed — M5-C |
 | `/api/catalog/[...path]` | POST, PUT, PATCH, DELETE | BFF for built-in-catalog writes (ADR 0008): transaction endpoints only; operator+, audited. Session callers get the session access token injected server-side; **bearer callers get their own token forwarded — the Phase 7 §4.3 brokered push path** (precondition set on every bearer write, synchronous staged pre-validation, `prior_item` snapshot on PUT, staged PATCH → 400, bearer collection-create → 403; `X-BFF-Auth` stamped when `CATALOG_BFF_SHARED_SECRET` is set). Reads stay direct. Client docs: `docs/push-ingest.md` |
 
 **Auth**: OIDC login with a claims-mapping layer and a dev-bypass mode
