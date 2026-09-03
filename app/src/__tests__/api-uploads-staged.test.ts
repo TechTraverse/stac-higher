@@ -49,6 +49,7 @@ function settings(overrides: Partial<CollectionSettings> = {}): CollectionSettin
     groupId: EO,
     externallyWritable: true,
     retentionDays: null,
+    retentionMaxItems: null,
     gcGraceDays: 30,
     archived: false,
     servingEnabled: false,

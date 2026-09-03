@@ -97,6 +97,7 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
       groupId: data.group_id,
       externallyWritable: data.externally_writable,
       retentionDays: data.retention_days,
+      retentionMaxItems: data.retention_max_items,
       gcGraceDays: data.gc_grace_days,
       archived: data.archived,
       servingEnabled: data.serving_enabled,
