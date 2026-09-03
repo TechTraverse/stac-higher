@@ -77,6 +77,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
       name: data.name,
       description: data.description,
       groupId: data.group_id,
+      kind: data.kind,
       enabled: data.enabled,
       maxRunsPerHour: data.max_runs_per_hour,
       createdBy: auth.identity.sub,

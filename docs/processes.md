@@ -40,9 +40,10 @@ run's output prefix, named in:
 | `STAC_HIGHER_OUTPUT_PREFIX` | `staging/runs/{run_id}/` — the only place you may write |
 
 You can list, read and write inside that prefix, and **read** the canonical
-prefixes of your process's source collections (`assets/{collection}/…`) —
-nowhere else. Attempting anything outside that fails as a permissions error,
-not a silent no-op.
+prefixes of your process's source collections (`assets/{collection}/…`) — or,
+for an extractor, of the collection its association ingests into — nowhere
+else. Attempting anything outside that fails as a permissions error, not a
+silent no-op.
 
 ## What your run receives
 
@@ -74,7 +75,13 @@ prefix). `href` is the catalog's own href, for provenance. `op` is the event
 that triggered the run (`insert` | `update`). An item deleted between trigger
 and run appears under `skipped`, not `items`. A cron run has an empty
 `items` list. Assets with a relative or missing href are omitted from
-`assets` — they are not locations you can read.
+`assets` — they are not locations you can read. A canonical `/api/assets/...`
+href can still arrive `staged: true`: when its item is reference-mode, the
+bytes live at the connection's own source rather than the platform bucket, so
+the pipeline stages a copy from the ingest ledger's `source_href` instead of
+granting a read to a canonical key that does not exist. The manifest's
+top-level `kind` is `"transform"` for an ordinary process run or `"extract"`
+for an extractor run (see "Extractors" below).
 
 The manifest shape is pinned by
 `tests/contract-fixtures/process-input-manifest.json` and ADR 0018; new keys
@@ -141,6 +148,72 @@ always `/api/assets/{collection}/{item}/{filename}` — never a storage URL.
 
 An **absolute** href (`https://…`, `s3://…`) is left exactly as written: that
 is how you publish a reference-style item whose bytes live elsewhere.
+
+## Extractors
+
+A process created with **kind: extractor** is not wired to source and output
+collections. It is selected on an **ingest association** (a collection's Data
+flow tab → metadata strategy *extractor process*), and the platform hands it
+every item that association brings in — **before** the item is catalogued —
+so it can fix up what the built-in extraction could not infer: the datetime
+from a filename, a footprint from a projection the platform does not read,
+product-specific properties.
+
+Your run receives the same manifest as a transform, with two differences:
+
+- `kind` is `"extract"`.
+- each `items[].item` is a **draft**: the id, collection and assets the
+  platform built, a `datetime` that may be `null`, and a `geometry` that may
+  be `null`. Asset `bucket`/`key` work as for a transform (reference-mode
+  files are staged in for you).
+
+Write **one `{item_id}.json` per input item** into your output prefix, and
+nothing else — no asset files. The platform then validates and catalogues
+each document as the ingest would have. These must not change, or the item
+is refused with the reason on its ingest ledger row:
+
+- `id` and `collection`;
+- the set of asset keys, and every asset `href`.
+
+Everything else is yours — with two exceptions that are also required:
+`geometry` and `properties.datetime` **must both be set (non-null)**; an
+output that leaves either null is refused with the reason on its ledger row,
+same as an immutability violation. `bbox`, any other `properties`, and
+per-asset metadata are all optional. An input with no output document is
+refused too.
+
+**Failure.** If the run fails, times out, or dies, every file in its batch
+is marked `failed` on the ingest ledger with the run's error — there is no
+fallback to the draft — and the ingest retries the file like any other
+failure. A dead extractor run is **not** re-run from the process page — the
+re-run verb is refused for extractors (409), because the ingest sweep already
+owns that retry and re-running would execute against ledger rows the run no
+longer holds.
+
+Defaults for an extractor: **600 runs/hour** (applied whether you create the
+process through the UI or the API) and a **120 s timeout** — that one is a
+default of the deploy FORM only, so an API caller posting a revision should
+set `runtime.timeout_seconds` explicitly (the schema default is 900 s).
+Back-to-back files coalesce into one run while a run is still queued.
+
+A minimal extractor:
+
+```python
+import json, os, boto3
+
+s3 = boto3.client("s3")
+bucket = os.environ["STAC_HIGHER_OUTPUT_BUCKET"]
+prefix = os.environ["STAC_HIGHER_OUTPUT_PREFIX"]
+manifest = json.loads(
+    s3.get_object(Bucket=bucket, Key=os.environ["STAC_HIGHER_INPUT_MANIFEST"])["Body"].read()
+)
+for entry in manifest["items"]:
+    item = entry["item"]
+    item["properties"]["datetime"] = "2026-09-03T04:01:17Z"   # from the filename, say
+    item["geometry"] = {"type": "Point", "coordinates": [-75.0, 0.0]}
+    item["bbox"] = [-75.0, 0.0, -75.0, 0.0]
+    s3.put_object(Bucket=bucket, Key=f"{prefix}{item['id']}.json", Body=json.dumps(item).encode())
+```
 
 ## Environment and secrets
 
@@ -257,7 +330,9 @@ fails the same way — the ledger `error` names the item and asset — and no
 container ever started. A revision whose `network.level` exceeds the
 deployment cap dies immediately: that is configuration, not a fault. A dead run can be re-run from the UI — which re-executes **the same
 revision that failed**, not whatever is current. If you deployed a fix, trigger
-a new run; re-running an old row will run the old code.
+a new run; re-running an old row will run the old code. **Extractor** runs are
+the exception: re-run is refused for them, and their files are retried by the
+ingest failed-retry sweep instead (see "Extractors").
 
 A run stranded by a worker or executor crash is returned to `queued` by the
 stall sweep, so the crash direction is safe: a run may execute twice, never

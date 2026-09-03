@@ -1838,6 +1838,176 @@ git commit -m "feat(process): extract manifests from the draft, association read
 
 ---
 
+### Task 9b: Reference-mode inputs resolve to their source hrefs (plan defect found in Task 9)
+
+**Why this task exists.** The planner treats every canonical `/api/assets/{c}/{i}/{f}` href as platform-held. But `storage_mode: reference` items carry canonical hrefs in the catalog too — the APP resolves them to `ingest_files.source_href` at request time (`app/src/lib/storage/reference.ts::lookupReferenceHref`). So a reference-mode item feeding a transform (G-2) or an extractor (G-6) is planned as `assets/{c}/{i}/{f}`, a key that does not exist. This is exactly the GOES case (G-7). The fix mirrors the app's seam on the pipeline side: the runner asks the ledger for each item's reference source hrefs, and the planner stages those assets from the source instead of granting a non-existent key. Ruling recorded in the SDD ledger; spec §6.2's "reference-mode files must be staged for an extractor" holds, it just needed this resolution step.
+
+**Files:**
+- Modify: `services/pipeline/src/pipeline/process/repo.py` (ABC + Pg: `reference_source_hrefs`)
+- Modify: `services/pipeline/src/pipeline/process/inputs.py` (`plan_inputs(..., source_hrefs=...)`)
+- Modify: `services/pipeline/src/pipeline/process/runner.py` (query per item, pass through)
+- Modify: `services/pipeline/tests/_process_fake.py` (`source_hrefs` field)
+- Modify: `tests/contract-fixtures/process-extract-manifest.json` (the draft's asset href becomes CANONICAL; `given.source_hrefs` supplies the NODD URL; `expected` stages from it), `tests/contract-fixtures/README.md` (one sentence)
+- Test: `services/pipeline/tests/test_process_inputs.py`, `services/pipeline/tests/test_process_triggers.py`
+
+**Interfaces:**
+- Produces: `ProcessRepo.reference_source_hrefs(collection_id: str, item_id: str) -> dict[str, str]` (filename → source href; empty for copy-mode / manual items); `plan_inputs(..., source_hrefs: Mapping[tuple[str, str], Mapping[str, str]] = {})`; the fake gains `source_hrefs: dict[tuple[str, str], dict[str, str]]`.
+- Consumes: `parse_canonical_href`, `run_input_asset_key`, `RemoteFetch`, `InputAsset` (existing); `QueuedRun.association_id` (Task 7).
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/test_process_inputs.py` — add:
+
+```python
+def test_reference_mode_canonical_href_is_staged_from_its_source():
+    doc = {
+        "id": "i", "collection": "c",
+        "assets": {"scene": {"href": "/api/assets/c/i/scene.nc"}},
+    }
+    plan = plan_inputs(
+        run_id="r", process_id="p", batch_id="b", kind="transform",
+        refs=[{"item_id": "i", "collection_id": "c"}],
+        documents={("c", "i"): doc}, source_collections=["c"],
+        bucket="stac-higher", asset_href_base="/api/assets",
+        source_hrefs={("c", "i"): {"scene.nc": "https://src.example/x/scene.nc"}},
+    )
+    (fetch,) = plan.fetches
+    assert fetch.href == "https://src.example/x/scene.nc"
+    assert fetch.key == "staging/runs/r/inputs/b/i/scene.nc"
+    asset = plan.manifest["items"][0]["assets"]["scene"]
+    assert asset["staged"] is True and asset["key"] == fetch.key
+    # The manifest keeps the CATALOG href for provenance, not the source URL.
+    assert asset["href"] == "/api/assets/c/i/scene.nc"
+    # Still granted: the collection prefix (a copy-mode sibling may need it).
+    assert list(plan.read_prefixes) == ["assets/c/"]
+
+
+def test_canonical_href_without_a_source_href_stays_platform_held():
+    doc = {"id": "i", "collection": "c", "assets": {"a": {"href": "/api/assets/c/i/a.tif"}}}
+    plan = plan_inputs(
+        run_id="r", process_id="p", batch_id="b", kind="transform",
+        refs=[{"item_id": "i", "collection_id": "c"}], documents={("c", "i"): doc},
+        source_collections=["c"], bucket="stac-higher", asset_href_base="/api/assets",
+        source_hrefs={("c", "i"): {"other.tif": "https://src.example/other.tif"}},
+    )
+    assert plan.fetches == ()
+    assert plan.manifest["items"][0]["assets"]["a"]["key"] == "assets/c/i/a.tif"
+```
+
+Rewrite `tests/contract-fixtures/process-extract-manifest.json` so the draft's single asset href is the canonical `/api/assets/goes-abi-mcmipc/OR_ABI-L2-MCMIPC-M6_G19_s20262460401172/OR_ABI-L2-MCMIPC-M6_G19_s20262460401172_e20262460403556_c20262460404061.nc`, add
+
+```json
+"source_hrefs": {
+  "goes-abi-mcmipc/OR_ABI-L2-MCMIPC-M6_G19_s20262460401172": {
+    "OR_ABI-L2-MCMIPC-M6_G19_s20262460401172_e20262460403556_c20262460404061.nc":
+      "https://noaa-goes19.s3.us-east-1.amazonaws.com/ABI-L2-MCMIPC/2026/246/04/OR_ABI-L2-MCMIPC-M6_G19_s20262460401172_e20262460403556_c20262460404061.nc"
+  }
+}
+```
+
+to `given`, and make `expected.fetches[0].href` the NODD URL while `expected.manifest.items[0].assets[<key>].href` is the canonical href (`staged: true`, key under `inputs/b1/<item_id>/<filename>`). Update `$comment` to say why (reference-mode items are catalogued with canonical hrefs; the pipeline resolves them through the ledger exactly as the app's asset route does). In `test_process_inputs.py`, the extract golden test passes `source_hrefs={tuple(k.split("/", 1)): v for k, v in given.get("source_hrefs", {}).items()}`.
+
+`tests/test_process_triggers.py` — a `run_one` test (copy the neighbouring extract-run setup): `FakeProcessRepo(source_hrefs={("c", "a"): {"a.nc": "https://src.example/a.nc"}})`, a draft whose asset href is `/api/assets/c/a/a.nc`, a recording `fetch_remote` (`async def fetch_remote(href): seen.append(href); return b"bytes"`), and assert `seen == ["https://src.example/a.nc"]` after `run_one`.
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd services/pipeline && uv run pytest tests/test_process_inputs.py tests/test_process_triggers.py -q -k "reference or platform_held or golden"`
+Expected: FAIL — `plan_inputs` has no `source_hrefs`; the fixture asserts a fetch that is not produced.
+
+- [ ] **Step 3: Implement**
+
+`process/repo.py` — ABC:
+
+```python
+    @abc.abstractmethod
+    async def reference_source_hrefs(self, collection_id: str, item_id: str) -> dict[str, str]:
+        """filename -> source href for a `storage_mode: reference` item's
+        assets, from the ingest ledger (empty for copy-mode or manual items).
+        The catalog stores CANONICAL hrefs for reference items too; the app's
+        asset route resolves them through this same ledger column
+        (`storage/reference.ts`), and the run planner must do the same or it
+        grants a key that does not exist."""
+```
+
+Pg (mirrors `lookupReferenceHref`, latest version per filename):
+
+```python
+    async def reference_source_hrefs(  # pragma: no cover
+        self, collection_id: str, item_id: str
+    ) -> dict[str, str]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT DISTINCT ON (filename) filename, source_href FROM ("
+                "  SELECT regexp_replace(f.source_path, '^.*/', '') AS filename,"
+                "         f.source_href, f.version"
+                "    FROM stac_higher.ingest_files f"
+                "    JOIN stac_higher.collection_connections cc ON cc.id = f.association_id"
+                "   WHERE cc.collection_id = %s AND f.item_id = %s"
+                "     AND f.source_href IS NOT NULL"
+                "     AND f.reference_removed_at IS NULL"
+                ") x ORDER BY filename, version DESC",
+                (collection_id, item_id),
+            )
+            rows = await cur.fetchall()
+        return {str(r[0]): str(r[1]) for r in rows}
+```
+
+`process/inputs.py` — `plan_inputs` gains `source_hrefs: Mapping[tuple[str, str], Mapping[str, str]] | None = None`; inside the asset loop, the canonical branch becomes:
+
+```python
+            canonical = parse_canonical_href(href, asset_href_base)
+            if canonical is not None:
+                c, i, f = canonical
+                source = (source_hrefs or {}).get((collection, item_id), {}).get(f)
+                if source:
+                    # A reference-mode asset: the catalog href is canonical but
+                    # the bytes live at the source (ingest_files.source_href).
+                    # Stage from there; keep the CATALOG href for provenance.
+                    key = run_input_asset_key(run_id, batch_id, item_id, f)
+                    fetches.append(RemoteFetch(href=source, key=key, item_id=item_id, asset_key=asset_key))
+                    assets[asset_key] = asdict(InputAsset(bucket=bucket, key=key, staged=True, href=href))
+                    continue
+                assets[asset_key] = asdict(
+                    InputAsset(bucket=bucket, key=canonical_asset_key(c, i, f), staged=False, href=href)
+                )
+                continue
+```
+
+Docstring: one sentence on `source_hrefs`. Module docstring: amend the first bullet ("a canonical href → the object already sits at … UNLESS the ledger says the item is reference-mode, in which case it is fetched from `source_href` like any remote asset").
+
+`process/runner.py` — after `documents` are known (both branches), build the mapping only for items that have at least one canonical href:
+
+```python
+    # Reference-mode items are catalogued with canonical hrefs (the app resolves
+    # them through ingest_files.source_href at request time); the planner needs
+    # the same resolution or it grants a key that does not exist (G-6 Task 9b).
+    source_hrefs: dict[tuple[str, str], dict[str, str]] = {}
+    for (coll, item_id), doc in documents.items():
+        if any(
+            parse_canonical_href((a or {}).get("href"), settings.asset_href_base)
+            for a in (doc.get("assets") or {}).values()
+        ):
+            source_hrefs[(coll, item_id)] = await repo.reference_source_hrefs(coll, item_id)
+```
+
+For extract runs `documents` is empty today (drafts ride in refs) — populate `documents[(coll, item_id)] = ref["draft"]` for extract refs before this loop so both kinds go through the same mapping, and pass `source_hrefs=source_hrefs` to `plan_inputs`. Import `parse_canonical_href` from `pipeline.process.inputs`.
+
+`tests/_process_fake.py`: `source_hrefs: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)`; `async def reference_source_hrefs(self, collection_id, item_id): return dict(self.source_hrefs.get((collection_id, item_id), {}))`.
+
+`tests/contract-fixtures/README.md` — under the extract-manifest paragraph add: "`given.source_hrefs` (optional, `{collection}/{item_id}` → `{filename: href}`) is what the ledger says about reference-mode assets; a canonical href with a matching entry is staged from that source and keeps its catalog href in the manifest."
+
+- [ ] **Step 4: Run, lint, commit**
+
+Run: `cd services/pipeline && uv run pytest tests/test_process_inputs.py tests/test_process_triggers.py tests/test_process_staging.py -q && uv run ruff check .`
+Expected: PASS.
+
+```bash
+git add services/pipeline/src/pipeline/process services/pipeline/tests tests/contract-fixtures
+git commit -m "fix(process): reference-mode inputs are staged from ingest_files.source_href, not granted a missing canonical key (G-6)"
+```
+
+---
+
 ### Task 10: Finalize's extract branch
 
 **Files:**

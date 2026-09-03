@@ -32,6 +32,7 @@ vi.mock("@/lib/connections/storage", async (importOriginal) => {
     await importOriginal<typeof import("@/lib/connections/storage")>();
   return { ...actual, getConnection: vi.fn() };
 });
+vi.mock("@/lib/processes/storage", () => ({ getProcess: vi.fn() }));
 
 import {
   associationDeleteImpact,
@@ -46,6 +47,7 @@ import { getCollectionSettings } from "@/lib/collections/settings";
 import { makeCollectionSettings } from "./helpers/settings-fixtures";
 import { getConnection } from "@/lib/connections/storage";
 import type { ApiConnection } from "@/lib/connections/storage";
+import { getProcess } from "@/lib/processes/storage";
 import { DuplicateAssociationError } from "@/lib/associations/storage";
 import {
   GET as listRoute,
@@ -401,5 +403,73 @@ describe("/api/collections/[id]/connections/[assocId]", () => {
       params,
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("extractor strategy on create/update (G-6)", () => {
+  const PROC = "5c9f1c2e-0000-4000-8000-0000000000e1";
+  const extractorConfig = {
+    source_path: "/out",
+    metadata: { strategy: "extractor", extractor: { process_id: PROC } },
+  };
+  const params = { id: COLLECTION, assocId: ASSOC_ID };
+
+  beforeEach(() => {
+    vi.mocked(getConnection).mockResolvedValue(s3Connection);
+    vi.mocked(getCollectionSettings).mockResolvedValue(unowned);
+  });
+
+  it("accepts an extractor the connection's group owns", async () => {
+    vi.mocked(getProcess).mockResolvedValue({
+      id: PROC,
+      kind: "extractor",
+      group_id: EO,
+    } as never);
+    vi.mocked(createAssociation).mockResolvedValue(assoc);
+    const res = await call(createRoute, authed(["operator"]), {
+      body: { connection_id: CONN_ID, direction: "ingest", config: extractorConfig },
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("400s when the process is missing or in another group", async () => {
+    vi.mocked(getProcess).mockResolvedValue({
+      id: PROC,
+      kind: "extractor",
+      group_id: "other",
+    } as never);
+    const res = await call(createRoute, authed(["operator"]), {
+      body: { connection_id: CONN_ID, direction: "ingest", config: extractorConfig },
+    });
+    expect(res.status).toBe(400);
+    expect(createAssociation).not.toHaveBeenCalled();
+  });
+
+  it("409s when the named process is a transform", async () => {
+    vi.mocked(getProcess).mockResolvedValue({
+      id: PROC,
+      kind: "transform",
+      group_id: EO,
+    } as never);
+    const res = await call(createRoute, authed(["operator"]), {
+      body: { connection_id: CONN_ID, direction: "ingest", config: extractorConfig },
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("re-checks on update", async () => {
+    vi.mocked(getAssociation).mockResolvedValue(assoc);
+    vi.mocked(getProcess).mockResolvedValue({
+      id: PROC,
+      kind: "transform",
+      group_id: EO,
+    } as never);
+    const res = await call(putRoute, authed(["operator"]), {
+      params,
+      method: "PUT",
+      body: { config: extractorConfig },
+    });
+    expect(res.status).toBe(409);
+    expect(updateAssociation).not.toHaveBeenCalled();
   });
 });

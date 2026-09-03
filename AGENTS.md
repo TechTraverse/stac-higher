@@ -295,8 +295,10 @@ the triggering items into `staging/runs/{run_id}/inputs/{batch_id}/` with a
 `STAC_HIGHER_INPUT_PREFIX` / `STAC_HIGHER_INPUT_MANIFEST`) — platform-held
 assets are read in place via source-collection read grants in the STS session
 policy, remote ones are fetched through the owning reference-mode
-association's adapter (else an egress-checked public GET); finalize skips
-`inputs/`. Every revision carries `runtime.network` capped by
+association's adapter (else an egress-checked public GET); reference-mode
+items — catalogued with canonical hrefs — are staged from their ledger
+`source_href` (G-6, mirroring the app's `lookupReferenceHref`); finalize
+skips `inputs/`. Every revision carries `runtime.network` capped by
 `PROCESS_NETWORK_MAX` (slice 1: `isolated` only). Process-author contract:
 **`docs/processes.md`**. Alerting (M5-E): the flow
 monitor owns `process_stalled` (per SOURCE, I-63), `process_failed` and

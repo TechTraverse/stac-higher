@@ -365,3 +365,20 @@ contract); the three new statements want confirmation in the M2-I rehearsal.
 - Tracked in: `delivery/repo.py` (`pre_record`, `discard_pre_records`,
   `sweep_stalled_deliveries`), `jobs/dispatch.py`,
   `tests/test_delivery_prerecord.py`.
+
+### I-100 · `metadata.defaults.datetime: "file_mtime"` is the ledger SETTLE time, not the object's modified time 🟢 resolved (G-6: DISCOVER persists `source_mtime`; `file_mtime` prefers it)
+
+Measured on the W-1 live gate (2026-09-02): a GOES object last-modified at
+03:19Z (scan 03:16Z) was catalogued with `datetime` 03:49Z — the moment
+DISCOVER admitted it. `resolve_datetime` documents `file_mtime` as "the
+member's ledger settle time (approximation)", and before W-1 the two were
+minutes apart. A rolling window plus a per-poll cap makes them drift by the
+whole backlog: DISCOVER sees `FileEntry.mtime` for every entry (it gates on
+it) and then throws it away.
+- Fix candidate: persist the listed `mtime` on the `ingest_files` row at
+  admission and have `file_mtime` prefer it over `observed_at`. Small and
+  contained. G-6's extractor supersedes it for GOES (scan time from the
+  filename), but every non-extractor association keeps the approximation.
+- Resolved by: G-6 (migration 027 adds `ingest_files.source_mtime`; DISCOVER
+  persists the listed `mtime` there and `file_mtime` prefers it over the
+  settle time).

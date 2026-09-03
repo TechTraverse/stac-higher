@@ -116,3 +116,16 @@ describe("findPath", () => {
     expect(findPath(edges, A, B)).toEqual([A, P, B]);
   });
 });
+
+describe("extractor edges (G-6)", () => {
+  it("are display-only: the cycle check never walks them", () => {
+    const edges: GraphEdge[] = [
+      { from: processNode("ex"), to: collectionNode("src"), kind: "extractor", id: "a1" },
+      { from: collectionNode("src"), to: processNode("p"), kind: "process_source", id: "s1" },
+    ];
+    // p → ex would only close a loop THROUGH the extractor edge, which is
+    // not traversable, so attaching `ex`'s "output" to src is not a cycle.
+    expect(wouldCycle(edges, processNode("p"), processNode("ex"))).toBeNull();
+    expect(findPath(edges, collectionNode("src"), processNode("ex"))).toBeNull();
+  });
+});

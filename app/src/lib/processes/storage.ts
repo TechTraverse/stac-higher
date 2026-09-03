@@ -22,9 +22,10 @@
  */
 import { getClient, query } from "@/lib/db/connection";
 import { runMigrations } from "@/lib/db/migrate";
+import type { ProcessKind } from "./schemas";
 
 const PROCESS_COLUMNS = `
-  id, name, description, group_id, current_revision, enabled,
+  id, name, description, group_id, kind, current_revision, enabled,
   max_runs_per_hour, created_by, created_at, updated_at
 `;
 
@@ -60,6 +61,7 @@ interface ProcessRow {
   name: string;
   description: string;
   group_id: string;
+  kind: ProcessKind;
   current_revision: string | null;
   enabled: boolean;
   max_runs_per_hour: number;
@@ -73,6 +75,7 @@ export interface ApiProcess {
   name: string;
   description: string;
   group_id: string;
+  kind: ProcessKind;
   current_revision: string | null;
   enabled: boolean;
   max_runs_per_hour: number;
@@ -87,6 +90,7 @@ function toApiProcess(row: ProcessRow): ApiProcess {
     name: row.name,
     description: row.description,
     group_id: row.group_id,
+    kind: row.kind,
     current_revision: row.current_revision,
     enabled: row.enabled,
     max_runs_per_hour: row.max_runs_per_hour,
@@ -146,6 +150,7 @@ export interface CreateProcessInput {
   name: string;
   description: string;
   groupId: string;
+  kind: ProcessKind;
   enabled: boolean;
   maxRunsPerHour: number;
   createdBy: string;
@@ -158,13 +163,14 @@ export async function createProcess(
   try {
     const result = await query<ProcessRow>(
       `INSERT INTO stac_higher.processes
-         (name, description, group_id, enabled, max_runs_per_hour, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (name, description, group_id, kind, enabled, max_runs_per_hour, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING ${PROCESS_COLUMNS}`,
       [
         input.name,
         input.description,
         input.groupId,
+        input.kind,
         input.enabled,
         input.maxRunsPerHour,
         input.createdBy,

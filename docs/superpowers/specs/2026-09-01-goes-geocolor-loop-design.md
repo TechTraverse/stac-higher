@@ -12,7 +12,7 @@ read a canonical asset through the source-collection grant, had a 3.8 MB NODD
 mesoscale file staged into `inputs/`, and was denied a non-source collection.
 Finding for §5: the item-write → dispatcher hop is ALREADY event-driven
 (outbox `pg_notify` → `dispatcher/listener.py`); two events 30 ms apart became
-two runs, which G-3's queued-run coalescing addresses.
+two runs, which G-3's queued-run coalescing addresses. G-6 merged 2026-09-03.
 **Scope source:** the lead's request for a real end-to-end use case: consume
 GOES ABI data from the NOAA Open Data Dissemination (NODD) buckets, produce a
 GeoColor-style Cloud-Optimized GeoTIFF (COG) with an operator-authored
@@ -577,3 +577,13 @@ sections above, this addendum wins.
   association's group" in §6.1). Soft-deleting an extractor named by any
   association is a 409. `kind` is create-only.
 - **Migration numbering.** G-6 takes **027**; K-3 moves to 028.
+- **The run planner resolves reference-mode canonical hrefs through the
+  ledger (Task 9b).** The planner treated every canonical `/api/assets/...`
+  href as platform-held, but a reference-mode item is catalogued with a
+  canonical href while its bytes stay at the connection's own source (the app
+  resolves this via `lookupReferenceHref`); granting a read on the canonical
+  key would point at an object that does not exist. `ProcessRepo.
+  reference_source_hrefs` mirrors that lookup so the planner can stage such
+  assets from `ingest_files.source_href` instead — for both transform and
+  extract runs. This closes a gap G-2 shipped with, found while wiring G-7's
+  reference-mode GOES flow.

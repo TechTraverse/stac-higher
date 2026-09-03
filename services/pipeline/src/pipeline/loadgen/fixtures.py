@@ -27,10 +27,52 @@ LOAD_POLL_SECONDS = 60
 
 
 #: EXTRACT strategies the harness offers, and what each measures.
-METADATA_STRATEGIES = ("defaults_only", "raster_auto")
+METADATA_STRATEGIES = ("defaults_only", "raster_auto", "extractor")
+
+#: The harness's pass-through extractor (G-6). Fixed ids so setup is
+#: idempotent and teardown can find it, like pipeline.demo's process.
+EXTRACTOR_PROCESS_ID = "1d000000-0000-4000-8000-0000000000e1"
+EXTRACTOR_REVISION_ID = "1d000000-0000-4000-8000-0000000000e2"
+EXTRACTOR_NAME = "m3-load-extractor"
+EXTRACTOR_RUNTIME: dict[str, Any] = {
+    "kind": "inline_python",
+    "image": None,
+    "memory_mb": 512,
+    "timeout_seconds": 120,
+    "retry": {"max_attempts": 2, "backoff": "exponential"},
+    "network": {"level": "isolated", "hosts": []},
+}
+EXTRACTOR_CODE = '''\
+"""Pass-through extractor: hand every draft back with a datetime and a
+footprint, changing nothing the platform forbids changing."""
+import datetime as dt
+import json
+import os
+
+import boto3
+
+s3 = boto3.client("s3")
+bucket = os.environ["STAC_HIGHER_OUTPUT_BUCKET"]
+prefix = os.environ["STAC_HIGHER_OUTPUT_PREFIX"]
+manifest = json.loads(
+    s3.get_object(Bucket=bucket, Key=os.environ["STAC_HIGHER_INPUT_MANIFEST"])["Body"].read()
+)
+now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+for entry in manifest["items"]:
+    item = entry["item"]
+    if not item["properties"].get("datetime"):
+        item["properties"]["datetime"] = now
+    if item.get("geometry") is None:
+        item["geometry"] = {"type": "Point", "coordinates": [0.0, 0.0]}
+        item["bbox"] = [0.0, 0.0, 0.0, 0.0]
+    item["properties"]["loadgen:extracted"] = True
+    s3.put_object(Bucket=bucket, Key=f"{prefix}{item["id"]}.json", Body=json.dumps(item).encode())
+'''
 
 
-def metadata_config(strategy: str = "defaults_only") -> dict[str, Any]:
+def metadata_config(
+    strategy: str = "defaults_only", *, process_id: str | None = None
+) -> dict[str, Any]:
     """The §5.1 `metadata` block for a load profile.
 
     `defaults_only` needs BOTH defaults set: without a datetime EXTRACT raises
@@ -42,6 +84,13 @@ def metadata_config(strategy: str = "defaults_only") -> dict[str, Any]:
         raise ValueError(
             f"strategy must be one of {METADATA_STRATEGIES}, got {strategy!r}"
         )
+    if strategy == "extractor":
+        # G-6: routes the item through a real process run rather than the
+        # inline EXTRACT path — the number to watch is ingest_files_extracting.
+        return {
+            "strategy": "extractor",
+            "extractor": {"process_id": process_id or EXTRACTOR_PROCESS_ID},
+        }
     if strategy == "raster_auto":
         # rio-stac reads the datetime and geometry off the raster itself; the
         # datetime default is the documented fallback for a tag-less file.

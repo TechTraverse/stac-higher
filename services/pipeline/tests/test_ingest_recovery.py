@@ -77,6 +77,18 @@ async def test_failed_retry_is_bounded():
     assert repo.rows["f"].status == "failed"
 
 
+async def test_failed_retry_clears_the_stale_failure_reason():
+    """The reason describes the failure the row is being retried out of;
+    carrying it into `settled` makes an operator read a stale cause."""
+    repo = FakeIngestRepo(now=EPOCH + dt.timedelta(hours=1))
+    repo.rows = {"f": _entry("f", "failed", EPOCH)}
+    repo.rows["f"].reason = "extractor run r1: boom"
+
+    assert await repo.sweep_failed_for_retry(3, older_than_seconds=300) == 1
+    assert repo.rows["f"].status == "settled"
+    assert repo.rows["f"].reason is None
+
+
 async def test_failed_retry_waits_for_cooloff():
     repo = FakeIngestRepo(now=EPOCH + dt.timedelta(seconds=60))
     repo.rows = {"f": _entry("f", "failed", EPOCH)}
@@ -183,6 +195,9 @@ async def test_recovery_sweep_job_registered_and_calls_both_sweeps(monkeypatch):
         async def sweep_stuck_stored(self, max_retries, older_than_seconds):
             calls.append(("stored", max_retries, older_than_seconds))
             return (1, 0)
+        async def sweep_stuck_extracting(self, older_than_seconds):
+            calls.append(("extracting", older_than_seconds))
+            return 3
 
     monkeypatch.setattr(ingest_jobs, "PgIngestRepo", _Repo)
     await queue.periodic[JOB_RECOVERY_SWEEP].func(timestamp=0)
@@ -190,4 +205,32 @@ async def test_recovery_sweep_job_registered_and_calls_both_sweeps(monkeypatch):
         ("stuck", settings.ingest_fetch_stall_seconds),
         ("failed", settings.ingest_max_retries, settings.ingest_failed_retry_seconds),
         ("stored", settings.ingest_max_retries, settings.ingest_stored_stall_seconds),
+        ("extracting", settings.ingest_stored_stall_seconds),
     ]
+
+
+async def test_sweep_stuck_extracting_fails_rows_whose_run_is_gone():
+    from pipeline.ingest.repo import STATUS_EXTRACTING, STATUS_FAILED
+
+    repo = FakeIngestRepo()
+    assoc = make_association({"source_path": "/o"})
+    live = await repo.insert_ledger_version(
+        assoc.id, "live.nc", version=1, status=STATUS_EXTRACTING, size=1, fingerprint="f"
+    )
+    gone = await repo.insert_ledger_version(
+        assoc.id, "gone.nc", version=1, status=STATUS_EXTRACTING, size=1, fingerprint="f"
+    )
+    never = await repo.insert_ledger_version(
+        assoc.id, "never.nc", version=1, status=STATUS_EXTRACTING, size=1, fingerprint="f"
+    )
+    await repo.set_extract_run([live], "run-live")
+    await repo.set_extract_run([gone], "run-gone")
+    repo.run_statuses = {"run-live": "running"}  # run-gone is absent; never has no run
+    repo.now = repo.now + dt.timedelta(hours=1)
+
+    failed = await repo.sweep_stuck_extracting(older_than_seconds=1800)
+
+    assert failed == 2
+    assert repo.rows[live].status == STATUS_EXTRACTING
+    assert repo.rows[gone].status == STATUS_FAILED and "run" in repo.rows[gone].reason
+    assert repo.rows[never].status == STATUS_FAILED

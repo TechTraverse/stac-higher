@@ -10,6 +10,11 @@ import {
   Input,
   Label,
   LoadingState,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@stac-higher/shared";
 import {
   Dialog,
@@ -40,6 +45,7 @@ import {
   useProcesses,
 } from "@/lib/processes/queries";
 import type { Process } from "@/lib/processes/types";
+import type { ProcessKind } from "@/lib/processes/schemas";
 
 const HEALTH_VAR: Record<LineageHealth, string> = {
   ok: "success",
@@ -121,7 +127,13 @@ function ProcessCard({
   const verdict = processVerdict(process, runs, sources?.length);
   const { rate, counted } = successRateOverRuns(ledger);
   const last = ledger.find((r) => r.started_at !== null) ?? ledger[0] ?? null;
-  const trigger = triggerSummary(sources);
+  // An extractor has no `process_sources` by design — it is selected on an
+  // ingest association — so the sources-derived summary would read "no
+  // trigger" and look broken. Name what actually drives it instead.
+  const trigger =
+    process.kind === "extractor"
+      ? { text: "ingest extractor", mono: false }
+      : triggerSummary(sources);
 
   return (
     <Card
@@ -140,6 +152,9 @@ function ProcessCard({
               >
                 {process.name}
               </a>
+              {process.kind === "extractor" && (
+                <Badge variant="outline">extractor</Badge>
+              )}
             </div>
             <p
               className={`mt-0.5 text-[12px] text-muted-foreground ${trigger.mono ? "tech" : ""}`}
@@ -240,6 +255,7 @@ function CreateProcessDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [groupId, setGroupId] = useState(groups[0] ?? "");
+  const [kind, setKind] = useState<ProcessKind>("transform");
   const createMutation = useCreateProcess();
 
   const submit = async (event: React.FormEvent) => {
@@ -249,8 +265,12 @@ function CreateProcessDialog({
         name,
         description,
         group_id: groupId,
+        kind,
         enabled: true,
-        max_runs_per_hour: 60,
+        // GOES spec §6.5: an extractor runs once per ingested file rather
+        // than once per batch, so it needs a higher hourly ceiling than a
+        // transform to keep pace with a busy ingest source.
+        max_runs_per_hour: kind === "extractor" ? 600 : 60,
       });
       toast.success(`Created ${created.name}`);
       onOpenChange(false);
@@ -302,6 +322,21 @@ function CreateProcessDialog({
                 required
               />
             </div>
+            <div className="grid gap-2">
+              <Label htmlFor="process-kind">Kind</Label>
+              <Select value={kind} onValueChange={(v) => setKind(v as ProcessKind)}>
+                <SelectTrigger id="process-kind" aria-label="Kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="transform">transform — sources → outputs</SelectItem>
+                  <SelectItem value="extractor">extractor — fixes up items an ingest source brings in</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[12px] text-muted-foreground">
+                Cannot be changed after creation.
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -352,7 +387,8 @@ function ProcessesContent() {
         <div>
           <h1 className="text-3xl font-bold">Processes</h1>
           <p className="text-muted-foreground">
-            User-defined transforms that turn catalog items into new items.
+            User-defined transforms and extractors that turn catalog items
+            into new items.
           </p>
         </div>
         {canMutate && (

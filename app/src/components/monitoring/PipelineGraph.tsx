@@ -175,6 +175,8 @@ function GraphContent() {
     const deliverIn = new Set(
       edges.filter((e) => e.kind === "deliver").map((e) => e.to),
     );
+    // An `extractor` edge does not make a collection derived: the extractor
+    // fixes up items ingested INTO it.
     const derived = new Set(
       edges.filter((e) => e.kind === "process_output").map((e) => e.to),
     );

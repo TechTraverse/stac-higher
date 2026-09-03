@@ -9,6 +9,7 @@ backend that was down.
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pytest
 
@@ -499,6 +500,164 @@ async def test_run_one_marks_staging_failure_as_a_failed_attempt_and_never_launc
     assert repo.finished[0]["status"] == "failed"
 
 
+# ---------------------------------------------------------------------------
+# a dead EXTRACTOR run fails its ingest batch (G-6, spec §6.2/§15)
+# ---------------------------------------------------------------------------
+
+ASSOC = "55555555-5555-4555-8555-555555555555"
+
+
+def _extract_run(**overrides) -> QueuedRun:
+    """An extractor run: association-anchored, source-less, and carrying the
+    draft plus the ledger rows its batch came from."""
+    return queued(
+        source_id=None,
+        association_id=ASSOC,
+        input_items=[
+            {
+                "item_id": "a",
+                "collection_id": "c",
+                "op": "insert",
+                "ledger_ids": ["1", "2"],
+                "draft": {"id": "a", "collection": "c", "assets": {}},
+            }
+        ],
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dead_extractor_run_reports_its_batch():
+    repo = FakeProcessRepo()
+    seen: list[tuple[str, str]] = []
+
+    async def on_dead(run, error):
+        seen.append((run.id, error))
+
+    # attempts at the budget, so the failing exit code is TERMINAL, not a retry.
+    run = _extract_run(attempts=3)
+    result = await run_one(
+        run,
+        repo=repo,
+        executor=MemoryExecutor(results=[ExitStatus(1)]),
+        settings=Settings.from_env({}),
+        storage_client=FakeStore(),
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=FakeSts(),
+        on_dead=on_dead,
+    )
+    assert result.status == "dead"
+    assert seen and seen[0][0] == run.id
+    assert seen[0][1]
+
+
+@pytest.mark.asyncio
+async def test_a_retryable_extractor_failure_leaves_its_batch_alone():
+    """The retry may still land the batch, so only a TERMINAL dead fails it."""
+    repo = FakeProcessRepo()
+    seen: list[str] = []
+
+    async def on_dead(run, error):
+        seen.append(run.id)
+
+    result = await run_one(
+        _extract_run(attempts=1),
+        repo=repo,
+        executor=MemoryExecutor(results=[ExitStatus(1)]),
+        settings=Settings.from_env({}),
+        storage_client=FakeStore(),
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=FakeSts(),
+        on_dead=on_dead,
+    )
+    assert result.status == "failed"
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_an_extractor_run_reads_its_draft_and_grants_its_own_collection():
+    """No pgstac read, no process_sources: the refs carry both (§15)."""
+    repo = FakeProcessRepo()  # no source_collections, no items
+    store = RecordingStore()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    result = await run_one(
+        _extract_run(),
+        repo=repo,
+        executor=executor,
+        settings=Settings.from_env({}),
+        storage_client=store,
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=FakeSts(),
+    )
+    assert result.status == "succeeded"
+    manifest_key = next(k for k in store.objects if k.endswith("/manifest.json"))
+    manifest = json.loads(store.objects[manifest_key])
+    assert manifest["kind"] == "extract"
+    assert manifest["items"][0]["item"] == {"id": "a", "collection": "c", "assets": {}}
+
+
+@pytest.mark.asyncio
+async def test_an_extractor_run_stages_a_reference_mode_asset_from_its_source():
+    """A reference-mode item is catalogued with a CANONICAL href even though
+    its bytes never entered the bucket; the runner resolves it through the
+    ingest ledger, exactly as the app's asset route does (G-6 Task 9b).
+
+    NOTE the lookup is keyed on `(collection_id, item_id)` and the Pg query
+    filters `ingest_files.item_id`: the ledger rows MUST still carry their
+    item id while they sit in `extracting` for this to resolve. The fake is a
+    static dict and cannot see that coupling — `test_ingest_itemize.py::
+    test_parked_extracting_rows_keep_their_item_id` guards the other half.
+    """
+    repo = FakeProcessRepo(
+        source_hrefs={("c", "a"): {"a.nc": "https://src.example/a.nc"}}
+    )
+    store = RecordingStore()
+    seen: list[str] = []
+
+    async def fetch_remote(href: str) -> bytes:
+        seen.append(href)
+        return b"bytes"
+
+    run = queued(
+        source_id=None,
+        association_id=ASSOC,
+        input_items=[
+            {
+                "item_id": "a",
+                "collection_id": "c",
+                "op": "insert",
+                "ledger_ids": ["1"],
+                "draft": {
+                    "id": "a",
+                    "collection": "c",
+                    "assets": {"d": {"href": "/api/assets/c/a/a.nc"}},
+                },
+            }
+        ],
+    )
+    result = await run_one(
+        run,
+        repo=repo,
+        executor=MemoryExecutor(results=[ExitStatus(0)]),
+        settings=Settings.from_env({}),
+        storage_client=store,
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=FakeSts(),
+        fetch_remote=fetch_remote,
+    )
+    assert result.status == "succeeded"
+    assert seen == ["https://src.example/a.nc"]
+    manifest_key = next(k for k in store.objects if k.endswith("/manifest.json"))
+    asset = json.loads(store.objects[manifest_key])["items"][0]["assets"]["d"]
+    assert asset["staged"] is True
+    # The manifest keeps the CATALOG href, not the source URL.
+    assert asset["href"] == "/api/assets/c/a/a.nc"
+
+
 @pytest.mark.asyncio
 async def test_run_one_dies_when_the_network_level_exceeds_the_cap():
     repo = _remote_input_repo()
@@ -750,3 +909,89 @@ async def test_a_rate_deferred_trigger_is_not_dispatched_now():
 
     assert result.deferred is True
     assert result.enqueued_now is False and asked == []
+
+
+ASSOC = "55555555-5555-4555-8555-555555555555"
+
+
+async def test_extractor_triggers_coalesce_per_association_until_claimed():
+    repo = FakeProcessRepo()
+    first = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None,
+        association_id=ASSOC, input_items=[{"item_id": "a", "ledger_ids": ["1"]}], now=NOW,
+    )
+    second = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None,
+        association_id=ASSOC, input_items=[{"item_id": "b", "ledger_ids": ["2"]}], now=NOW,
+    )
+    assert second.run_id == first.run_id and second.merged
+    assert [i["item_id"] for i in repo.enqueued[0]["input_items"]] == ["a", "b"]
+    assert repo.enqueued[0]["association_id"] == ASSOC
+
+    claimed = await repo.claim_run(first.run_id, NOW)
+    assert claimed is not None and claimed.association_id == ASSOC
+
+    third = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None,
+        association_id=ASSOC, input_items=[{"item_id": "c", "ledger_ids": ["3"]}], now=NOW,
+    )
+    assert third.run_id != first.run_id and not third.merged
+
+
+async def test_a_source_less_association_less_trigger_never_coalesces():
+    repo = FakeProcessRepo()
+    a = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None, input_items=[], now=NOW
+    )
+    b = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None, input_items=[], now=NOW
+    )
+    assert a.run_id != b.run_id
+
+
+async def test_get_run_returns_the_batch_for_finalize():
+    repo = FakeProcessRepo()
+    r = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None, association_id=ASSOC,
+        input_items=[{"item_id": "a", "ledger_ids": ["1"], "draft": {"id": "a"}}], now=NOW,
+    )
+    rec = await repo.get_run(r.run_id)
+    assert rec is not None
+    assert (rec.process_id, rec.association_id, rec.status) == (PROC, ASSOC, "queued")
+    assert rec.input_items[0]["draft"] == {"id": "a"}
+
+
+@pytest.mark.asyncio
+async def test_failing_a_dead_extractor_batch_only_touches_rows_it_still_owns():
+    """`sweep_failed_for_retry` re-settles the SAME row ids, so a row can be
+    re-driven through a NEW extractor run while a stale run still exists. When
+    that stale run finally reaches `dead` it must not clobber the rows the new
+    run owns (or already itemized)."""
+    from _ingest_fake import FakeIngestRepo
+    from pipeline.jobs.process import fail_extract_batch
+
+    ingest = FakeIngestRepo()
+    mine = await ingest.insert_ledger_version(
+        ASSOC, "a.nc", version=1, status="extracting", size=1, fingerprint="f",
+        item_id="a",
+    )
+    theirs = await ingest.insert_ledger_version(
+        ASSOC, "b.nc", version=1, status="extracting", size=1, fingerprint="f",
+        item_id="b",
+    )
+    landed = await ingest.insert_ledger_version(
+        ASSOC, "c.nc", version=1, status="itemized", size=1, fingerprint="f",
+        item_id="c",
+    )
+    run = _extract_run()
+    run.input_items[0]["ledger_ids"] = [mine, theirs, landed]
+    await ingest.set_extract_run([mine], run.id)
+    await ingest.set_extract_run([theirs], "some-other-run")
+    await ingest.set_extract_run([landed], run.id)
+
+    count = await fail_extract_batch(ingest, run, "boom")
+
+    assert count == 1
+    assert ingest.rows[mine].status == "failed" and "boom" in ingest.rows[mine].reason
+    assert ingest.rows[theirs].status == "extracting"
+    assert ingest.rows[landed].status == "itemized" and ingest.rows[landed].item_id == "c"

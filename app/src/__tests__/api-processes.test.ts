@@ -33,6 +33,9 @@ vi.mock("@/lib/processes/storage", () => ({
 vi.mock("@/lib/associations/access", () => ({
   canManageCollection: vi.fn(async () => true),
 }));
+vi.mock("@/lib/associations/storage", () => ({
+  countAssociationsUsingExtractor: vi.fn(async () => 0),
+}));
 vi.mock("@/lib/collections/settings", () => ({
   getCollectionSettings: vi.fn(async () => ({ archived: false })),
 }));
@@ -42,6 +45,7 @@ vi.mock("@/lib/connections/storage", () => ({ getConnection: vi.fn() }));
 
 import type { AuthContext, CanonicalRole } from "@/lib/auth/types";
 import { canManageCollection } from "@/lib/associations/access";
+import { countAssociationsUsingExtractor } from "@/lib/associations/storage";
 import { loadGraphEdges } from "@/lib/graph/storage";
 import { collectionNode, processNode } from "@/lib/graph/edges";
 import { getCollectionSettings } from "@/lib/collections/settings";
@@ -93,6 +97,7 @@ function process(overrides: Partial<ApiProcess> = {}): ApiProcess {
     name: "cloud-mask",
     description: "",
     group_id: EO,
+    kind: "transform",
     current_revision: REVISION_ID,
     enabled: true,
     max_runs_per_hour: 60,
@@ -644,6 +649,65 @@ describe("the run ledger and the re-run verb (M5-C)", () => {
     expect(res.status).toBe(404);
     expect(rerunRun).not.toHaveBeenCalled();
   });
+
+  it("409s re-running an EXTRACTOR run — the ingest sweep owns that retry", async () => {
+    // An extractor run's rows are re-driven by the ingest failed-retry sweep.
+    // Flipping the row back to `queued` either collides with the newer queued
+    // run for the same association (23505 -> 500) or re-executes against rows
+    // it no longer owns.
+    vi.mocked(getProcess).mockResolvedValue(process({ kind: "extractor" }));
+    const res = await call(rerunRoute, operator, {
+      method: "POST",
+      params: { runId: RUN_ID },
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("extractor run");
+    expect(rerunRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("spec §6.5 kind-aware defaults", () => {
+  it("gives an extractor created through the API the 600/h ceiling", async () => {
+    vi.mocked(createProcess).mockResolvedValue(process({ kind: "extractor" }));
+    const res = await call(createRoute, operator, {
+      method: "POST",
+      body: { name: "goes-extract", group_id: EO, kind: "extractor" },
+    });
+    expect(res.status).toBe(201);
+    expect(vi.mocked(createProcess).mock.calls[0][0]).toMatchObject({
+      kind: "extractor",
+      maxRunsPerHour: 600,
+    });
+  });
+
+  it("leaves a transform at 60/h", async () => {
+    vi.mocked(createProcess).mockResolvedValue(process());
+    const res = await call(createRoute, operator, {
+      method: "POST",
+      body: { name: "cloud-mask", group_id: EO },
+    });
+    expect(res.status).toBe(201);
+    expect(vi.mocked(createProcess).mock.calls[0][0]).toMatchObject({
+      kind: "transform",
+      maxRunsPerHour: 60,
+    });
+  });
+
+  it("still honours an explicit ceiling", async () => {
+    vi.mocked(createProcess).mockResolvedValue(process({ kind: "extractor" }));
+    await call(createRoute, operator, {
+      method: "POST",
+      body: {
+        name: "goes-extract",
+        group_id: EO,
+        kind: "extractor",
+        max_runs_per_hour: 5,
+      },
+    });
+    expect(vi.mocked(createProcess).mock.calls[0][0]).toMatchObject({
+      maxRunsPerHour: 5,
+    });
+  });
 });
 
 describe("cycle refusal (I-64, M5-D)", () => {
@@ -707,5 +771,64 @@ describe("cycle refusal (I-64, M5-D)", () => {
       body: { collection_id: "cloud-masks" },
     });
     expect(res.status).toBe(201);
+  });
+});
+
+describe("process kind (G-6)", () => {
+  it("creates a transform by default and passes an explicit extractor through", async () => {
+    vi.mocked(createProcess).mockImplementation(async (input) =>
+      ({ ...process(), kind: input.kind }) as ApiProcess,
+    );
+    const a = await call(createRoute, operator, {
+      method: "POST",
+      body: { name: "x", group_id: EO },
+    });
+    expect(a.status).toBe(201);
+    expect(vi.mocked(createProcess).mock.calls[0][0].kind).toBe("transform");
+
+    const b = await call(createRoute, operator, {
+      method: "POST",
+      body: { name: "y", group_id: EO, kind: "extractor" },
+    });
+    expect(b.status).toBe(201);
+    expect(vi.mocked(createProcess).mock.calls[1][0].kind).toBe("extractor");
+  });
+
+  it("refuses an unknown kind", async () => {
+    const res = await call(createRoute, operator, {
+      method: "POST",
+      body: { name: "z", group_id: EO, kind: "filter" },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses sources and outputs on an extractor with a 409 naming the kind", async () => {
+    vi.mocked(getProcess).mockResolvedValue({ ...process(), kind: "extractor" });
+    const src = await call(createSourceRoute, operator, {
+      method: "POST",
+      body: {
+        collection_id: "c",
+        trigger: { kind: "item_event", item_filter: null },
+      },
+    });
+    expect(src.status).toBe(409);
+    expect((await src.json()).error).toMatch(/extractor/);
+    expect(createSource).not.toHaveBeenCalled();
+
+    const out = await call(createOutputRoute, operator, {
+      method: "POST",
+      body: { collection_id: "c" },
+    });
+    expect(out.status).toBe(409);
+    expect(createOutput).not.toHaveBeenCalled();
+  });
+
+  it("refuses deleting an extractor an association still names", async () => {
+    vi.mocked(getProcess).mockResolvedValue({ ...process(), kind: "extractor" });
+    vi.mocked(countAssociationsUsingExtractor).mockResolvedValue(2);
+    const res = await call(deleteRoute, operator, { method: "DELETE" });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/2 ingest association/);
+    expect(softDeleteProcess).not.toHaveBeenCalled();
   });
 });

@@ -451,3 +451,16 @@ async def test_build_item_dispatches_sidecar_reads_sidecar_bytes():
     assert item["properties"]["datetime"] == "2023-05-05T10:00:00Z"
     assert item["geometry"] is not None
     assert item["properties"]["stac_higher:geometry_source"] == "raster"
+
+
+def test_parse_metadata_extractor_needs_a_process_id():
+    from pipeline.ingest.extract import ExtractError, parse_metadata
+
+    cfg = parse_metadata({"strategy": "extractor", "extractor": {"process_id": "p1"}})
+    assert cfg.strategy == "extractor"
+    assert cfg.extractor_process_id == "p1"
+    with pytest.raises(ExtractError, match=r"extractor\.process_id"):
+        parse_metadata({"strategy": "extractor"})
+    # lenient reader: an extractor block on another strategy is ignored
+    cfg = parse_metadata({"strategy": "defaults_only", "extractor": {"process_id": "p1"}})
+    assert cfg.extractor_process_id is None

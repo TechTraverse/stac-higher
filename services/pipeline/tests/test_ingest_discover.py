@@ -81,6 +81,17 @@ async def test_new_file_recorded_as_seen():
     assert row.version == 1
 
 
+async def test_discover_persists_the_listed_mtime():
+    repo = FakeIngestRepo()
+    cfg = parse_ingest_config({"source_path": "products/", "settle": "two_polls"})
+    adapter = FakeAdapter(
+        entries=[_entry("products/a.tif", etag="v1", mtime=1_700_000_000.0)]
+    )
+    await discover_stage(repo, _assoc({}), cfg, adapter)
+    row = await repo.get_latest_ledger("assoc1", "a.tif")
+    assert row.source_mtime == dt.datetime.fromtimestamp(1_700_000_000.0, tz=dt.UTC)
+
+
 async def test_unchanged_second_poll_settles():
     repo = FakeIngestRepo()
     cfg = parse_ingest_config({"source_path": "products/", "settle": "two_polls"})

@@ -266,3 +266,36 @@ describe("deliveryConfigSchema (§5.1)", () => {
     expect(result.success).toBe(true);
   });
 });
+
+describe("metadata.strategy extractor (G-6)", () => {
+  const PROC = "5c9f1c2e-0000-4000-8000-0000000000e1";
+  it("accepts an extractor with a process id", () => {
+    const r = ingestConfigSchema.safeParse({
+      source_path: "/out",
+      metadata: { strategy: "extractor", extractor: { process_id: PROC } },
+    });
+    expect(r.success).toBe(true);
+    expect(r.success && r.data.metadata.extractor?.process_id).toBe(PROC);
+  });
+  it("refuses extractor without a process id", () => {
+    const r = ingestConfigSchema.safeParse({
+      source_path: "/out",
+      metadata: { strategy: "extractor" },
+    });
+    expect(r.success).toBe(false);
+  });
+  it("refuses a non-uuid process id", () => {
+    const r = ingestConfigSchema.safeParse({
+      source_path: "/out",
+      metadata: { strategy: "extractor", extractor: { process_id: "goes" } },
+    });
+    expect(r.success).toBe(false);
+  });
+  it("refuses an extractor block on another strategy", () => {
+    const r = ingestConfigSchema.safeParse({
+      source_path: "/out",
+      metadata: { strategy: "defaults_only", extractor: { process_id: PROC } },
+    });
+    expect(r.success).toBe(false);
+  });
+});

@@ -350,6 +350,46 @@
       },
       "app": "reject",
       "pipeline": "reject"
+    },
+    {
+      "name": "extractor strategy",
+      "config": {
+        "source_path": "ABI-L2-MCMIPC/",
+        "storage_mode": "reference",
+        "metadata": {
+          "strategy": "extractor",
+          "extractor": { "process_id": "5c9f1c2e-0000-4000-8000-0000000000e1" }
+        }
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "extractor strategy without a process id",
+      "config": { "source_path": "/out", "metadata": { "strategy": "extractor" } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "extractor block on another strategy",
+      "config": {
+        "source_path": "/out",
+        "metadata": {
+          "strategy": "defaults_only",
+          "extractor": { "process_id": "5c9f1c2e-0000-4000-8000-0000000000e1" }
+        }
+      },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "extractor with a non-uuid process id (writer strict, reader lenient)",
+      "config": {
+        "source_path": "/out",
+        "metadata": { "strategy": "extractor", "extractor": { "process_id": "goes" } }
+      },
+      "app": "reject",
+      "pipeline": "accept"
     }
   ]
 }

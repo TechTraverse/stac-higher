@@ -104,3 +104,15 @@ export function secretRefOutOfScope(name: string): Response {
       "group (docs/processes.md).",
   });
 }
+
+/** GOES spec §6.1: an extractor has no sources and no outputs — it is
+ * selected on an ingest association instead. 409 so the UI can say why. */
+export function refuseIfExtractor(process: ApiProcess): Response | null {
+  if (process.kind !== "extractor") return null;
+  return jsonResponse(409, {
+    error:
+      "This process is an extractor. Extractors are selected on an ingest " +
+      "association's metadata strategy and cannot have trigger sources or " +
+      "output collections.",
+  });
+}

@@ -87,6 +87,23 @@ def _enum(raw: Any, allowed: Sequence[str], default: str, field_name: str) -> st
     return value
 
 
+def extractor_process_id(metadata: dict[str, Any] | None) -> str | None:
+    """The normalised ``metadata.extractor.process_id``, or ``None`` when
+    absent/empty (G-6). A pure extraction with no strategy opinion — whether
+    the id is *required* (only when ``metadata.strategy == "extractor"``) is
+    the caller's call: :func:`parse_ingest_config` raises
+    :class:`IngestConfigError` off it here, and
+    :func:`pipeline.ingest.extract.parse_metadata` raises its own
+    :class:`~pipeline.ingest.extract.ExtractError` off the same result — one
+    definition of the id-extraction rule, two error types."""
+    if not isinstance(metadata, dict):
+        return None
+    extractor = metadata.get("extractor") or {}
+    if not isinstance(extractor, dict):
+        return None
+    return str(extractor.get("process_id") or "") or None
+
+
 def parse_ingest_config(raw: dict[str, Any]) -> IngestConfig:
     """Parse a ``collection_connections.config`` dict into an :class:`IngestConfig`.
 
@@ -110,6 +127,17 @@ def parse_ingest_config(raw: dict[str, Any]) -> IngestConfig:
 
     poll = int(raw.get("poll_frequency_seconds", DEFAULT_POLL_FREQUENCY_SECONDS))
     metadata = raw.get("metadata")
+    # G-6: fail at config-parse time, not on the first EXTRACT of a group — the
+    # same "config error, not a runtime surprise" reasoning as the
+    # window/path_template checks below. `extract.parse_metadata` applies the
+    # identical rule (off the same `extractor_process_id` helper) at EXTRACT
+    # time, for a config written before this check existed.
+    if (
+        isinstance(metadata, dict)
+        and str(metadata.get("strategy", "raster_auto")) == "extractor"
+        and extractor_process_id(metadata) is None
+    ):
+        raise IngestConfigError("metadata.strategy 'extractor' needs extractor.process_id")
 
     window_raw = raw.get("window") or {}
     if not isinstance(window_raw, dict):

@@ -35,6 +35,11 @@ from botocore.client import Config
 from pipeline.connections.envelope import load_master_key, seal
 from pipeline.loadgen.feed import emission_offsets, granule, raster_granule
 from pipeline.loadgen.fixtures import (
+    EXTRACTOR_CODE,
+    EXTRACTOR_NAME,
+    EXTRACTOR_PROCESS_ID,
+    EXTRACTOR_REVISION_ID,
+    EXTRACTOR_RUNTIME,
     LOAD_CREATED_BY,
     LOAD_GROUP,
     METADATA_STRATEGIES,
@@ -127,6 +132,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 config=s3_connection_config(args.source_bucket, args.internal_s3_endpoint),
                 credentials=credentials,
             )
+            if args.metadata == "extractor":
+                _install_extractor(cur)
             ingest_id = _upsert_association(
                 cur,
                 collection_id=n["collection"],
@@ -227,6 +234,47 @@ def _upsert_association(
         (collection_id, connection_id, direction, json.dumps(config), LOAD_CREATED_BY),
     )
     return cur.fetchone()[0]
+
+
+def _install_extractor(cur) -> None:
+    """The pass-through extractor the `extractor` profile names (G-6). Same
+    direct-SQL split as the associations: the app owns the DDL, the harness
+    writes rows."""
+    cur.execute(
+        "INSERT INTO stac_higher.processes"
+        " (id, name, description, group_id, kind, enabled, max_runs_per_hour, created_by)"
+        " VALUES (%s, %s, 'M3 load harness pass-through extractor', %s, 'extractor', true, 600, %s)"
+        " ON CONFLICT (id) DO UPDATE SET enabled = true, deleted_at = NULL",
+        (EXTRACTOR_PROCESS_ID, EXTRACTOR_NAME, LOAD_GROUP, LOAD_CREATED_BY),
+    )
+    cur.execute(
+        "UPDATE stac_higher.processes SET current_revision = NULL WHERE id = %s",
+        (EXTRACTOR_PROCESS_ID,),
+    )
+    cur.execute(
+        "DELETE FROM stac_higher.process_runs WHERE process_id = %s",
+        (EXTRACTOR_PROCESS_ID,),
+    )
+    cur.execute(
+        "DELETE FROM stac_higher.process_revisions WHERE process_id = %s",
+        (EXTRACTOR_PROCESS_ID,),
+    )
+    cur.execute(
+        "INSERT INTO stac_higher.process_revisions"
+        " (id, process_id, runtime, code, env, created_by)"
+        " VALUES (%s, %s, %s::jsonb, %s, '[]'::jsonb, %s)",
+        (
+            EXTRACTOR_REVISION_ID,
+            EXTRACTOR_PROCESS_ID,
+            json.dumps(EXTRACTOR_RUNTIME),
+            EXTRACTOR_CODE,
+            LOAD_CREATED_BY,
+        ),
+    )
+    cur.execute(
+        "UPDATE stac_higher.processes SET current_revision = %s WHERE id = %s",
+        (EXTRACTOR_REVISION_ID, EXTRACTOR_PROCESS_ID),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -359,6 +407,24 @@ def cmd_teardown(args: argparse.Namespace) -> int:
                 "DELETE FROM stac_higher.collection_connections WHERE collection_id = %s",
                 (n["collection"],),
             )
+            # G-6: the extractor process, if this label's setup installed one.
+            # Null current_revision first — the FK the revision delete would
+            # otherwise trip — then runs, then revisions, then the process.
+            cur.execute(
+                "UPDATE stac_higher.processes SET current_revision = NULL WHERE id = %s",
+                (EXTRACTOR_PROCESS_ID,),
+            )
+            cur.execute(
+                "DELETE FROM stac_higher.process_runs WHERE process_id = %s",
+                (EXTRACTOR_PROCESS_ID,),
+            )
+            cur.execute(
+                "DELETE FROM stac_higher.process_revisions WHERE process_id = %s",
+                (EXTRACTOR_PROCESS_ID,),
+            )
+            cur.execute(
+                "DELETE FROM stac_higher.processes WHERE id = %s", (EXTRACTOR_PROCESS_ID,)
+            )
             cur.execute(
                 "DELETE FROM stac_higher.connections WHERE name = ANY(%s)",
                 ([n["connection"], n["dest_connection"]],),
@@ -395,7 +461,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--metadata",
         default="defaults_only",
         choices=METADATA_STRATEGIES,
-        help="defaults_only = plumbing ceiling (no GDAL); raster_auto = real EXTRACT cost",
+        help=(
+            "defaults_only = plumbing ceiling (no GDAL); raster_auto = real EXTRACT cost; "
+            "extractor = the G-6 extractor path (pass-through extractor process, "
+            "one run per batch)"
+        ),
     )
     setup.add_argument("--deliver", action="store_true", help="also attach a delivery fan-out")
     setup.add_argument(
@@ -414,7 +484,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         default="opaque",
         choices=("opaque", "raster"),
-        help="must match the association's metadata strategy (see `setup --metadata`)",
+        help=(
+            "must match the association's metadata strategy (see `setup --metadata`); "
+            "extractor pairs with opaque"
+        ),
     )
     feed.set_defaults(func=cmd_feed)
 

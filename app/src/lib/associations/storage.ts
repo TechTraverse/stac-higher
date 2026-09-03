@@ -378,3 +378,21 @@ export async function associationDeleteImpact(
     reference_items: Number(row?.reference_items ?? 0),
   };
 }
+
+/** How many live ingest associations name this process as their extractor
+ * (GOES spec §6.1). Read before soft-deleting an extractor: a dangling
+ * reference would fail every file of those associations at ITEMIZE. */
+export async function countAssociationsUsingExtractor(
+  processId: string,
+): Promise<number> {
+  await runMigrations();
+  const result = await query<{ n: string }>(
+    `SELECT count(*)::text AS n
+       FROM stac_higher.collection_connections
+      WHERE deleted_at IS NULL AND direction = 'ingest'
+        AND config->'metadata'->>'strategy' = 'extractor'
+        AND config->'metadata'->'extractor'->>'process_id' = $1`,
+    [processId],
+  );
+  return Number(result.rows[0]?.n ?? 0);
+}

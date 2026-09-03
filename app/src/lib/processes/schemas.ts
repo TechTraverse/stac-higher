@@ -311,17 +311,38 @@ export type ProcessExpectation = z.infer<typeof processExpectationSchema>;
 // in-route, where the row and the caller's identity are both known.
 // ---------------------------------------------------------------------------
 
+/** GOES spec §6.1: a transform is wired to source/output collections; an
+ * extractor is selected on an ingest association and fixes up draft items.
+ * Create-only — `processUpdateSchema` deliberately lacks it. */
+export const PROCESS_KINDS = ["transform", "extractor"] as const;
+export type ProcessKind = (typeof PROCESS_KINDS)[number];
+
+/** GOES spec §6.5: an extractor runs once per scene group, so its ceiling is
+ * an order of magnitude above a transform's. Resolved here rather than in the
+ * create form alone, so an API caller gets the same default the UI shows. */
+export const DEFAULT_MAX_RUNS_PER_HOUR: Record<ProcessKind, number> = {
+  transform: 60,
+  extractor: 600,
+};
+
 export const processCreateSchema = z
   .object({
     name: nonBlank("name is required"),
     description: z.string().default(""),
     group_id: nonBlank("group_id is required"),
+    kind: z.enum(PROCESS_KINDS).default("transform"),
     enabled: z.boolean().default(true),
     // §7: operator-editable, floored at 1 so "pause by ceiling" stays
-    // expressible without a zero that would read as "unlimited".
-    max_runs_per_hour: z.number().int().min(1).default(60),
+    // expressible without a zero that would read as "unlimited". Optional so
+    // the kind-aware default below can apply; an explicit value always wins.
+    max_runs_per_hour: z.number().int().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .transform((data) => ({
+    ...data,
+    max_runs_per_hour:
+      data.max_runs_per_hour ?? DEFAULT_MAX_RUNS_PER_HOUR[data.kind],
+  }));
 
 export type ProcessCreate = z.infer<typeof processCreateSchema>;
 

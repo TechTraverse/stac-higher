@@ -11,7 +11,7 @@ just a wasted read.
 | Queue | What it is | State |
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
-| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-5 done. **G-6 and G-7 planned 2026-09-02** (spec §15 addendum + two plans) — implement G-6 first |
+| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-6 done. **G-7 planned 2026-09-02** (spec §15 addendum + plan) — the only slice left |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
@@ -226,7 +226,9 @@ slice text, before implementing.
       when present), shown when `serving_enabled` and the item `info` call
       succeeds; silent otherwise. Depends on G-4. Plan:
       `2026-09-02-goes-g5-raster-preview.md`.
-- [ ] **G-6 · Extractors.** Spec §6. `processes.kind` (`transform` |
+- [x] **G-6 · Extractors.** Landed 2026-09-03 (`ai/goes-g6`, plan
+      `2026-09-02-goes-g6-extractors.md`) — see "Discovered follow-ups" below
+      for the deviations taken. Spec §6. `processes.kind` (`transform` |
       `extractor`, immutable); `metadata.strategy: "extractor"` +
       `metadata.extractor.process_id` on ingest associations (group-owned,
       kind-checked both ways); ledger status `extracting`; ITEMIZE splits at
@@ -296,8 +298,8 @@ and need a cloud account — lead-gated.
       per-profile `capacity`: the claim path counts `running` rows on the
       profile and, when full, releases the run back to `queued` with
       `phase = pending_capacity` and `next_attempt_at = now + 15 s`, no
-      attempt spent. Migration **027** (026 taken by W-2's retention cap,
-      which landed first) lands the `executor_backend`,
+      attempt spent. Migration **028** (026 taken by W-2, 027 by G-6's
+      extractors) lands the `executor_backend`,
       `executor_handle`, `phase`, `phase_detail`, `submitted_at`,
       `cancel_requested_at` columns (the `cancelled` status waits for K-4).
       Depends on K-1.
@@ -366,7 +368,8 @@ live e2e needs and the GOES loop spec §5 flagged as an unsettled gap.
 
 The two slices are independent and may run in parallel in separate worktrees.
 Both have detailed plans. **W-2 took migration 026**; K-3's spec and its
-slice text above were renumbered to 027 as part of W-2 Task 1.
+slice text above were renumbered to 027 as part of W-2 Task 1, and then to
+**028** once G-6 (G queue) took 027 for its own migration.
 
 - [x] **W-1 · Ingest date window + prefix expansion + per-poll cap.** Spec §3.
       New pure `ingest/window.py` (bound grammar `-<n>[smhd]` or RFC3339,
@@ -388,7 +391,8 @@ slice text above were renumbered to 027 as part of W-2 Task 1.
       unchanged (ADR 0011 is not amended). Write path through the settings
       schema, the impact dry-run (`?retention_max_items=N`, DISTINCT across
       both rules) and a Maximum-items control on the Settings tab. Renumbers
-      K-3 to migration 027. Plan: `2026-09-02-w2-retention-cap.md`.
+      K-3 to migration 027 (later 028 — G-6 took 027). Plan:
+      `2026-09-02-w2-retention-cap.md`.
 
 ## Parked (do not start without the lead)
 
@@ -477,5 +481,23 @@ object stores only).
   the item; `asset_collect` removed the object in the same minute
   (`deleted_objects 1, errors 0`). `demo-scenes` now holds only 002 and keeps
   the cap — run `pipeline.demo seed` to restore the original scene.
+
+- **G-6 landed 2026-09-03 (`ai/goes-g6`), deviations from the plan:**
+  - Task 9b (unplanned): the run planner treated every canonical href as
+    platform-held, but a reference-mode item is catalogued with a canonical
+    href too — a gap found in G-2's planner while wiring G-6, fixed by
+    `ProcessRepo.reference_source_hrefs` staging from `ingest_files.source_href`.
+  - `graph-cycles.test.ts`'s extractor assertion was retargeted: the plan's
+    original `wouldCycle(p → src)` case was already a real cycle via the
+    existing `process_source` edge, unrelated to the new extractor edge.
+  - The extractor process-id rule (extractor strategy needs a `process_id`)
+    is single-sourced in `ingest/config.py`, not duplicated in `extract.py`.
+  - `check_extract_output` was made total over malformed/non-dict document
+    shapes instead of raising `AttributeError` out of the batch.
+  - A partial-rejection error is now recorded on the run row, not silent.
+  - Draft asset keys are filename stems (`build_assets`), not the raw
+    filename — carries to G-7.
+  - The loadgen teardown removes extractor rows AFTER the association
+    delete, not before as the brief said; no FK path makes the order matter.
 
 (append here during iterations)

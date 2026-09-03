@@ -1,9 +1,13 @@
 """EXTRACT stage: build a STAC item dict from a group's stored members (§6.1).
 
-Three metadata strategies (§5.1): `raster_auto` (rio-stac over the primary
+Four metadata strategies (§5.1): `raster_auto` (rio-stac over the primary
 raster), `sidecar` (parse an adjacent XML/JSON file), `defaults_only` (no
-extraction — a null-geometry item from collection defaults). Member bytes are
-read via a `MemberByteSource` seam — `CanonicalByteSource` (copy mode: FETCH
+extraction — a null-geometry item from collection defaults) and `extractor`
+(GOES spec §6.1: only a best-effort DRAFT is built here — a process fills in
+what the platform cannot infer, so a missing datetime/geometry is `None`
+rather than an error).
+
+Member bytes are read via a `MemberByteSource` seam — `CanonicalByteSource` (copy mode: FETCH
 already wrote them to canonical storage) or `SourceAdapterByteSource`
 (reference mode: read in place from the source adapter) — so `build_item` is
 storage-mode-agnostic; raster reads go through an in-memory `rasterio.MemoryFile`
@@ -32,6 +36,7 @@ from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _xml_fromstring
 
 from pipeline.connections.adapters.base import StorageAdapter
+from pipeline.ingest.config import extractor_process_id as _resolve_extractor_process_id
 from pipeline.ingest.discover import source_fetch_path
 from pipeline.storage import platform
 from pipeline.storage.keys import asset_href
@@ -73,8 +78,9 @@ class ExtractError(ValueError):
 @dataclass(frozen=True)
 class ExtractMember:
     """One stored group member EXTRACT reads. ``canonical_key`` is the object
-    key FETCH wrote; ``observed_at`` is the ledger's settle time (the
-    ``file_mtime`` datetime proxy — no durable source mtime exists)."""
+    key FETCH wrote; ``observed_at`` is the listed object's modified time when
+    DISCOVER recorded one (``source_mtime``, I-100), else the ledger's settle
+    time — the ``file_mtime`` datetime proxy."""
 
     source_path: str
     filename: str
@@ -92,6 +98,9 @@ class MetadataConfig:
     #: (ISSUE I-27); any other/absent value is treated as unset (forward-
     #: compatible — don't raise on a value a newer app might send).
     default_geometry: str | None
+    #: GOES spec §6: the process that fixes up the draft item; set only for
+    #: strategy "extractor".
+    extractor_process_id: str | None
 
 
 def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
@@ -99,8 +108,13 @@ def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
     sidecar = raw.get("sidecar") or {}
     defaults = raw.get("defaults") or {}
     strategy = str(raw.get("strategy", "raster_auto"))
-    if strategy not in ("raster_auto", "sidecar", "defaults_only"):
+    if strategy not in ("raster_auto", "sidecar", "defaults_only", "extractor"):
         raise ExtractError(f"unknown metadata.strategy {strategy!r}")
+    extractor_process_id: str | None = None
+    if strategy == "extractor":
+        extractor_process_id = _resolve_extractor_process_id(raw)
+        if extractor_process_id is None:
+            raise ExtractError("metadata.strategy 'extractor' needs extractor.process_id")
     default_geometry = defaults.get("geometry")
     if default_geometry != "collection":
         default_geometry = None
@@ -110,6 +124,7 @@ def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
         sidecar_parser=str(sidecar.get("parser", "generic_xml")),
         default_datetime=defaults.get("datetime"),
         default_geometry=default_geometry,
+        extractor_process_id=extractor_process_id,
     )
 
 
@@ -137,7 +152,8 @@ def resolve_datetime(
     extracted: dt.datetime | None, cfg: MetadataConfig, primary: ExtractMember
 ) -> dt.datetime:
     """extracted → metadata.defaults.datetime → error. `file_mtime` uses the
-    member's ledger settle time (documented approximation)."""
+    listed object's modified time when DISCOVER recorded one (`source_mtime`,
+    I-100), else the member's ledger settle time."""
     if extracted is not None:
         return extracted if extracted.tzinfo else extracted.replace(tzinfo=dt.UTC)
     default = cfg.default_datetime
@@ -432,6 +448,34 @@ def build_defaults_only(
     return _base_item(collection_id, item_id, members, primary, when, asset_href_base)
 
 
+def build_extractor_draft(
+    collection_id: str,
+    item_id: str,
+    members: list[ExtractMember],
+    cfg: MetadataConfig,
+    asset_href_base: str,
+) -> dict[str, Any]:
+    """The DRAFT an extractor process starts from (GOES spec §6.1): the
+    defaults-only skeleton with every asset attached, but tolerant of a
+    missing datetime — the extractor's whole job is to supply what the
+    platform cannot infer, so an unresolved default is `None` here rather
+    than an error. Geometry is `None`; `build_item` may still layer the
+    opt-in collection-extent fallback on top."""
+    if not members:
+        raise ExtractError("no members to itemize")
+    primary = _primary(members)
+    try:
+        when: dt.datetime | None = resolve_datetime(None, cfg, primary)
+    except ExtractError:
+        when = None
+    item = _base_item(
+        collection_id, item_id, members, primary, when or dt.datetime.now(dt.UTC), asset_href_base
+    )
+    if when is None:
+        item["properties"]["datetime"] = None
+    return item
+
+
 def build_raster_auto(
     collection_id: str,
     item_id: str,
@@ -565,6 +609,20 @@ async def build_item(
     if not members:
         raise ExtractError("no members to itemize")
     cfg = cfg if cfg is not None else parse_metadata(metadata)
+
+    if cfg.strategy == "extractor":
+        item = build_extractor_draft(collection_id, item_id, members, cfg, asset_href_base)
+        if item.get("geometry") is None and collection_fallback is not None:
+            # Only the cheap layer: no best-effort GDAL read (the extractor
+            # will open the file itself), and no fail-fast — a null geometry
+            # is the extractor's to fill.
+            _set_geometry(
+                item,
+                collection_fallback["geometry"],
+                collection_fallback["bbox"],
+                collection_fallback["source"],
+            )
+        return item
 
     if cfg.strategy == "defaults_only":
         item = build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)

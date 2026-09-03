@@ -236,6 +236,13 @@ async def discover_stage(
     return result
 
 
+def _mtime(entry: FileEntry) -> dt.datetime | None:
+    """The listed modified time as an aware datetime (I-100), or None."""
+    if entry.mtime is None:
+        return None
+    return dt.datetime.fromtimestamp(entry.mtime, tz=dt.UTC)
+
+
 async def _reconcile(
     repo: IngestRepo,
     association_id: str,
@@ -257,6 +264,7 @@ async def _reconcile(
             status=STATUS_SETTLED if immediate else STATUS_SEEN,
             size=entry.size,
             fingerprint=fingerprint,
+            source_mtime=_mtime(entry),
         )
         if immediate:
             result.settled += 1
@@ -303,6 +311,7 @@ async def _reconcile(
                 size=entry.size,
                 fingerprint=fingerprint,
                 item_id=latest.item_id,
+                source_mtime=_mtime(entry),
             )
             result.reingest += 1
         return
@@ -317,6 +326,7 @@ async def _reconcile(
                 status=STATUS_SEEN,
                 size=entry.size,
                 fingerprint=fingerprint,
+                source_mtime=_mtime(entry),
             )
             result.reingest += 1
         return

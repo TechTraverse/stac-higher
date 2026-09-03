@@ -37,6 +37,9 @@ class QueuedRun:
     revision_id: str
     source_id: str | None
     attempts: int
+    #: Set for an extractor run (§15); mutually exclusive with source_id in
+    #: practice, but the dataclass does not enforce that.
+    association_id: str | None = None
     input_items: list[dict[str, Any]] = field(default_factory=list)
     #: Revision payload, joined so the worker needs one round trip, not three.
     runtime: dict[str, Any] = field(default_factory=dict)
@@ -76,6 +79,17 @@ class ProcessCheckRequest:
     revision_id: str
 
 
+@dataclass(frozen=True)
+class RunRecord:
+    """A run row as the finalize extract branch needs it (G-6)."""
+
+    id: str
+    process_id: str
+    association_id: str | None
+    status: str
+    input_items: list[dict[str, Any]] = field(default_factory=list)
+
+
 class ProcessRepo(abc.ABC):
     # -- reads the dispatcher and scheduler need -----------------------------
 
@@ -106,6 +120,20 @@ class ProcessRepo(abc.ABC):
     async def rate_window(self, process_id: str, since: dt.datetime) -> RateWindow:
         """Runs started for this process since ``since``, plus the ceiling."""
 
+    @abc.abstractmethod
+    async def process_kind(self, process_id: str) -> str | None:
+        """`transform` | `extractor`, or None when the process is gone
+        (GOES spec §6). Read where the two kinds diverge — finalize — rather
+        than carried on the run, so a process cannot change meaning mid-run
+        (kind is create-only in the app anyway)."""
+
+    @abc.abstractmethod
+    async def process_is_enabled(self, process_id: str) -> bool:
+        """Whether the (live) process is enabled. `current_revision` filters on
+        `enabled`, so a disabled process is indistinguishable from an undeployed
+        one there; ITEMIZE reads this first so a disabled extractor fails its
+        rows with "is disabled" rather than "no deployed revision" (G-6)."""
+
     # -- the run ledger ------------------------------------------------------
 
     @abc.abstractmethod
@@ -118,6 +146,7 @@ class ProcessRepo(abc.ABC):
         input_items: Sequence[dict[str, Any]],
         deferred_until: dt.datetime | None,
         is_test: bool = False,
+        association_id: str | None = None,
     ) -> str | None:
         """Queue a run, or FOLD the items into this source's pending run
         (§7 coalescing, widened by G-3 to every QUEUED run rather than only
@@ -128,6 +157,9 @@ class ProcessRepo(abc.ABC):
         dispatch wakes racing on the same source must not both see "no pending
         run" and create one each. The partial unique index is the arbiter, and
         the ON CONFLICT path appends instead of failing.
+
+        An extractor run names its ASSOCIATION instead of a source (§15) and
+        coalesces per (process, association) the same way.
         """
 
     async def enqueue_run_detailed(
@@ -139,6 +171,7 @@ class ProcessRepo(abc.ABC):
         input_items: Sequence[dict[str, Any]],
         deferred_until: dt.datetime | None,
         is_test: bool = False,
+        association_id: str | None = None,
     ) -> tuple[str | None, bool]:
         """:meth:`enqueue_run` plus whether the items were MERGED into a run
         that already existed. The caller needs that to decide whether to ask
@@ -154,6 +187,7 @@ class ProcessRepo(abc.ABC):
             input_items=input_items,
             deferred_until=deferred_until,
             is_test=is_test,
+            association_id=association_id,
         )
         return run_id, False
 
@@ -174,6 +208,10 @@ class ProcessRepo(abc.ABC):
         that has elapsed), plus `failed` rows whose retry is due. Stamps
         `running` + `started_at` + attempts in the claiming statement so
         overlapping workers cannot double-claim (the I-40 idiom)."""
+
+    @abc.abstractmethod
+    async def get_run(self, run_id: str) -> RunRecord | None:
+        """One run row's identity, status and input batch."""
 
     @abc.abstractmethod
     async def finish_run(
@@ -208,6 +246,15 @@ class ProcessRepo(abc.ABC):
     async def get_item(self, collection_id: str, item_id: str) -> dict[str, Any] | None:
         """The pgstac document for one triggering item, or None when it has
         been deleted since the trigger (the planner records a skip)."""
+
+    @abc.abstractmethod
+    async def reference_source_hrefs(self, collection_id: str, item_id: str) -> dict[str, str]:
+        """filename -> source href for a `storage_mode: reference` item's
+        assets, from the ingest ledger (empty for copy-mode or manual items).
+        The catalog stores CANONICAL hrefs for reference items too; the app's
+        asset route resolves them through this same ledger column
+        (`storage/reference.ts`), and the run planner must do the same or it
+        grants a key that does not exist."""
 
     @abc.abstractmethod
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
@@ -273,6 +320,8 @@ class PgProcessRepo(ProcessRepo):
                 " WHERE s.collection_id = %s AND s.enabled"
                 "   AND p.enabled AND p.deleted_at IS NULL"
                 "   AND p.current_revision IS NOT NULL"
+                # G-6: an extractor is never dispatched by item events or cron.
+                "   AND p.kind = 'transform'"
                 "   AND s.trigger->>'kind' = 'item_event'",
                 (collection_id,),
             )
@@ -300,6 +349,8 @@ class PgProcessRepo(ProcessRepo):
                 "  JOIN stac_higher.processes p ON p.id = s.process_id"
                 " WHERE s.enabled AND p.enabled AND p.deleted_at IS NULL"
                 "   AND p.current_revision IS NOT NULL"
+                # G-6: an extractor is never dispatched by item events or cron.
+                "   AND p.kind = 'transform'"
                 "   AND s.trigger->>'kind' = 'cron'"
             )
             rows = await cur.fetchall()
@@ -325,6 +376,25 @@ class PgProcessRepo(ProcessRepo):
             )
             row = await cur.fetchone()
         return str(row[0]) if row and row[0] else None
+
+    async def process_kind(self, process_id: str) -> str | None:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT kind FROM stac_higher.processes WHERE id = %s AND deleted_at IS NULL",
+                (process_id,),
+            )
+            row = await cur.fetchone()
+        return str(row[0]) if row else None
+
+    async def process_is_enabled(self, process_id: str) -> bool:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT enabled FROM stac_higher.processes"
+                " WHERE id = %s AND deleted_at IS NULL",
+                (process_id,),
+            )
+            row = await cur.fetchone()
+        return bool(row[0]) if row else False
 
     async def rate_window(  # pragma: no cover
         self, process_id: str, since: dt.datetime
@@ -358,6 +428,7 @@ class PgProcessRepo(ProcessRepo):
         input_items: Sequence[dict[str, Any]],
         deferred_until: dt.datetime | None,
         is_test: bool = False,
+        association_id: str | None = None,
     ) -> str | None:
         run_id, _merged = await self.enqueue_run_detailed(
             process_id=process_id,
@@ -366,6 +437,7 @@ class PgProcessRepo(ProcessRepo):
             input_items=input_items,
             deferred_until=deferred_until,
             is_test=is_test,
+            association_id=association_id,
         )
         return run_id
 
@@ -378,6 +450,7 @@ class PgProcessRepo(ProcessRepo):
         input_items: Sequence[dict[str, Any]],
         deferred_until: dt.datetime | None,
         is_test: bool = False,
+        association_id: str | None = None,
     ) -> tuple[str | None, bool]:
         items = json.dumps(list(input_items))
         async with await self._connect() as conn:
@@ -421,16 +494,39 @@ class PgProcessRepo(ProcessRepo):
                     return None, False
                 return str(row[0]), not bool(row[1])
 
+            if association_id is not None and not is_test:
+                # §15: extractor runs coalesce per (process, association);
+                # migration 027's process_runs_queued_association_idx is the
+                # arbiter, the exact shape of the source branch above.
+                cur = await conn.execute(
+                    "INSERT INTO stac_higher.process_runs"
+                    " (process_id, revision_id, source_id, association_id, input_items,"
+                    "  rate_deferred_until, is_test)"
+                    " VALUES (%s, %s, NULL, %s, %s::jsonb, %s, %s)"
+                    " ON CONFLICT (process_id, association_id)"
+                    "   WHERE status = 'queued' AND association_id IS NOT NULL"
+                    " DO UPDATE SET input_items ="
+                    "   stac_higher.process_runs.input_items || EXCLUDED.input_items"
+                    " RETURNING id, (xmax = 0) AS inserted",
+                    (process_id, revision_id, association_id, items, deferred_until, is_test),
+                )
+                row = await cur.fetchone()
+                await conn.commit()
+                if not row:
+                    return None, False
+                return str(row[0]), not bool(row[1])
+
             cur = await conn.execute(
                 "INSERT INTO stac_higher.process_runs"
-                " (process_id, revision_id, source_id, input_items,"
+                " (process_id, revision_id, source_id, association_id, input_items,"
                 "  rate_deferred_until, is_test)"
-                " VALUES (%s, %s, %s, %s::jsonb, %s, %s)"
+                " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)"
                 " RETURNING id",
                 (
                     process_id,
                     revision_id,
                     source_id,
+                    association_id,
                     items,
                     deferred_until,
                     is_test,
@@ -462,8 +558,8 @@ class PgProcessRepo(ProcessRepo):
                 "   FROM due, stac_higher.process_revisions rev"
                 "  WHERE r.id = due.id AND rev.id = r.revision_id"
                 " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
-                "           r.attempts, r.input_items, rev.runtime, rev.code,"
-                "           rev.env, r.is_test",
+                "           r.association_id, r.attempts, r.input_items,"
+                "           rev.runtime, rev.code, rev.env, r.is_test",
                 {"now": now, "limit": limit},
             )
             rows = await cur.fetchall()
@@ -474,12 +570,13 @@ class PgProcessRepo(ProcessRepo):
                 process_id=str(r[1]),
                 revision_id=str(r[2]),
                 source_id=str(r[3]) if r[3] else None,
-                attempts=int(r[4]),
-                input_items=list(r[5] or []),
-                runtime=dict(r[6] or {}),
-                code=r[7],
-                env=list(r[8] or []),
-                is_test=bool(r[9]),
+                association_id=str(r[4]) if r[4] else None,
+                attempts=int(r[5]),
+                input_items=list(r[6] or []),
+                runtime=dict(r[7] or {}),
+                code=r[8],
+                env=list(r[9] or []),
+                is_test=bool(r[10]),
             )
             for r in rows
         ]
@@ -507,8 +604,8 @@ class PgProcessRepo(ProcessRepo):
                 "    AND (r.rate_deferred_until IS NULL"
                 "         OR r.rate_deferred_until <= %(now)s)"
                 " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
-                "           r.attempts, r.input_items, rev.runtime, rev.code,"
-                "           rev.env, r.is_test",
+                "           r.association_id, r.attempts, r.input_items,"
+                "           rev.runtime, rev.code, rev.env, r.is_test",
                 {"now": now, "run_id": run_id},
             )
             row = await cur.fetchone()
@@ -520,12 +617,29 @@ class PgProcessRepo(ProcessRepo):
             process_id=str(row[1]),
             revision_id=str(row[2]),
             source_id=str(row[3]) if row[3] else None,
-            attempts=int(row[4]),
-            input_items=list(row[5] or []),
-            runtime=dict(row[6] or {}),
-            code=row[7],
-            env=list(row[8] or []),
-            is_test=bool(row[9]),
+            association_id=str(row[4]) if row[4] else None,
+            attempts=int(row[5]),
+            input_items=list(row[6] or []),
+            runtime=dict(row[7] or {}),
+            code=row[8],
+            env=list(row[9] or []),
+            is_test=bool(row[10]),
+        )
+
+    async def get_run(self, run_id: str) -> RunRecord | None:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT id, process_id, association_id, status, input_items"
+                "  FROM stac_higher.process_runs WHERE id = %s",
+                (run_id,),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return RunRecord(
+            id=str(row[0]), process_id=str(row[1]),
+            association_id=str(row[2]) if row[2] else None,
+            status=str(row[3]), input_items=list(row[4] or []),
         )
 
     async def finish_run(  # pragma: no cover
@@ -593,6 +707,25 @@ class PgProcessRepo(ProcessRepo):
             )
             row = await cur.fetchone()
         return dict(row[0]) if row and row[0] else None
+
+    async def reference_source_hrefs(  # pragma: no cover
+        self, collection_id: str, item_id: str
+    ) -> dict[str, str]:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT DISTINCT ON (filename) filename, source_href FROM ("
+                "  SELECT regexp_replace(f.source_path, '^.*/', '') AS filename,"
+                "         f.source_href, f.version"
+                "    FROM stac_higher.ingest_files f"
+                "    JOIN stac_higher.collection_connections cc ON cc.id = f.association_id"
+                "   WHERE cc.collection_id = %s AND f.item_id = %s"
+                "     AND f.source_href IS NOT NULL"
+                "     AND f.reference_removed_at IS NULL"
+                ") x ORDER BY filename, version DESC",
+                (collection_id, item_id),
+            )
+            rows = await cur.fetchall()
+        return {str(r[0]): str(r[1]) for r in rows}
 
     async def reset_stalled_runs(  # pragma: no cover
         self, older_than: dt.datetime, limit: int

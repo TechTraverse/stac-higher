@@ -24,6 +24,8 @@ from pipeline.ingest.itemize import run_itemize
 from pipeline.ingest.repo import IngestAssociation, PgIngestRepo
 from pipeline.ingest.scheduler import due_associations
 from pipeline.jobs._common import load_key_or_skip
+from pipeline.jobs.process import JOB_RUN_NOW
+from pipeline.process.repo import PgProcessRepo
 from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client
@@ -54,6 +56,10 @@ async def _load_association(
 
 
 def register(queue: QueueBackend, settings: Settings) -> None:
+    async def _enqueue_run_now(run_id: str) -> None:
+        # The same immediate-dispatch job the process trigger uses (G-3).
+        await queue.enqueue(JOB_RUN_NOW, {"run_id": run_id})
+
     async def poll(timestamp: int) -> None:
         repo = PgIngestRepo(settings.database_url)
         due = await due_associations(repo, timestamp)
@@ -165,6 +171,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         )
         s3_client = build_platform_client(settings)
         writer = PgPgstacWriter(settings.database_url)
+        process_repo = PgProcessRepo(settings.database_url)
         outcome = await run_itemize(
             repo,
             writer,
@@ -176,10 +183,13 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             source_paths=source_paths,
             bucket=settings.staging_bucket,
             asset_href_base=settings.asset_href_base,
+            process_repo=process_repo,
+            enqueue_now=_enqueue_run_now,
         )
         # Flow telemetry (M2-A): one rollup write per item — itemized counts as
         # activity, a terminal itemize failure stamps last_error_at. "skipped"
-        # (idempotent re-run) writes nothing.
+        # (idempotent re-run) writes nothing, and neither does "extracting" —
+        # the extract finalize branch bumps the rollup when the item lands.
         if outcome.status == "itemized":
             await repo.bump_flow_stats(
                 association_id,
@@ -207,7 +217,10 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         resettled, dead_ended = await repo.sweep_stuck_stored(
             settings.ingest_max_retries, settings.ingest_stored_stall_seconds
         )
-        if stuck or retried or resettled or dead_ended:
+        # G-6: `extracting` rows whose run vanished or closed without
+        # finalizing are failed; the failed-retry sweep re-drives the file.
+        extract_failed = await repo.sweep_stuck_extracting(settings.ingest_stored_stall_seconds)
+        if stuck or retried or resettled or dead_ended or extract_failed:
             logger.info(
                 "ingest recovery sweep",
                 extra={
@@ -215,6 +228,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     "failed_requeued": retried,
                     "stored_resettled": resettled,
                     "stored_dead_ended": dead_ended,
+                    "extracting_failed": extract_failed,
                     "scheduled_timestamp": timestamp,
                 },
             )

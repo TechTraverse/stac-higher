@@ -1402,6 +1402,58 @@ const MIGRATIONS = [
         CHECK (retention_max_items IS NULL OR retention_max_items >= 1);
     `,
   },
+  {
+    // GOES spec §6 + §15 (G-6, extractors).
+    //
+    // processes.kind — a process is a `transform` (sources → outputs) or an
+    // `extractor` (selected on an ingest association, fixes up the draft
+    // item before it is catalogued). Immutable after create: the app never
+    // puts it in the update path, the `current_revision` precedent.
+    //
+    // ingest_files — a new `extracting` status between `stored` and
+    // `itemized`; `reason` carries the failure text §6.2 promises (the
+    // ledger never had one); `extract_run_id` links a row to the run that
+    // owns it, so the recovery sweep can tell a live run from a vanished
+    // one; `source_mtime` is the listed object modified time DISCOVER used
+    // to throw away (I-100) so `file_mtime` can stop meaning "settle time".
+    //
+    // process_runs.association_id — extractor runs coalesce per
+    // (process, association): §6.4 keyed coalescing on source_id, but an
+    // extractor has no process_sources rows by §6.1, and enqueue_run only
+    // takes the ON CONFLICT path with a source. A second partial unique
+    // index is the arbiter, the same shape as 025's.
+    name: "027_extractors",
+    sql: `
+      ALTER TABLE stac_higher.processes
+        ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'transform';
+      ALTER TABLE stac_higher.processes
+        DROP CONSTRAINT IF EXISTS processes_kind_check;
+      ALTER TABLE stac_higher.processes
+        ADD CONSTRAINT processes_kind_check
+        CHECK (kind IN ('transform', 'extractor'));
+
+      ALTER TABLE stac_higher.ingest_files
+        DROP CONSTRAINT IF EXISTS ingest_files_status_check;
+      ALTER TABLE stac_higher.ingest_files
+        ADD CONSTRAINT ingest_files_status_check
+        CHECK (status IN ('seen', 'settled', 'fetching', 'stored', 'extracting', 'itemized', 'failed'));
+      ALTER TABLE stac_higher.ingest_files
+        ADD COLUMN IF NOT EXISTS reason text;
+      ALTER TABLE stac_higher.ingest_files
+        ADD COLUMN IF NOT EXISTS extract_run_id uuid;
+      ALTER TABLE stac_higher.ingest_files
+        ADD COLUMN IF NOT EXISTS source_mtime timestamptz;
+
+      ALTER TABLE stac_higher.process_runs
+        ADD COLUMN IF NOT EXISTS association_id uuid
+          REFERENCES stac_higher.collection_connections(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS process_runs_association_id_idx
+        ON stac_higher.process_runs (association_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS process_runs_queued_association_idx
+        ON stac_higher.process_runs (process_id, association_id)
+        WHERE status = 'queued' AND association_id IS NOT NULL;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

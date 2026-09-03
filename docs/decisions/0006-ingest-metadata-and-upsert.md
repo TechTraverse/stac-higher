@@ -9,7 +9,9 @@
 
 Slice B4 adds the last two stages of Ingest flow A (§6.1): **EXTRACT** turns a
 `stored` group of source files into a STAC item dict per the association's
-`metadata` strategy (§5.1 — `raster_auto` / `sidecar` / `defaults_only`), and
+`metadata` strategy (§5.1 — `raster_auto` / `sidecar` / `defaults_only`; G-6
+adds a fourth, `extractor`, dispatching to an operator process instead of a
+library — see `docs/processes.md` "Extractors"), and
 **ITEMIZE** validates that dict and writes it into pgstac. Two library
 questions had to be settled before either stage could exist: what does
 metadata extraction depend on, and how does the pipeline write into a schema

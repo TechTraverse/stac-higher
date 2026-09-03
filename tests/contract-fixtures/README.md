@@ -158,6 +158,18 @@ touches it, so **only the pytest suite consumes this file**:
 
 `version` bumps are additive: a reader must ignore keys it does not know.
 
+`process-extract-manifest.json` is the extractor twin (G-6): `kind: extract`,
+`items[].item` is the ref's own `draft` (`$ref: given.refs.<n>.draft`) rather
+than a pgstac document — an extractor's item is not catalogued yet — and
+`read_prefixes` come from the refs' collections rather than `process_sources`.
+Note its draft asset key is a filename **stem** (what `build_assets` produces)
+while the staged filename comes from the href's tail, so the two differ by the
+extension on purpose.
+`given.source_hrefs` (optional, `{collection}/{item_id}` → `{filename: href}`)
+is what the ledger says about reference-mode assets; a canonical href with a
+matching entry is staged from that source and keeps its catalog href in the
+manifest.
+
 ## Why `app` and `pipeline` expectations can differ
 
 The contract is deliberately asymmetric. Zod is the **strict write gatekeeper**

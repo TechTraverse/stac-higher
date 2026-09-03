@@ -19,7 +19,7 @@ import { getCollectionSettings } from "@/lib/collections/settings";
 import { formatPath, collectionNode, processNode, wouldCycle } from "@/lib/graph/edges";
 import { loadGraphEdges } from "@/lib/graph/storage";
 import { jsonResponse } from "@/lib/http/response";
-import { loadVisibleProcess } from "@/lib/processes/access";
+import { loadVisibleProcess, refuseIfExtractor } from "@/lib/processes/access";
 import { processOutputCreateSchema } from "@/lib/processes/schemas";
 import {
   createOutput,
@@ -65,6 +65,8 @@ export const GET: APIRoute = async ({ params, locals }) => {
 export const POST: APIRoute = async ({ params, request, locals }) => {
   const loaded = await loadVisibleProcess(locals.auth, params.id, true);
   if ("response" in loaded) return loaded.response;
+  const refused = refuseIfExtractor(loaded.process);
+  if (refused) return refused;
 
   try {
     const body = await request.json().catch(() => null);

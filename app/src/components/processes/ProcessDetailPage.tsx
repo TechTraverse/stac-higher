@@ -43,6 +43,7 @@ import {
   PROCESS_NETWORK_LEVELS,
   type NetworkLevel,
   type ProcessEnv,
+  type ProcessKind,
 } from "@/lib/processes/schemas";
 import {
   DEFAULT_NETWORK_MAX,
@@ -241,6 +242,7 @@ export function CodeCard({
   currentEnv,
   currentRevision,
   canMutate,
+  kind,
 }: {
   id: string;
   groupId: string;
@@ -248,11 +250,16 @@ export function CodeCard({
   currentEnv: ProcessEnv;
   currentRevision: string | null;
   canMutate: boolean;
+  kind: ProcessKind;
 }) {
   const [code, setCode] = useState(currentCode ?? STARTER_CODE);
   const [env, setEnv] = useState<ProcessEnv>(currentEnv);
   const [memoryMb, setMemoryMb] = useState(512);
-  const [timeoutSeconds, setTimeoutSeconds] = useState(900);
+  // GOES spec §6.5: an extractor runs against one ingested file rather than a
+  // batch, so it defaults to a much shorter timeout than a transform.
+  const [timeoutSeconds, setTimeoutSeconds] = useState(
+    kind === "extractor" ? 120 : 900,
+  );
   const [networkLevel, setNetworkLevel] = useState<NetworkLevel>("isolated");
   const networkMax = readUiNetworkMax();
   const deployMutation = useDeployRevision();
@@ -729,10 +736,12 @@ function RunRow({
   run,
   processId,
   canMutate,
+  isExtractor,
 }: {
   run: ProcessRun;
   processId: string;
   canMutate: boolean;
+  isExtractor: boolean;
 }) {
   const rerunMutation = useRerunRun();
 
@@ -786,7 +795,9 @@ function RunRow({
             </a>
           </Button>
         )}
-      {canMutate && run.status === "dead" && (
+      {/* Extractor runs are not re-runnable: their ingest rows are re-driven
+          by the failed-retry sweep, and the route refuses the verb (409). */}
+      {canMutate && !isExtractor && run.status === "dead" && (
         <Button
           variant="outline"
           size="sm"
@@ -806,7 +817,15 @@ function RunRow({
   );
 }
 
-function RunsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
+function RunsCard({
+  id,
+  canMutate,
+  isExtractor,
+}: {
+  id: string;
+  canMutate: boolean;
+  isExtractor: boolean;
+}) {
   const { data: runs, isLoading } = useRuns(id);
 
   return (
@@ -814,8 +833,10 @@ function RunsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
       <CardHeader>
         <CardTitle>Recent runs</CardTitle>
         <CardDescription>
-          Each run pins the revision that executed it. A dead run can be
-          re-run — it re-executes that same revision, not whatever is current.
+          Each run pins the revision that executed it.{" "}
+          {isExtractor
+            ? "A dead extractor run is not re-run from here — its files go back through the ingest retry sweep."
+            : "A dead run can be re-run — it re-executes that same revision, not whatever is current."}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
@@ -826,7 +847,13 @@ function RunsCard({ id, canMutate }: { id: string; canMutate: boolean }) {
           </p>
         )}
         {runs?.map((run) => (
-          <RunRow key={run.id} run={run} processId={id} canMutate={canMutate} />
+          <RunRow
+            key={run.id}
+            run={run}
+            processId={id}
+            canMutate={canMutate}
+            isExtractor={isExtractor}
+          />
         ))}
       </CardContent>
     </Card>
@@ -907,6 +934,25 @@ function SourceHistory({ source }: { source: ProcessSource }) {
   );
 }
 
+function ExtractorCard() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Extractor</CardTitle>
+        <CardDescription>
+          This process fixes up items as an ingest source brings them in. It
+          is selected on an ingest association's metadata strategy (a
+          collection's Data flow tab) and has no trigger sources or output
+          collections of its own. Each run receives the draft items in its
+          input manifest (<code className="tech">kind: "extract"</code>) and
+          writes one <code className="tech">{"{item_id}.json"}</code> per item
+          back — id, collection and asset hrefs unchanged.
+        </CardDescription>
+      </CardHeader>
+    </Card>
+  );
+}
+
 function ProcessDetailContent({ id }: { id: string }) {
   const { data: process, isLoading, error, refetch } = useProcess(id);
   const { data: revisions } = useRevisions(id);
@@ -940,6 +986,9 @@ function ProcessDetailContent({ id }: { id: string }) {
           <div className="mt-1 flex flex-wrap items-center gap-2.5">
             <h1 className="text-2xl font-bold tracking-tight">{process.name}</h1>
             <DeployState process={process} />
+            {process.kind === "extractor" && (
+              <Badge variant="outline">extractor</Badge>
+            )}
           </div>
           <p className="tech mt-0.5 text-[11.5px] text-muted-foreground">
             {process.id}
@@ -963,8 +1012,14 @@ function ProcessDetailContent({ id }: { id: string }) {
             maxRunsPerHour={process.max_runs_per_hour}
             canMutate={canMutate}
           />
-          <SourcesCard id={process.id} canMutate={canMutate} />
-          <OutputsCard id={process.id} canMutate={canMutate} />
+          {process.kind === "extractor" ? (
+            <ExtractorCard />
+          ) : (
+            <>
+              <SourcesCard id={process.id} canMutate={canMutate} />
+              <OutputsCard id={process.id} canMutate={canMutate} />
+            </>
+          )}
         </div>
 
         <div className="space-y-5 xl:sticky xl:top-20">
@@ -975,6 +1030,7 @@ function ProcessDetailContent({ id }: { id: string }) {
             currentEnv={(current?.env ?? []) as ProcessEnv}
             currentRevision={process.current_revision}
             canMutate={canMutate}
+            kind={process.kind}
           />
           <TestRunCard
             id={process.id}
@@ -985,7 +1041,11 @@ function ProcessDetailContent({ id }: { id: string }) {
       </div>
 
       <HistoryCard id={process.id} />
-      <RunsCard id={process.id} canMutate={canMutate} />
+      <RunsCard
+        id={process.id}
+        canMutate={canMutate}
+        isExtractor={process.kind === "extractor"}
+      />
     </main>
   );
 }

@@ -88,6 +88,10 @@ TABLE_QUERIES: dict[str, str] = {
     "ingest_files_stored": (
         "SELECT count(*) FROM stac_higher.ingest_files WHERE status = 'stored'"
     ),
+    "ingest_files_extracting": (
+        # G-6: files parked while their extractor run executes.
+        "SELECT count(*) FROM stac_higher.ingest_files WHERE status = 'extracting'"
+    ),
     "ingest_files_itemized": (
         "SELECT count(*) FROM stac_higher.ingest_files WHERE status = 'itemized'"
     ),

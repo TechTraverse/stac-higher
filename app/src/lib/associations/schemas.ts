@@ -41,13 +41,21 @@ export const groupingSchema = z
 export const metadataSchema = z
   .object({
     strategy: z
-      .enum(["raster_auto", "sidecar", "defaults_only"])
+      .enum(["raster_auto", "sidecar", "defaults_only", "extractor"])
       .default("raster_auto"),
     sidecar: z
       .object({
         pattern: z.string().min(1),
         parser: z.enum(["generic_xml", "json"]).default("generic_xml"),
       })
+      .strict()
+      .optional(),
+    // GOES spec §6: the operator-authored process that fixes up each draft
+    // item. Required with `strategy: extractor`, refused otherwise — the
+    // route checks the process exists, is kind=extractor and is owned by
+    // the connection's group.
+    extractor: z
+      .object({ process_id: z.string().uuid() })
       .strict()
       .optional(),
     // Collection-level fallbacks applied when extraction leaves a field unset.
@@ -63,7 +71,23 @@ export const metadataSchema = z
       .strict()
       .default({}),
   })
-  .strict();
+  .strict()
+  .superRefine((m, ctx) => {
+    if (m.strategy === "extractor" && !m.extractor) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["extractor"],
+        message: "strategy 'extractor' needs extractor.process_id",
+      });
+    }
+    if (m.strategy !== "extractor" && m.extractor) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["extractor"],
+        message: "extractor.process_id is only valid with strategy 'extractor'",
+      });
+    }
+  });
 
 /** post-ingest action: `leave`, `delete`, or `move:<path>`. */
 const postIngestSchema = z
