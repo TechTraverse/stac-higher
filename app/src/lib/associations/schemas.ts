@@ -74,6 +74,11 @@ const postIngestSchema = z
   )
   .default("leave");
 
+// W-1 `path_template` tokens — mirrors `TOKENS` in
+// services/pipeline/src/pipeline/ingest/window.py. Keep in sync.
+const PATH_TEMPLATE_TOKENS = new Set(["Y", "m", "d", "j", "H"]);
+const TEMPLATE_TOKEN = /\{([^{}]*)\}/g;
+
 export const ingestConfigSchema = z
   .object({
     source_path: nonBlank("source_path is required"),
@@ -87,6 +92,23 @@ export const ingestConfigSchema = z
     // settle on first sight; ftp/sftp uploads are visible mid-write and keep
     // the unchanged-across-two-polls window.
     settle: z.enum(["auto", "two_polls", "immediate"]).default("auto"),
+    // W-1: what comes IN. `begin`/`end` are each an RFC3339 timestamp or a
+    // `-<n>[smhd]` offset, re-resolved every poll — that is what makes a
+    // rolling window roll. The GRAMMAR is checked pipeline-side (one parser,
+    // one set of rules); this gate checks the shape.
+    window: z
+      .object({
+        begin: z.string().min(1, "window.begin is required"),
+        end: z.string().min(1).nullable().default(null),
+      })
+      .strict()
+      .optional(),
+    // Expands the window into the key prefixes worth listing, so the LISTING
+    // is bounded and not just its result. Tokens: {Y} {m} {d} {j} {H}.
+    path_template: z.string().min(1).optional(),
+    // Caps how many NEW files one poll admits, oldest first — a wide window
+    // becomes a paced backfill instead of a stampede.
+    max_files_per_poll: z.number().int().min(1).optional(),
     storage_mode: z.enum(STORAGE_MODES).default("copy"),
     // Function defaults so an omitted nested object is PARSED through its schema
     // (applying the inner field defaults) — `.default({})` would store a bare
@@ -107,6 +129,34 @@ export const ingestConfigSchema = z
           "reference mode cannot delete or move the source — its bytes are the " +
           "catalog's asset; use post_ingest 'leave' (or switch to copy mode)",
       });
+    }
+    if (cfg.path_template !== undefined) {
+      if (cfg.window === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["path_template"],
+          message:
+            "path_template needs a window to expand — set window.begin, or drop " +
+            "the template and scope source_path instead",
+        });
+      }
+      // Same guards as the pipeline's validate_template(): at least one
+      // known token, no unknown ones — caught at write time, not mid-listing.
+      const tokens = [...cfg.path_template.matchAll(TEMPLATE_TOKEN)].map((m) => m[1]);
+      const unknown = tokens.filter((t) => !PATH_TEMPLATE_TOKENS.has(t));
+      if (unknown.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["path_template"],
+          message: `path_template has unknown token(s) ${unknown.join(", ")}; known: {Y} {m} {d} {j} {H}`,
+        });
+      } else if (tokens.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["path_template"],
+          message: "path_template must contain at least one date token, e.g. {Y}/{j}/{H}/",
+        });
+      }
     }
   });
 
