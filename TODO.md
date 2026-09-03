@@ -13,7 +13,7 @@ just a wasted read.
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-5 done. **G-6 and G-7 have no plans yet** — brainstorm and write one before implementing |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved |
-| **W** | Ingest date window + retention cap | Spec approved. **W-1 done 2026-09-02**; W-2 has a task-level plan and is ready to execute |
+| **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
 off `ai/main`, and `npm run verify` — plus the pipeline's `pytest` and `ruff`
@@ -361,8 +361,8 @@ pointing an association at a public archive a safe thing to do, which G-7's
 live e2e needs and the GOES loop spec §5 flagged as an unsettled gap.
 
 The two slices are independent and may run in parallel in separate worktrees.
-Both have detailed plans. **W-2 takes migration 026**, so K-3's spec and its
-slice text below must be renumbered to 027 as part of W-2 Task 1.
+Both have detailed plans. **W-2 took migration 026**; K-3's spec and its
+slice text above were renumbered to 027 as part of W-2 Task 1.
 
 - [x] **W-1 · Ingest date window + prefix expansion + per-poll cap.** Spec §3.
       New pure `ingest/window.py` (bound grammar `-<n>[smhd]` or RFC3339,
@@ -375,7 +375,7 @@ slice text below must be renumbered to 027 as part of W-2 Task 1.
       oldest-first; new counters `out_of_window` / `undateable` /
       `deferred_by_cap` / `prefixes_listed`; the fields in the Data flow form.
       Plan: `2026-09-02-w1-ingest-window.md`.
-- [ ] **W-2 · Retention count cap.** Spec §4. Migration **026** adds
+- [x] **W-2 · Retention count cap.** Spec §4. Migration **026** adds
       `collection_settings.retention_max_items` (nullable, `>= 1`);
       `list_gc_collections` widens its predicate and `list_expired_items` gains
       a UNIONed "beyond the newest N by `datetime DESC, id DESC`" branch —
@@ -452,5 +452,14 @@ object stores only).
   `max_files_per_poll 4`, reference mode, `metadata.defaults.datetime:
   "file_mtime"` — expect three listings, ~12 files found, four admitted per
   poll (spec §2). Residuals I-97…I-99 are in ISSUES.md.
+
+- **W-2 landed 2026-09-02 (`ai/w2-retention`).** One naming deviation from
+  the plan: the GC dataclass is `RetentionCollection` (existing name), not the
+  plan's `GcCollection`. The assembled `list_expired_items` SQL was run against
+  the live pgstac (offset 0 and a huge offset, plus the UNION) — syntax proven.
+  **Live check still owed (lead, Docker):** on the demo collection set
+  `retention_max_items: 1`, seed a second scene, and watch the sweep mark
+  (`asset_gc` reason `retention`) and then collect the older one after the
+  grace window.
 
 (append here during iterations)
