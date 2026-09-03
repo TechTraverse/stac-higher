@@ -79,6 +79,9 @@ class FakeIngestRepo(IngestRepo):
     retries: dict[str, int] = field(default_factory=dict)
     #: per-association flow_stats rollup, same pure math as PgIngestRepo (M2-A).
     flow_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: extract_run_id -> status, so sweep_stuck_extracting can tell a live run
+    #: from a vanished one (mirrors the process_runs join in PgIngestRepo).
+    run_statuses: dict[str, str] = field(default_factory=dict)
 
     async def list_enabled_ingest_associations(self) -> list[IngestAssociation]:
         return [a for a in self.associations if a.enabled]
@@ -127,6 +130,7 @@ class FakeIngestRepo(IngestRepo):
         size: int | None,
         fingerprint: str | None,
         item_id: str | None = None,
+        source_mtime: dt.datetime | None = None,
     ) -> str:
         entry_id = str(self._next_id)
         self._next_id += 1
@@ -140,6 +144,7 @@ class FakeIngestRepo(IngestRepo):
             checksum=None,
             status=status,
             item_id=item_id,
+            source_mtime=source_mtime,
             created_at=self.now,
             updated_at=self.now,
         )
@@ -198,7 +203,12 @@ class FakeIngestRepo(IngestRepo):
         return resettled, dead_ended
 
     async def set_ledger_status_many(
-        self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
+        self,
+        entry_ids: Sequence[str],
+        *,
+        status: str,
+        item_id: str | None = None,
+        reason: str | None = None,
     ) -> None:
         self.set_ledger_status_many_calls += 1
         # A simple loop is fine in the fake — the invariant under test is that
@@ -208,7 +218,33 @@ class FakeIngestRepo(IngestRepo):
             row = self.rows[entry_id]
             row.status = status
             row.item_id = item_id
+            row.reason = reason
             row.updated_at = self.now
+
+    async def get_ledger_entries(self, entry_ids: Sequence[str]) -> list[LedgerEntry]:
+        return [self.rows[entry_id] for entry_id in entry_ids if entry_id in self.rows]
+
+    async def set_extract_run(self, entry_ids: Sequence[str], run_id: str) -> None:
+        for entry_id in entry_ids:
+            self.rows[entry_id].extract_run_id = run_id
+
+    async def sweep_stuck_extracting(self, older_than_seconds: int) -> int:
+        cutoff = self.now - dt.timedelta(seconds=older_than_seconds)
+        count = 0
+        for row in self.rows.values():
+            if row.status != "extracting" or not row.updated_at or row.updated_at >= cutoff:
+                continue
+            run_status = self.run_statuses.get(row.extract_run_id) if row.extract_run_id else None
+            if row.extract_run_id is None:
+                row.reason = "extractor run was never queued"
+            elif run_status not in ("queued", "running", "failed"):
+                row.reason = f"extractor run {row.extract_run_id} is gone or closed"
+            else:
+                continue
+            row.status = "failed"
+            row.updated_at = self.now
+            count += 1
+        return count
 
     async def bump_flow_stats(
         self,

@@ -110,6 +110,16 @@ def parse_ingest_config(raw: dict[str, Any]) -> IngestConfig:
 
     poll = int(raw.get("poll_frequency_seconds", DEFAULT_POLL_FREQUENCY_SECONDS))
     metadata = raw.get("metadata")
+    if isinstance(metadata, dict) and str(metadata.get("strategy", "raster_auto")) == "extractor":
+        # G-6: fail at config-parse time, not on the first EXTRACT of a group —
+        # the same "config error, not a runtime surprise" reasoning as the
+        # window/path_template checks below. Mirrors (duplicated, not
+        # imported: importing extract.py here would cycle back through
+        # discover.py's `from pipeline.ingest.config import ...`)
+        # `extract.parse_metadata`'s own check.
+        extractor = metadata.get("extractor") or {}
+        if not str(extractor.get("process_id") or ""):
+            raise IngestConfigError("metadata.strategy 'extractor' needs extractor.process_id")
 
     window_raw = raw.get("window") or {}
     if not isinstance(window_raw, dict):

@@ -115,7 +115,8 @@ def _member(entry: LedgerEntry, collection_id: str, item_id: str) -> ExtractMemb
         source_path=entry.source_path,
         filename=filename,
         canonical_key=canonical_asset_key(collection_id, item_id, filename),
-        observed_at=entry.updated_at,
+        # I-100: the listed object mtime when DISCOVER recorded one, else the settle time.
+        observed_at=entry.source_mtime or entry.updated_at,
     )
 
 

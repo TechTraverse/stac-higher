@@ -26,11 +26,12 @@ from typing import Any
 from pipeline.connections.repo import ConnectionRow, _to_connection_row
 from pipeline.flow.stats import apply_ingest_activity
 
-# ledger statuses (mirrors the migration-005 CHECK constraint).
+# ledger statuses (mirrors the CHECK constraint, migration 005, widened by 027).
 STATUS_SEEN = "seen"
 STATUS_SETTLED = "settled"
 STATUS_FETCHING = "fetching"
 STATUS_STORED = "stored"
+STATUS_EXTRACTING = "extracting"
 STATUS_ITEMIZED = "itemized"
 STATUS_FAILED = "failed"
 
@@ -66,6 +67,9 @@ class LedgerEntry:
     status: str
     item_id: str | None
     source_href: str | None = None
+    reason: str | None = None
+    extract_run_id: str | None = None
+    source_mtime: dt.datetime | None = None
     created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
 
@@ -115,6 +119,7 @@ class IngestRepo(abc.ABC):
         size: int | None,
         fingerprint: str | None,
         item_id: str | None = None,
+        source_mtime: dt.datetime | None = None,
     ) -> str:
         """Insert a new ledger version row; returns its id."""
 
@@ -155,13 +160,39 @@ class IngestRepo(abc.ABC):
 
     @abc.abstractmethod
     async def set_ledger_status_many(
-        self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
+        self,
+        entry_ids: Sequence[str],
+        *,
+        status: str,
+        item_id: str | None = None,
+        reason: str | None = None,
     ) -> None:
         """Update ``status`` (and ``item_id``) for ALL given ledger rows in a
         single statement — all-or-nothing. Used by ITEMIZE so a group's members
         are marked together: a crash mid-mark must never leave the group split
         across statuses, which would let a retry rebuild the item from a
-        subset of members."""
+        subset of members. ``reason`` is the failure text an operator reads
+        (G-6); pass None on success so a stale reason does not outlive the
+        failure."""
+
+    @abc.abstractmethod
+    async def get_ledger_entries(self, entry_ids: Sequence[str]) -> list[LedgerEntry]:
+        """The rows for ``entry_ids`` (any status). The extract finalize
+        branch re-reads its batch's rows by id — the same idempotent guard
+        ITEMIZE applies by source path."""
+
+    @abc.abstractmethod
+    async def set_extract_run(self, entry_ids: Sequence[str], run_id: str) -> None:
+        """Stamp the extractor run that owns these ``extracting`` rows, so the
+        recovery sweep can tell a live run from a vanished one (G-6)."""
+
+    @abc.abstractmethod
+    async def sweep_stuck_extracting(self, older_than_seconds: int) -> int:
+        """Extract-stall recovery (G-6): an ``extracting`` row older than the
+        threshold whose run was never stamped, or whose run row is gone or no
+        longer open (not queued/running/failed), is failed with a reason. The
+        failed-retry sweep then re-drives it like any failed file. Returns the
+        number of rows failed."""
 
     @abc.abstractmethod
     async def bump_flow_stats(
@@ -190,11 +221,12 @@ _ASSOC_COLUMNS = "cc.id, cc.collection_id, cc.config, cc.enabled"
 _CONNECTION_COLUMNS = "c.id, c.name, c.protocol, c.config, c.credentials, c.host_key, c.enabled"
 _LEDGER_COLUMNS = (
     "id, association_id, source_path, version, size, fingerprint, checksum,"
-    " status, item_id, source_href, created_at, updated_at"
+    " status, item_id, source_href, reason, extract_run_id, source_mtime,"
+    " created_at, updated_at"
 )
 #: mutable ledger columns settable through set_ledger_fields (guards SQL building).
 _LEDGER_MUTABLE = frozenset(
-    {"status", "size", "fingerprint", "checksum", "item_id", "source_href"}
+    {"status", "size", "fingerprint", "checksum", "item_id", "source_href", "reason"}
 )
 
 
@@ -210,6 +242,9 @@ def _to_ledger_entry(record: Sequence[Any]) -> LedgerEntry:
         status,
         item_id,
         source_href,
+        reason,
+        extract_run_id,
+        source_mtime,
         created_at,
         updated_at,
     ) = record
@@ -224,6 +259,9 @@ def _to_ledger_entry(record: Sequence[Any]) -> LedgerEntry:
         status=status,
         item_id=item_id,
         source_href=source_href,
+        reason=reason,
+        extract_run_id=str(extract_run_id) if extract_run_id else None,
+        source_mtime=source_mtime,
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -321,13 +359,24 @@ class PgIngestRepo(IngestRepo):
         size: int | None,
         fingerprint: str | None,
         item_id: str | None = None,
+        source_mtime: dt.datetime | None = None,
     ) -> str:
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "INSERT INTO stac_higher.ingest_files"
-                " (association_id, source_path, version, status, size, fingerprint, item_id)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                (association_id, source_path, version, status, size, fingerprint, item_id),
+                " (association_id, source_path, version, status, size, fingerprint,"
+                "  item_id, source_mtime)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (
+                    association_id,
+                    source_path,
+                    version,
+                    status,
+                    size,
+                    fingerprint,
+                    item_id,
+                    source_mtime,
+                ),
             )
             row = await cur.fetchone()
             await conn.commit()
@@ -399,17 +448,76 @@ class PgIngestRepo(IngestRepo):
         return statuses.count("settled"), statuses.count("failed")
 
     async def set_ledger_status_many(  # pragma: no cover
-        self, entry_ids: Sequence[str], *, status: str, item_id: str | None = None
+        self,
+        entry_ids: Sequence[str],
+        *,
+        status: str,
+        item_id: str | None = None,
+        reason: str | None = None,
     ) -> None:
         if not entry_ids:
             return
         async with await self._connect() as conn:
             await conn.execute(
-                "UPDATE stac_higher.ingest_files SET status = %s, item_id = %s, updated_at = now()"
+                "UPDATE stac_higher.ingest_files"
+                " SET status = %s, item_id = %s, reason = %s, updated_at = now()"
                 " WHERE id = ANY(%s)",
-                (status, item_id, list(entry_ids)),
+                (status, item_id, reason, list(entry_ids)),
             )
             await conn.commit()
+
+    async def get_ledger_entries(  # pragma: no cover
+        self, entry_ids: Sequence[str]
+    ) -> list[LedgerEntry]:
+        ids = list(entry_ids)
+        if not ids:
+            return []
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"SELECT {_LEDGER_COLUMNS} FROM stac_higher.ingest_files"
+                " WHERE id = ANY(%s::uuid[]) ORDER BY created_at",
+                (ids,),
+            )
+            rows = await cur.fetchall()
+        return [_to_ledger_entry(r) for r in rows]
+
+    async def set_extract_run(  # pragma: no cover
+        self, entry_ids: Sequence[str], run_id: str
+    ) -> None:
+        if not entry_ids:
+            return
+        async with await self._connect() as conn:
+            await conn.execute(
+                "UPDATE stac_higher.ingest_files SET extract_run_id = %s"
+                " WHERE id = ANY(%s::uuid[])",
+                (run_id, list(entry_ids)),
+            )
+            await conn.commit()
+
+    async def sweep_stuck_extracting(  # pragma: no cover
+        self, older_than_seconds: int
+    ) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.ingest_files f"
+                "   SET status = 'failed',"
+                "       reason = CASE WHEN f.extract_run_id IS NULL"
+                "                     THEN 'extractor run was never queued'"
+                "                     ELSE 'extractor run ' || f.extract_run_id"
+                "                          || ' is gone or closed'"
+                "                END,"
+                "       updated_at = now()"
+                " WHERE f.status = 'extracting'"
+                "   AND f.updated_at < now() - make_interval(secs => %s)"
+                "   AND NOT EXISTS ("
+                "     SELECT 1 FROM stac_higher.process_runs r"
+                "      WHERE r.id = f.extract_run_id"
+                "        AND r.status IN ('queued', 'running', 'failed'))",
+                (older_than_seconds,),
+            )
+            count = cur.rowcount or 0
+            await conn.commit()
+        return count
 
     async def bump_flow_stats(  # pragma: no cover
         self,

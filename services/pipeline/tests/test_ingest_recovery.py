@@ -191,3 +191,30 @@ async def test_recovery_sweep_job_registered_and_calls_both_sweeps(monkeypatch):
         ("failed", settings.ingest_max_retries, settings.ingest_failed_retry_seconds),
         ("stored", settings.ingest_max_retries, settings.ingest_stored_stall_seconds),
     ]
+
+
+async def test_sweep_stuck_extracting_fails_rows_whose_run_is_gone():
+    from pipeline.ingest.repo import STATUS_EXTRACTING, STATUS_FAILED
+
+    repo = FakeIngestRepo()
+    assoc = make_association({"source_path": "/o"})
+    live = await repo.insert_ledger_version(
+        assoc.id, "live.nc", version=1, status=STATUS_EXTRACTING, size=1, fingerprint="f"
+    )
+    gone = await repo.insert_ledger_version(
+        assoc.id, "gone.nc", version=1, status=STATUS_EXTRACTING, size=1, fingerprint="f"
+    )
+    never = await repo.insert_ledger_version(
+        assoc.id, "never.nc", version=1, status=STATUS_EXTRACTING, size=1, fingerprint="f"
+    )
+    await repo.set_extract_run([live], "run-live")
+    await repo.set_extract_run([gone], "run-gone")
+    repo.run_statuses = {"run-live": "running"}  # run-gone is absent; never has no run
+    repo.now = repo.now + dt.timedelta(hours=1)
+
+    failed = await repo.sweep_stuck_extracting(older_than_seconds=1800)
+
+    assert failed == 2
+    assert repo.rows[live].status == STATUS_EXTRACTING
+    assert repo.rows[gone].status == STATUS_FAILED and "run" in repo.rows[gone].reason
+    assert repo.rows[never].status == STATUS_FAILED

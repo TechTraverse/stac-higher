@@ -92,6 +92,9 @@ class MetadataConfig:
     #: (ISSUE I-27); any other/absent value is treated as unset (forward-
     #: compatible — don't raise on a value a newer app might send).
     default_geometry: str | None
+    #: GOES spec §6: the process that fixes up the draft item; set only for
+    #: strategy "extractor".
+    extractor_process_id: str | None
 
 
 def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
@@ -99,8 +102,13 @@ def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
     sidecar = raw.get("sidecar") or {}
     defaults = raw.get("defaults") or {}
     strategy = str(raw.get("strategy", "raster_auto"))
-    if strategy not in ("raster_auto", "sidecar", "defaults_only"):
+    if strategy not in ("raster_auto", "sidecar", "defaults_only", "extractor"):
         raise ExtractError(f"unknown metadata.strategy {strategy!r}")
+    extractor_process_id: str | None = None
+    if strategy == "extractor":
+        extractor_process_id = str((raw.get("extractor") or {}).get("process_id") or "") or None
+        if extractor_process_id is None:
+            raise ExtractError("metadata.strategy 'extractor' needs extractor.process_id")
     default_geometry = defaults.get("geometry")
     if default_geometry != "collection":
         default_geometry = None
@@ -110,6 +118,7 @@ def parse_metadata(raw: dict[str, Any]) -> MetadataConfig:
         sidecar_parser=str(sidecar.get("parser", "generic_xml")),
         default_datetime=defaults.get("datetime"),
         default_geometry=default_geometry,
+        extractor_process_id=extractor_process_id,
     )
 
 
