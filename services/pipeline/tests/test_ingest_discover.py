@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 from _ingest_fake import FakeAdapter, FakeIngestRepo
 from pipeline.connections.adapters.base import FileEntry
 from pipeline.connections.repo import ConnectionRow
@@ -249,3 +251,117 @@ async def test_an_immediately_settled_file_that_changes_reverts_to_seen():
     row = await repo.get_latest_ledger("assoc1", "a.tif")
     assert row.status == "seen"
     assert row.fingerprint == "v2"
+
+
+# --- date window (W-1) ----------------------------------------------------- #
+
+NOW = dt.datetime(2026, 9, 2, 18, 30, tzinfo=dt.UTC)
+
+
+def _at(hours_ago: float) -> float:
+    return (NOW - dt.timedelta(hours=hours_ago)).timestamp()
+
+
+async def test_entries_outside_the_window_are_skipped_and_counted():
+    repo = FakeIngestRepo()
+    cfg = parse_ingest_config({"source_path": "products/", "window": {"begin": "-2h"}})
+    adapter = FakeAdapter(
+        entries=[
+            _entry("products/fresh.tif", etag="v1", mtime=_at(1)),
+            _entry("products/stale.tif", etag="v2", mtime=_at(5)),
+        ]
+    )
+
+    result = await discover_stage(repo, _assoc({}), cfg, adapter, now=NOW)
+
+    assert result.out_of_window == 1
+    assert await repo.get_latest_ledger("assoc1", "fresh.tif") is not None
+    assert await repo.get_latest_ledger("assoc1", "stale.tif") is None
+
+
+async def test_an_entry_with_no_mtime_is_skipped_when_a_window_is_set():
+    repo = FakeIngestRepo()
+    cfg = parse_ingest_config({"source_path": "products/", "window": {"begin": "-2h"}})
+    adapter = FakeAdapter(entries=[_entry("products/a.tif", etag="v1", mtime=None)])
+
+    result = await discover_stage(repo, _assoc({}), cfg, adapter, now=NOW)
+
+    assert result.undateable == 1
+    assert await repo.get_latest_ledger("assoc1", "a.tif") is None
+
+
+async def test_an_entry_with_no_mtime_is_admitted_when_no_window_is_set():
+    # The window is what makes a missing timestamp disqualifying; without one
+    # the etag still fingerprints the file perfectly well.
+    repo = FakeIngestRepo()
+    cfg = parse_ingest_config({"source_path": "products/"})
+    adapter = FakeAdapter(entries=[_entry("products/a.tif", etag="v1", mtime=None)])
+
+    result = await discover_stage(repo, _assoc({}), cfg, adapter, now=NOW)
+
+    assert result.undateable == 0
+    assert await repo.get_latest_ledger("assoc1", "a.tif") is not None
+
+
+async def test_the_template_lists_one_prefix_per_hour_in_the_window():
+    repo = FakeIngestRepo()
+    cfg = parse_ingest_config(
+        {
+            "source_path": "ABI-L2-MCMIPC/",
+            "path_template": "{Y}/{j}/{H}/",
+            "window": {"begin": "-2h"},
+        }
+    )
+    adapter = FakeAdapter(entries=[])
+
+    result = await discover_stage(repo, _assoc({}), cfg, adapter, now=NOW)
+
+    assert adapter.list_calls == [
+        "ABI-L2-MCMIPC/2026/245/16/",
+        "ABI-L2-MCMIPC/2026/245/17/",
+        "ABI-L2-MCMIPC/2026/245/18/",
+    ]
+    assert result.prefixes_listed == 3
+
+
+async def test_without_a_template_the_source_path_is_listed_once():
+    repo = FakeIngestRepo()
+    cfg = parse_ingest_config({"source_path": "products/", "window": {"begin": "-2h"}})
+    adapter = FakeAdapter(entries=[])
+
+    await discover_stage(repo, _assoc({}), cfg, adapter, now=NOW)
+
+    assert adapter.list_calls == ["products/"]
+
+
+async def test_the_per_poll_cap_admits_the_oldest_first_and_defers_the_rest():
+    repo = FakeIngestRepo()
+    cfg = parse_ingest_config({"source_path": "products/", "max_files_per_poll": 2})
+    adapter = FakeAdapter(
+        entries=[
+            _entry("products/c.tif", etag="c", mtime=_at(1)),
+            _entry("products/a.tif", etag="a", mtime=_at(3)),
+            _entry("products/b.tif", etag="b", mtime=_at(2)),
+        ]
+    )
+
+    result = await discover_stage(repo, _assoc({}), cfg, adapter, now=NOW)
+
+    assert result.deferred_by_cap == 1
+    assert await repo.get_latest_ledger("assoc1", "a.tif") is not None
+    assert await repo.get_latest_ledger("assoc1", "b.tif") is not None
+    assert await repo.get_latest_ledger("assoc1", "c.tif") is None
+
+
+async def test_the_cap_does_not_count_files_already_in_the_ledger():
+    # Otherwise a steady state of known files would starve new arrivals.
+    repo = FakeIngestRepo()
+    cfg = parse_ingest_config({"source_path": "products/", "max_files_per_poll": 1})
+    adapter = FakeAdapter(entries=[_entry("products/a.tif", etag="a", mtime=_at(2))])
+    await discover_stage(repo, _assoc({}), cfg, adapter, now=NOW)
+
+    adapter.entries.append(_entry("products/b.tif", etag="b", mtime=_at(1)))
+    result = await discover_stage(repo, _assoc({}), cfg, adapter, now=NOW)
+
+    assert await repo.get_latest_ledger("assoc1", "b.tif") is not None
+    assert result.deferred_by_cap == 0
