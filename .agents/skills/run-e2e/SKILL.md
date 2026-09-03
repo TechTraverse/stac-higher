@@ -33,6 +33,15 @@ description: Run the Playwright e2e suite for the STAC Higher app, or debug a fa
    (`set -a && source /path/to/stac-higher/.env && set +a`) or
    `data-flow.spec.ts` fails in `beforeAll` with an unhelpful
    `expect(conn.ok())` false that looks like a regression.
+4. **Live-data specs**: `goes-loop.spec.ts` runs only with `E2E_LIVE_NODD=1`.
+   It needs the internet, the FULL stack including the pipeline
+   (`docker compose up -d --wait`), the process runtime image
+   (`stac-higher-process-runtime:local`, see
+   `services/pipeline/src/pipeline/demo/README.md`), migration 027 applied
+   (load any app page), the `stac-higher-deliveries` bucket (`minio-init`
+   creates it), and `CREDENTIALS_MASTER_KEY` in the dev server env (the
+   delivery connection). Budget ~5 minutes; the bound is 10. Run it alone:
+   `E2E_LIVE_NODD=1 npm run test:e2e:ci -- goes-loop`.
 
 ## Run
 
@@ -42,10 +51,21 @@ From `app/`:
 - Filtered: `npm run test:e2e:ci -- <filter>`
 
 Current specs: `assets`, `catalogs`, `collection-settings`, `connections`,
-`data-flow`, `extension-forms`, `extensions`, `monitoring`, `proxy`.
+`data-flow`, `extension-forms`, `extensions`, `goes-loop` (gated), `monitoring`,
+`processes`, `proxy`.
 
 Report pass/fail counts; on failure list only failing test names plus the first
 error line each. Don't dump the report directory.
+
+## Environment flags
+
+| Flag | Purpose |
+| --- | --- |
+| `E2E_PORT` | Dev server port (default 4321) |
+| `E2E_LIVE_NODD` | `1` enables the live GOES spec (`goes-loop.spec.ts`) |
+| `E2E_STAC_URL` | STAC API base for a stack on other ports (default `http://localhost:8082`) |
+| `E2E_TITILER_URL` | titiler-pgstac base for a stack on other ports (default `http://localhost:8084`) |
+| `E2E_S3_ENDPOINT` | S3/MinIO endpoint for a stack on other ports (default `http://localhost:9000`) |
 
 ## Gotchas (each of these has burned an agent before)
 
@@ -85,3 +105,9 @@ error line each. Don't dump the report directory.
   after a dedup-index migration) — after merging migration-bearing work,
   `docker compose build pipeline && docker compose up -d pipeline` (and grep
   the build output for `ERROR`; BuildKit can exit 0 on a failed pull).
+- **The live GOES spec depends on NOAA.** A NODD outage or an hour with no
+  CONUS scans (rare, e.g. during ABI maintenance) fails it in
+  `newestMcmipcKey`, which is a precondition failure, not a regression. It
+  leaves nothing behind on success; on a mid-run failure, `afterAll` still
+  removes its `e2e-goes-*` rows — check `/processes` and `/connections` if a
+  run was killed.
