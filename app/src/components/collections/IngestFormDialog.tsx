@@ -42,7 +42,10 @@ interface IngestFormState {
   pollFrequency: string;
   storageMode: "copy" | "reference";
   groupingRule: "none" | "shared_basename";
-  metadataStrategy: "raster_auto" | "sidecar" | "defaults_only";
+  // "extractor" (G-6) has no picker option yet — a UI follow-up task adds it;
+  // this widening only keeps `formFromAssociation` type-safe when seeding the
+  // form from a config that already names an extractor.
+  metadataStrategy: "raster_auto" | "sidecar" | "defaults_only" | "extractor";
   postIngest: "leave" | "delete" | "move";
   movePath: string;
   /** §5.1 expectation window (M2-A) — "" = no expectation declared. */

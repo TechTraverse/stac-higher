@@ -18,6 +18,7 @@ import { jsonResponse } from "@/lib/http/response";
 import { getCollectionSettings } from "@/lib/collections/settings";
 import {
   canManageCollection,
+  refuseUnusableExtractor,
   resolveUsableConnection,
 } from "@/lib/associations/access";
 import { parseAssociationCreate } from "@/lib/associations/schemas";
@@ -124,6 +125,11 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       return jsonResponse(400, {
         error: "storage_mode 'reference' requires an object-store (s3) connection",
       });
+    }
+
+    if (data.direction === "ingest") {
+      const refused = await refuseUnusableExtractor(data.config, connection.group_id);
+      if (refused) return refused;
     }
 
     const association = await createAssociation({

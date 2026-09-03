@@ -16,6 +16,7 @@ import type { APIRoute } from "astro";
 import { jsonResponse } from "@/lib/http/response";
 import {
   loadVisibleAssociation,
+  refuseUnusableExtractor,
   resolveUsableConnection,
 } from "@/lib/associations/access";
 import { parseAssociationUpdate } from "@/lib/associations/schemas";
@@ -63,23 +64,23 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     }
     const data = parsed.data;
 
-    if (
-      data.config &&
-      "storage_mode" in data.config &&
-      data.config.storage_mode === "reference" &&
-      locals.auth?.authenticated
-    ) {
+    if (data.config && existing.direction === "ingest" && locals.auth?.authenticated) {
       const connection = await resolveUsableConnection(
         locals.auth.identity,
         existing.connection_id,
       );
       if ("response" in connection) return connection.response;
-      if (connection.protocol !== "s3") {
+      if (
+        "storage_mode" in data.config &&
+        data.config.storage_mode === "reference" &&
+        connection.protocol !== "s3"
+      ) {
         return jsonResponse(400, {
-          error:
-            "storage_mode 'reference' requires an object-store (s3) connection",
+          error: "storage_mode 'reference' requires an object-store (s3) connection",
         });
       }
+      const refused = await refuseUnusableExtractor(data.config, connection.group_id);
+      if (refused) return refused;
     }
 
     const updated = await updateAssociation(existing.id, {
