@@ -898,6 +898,42 @@ profile's `queue` field and a per-run group label are in place so the split
 is a manifest + profile-file change.
 - Tracked in: spec §7.4; here.
 
+## Ingest window + retention cap (W queue, 2026-09-02)
+
+Opened by `docs/superpowers/specs/2026-09-02-ingest-window-and-retention-cap-design.md`
+§10 when W-1 landed. Two of that section's five risks are deliberate and
+documented rather than open: prefix expansion assumes a UTC, zero-padded,
+date-partitioned key layout (a bucket keyed otherwise cannot use the template
+and filters after a full listing instead), and `INGEST_MAX_WINDOW_PREFIXES`
+is a blunt refusal, not a degrade-to-daily (silently changing the granularity
+would change which files are found).
+
+### I-97 · The ingest window gates on upload time, not observation time 🟡
+`window` matches `FileEntry.mtime` — when the producer uploaded the object.
+For GOES that trails the scan time by minutes; a producer that backfills old
+data under a new timestamp could be admitted by a recent window even though
+its content is old. Gating on observation time requires reading the file,
+which is the download the window exists to avoid.
+- Tracked in: spec §3.1, §10. Revisit if a source's upload order stops
+  tracking its observation order.
+
+### I-98 · A source with no modified times ingests nothing once a window is set 🟡
+S3 always reports an mtime; an FTP server without MLSD may not. With a window
+configured such entries are skipped and counted (`undateable`) plus a warning
+log line, but the Data flow tab shows nothing — an operator who sets a window
+on an MLSD-less FTP source sees silence.
+- Fix candidate: surface `undateable` (and `deferred_by_cap`) on the Data flow
+  tab from the tick counters.
+
+### I-99 · A small `max_files_per_poll` against a wide window leaves a long-lived `settled` backlog 🟡
+Files admitted but not yet fetched sit `settled` in the ledger; the cap paces
+admission, so a very small cap against a very large window means a backlog
+that drains over many polls. The existing stall sweeps cover correctness; the
+backlog's *visibility* (how far behind the window the association is) has no
+surface.
+- Fix candidate: a "behind by N files / oldest admitted at T" read-out on the
+  association card, computed from the ledger.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

@@ -52,6 +52,7 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `CREDENTIALS_MASTER_KEY` | _(unset)_ | base64-encoded 32-byte AES-256-GCM key, **identical to the app's**. Decrypts connection credentials. Absent at startup is tolerated — the connection drain/health-sweep ticks fail loudly (logged) instead of killing the process. |
 | `EGRESS_ALLOW_HOSTS` | _(empty)_ | Comma-separated hostnames the egress policy permits even when they resolve to private/loopback addresses (e.g. the compose-internal test servers). Matched case-insensitively. |
 | `ASSET_HREF_BASE` | `/api/assets` | Root-relative base path ITEMIZE uses when building an item's asset `href`s (`{ASSET_HREF_BASE}/{collection}/{item}/{filename}`) — must match the app's asset route (ADR 0005). |
+| `INGEST_MAX_WINDOW_PREFIXES` | `1000` | The most prefixes one DISCOVER tick may expand an ingest `path_template` into (W-1). Exceeding it fails the tick loudly rather than listing for an hour — a 90-day window at hourly granularity is a configuration mistake, not a workload. |
 | `CONNECTION_CHECKS_RETENTION_DAYS` | `30` | Age after which connection_checks rows are deleted by the hourly history sweep (M2-G). |
 | `HISTORY_RETENTION_DAYS` | `365` | Window for pruning delivery_log/ingest_files rows of soft-deleted associations (and itemless terminal deliveries). |
 | `GC_BATCH_ITEMS` | `500` | Max items one retention/collect sweep tick processes per collection (M2-F; backlogs drain across ticks). |
@@ -127,6 +128,25 @@ poll → DISCOVER → GROUP → FETCH → EXTRACT → ITEMIZE → post-ingest
   consecutive polls before it's eligible — protects against picking up a
   file mid-upload. A fingerprint change on an already-`itemized` file is a new
   version of the same product (re-ingest).
+- **Date window (W-1, `ingest/window.py`)** — three optional config fields
+  bound what a tick takes IN, so an association can point at a public
+  archive the size of NODD (`noaa-goes19`, ~250,000 objects per product)
+  safely. `window.begin` / `window.end` are each an RFC3339 timestamp or a
+  `-<n>[smhd]` offset, re-resolved against *now* on every poll (that is what
+  makes a rolling window roll; `end` absent = open to now); only entries whose
+  `FileEntry.mtime` falls in the half-open `[begin, end)` are admitted, and
+  an entry with **no** mtime is skipped and counted (`undateable`) once a
+  window is set. `path_template` (tokens `{Y}` `{m}` `{d}` `{j}` `{H}`,
+  zero-padded, UTC; granularity = the finest token present) is appended to
+  `source_path` and expanded from the window into the prefixes worth listing,
+  so the LISTING is bounded and not just its result — `"ABI-L2-MCMIPC/"` +
+  `"{Y}/{j}/{H}/"` + `{begin: "-6h"}` lists six hourly prefixes of ~12 keys
+  instead of one prefix of ~250,000. `max_files_per_poll` caps how many NEW
+  files one tick admits, oldest first, so a wide window becomes a paced
+  backfill (known files never count against it). Counters on the tick log:
+  `prefixes_listed`, `out_of_window`, `undateable`, `deferred_by_cap`. The
+  window governs what comes in, never what stays — an item whose file ages
+  out of the window remains in the catalog under retention alone.
 - **GROUP** (`ingest/group.py`) — `grouping.rule: none` itemizes each settled
   file immediately as its own item; `shared_basename` waits for sibling files
   sharing a basename, up to `timeout_seconds`, then applies `on_timeout`
