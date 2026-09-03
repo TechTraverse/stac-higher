@@ -1,7 +1,8 @@
 # Ingest date window + retention cap — design
 
 **Date:** 2026-09-02
-**Status:** draft for lead review.
+**Status:** **approved** (lead sign-off 2026-09-02). Implementation queue:
+`TODO.md` "W queue"; plans in `docs/superpowers/plans/2026-09-02-w{1,2}-*.md`.
 **Scope source:** the lead's question after measuring what an unbounded NODD
 association would do: "is there something we can do to configure a date window
 (begin/end, or begin and an open ended future time), and a max number of assets

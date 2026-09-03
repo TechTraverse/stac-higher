@@ -373,7 +373,10 @@ human review. After anything lands on `main`, sync it back with
 ## Solo Agent Loop (TODO.md)
 
 When iterating autonomously:
-1. Pick the **first unchecked item** (`- [ ]`) in `TODO.md`. No cherry-picking.
+1. Pick the **first unchecked item** (`- [ ]`) **in the queue you were asked
+   to work** — `TODO.md` holds several independent queues, and its header
+   routes between them. No cherry-picking within a queue; no wandering
+   across queues. If nobody named a queue, ask rather than guess.
 2. Read the files the task references before changing anything. Reuse existing
    components (`StacMap`, `FootprintLayer`, `ExtentLayer`, `BboxInput`, …).
 3. Implement in a worktree per the workflow above. One task per iteration; keep

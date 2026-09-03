@@ -1,8 +1,30 @@
-# TODO — implementation queues (M3 NOAA-scale readiness · G GOES loop · K process compute · W ingest bounds)
+# TODO — implementation queues
 
-The solo agent loop (AGENTS.md) works this file top-down: pick the **first
-unchecked item**, one task per iteration, worktree off `ai/main`, `npm run
-verify` (+ pipeline `pytest`/`ruff` when the pipeline is touched) before merge.
+**This file holds FOUR INDEPENDENT QUEUES. It is not one list.** Work only the
+queue you were asked for, top-down within it. The first unchecked item in the
+FILE belongs to M3 and is rarely the right default.
+
+**If you were not told which queue, stop and ask.** Which one is right depends
+on what the human wants that day; guessing costs a worktree and a merge, not
+just a wasted read.
+
+| Queue | What it is | State |
+|---|---|---|
+| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
+| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-5 done. **G-6 and G-7 have no plans yet** — brainstorm and write one before implementing |
+| **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved |
+| **W** | Ingest date window + retention cap | Spec approved, W-1 and W-2 both have task-level plans. Ready to execute |
+
+Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
+off `ai/main`, and `npm run verify` — plus the pipeline's `pytest` and `ruff`
+when the pipeline is touched — before merging. Slices name their dependencies
+within a queue; respect those. Slices in **different** queues never block each
+other, and when two touch the same file the later merge into `ai/main` resolves
+it (AGENTS.md conflict rules).
+
+---
+
+## M3 queue — NOAA-scale readiness
 
 **Read first:** `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` —
 the approved design spec. Every slice below names the spec section that
@@ -15,7 +37,7 @@ The M3 **scoping** queue is closed; it lives in git history at `b7fb503`
 (spec + adversarial review) and its findings are appended to the scoping notes.
 Spec approved by the lead 2026-09-01.
 
-## The one thing not to get wrong
+### The one thing not to get wrong
 
 **M3-A goes first, and batching must not jump the queue.** Batching before the
 pgstac fix would hide an O(n²) behind a bigger constant and let it resurface at
@@ -27,7 +49,7 @@ whole-object buffering converts a throughput problem into an OOM: ~9 GB of
 resident memory at concurrency 12–16 against the 250 MB size tier, versus
 ~1.8 GB after streaming (spec §3, S-E).
 
-## Settled — do not relitigate
+### Settled — do not relitigate
 
 Decisions the lead settled 2026-09-01 (spec §7, with the reasoning):
 
@@ -44,7 +66,7 @@ Decisions the lead settled 2026-09-01 (spec §7, with the reasoning):
 - The 60 items/s total budget; local-first (no AWS, no SQS — Phase 8); the OGC
   facade stays parked (ADR 0016).
 
-## Gate (spec §2)
+### Gate (spec §2)
 
 A load rehearsal on the **auth-enforced** local stack sustaining **60 items/s
 total catalog write rate for 30 minutes** — ~30 items/s ingest-origin, a
@@ -54,7 +76,7 @@ catalogued = delivered), **alerting functional throughout**, **bounded memory**
 (worker RSS flat across the window, independent of asset size), and a written
 load report recorded M-gate style in ROADMAP §9.
 
-## Slices (dependency spine encoded in this order — work top-down)
+### Slices (dependency spine encoded in this order — work top-down)
 
 - [ ] **M3-A · pgstac write path.** Spec §4. The single highest-leverage
       change measured: 2–3.5 → 22 items/s on the real pipeline. Set
@@ -318,7 +340,7 @@ and need a cloud account — lead-gated.
 ## W queue — ingest date window + retention cap (unblocks a real NODD association)
 
 **Read first:** `docs/superpowers/specs/2026-09-02-ingest-window-and-retention-cap-design.md`
-— **draft, awaiting lead approval.** Measured 2026-09-02: a single GOES product
+— **approved 2026-09-02.** Measured that day: a single GOES product
 on `noaa-goes19` is ~250,000 objects / ~12 TB, and NOTHING in the ingest path
 bounds a listing, a fetch, or what is kept. G-3 made it more eager still (s3
 sources settle on first sight). This queue adds the three knobs that make
