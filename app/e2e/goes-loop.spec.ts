@@ -90,14 +90,19 @@ function scanTimeMs(filename: string): number {
   );
 }
 
+/** ONE budget for the whole four-gate sequence, armed at the start of the test.
+ * A per-gate deadline would let four gates sum to 40 minutes inside the
+ * 15-minute describe timeout, and then Playwright's own timeout fires instead
+ * of the labelled one — losing which gate actually stalled. */
+let deadline = Number.POSITIVE_INFINITY;
+
 async function poll<T>(label: string, fn: () => Promise<T | null>, everyMs = 10_000): Promise<T> {
-  const deadline = Date.now() + GATE_MS;
   while (Date.now() < deadline) {
     const value = await fn();
     if (value !== null) return value;
     await new Promise((r) => setTimeout(r, everyMs));
   }
-  throw new Error(`timed out after ${GATE_MS / 1000}s waiting for: ${label}`);
+  throw new Error(`gate budget of ${GATE_MS / 1000}s exhausted waiting for: ${label}`);
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -193,6 +198,9 @@ test.describe("GOES loop against live NODD", () => {
       },
     } }), "ingest association")).id;
 
+    // Everything is wired; the four gates now share one 10-minute budget.
+    deadline = Date.now() + GATE_MS;
+
     // --- gate 1: the extracted source item --------------------------------
     const source = await poll("source item", async () => {
       const res = await request.get(`${STAC}/collections/${SRC}/items?limit=10`);
@@ -238,11 +246,10 @@ test.describe("GOES loop against live NODD", () => {
 
     // --- gate 4: delivered ---------------------------------------------------
     await poll("delivery", async () => {
-      const body = await json(
-        await request.get(`/api/collections/${OUT}/connections/${ids.deliver}/deliveries`),
-        "deliveries",
-      );
-      const rows: any[] = body.deliveries ?? [];
+      // Symmetric with gates 1 and 2: a transient non-2xx retries, never aborts.
+      const res = await request.get(`/api/collections/${OUT}/connections/${ids.deliver}/deliveries`);
+      if (!res.ok()) return null;
+      const rows: any[] = (await res.json()).deliveries ?? [];
       return rows.find((r) => r.item_id === outId && r.status === "delivered") ?? null;
     });
     const s3 = new S3Client({
