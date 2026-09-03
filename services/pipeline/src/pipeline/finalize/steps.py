@@ -197,7 +197,7 @@ async def _finalize_item(
             logger.info(
                 "finalize: multipart source ETag is not comparable with the copy's; "
                 "verified on size",
-                extra={"filename": staged.filename, "reason": "multipart_etag"},
+                extra={"staged_filename": staged.filename, "reason": "multipart_etag"},
             )
         bytes_moved += src.size
 

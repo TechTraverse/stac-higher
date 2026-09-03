@@ -387,11 +387,17 @@ def test_etags_comparable_only_for_single_part_etags():
     assert etags_comparable('"abc-12"') is False
 
 
-async def test_multipart_source_etag_verifies_on_size_alone():
+async def test_multipart_source_etag_verifies_on_size_alone(caplog):
     """A boto3 ``upload_file`` over the 8 MB threshold stages a MULTIPART
     object whose ETag is ``md5(concat(part md5s))-N``; the server-side copy is
     single-part, so its ETag is the plain content MD5 and can never match.
     Same size ⇒ the item lands (verified by size + the step-3 sha256)."""
+    # The INFO log on this path passes `extra` keys; a reserved LogRecord
+    # attribute there raises only when INFO is enabled — the 2026-09-03 live
+    # gate found exactly that, so capture INFO to execute the log call.
+    import logging
+
+    caplog.set_level(logging.INFO, logger="pipeline.finalize.steps")
     doc = _staged_doc("big.tif")
     staging_key = f"staging/{UPLOAD}/big.tif"
     repo, store, writer, hooks = _fixture(doc=doc, objects={staging_key: b"large-cog-bytes"})
