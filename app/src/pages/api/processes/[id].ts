@@ -9,6 +9,7 @@
  *          the name frees up for re-use.
  */
 import type { APIRoute } from "astro";
+import { countAssociationsUsingExtractor } from "@/lib/associations/storage";
 import { authzError } from "@/lib/authz/guard";
 import { canAccessGroup } from "@/lib/connections/access";
 import { jsonResponse } from "@/lib/http/response";
@@ -74,6 +75,16 @@ export const DELETE: APIRoute = async ({ params, locals }) => {
   if ("response" in loaded) return loaded.response;
 
   try {
+    if (loaded.process.kind === "extractor") {
+      const users = await countAssociationsUsingExtractor(loaded.process.id);
+      if (users > 0) {
+        return jsonResponse(409, {
+          error:
+            `This extractor is named by ${users} ingest association${users === 1 ? "" : "s"}. ` +
+            "Switch those associations to another metadata strategy first.",
+        });
+      }
+    }
     const deleted = await softDeleteProcess(loaded.process.id);
     if (!deleted) return processNotFound();
     return jsonResponse(200, { deleted: true, id: loaded.process.id });

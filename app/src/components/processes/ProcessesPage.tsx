@@ -249,6 +249,9 @@ function CreateProcessDialog({
         name,
         description,
         group_id: groupId,
+        // G-6: this dialog only creates transforms; extractors are created
+        // from the ingest association's metadata strategy instead.
+        kind: "transform",
         enabled: true,
         max_runs_per_hour: 60,
       });

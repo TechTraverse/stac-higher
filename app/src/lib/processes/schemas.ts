@@ -311,11 +311,18 @@ export type ProcessExpectation = z.infer<typeof processExpectationSchema>;
 // in-route, where the row and the caller's identity are both known.
 // ---------------------------------------------------------------------------
 
+/** GOES spec §6.1: a transform is wired to source/output collections; an
+ * extractor is selected on an ingest association and fixes up draft items.
+ * Create-only — `processUpdateSchema` deliberately lacks it. */
+export const PROCESS_KINDS = ["transform", "extractor"] as const;
+export type ProcessKind = (typeof PROCESS_KINDS)[number];
+
 export const processCreateSchema = z
   .object({
     name: nonBlank("name is required"),
     description: z.string().default(""),
     group_id: nonBlank("group_id is required"),
+    kind: z.enum(PROCESS_KINDS).default("transform"),
     enabled: z.boolean().default(true),
     // §7: operator-editable, floored at 1 so "pause by ceiling" stays
     // expressible without a zero that would read as "unlimited".
