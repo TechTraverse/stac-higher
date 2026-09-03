@@ -19,8 +19,8 @@ Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
 off `ai/main`, and `npm run verify` — plus the pipeline's `pytest` and `ruff`
 when the pipeline is touched — before merging. Slices name their dependencies
 within a queue; respect those. Slices in **different** queues never block each
-other, and when two touch the same file the later merge into `ai/main` resolves
-it (AGENTS.md conflict rules).
+other (one exception: G-7 needs W-1 merged — see G-7), and when two touch the
+same file the later merge into `ai/main` resolves it (AGENTS.md conflict rules).
 
 ---
 
@@ -136,6 +136,11 @@ load report recorded M-gate style in ROADMAP §9.
       audit covered database-level claim semantics across eleven legs, not
       module-level mutable state, shared boto3/GDAL client reuse, or
       `asyncio.to_thread` pool sizing under 12 concurrent jobs (spec §5, §8).
+      **Also owed here (G-3 plan Task 6, lead, Docker):** run the loadgen at
+      the new concurrency and confirm no duplicate `process_run_now`
+      executions and no `procrastinate_jobs` churn from G-3's per-item
+      enqueues — G-3 is functionally verified but not at rate, and this is the
+      slice that makes the difference.
 - [ ] **M3-F · GC at rate.** Spec §3, S-B. `asset_collect` is the **only**
       byte-deletion path and the one GC leg whose capacity does *not* scale
       with collection count: `list_due_marks(500)` per 5-minute tick = 144k/day
@@ -185,7 +190,10 @@ resolves it per AGENTS.md; neither queue waits for the other.
 Slices G-1, G-2 and G-4 are independent and may run concurrently in separate
 worktrees. Detailed task plans exist for those three
 (`docs/superpowers/plans/2026-09-01-goes-g{1,2,4}-*.md`), and for G-3 and G-5
-(`2026-09-02-goes-g{3,5}-*.md`); G-6 and G-7 get theirs when G-3 has merged.
+(`2026-09-02-goes-g{3,5}-*.md`). **G-6 and G-7 have no plan yet.** Writing
+one (`superpowers:brainstorming` → `superpowers:writing-plans`, the G-1…G-5
+plans as the template) is the first step of that slice's iteration, not a
+separate task — do not implement from the slice text alone.
 
 - [x] **G-1 · Anonymous S3 connections.** Spec §8. `anonymous` flag on the s3
       config; credentials optional when set (UI hides the key fields); the
@@ -228,13 +236,17 @@ worktrees. Detailed task plans exist for those three
       run failure fails every ledger row in the batch (no fallback); defaults
       600 runs/h and 120 s; display-only `extractor` graph edge; UI (kind badge,
       association picker); loadgen `--extractor` profile. Depends on G-2, G-3.
+      No plan yet — write `docs/superpowers/plans/2026-09-02-goes-g6-extractors.md`
+      first.
 - [ ] **G-7 · GOES worked example + live-gated e2e.** Spec §2, §9, §10. The
       `goes-abi-metadata` extractor and `goes-geocolor` process on the CURRENT
       runtime image (rasterio `NETCDF:` subdatasets, numpy true colour + night
       IR, GDAL COG driver, rio-stac item); `docs/processes.md` worked example;
       `app/e2e/goes-loop.spec.ts` skipped unless `E2E_LIVE_NODD=1`, scoping the
       association's `include` to the newest `ABI-L2-MCMIPC` key listed over
-      plain HTTPS; `run-e2e` skill update. Depends on G-1…G-6.
+      plain HTTPS; `run-e2e` skill update. Depends on G-1…G-6 **and on W-1**
+      (the only cross-queue dependency: without the ingest window the live
+      association would list the whole product). No plan yet — write it first.
 
 ## K queue — process compute: Kubernetes + Kueue + hardware profiles (AFTER G-6/G-7)
 
