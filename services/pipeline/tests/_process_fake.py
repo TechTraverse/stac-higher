@@ -14,6 +14,7 @@ from pipeline.process.repo import (
     ProcessRepo,
     QueuedRun,
     RateWindow,
+    RunRecord,
 )
 
 
@@ -30,6 +31,8 @@ class FakeProcessRepo(ProcessRepo):
     source_collections: list[str] = field(default_factory=list)
     #: What `current_revision` reports; None models "nothing deployed".
     deployed_revision: str | None = "rev-1"
+    #: What `process_kind` reports per process id; defaults to "transform".
+    kinds: dict[str, str] = field(default_factory=dict)
     #: The revision payload `claim_run` returns with a claimed row.
     runtime: dict[str, Any] = field(default_factory=lambda: {"kind": "inline_python"})
     code: str | None = "pass"
@@ -39,10 +42,11 @@ class FakeProcessRepo(ProcessRepo):
     finished: list[dict[str, Any]] = field(default_factory=list)
     source_runs: list[tuple[str, bool]] = field(default_factory=list)
     stalled_reset: int = 0
-    #: mirrors migration 025's partial unique index: (process, source) → the
-    #: QUEUED run id. A claim removes the entry, exactly as flipping the row to
-    #: `running` drops it out of the partial index.
-    _queued: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: mirrors migration 025's/027's partial unique indexes: (process,
+    #: ("src", source) | ("assoc", association)) → the QUEUED run id. A claim
+    #: removes the entry, exactly as flipping the row to `running` drops it
+    #: out of the partial index.
+    _queued: dict[tuple[str, tuple[str, str]], str] = field(default_factory=dict)
     _next_id: int = 0
 
     async def list_item_event_sources(self, collection_id: str) -> list[ProcessSource]:
@@ -53,6 +57,9 @@ class FakeProcessRepo(ProcessRepo):
 
     async def current_revision(self, process_id: str) -> str | None:
         return self.deployed_revision
+
+    async def process_kind(self, process_id: str) -> str | None:
+        return self.kinds.get(process_id, "transform")
 
     async def rate_window(self, process_id: str, since: dt.datetime) -> RateWindow:
         return self.windows.get(
@@ -68,6 +75,7 @@ class FakeProcessRepo(ProcessRepo):
         input_items: Sequence[dict[str, Any]],
         deferred_until: dt.datetime | None,
         is_test: bool = False,
+        association_id: str | None = None,
     ) -> str | None:
         run_id, _merged = await self.enqueue_run_detailed(
             process_id=process_id,
@@ -76,6 +84,7 @@ class FakeProcessRepo(ProcessRepo):
             input_items=input_items,
             deferred_until=deferred_until,
             is_test=is_test,
+            association_id=association_id,
         )
         return run_id
 
@@ -88,12 +97,18 @@ class FakeProcessRepo(ProcessRepo):
         input_items: Sequence[dict[str, Any]],
         deferred_until: dt.datetime | None,
         is_test: bool = False,
+        association_id: str | None = None,
     ) -> tuple[str | None, bool]:
-        # Model migration 025: at most one QUEUED run per (process, source),
-        # and a second trigger APPENDS to it. Test runs are excluded, as in the
-        # real statement.
+        # Model migrations 025/027: at most one QUEUED run per (process,
+        # source) or per (process, association), and a second trigger APPENDS
+        # to it. Test runs are excluded, as in the real statement.
+        key: tuple[str, str] | None = None
         if source_id is not None and not is_test:
-            existing = self._queued.get((process_id, source_id))
+            key = ("src", source_id)
+        elif association_id is not None and not is_test:
+            key = ("assoc", association_id)
+        if key is not None:
+            existing = self._queued.get((process_id, key))
             if existing is not None:
                 for row in self.enqueued:
                     if row["run_id"] == existing:
@@ -107,14 +122,15 @@ class FakeProcessRepo(ProcessRepo):
                 "process_id": process_id,
                 "revision_id": revision_id,
                 "source_id": source_id,
+                "association_id": association_id,
                 "input_items": list(input_items),
                 "deferred_until": deferred_until,
                 "is_test": is_test,
                 "status": "queued",
             }
         )
-        if source_id is not None and not is_test:
-            self._queued[(process_id, source_id)] = run_id
+        if key is not None:
+            self._queued[(process_id, key)] = run_id
         return run_id, False
 
     async def claim_run(self, run_id: str, now: dt.datetime) -> QueuedRun | None:
@@ -126,12 +142,16 @@ class FakeProcessRepo(ProcessRepo):
                 return None
             row["status"] = "running"
             # Out of the partial index, so a later trigger starts a new run.
-            self._queued.pop((row["process_id"], row["source_id"]), None)
+            if row["source_id"] is not None:
+                self._queued.pop((row["process_id"], ("src", row["source_id"])), None)
+            if row["association_id"] is not None:
+                self._queued.pop((row["process_id"], ("assoc", row["association_id"])), None)
             return QueuedRun(
                 id=run_id,
                 process_id=row["process_id"],
                 revision_id=row["revision_id"],
                 source_id=row["source_id"],
+                association_id=row["association_id"],
                 attempts=1,
                 input_items=list(row["input_items"]),
                 runtime=self.runtime,
@@ -145,6 +165,18 @@ class FakeProcessRepo(ProcessRepo):
         batch = self.due_runs[:limit]
         self.due_runs = self.due_runs[limit:]
         return batch
+
+    async def get_run(self, run_id: str) -> RunRecord | None:
+        for row in self.enqueued:
+            if row["run_id"] == run_id:
+                return RunRecord(
+                    id=row["run_id"],
+                    process_id=row["process_id"],
+                    association_id=row["association_id"],
+                    status=row["status"],
+                    input_items=list(row["input_items"]),
+                )
+        return None
 
     async def finish_run(
         self,

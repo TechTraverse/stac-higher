@@ -750,3 +750,53 @@ async def test_a_rate_deferred_trigger_is_not_dispatched_now():
 
     assert result.deferred is True
     assert result.enqueued_now is False and asked == []
+
+
+ASSOC = "55555555-5555-4555-8555-555555555555"
+
+
+async def test_extractor_triggers_coalesce_per_association_until_claimed():
+    repo = FakeProcessRepo()
+    first = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None,
+        association_id=ASSOC, input_items=[{"item_id": "a", "ledger_ids": ["1"]}], now=NOW,
+    )
+    second = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None,
+        association_id=ASSOC, input_items=[{"item_id": "b", "ledger_ids": ["2"]}], now=NOW,
+    )
+    assert second.run_id == first.run_id and second.merged
+    assert [i["item_id"] for i in repo.enqueued[0]["input_items"]] == ["a", "b"]
+    assert repo.enqueued[0]["association_id"] == ASSOC
+
+    claimed = await repo.claim_run(first.run_id, NOW)
+    assert claimed is not None and claimed.association_id == ASSOC
+
+    third = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None,
+        association_id=ASSOC, input_items=[{"item_id": "c", "ledger_ids": ["3"]}], now=NOW,
+    )
+    assert third.run_id != first.run_id and not third.merged
+
+
+async def test_a_source_less_association_less_trigger_never_coalesces():
+    repo = FakeProcessRepo()
+    a = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None, input_items=[], now=NOW
+    )
+    b = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None, input_items=[], now=NOW
+    )
+    assert a.run_id != b.run_id
+
+
+async def test_get_run_returns_the_batch_for_finalize():
+    repo = FakeProcessRepo()
+    r = await trigger_run(
+        repo, process_id=PROC, revision_id=REV, source_id=None, association_id=ASSOC,
+        input_items=[{"item_id": "a", "ledger_ids": ["1"], "draft": {"id": "a"}}], now=NOW,
+    )
+    rec = await repo.get_run(r.run_id)
+    assert rec is not None
+    assert (rec.process_id, rec.association_id, rec.status) == (PROC, ASSOC, "queued")
+    assert rec.input_items[0]["draft"] == {"id": "a"}

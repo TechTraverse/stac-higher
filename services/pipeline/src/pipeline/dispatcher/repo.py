@@ -192,6 +192,8 @@ class PgDispatchRepo(DispatchRepo):
                 # A process with nothing deployed has no revision to pin, so a
                 # run would be unrunnable the moment it was queued.
                 "   AND p.current_revision IS NOT NULL"
+                # G-6: an extractor is never dispatched by item events or cron.
+                "   AND p.kind = 'transform'"
                 "   AND s.trigger->>'kind' = 'item_event'",
                 (collection_id,),
             )

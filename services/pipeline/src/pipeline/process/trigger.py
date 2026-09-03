@@ -44,12 +44,16 @@ async def trigger_run(
     now: dt.datetime,
     is_test: bool = False,
     enqueue_now: Callable[[str], Awaitable[None]] | None = None,
+    association_id: str | None = None,
 ) -> TriggerResult:
     """Queue a run, deferring (and coalescing) when the §7 ceiling is spent.
 
     A test run is checked against the ceiling like any other. Exempting it
     would give a runaway loop a way around the limit: nothing stops a script
     from requesting test runs.
+
+    An extractor trigger (G-6) passes ``association_id`` and no source;
+    coalescing keys on it.
     """
     window = await repo.rate_window(
         process_id, now - dt.timedelta(seconds=WINDOW_SECONDS)
@@ -68,6 +72,7 @@ async def trigger_run(
         input_items=input_items,
         deferred_until=verdict.deferred_until,
         is_test=is_test,
+        association_id=association_id,
     )
 
     # G-3: don't make the run wait for the next minute tick. The tick stays
@@ -90,6 +95,7 @@ async def trigger_run(
             extra={
                 "process_id": process_id,
                 "source_id": source_id,
+                "association_id": association_id,
                 "run_id": run_id,
                 "recent_runs": verdict.recent_runs,
                 "ceiling": verdict.ceiling,
