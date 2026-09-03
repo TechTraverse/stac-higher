@@ -103,8 +103,13 @@ uv run python -m pipeline.demo goes-teardown
 
 `goes-seed` takes `--include GLOB` (repeatable — pin one granule), `--window`
 (default `-1h`), `--max-files` (default 2) and `--internal-s3-endpoint` (how the
-PIPELINE reaches MinIO, default `http://minio:9000`). Like `seed` it is
-idempotent: re-running replaces both revisions and leaves one association.
+PIPELINE reaches MinIO, default `http://minio:9000`); `goes-teardown` takes
+`--force`. Like `seed` it is idempotent: re-running replaces both revisions and
+leaves one association.
+
+The `goes-geocolor` revision asks for **2048 MB**, which is sized for MCMIP**C**
+(CONUS, 1500²). A full-disk product (MCMIPF, 5424²) needs several times that —
+raise `memory_mb` on the revision before pointing the association at one.
 
 ### Preconditions (beyond the three above)
 
@@ -118,21 +123,27 @@ idempotent: re-running replaces both revisions and leaves one association.
 
 ### It refuses a second ingest source
 
-If `goes-abi-mcmipc` already has an ENABLED ingest association whose connection
-is not `goes-nodd`, `goes-seed` exits naming the association and connection ids
-rather than seeding beside it — two associations polling the same product into
-the same collection ingest every file twice. Disable the other one first.
+If either GOES collection already has an ENABLED ingest association whose
+connection is not `goes-nodd`, `goes-seed` exits naming the association,
+collection and connection rather than seeding beside it — two associations
+polling the same product into the same collection ingest every file twice.
+The check runs BEFORE the first write, so a refused seed has changed nothing:
+not the collection documents, not the processes. Disable the other one first.
 
-### `goes-teardown` has no guard
+### `goes-teardown` refuses to delete a collection somebody else uses
 
-`goes-teardown` deletes `goes-abi-mcmipc` and `goes-geocolor` straight
-through the STAC API by id, unconditionally — it does not check whether a
-poll is mid-flight, a run is queued, or anyone else is looking at either
-collection. Both are fixed, well-known names shared by every `goes-seed`
-invocation (the gated e2e spec is unaffected: it creates its own uniquely
-named `e2e-goes-*` collections and connections and tears down only those).
-Don't run `goes-teardown` while another `goes-seed` session, or a manual
-poke at the shared collections, is in progress.
+`goes-abi-mcmipc` and `goes-geocolor` are fixed, well-known names shared by
+every `goes-seed` invocation, so another ingest association may be pointing at
+one of them (the W-1 seed association is, on the reference stack). Deleting the
+collection out from under it would leave it aimed at nothing — so `goes-teardown`
+lists any such association, ENABLED OR NOT, and exits without deleting
+anything. Pass `--force` to delete anyway.
+
+It still does not check whether a poll is mid-flight or a run is queued, so
+don't run it while another `goes-seed` session, or a manual poke at the shared
+collections, is in progress. (The gated e2e spec is unaffected either way: it
+creates its own uniquely named `e2e-goes-*` collections and connections and
+tears down only those.)
 
 ### What to look at afterwards
 

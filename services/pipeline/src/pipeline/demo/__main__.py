@@ -365,9 +365,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("goes-status", help="GOES loop: runs, ingest ledger, item counts").set_defaults(
         func=goes.status
     )
-    sub.add_parser("goes-teardown", help="remove everything goes-seed created").set_defaults(
-        func=goes.teardown
+    goes_teardown_parser = sub.add_parser(
+        "goes-teardown", help="remove everything goes-seed created"
     )
+    goes_teardown_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="delete the collections even when another ingest association targets them",
+    )
+    goes_teardown_parser.set_defaults(func=goes.teardown)
 
     args = parser.parse_args(argv)
     return args.func(args)

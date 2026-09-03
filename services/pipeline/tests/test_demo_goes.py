@@ -175,3 +175,149 @@ def test_goes_collection_documents_cover_source_and_output():
     for doc in docs:
         assert doc["type"] == "Collection" and doc["description"]
         assert doc["extent"]["spatial"]["bbox"][0][0] < doc["extent"]["spatial"]["bbox"][0][2]
+
+
+# --------------------------------------------------------------------------- #
+# the competing-association guard: `goes-seed` must refuse BEFORE it replaces
+# two collection documents, and `goes-teardown` must refuse to delete a
+# collection somebody else's association still points at.
+#
+# The helper's SQL is Pg-only, so the guard is exercised at the CLI level with
+# the helper itself stubbed out — what is under test is the refusal ORDER, not
+# the query.
+# --------------------------------------------------------------------------- #
+
+
+class _FakeConn:
+    """Just enough psycopg to run the seeders' `with connect(...) as conn`."""
+
+    def __init__(self):
+        self.statements: list[str] = []
+
+    def execute(self, sql, params=None):
+        self.statements.append(sql)
+        return self
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakePaginator:
+    def paginate(self, **kwargs):
+        return []
+
+
+class _FakeS3:
+    def get_paginator(self, name):
+        return _FakePaginator()
+
+
+def _goes_args(**overrides):
+    import argparse as _argparse
+
+    defaults = {
+        "database_url": "postgresql://u:p@localhost:5433/postgis",
+        "stac_url": "http://stac.invalid",
+        "s3_endpoint": "http://s3.invalid",
+        "titiler_url": "http://tiler.invalid",
+        "bucket": "stac-higher",
+        "include": [],
+        "window": "-1h",
+        "max_files": 2,
+        "deliver": False,
+        "internal_s3_endpoint": "http://minio:9000",
+        "force": False,
+    }
+    defaults.update(overrides)
+    return _argparse.Namespace(**defaults)
+
+
+@pytest.fixture
+def goes_seed_module(monkeypatch):
+    from pipeline.demo.goes import seed as module
+
+    conn = _FakeConn()
+    monkeypatch.setattr(module.psycopg, "connect", lambda *a, **k: conn)
+    monkeypatch.setattr(module, "check_migrations", lambda *a, **k: None)
+    monkeypatch.setattr(module, "say", lambda *a, **k: None)
+    module._test_conn = conn  # type: ignore[attr-defined]
+    return module
+
+
+def test_goes_seed_refuses_before_it_writes_any_collection(goes_seed_module, monkeypatch):
+    module = goes_seed_module
+    written: list[tuple] = []
+    monkeypatch.setattr(module, "put_collection", lambda *a, **k: written.append(a))
+    monkeypatch.setattr(
+        module,
+        "competing_ingest_associations",
+        lambda *a, **k: [("assoc-1", module.SOURCE_COLLECTION, "someone-elses-conn")],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.seed(_goes_args())
+
+    assert "assoc-1" in str(excinfo.value)
+    assert written == []  # the collection documents were NOT replaced
+
+
+def test_goes_teardown_refuses_while_another_association_targets_the_collections(
+    goes_seed_module, monkeypatch
+):
+    module = goes_seed_module
+    deleted: list[str] = []
+    monkeypatch.setattr(module, "remove_process", lambda *a, **k: deleted.append("process"))
+    monkeypatch.setattr(
+        module, "request", lambda *a, **k: deleted.append("collection") or (204, "")
+    )
+    monkeypatch.setattr(module, "s3_client", lambda *a, **k: _FakeS3())
+    monkeypatch.setattr(
+        module,
+        "competing_ingest_associations",
+        lambda *a, **k: [("assoc-1", module.SOURCE_COLLECTION, "someone-elses-conn")],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.teardown(_goes_args(force=False))
+
+    assert "--force" in str(excinfo.value)
+    assert deleted == []
+    assert module._test_conn.statements == []  # not one DELETE was issued
+
+
+def test_goes_teardown_proceeds_with_force(goes_seed_module, monkeypatch):
+    module = goes_seed_module
+    deleted: list[str] = []
+    monkeypatch.setattr(module, "remove_process", lambda *a, **k: deleted.append("process"))
+    monkeypatch.setattr(
+        module, "request", lambda *a, **k: deleted.append("collection") or (204, "")
+    )
+    monkeypatch.setattr(module, "s3_client", lambda *a, **k: _FakeS3())
+    monkeypatch.setattr(
+        module,
+        "competing_ingest_associations",
+        lambda *a, **k: [("assoc-1", module.SOURCE_COLLECTION, "someone-elses-conn")],
+    )
+
+    assert module.teardown(_goes_args(force=True)) == 0
+    assert deleted.count("process") == 2 and deleted.count("collection") == 2
+    assert module._test_conn.statements  # the DELETEs did run
+
+
+def test_goes_teardown_subparser_takes_force(monkeypatch):
+    """The CLI has to be able to SAY --force, or the escape hatch is unreachable."""
+    from pipeline.demo import __main__ as demo_main
+
+    seen: list[bool] = []
+    monkeypatch.setattr(
+        demo_main.goes, "teardown", lambda args: seen.append(args.force) or 0
+    )
+    assert demo_main.main(["goes-teardown", "--force"]) == 0
+    assert demo_main.main(["goes-teardown"]) == 0
+    assert seen == [True, False]

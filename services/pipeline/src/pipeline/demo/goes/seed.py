@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Sequence
 
 import psycopg
 
@@ -151,31 +152,56 @@ def collection_documents() -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 
-def _refuse_competing_ingest(conn: psycopg.Connection) -> None:
-    """A SECOND enabled ingest association on the source collection would poll
-    the same product into the same collection, so every file arrives twice.
+def competing_ingest_associations(
+    conn: psycopg.Connection,
+    collection_ids: Sequence[str],
+    *,
+    own_connection_name: str = CONNECTION_NAME,
+    include_disabled: bool = False,
+) -> list[tuple[str, str, str]]:
+    """Ingest associations on `collection_ids` that belong to somebody else.
 
-    Checked BEFORE anything is written: a refusal that had already deployed
-    two processes would be worse than useless.
+    Returns `(association id, collection id, connection name)` per row. Both
+    the seeder and the teardown ask this question — of the same rows, with a
+    different appetite: seeding only cares about an ENABLED competitor (two
+    live pollers ingest every file twice), while tearing a collection down
+    matters to a DISABLED association too, since deleting the collection
+    would leave it pointing at nothing.
     """
+    enabled_clause = "" if include_disabled else " AND cc.enabled"
     rows = conn.execute(
-        "SELECT cc.id, c.id, c.name"
+        "SELECT cc.id, cc.collection_id, c.name"
         "  FROM stac_higher.collection_connections cc"
         "  JOIN stac_higher.connections c ON c.id = cc.connection_id"
-        " WHERE cc.collection_id = %s AND cc.direction = 'ingest'"
-        "   AND cc.enabled AND cc.deleted_at IS NULL AND c.deleted_at IS NULL"
-        "   AND c.name <> %s",
-        (SOURCE_COLLECTION, CONNECTION_NAME),
+        " WHERE cc.collection_id = ANY(%s) AND cc.direction = 'ingest'"
+        "   AND cc.deleted_at IS NULL AND c.deleted_at IS NULL"
+        f"   AND c.name <> %s{enabled_clause}",
+        (list(collection_ids), own_connection_name),
     ).fetchall()
+    return [(str(assoc), str(collection), str(name)) for assoc, collection, name in rows]
+
+
+def _describe(rows: Sequence[tuple[str, str, str]]) -> str:
+    return "\n".join(
+        f"  association {assoc_id}  collection {collection_id}  connection {name}"
+        for assoc_id, collection_id, name in rows
+    )
+
+
+def _refuse_competing_ingest(conn: psycopg.Connection) -> None:
+    """A SECOND enabled ingest association on either GOES collection would poll
+    the same product into the same collection, so every file arrives twice.
+
+    Checked BEFORE anything is written — including before the collection
+    documents are PUT: a refusal that had already replaced two collections
+    and deployed two processes would be worse than useless.
+    """
+    rows = competing_ingest_associations(conn, (SOURCE_COLLECTION, OUTPUT_COLLECTION))
     if not rows:
         return
-    listed = "\n".join(
-        f"  association {assoc_id}  connection {conn_id} ({name})"
-        for assoc_id, conn_id, name in rows
-    )
     raise SystemExit(
-        f"{SOURCE_COLLECTION} already has another ENABLED ingest association:\n"
-        f"{listed}\n"
+        "another ENABLED ingest association already targets a GOES collection:\n"
+        f"{_describe(rows)}\n"
         "Disable it first, or it will ingest the same files twice."
     )
 
@@ -185,14 +211,16 @@ def seed(args: argparse.Namespace) -> int:
 
     _require_master_key(args)
 
-    say("catalog")
-    for document in collection_documents():
-        put_collection(args.stac_url, document)
-
-    say("platform")
+    # The connection opens FIRST so the competing-association refusal happens
+    # before the catalog is touched, not after two collections were replaced.
     with psycopg.connect(args.database_url, autocommit=True) as conn:
         _refuse_competing_ingest(conn)
 
+        say("catalog")
+        for document in collection_documents():
+            put_collection(args.stac_url, document)
+
+        say("platform")
         enable_serving(conn, SOURCE_COLLECTION, GROUP)
         enable_serving(conn, OUTPUT_COLLECTION, GROUP)
         say("  OGC serving enabled on both collections")
@@ -367,6 +395,21 @@ def status(args: argparse.Namespace) -> int:
 
 def teardown(args: argparse.Namespace) -> int:
     with psycopg.connect(args.database_url, autocommit=True) as conn:
+        # Both collections are fixed, well-known names. Somebody else's ingest
+        # association may be sitting on one (the W-1 seed association is, on
+        # the lead's stack), and deleting the collection out from under it
+        # would leave it pointing at nothing — so refuse before the first
+        # DELETE. Disabled associations count too: they are still pointed here.
+        others = competing_ingest_associations(
+            conn, (SOURCE_COLLECTION, OUTPUT_COLLECTION), include_disabled=True
+        )
+        if others and not getattr(args, "force", False):
+            say(_describe(others))
+            raise SystemExit(
+                "goes-teardown: other ingest associations target these collections;"
+                " delete them first or pass --force"
+            )
+
         # Order is forced by the FKs migration 010 hardened to RESTRICT: the
         # ledger/history rows FK the association, the association FKs the
         # connection, and a `connection_checks` row (a UI "Test connection")
