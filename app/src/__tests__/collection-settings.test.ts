@@ -27,6 +27,7 @@ describe("collection settings defaults (ADR 0003)", () => {
       groupId: null, // unowned → visible to all, mutable by any operator/admin
       externallyWritable: false,
       retentionDays: null, // keep forever
+      retentionMaxItems: null, // no count cap (W-2)
       gcGraceDays: 30,
       servingEnabled: false,
       archived: false,
@@ -47,6 +48,7 @@ describe("collection settings defaults (ADR 0003)", () => {
           group_id: "weather",
           externally_writable: true,
           retention_days: 14,
+          retention_max_items: 24,
           gc_grace_days: 7,
           archived: true,
           serving_enabled: false,
@@ -60,6 +62,7 @@ describe("collection settings defaults (ADR 0003)", () => {
       groupId: "weather",
       externallyWritable: true,
       retentionDays: 14,
+      retentionMaxItems: 24,
       gcGraceDays: 7,
       archived: true,
       servingEnabled: false,
@@ -78,6 +81,7 @@ describe("upsertCollectionSettings (M2-E)", () => {
             group_id: "weather",
             externally_writable: false,
             retention_days: 30,
+            retention_max_items: 1000,
             gc_grace_days: 7,
             archived: false,
           },
@@ -89,6 +93,7 @@ describe("upsertCollectionSettings (M2-E)", () => {
       groupId: "weather",
       externallyWritable: false,
       retentionDays: 30,
+      retentionMaxItems: 1000,
       gcGraceDays: 7,
       archived: false,
       servingEnabled: false,
@@ -96,7 +101,9 @@ describe("upsertCollectionSettings (M2-E)", () => {
 
     const [sql, params] = mockQuery.mock.calls[0];
     expect(sql).toContain("ON CONFLICT (collection_id) DO UPDATE");
-    expect(params).toEqual(["goes-abi", "weather", false, 30, 7, false, false]);
+    expect(sql).toContain("retention_max_items = EXCLUDED.retention_max_items");
+    expect(params).toEqual(["goes-abi", "weather", false, 30, 1000, 7, false, false]);
     expect(settings.retentionDays).toBe(30);
+    expect(settings.retentionMaxItems).toBe(1000);
   });
 });

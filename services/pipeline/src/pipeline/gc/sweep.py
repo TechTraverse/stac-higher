@@ -53,7 +53,10 @@ async def retention_tick(repo: GcRepo, *, batch_limit: int) -> RetentionTickResu
         collections += 1
         reason = REASON_ARCHIVE if c.archived else REASON_RETENTION
         items = await repo.list_expired_items(
-            c.collection_id, c.retention_days, batch_limit
+            c.collection_id,
+            c.retention_days,
+            batch_limit,
+            retention_max_items=c.retention_max_items,
         )
         for item_id in items:
             # Mark BEFORE delete — see module docstring.

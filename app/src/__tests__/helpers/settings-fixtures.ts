@@ -19,6 +19,7 @@ export function makeCollectionSettings(
     groupId: null,
     externallyWritable: false,
     retentionDays: null,
+    retentionMaxItems: null,
     gcGraceDays: 30,
     archived: false,
     servingEnabled: false,

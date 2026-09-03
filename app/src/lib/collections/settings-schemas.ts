@@ -12,6 +12,9 @@ export const collectionSettingsUpdateSchema = z
     externally_writable: z.boolean(),
     /** null = keep forever; positive days otherwise (matches the 003 CHECK). */
     retention_days: z.number().int().min(1).max(36500).nullable(),
+    /** null = no count cap; keep the newest N by item datetime otherwise (W-2,
+     * matches the 026 CHECK). Unions with retention_days in the sweep. */
+    retention_max_items: z.number().int().min(1).max(1_000_000).nullable(),
     gc_grace_days: z.number().int().min(0).max(36500),
     archived: z.boolean(),
     /** Link-level OGC serving exposure (titiler-pgstac / tipg) — see I-1 caveat. */

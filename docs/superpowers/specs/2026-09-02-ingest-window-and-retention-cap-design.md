@@ -4,7 +4,10 @@
 **Status:** **approved** (lead sign-off 2026-09-02). Implementation queue:
 `TODO.md` "W queue"; plans in `docs/superpowers/plans/2026-09-02-w{1,2}-*.md`.
 **W-1 implemented 2026-09-02** (`ai/w1-window` — §3 in full; the §2 live gate
-against `noaa-goes19` is lead-only and still owed). W-2 open.
+against `noaa-goes19` is lead-only and still owed).
+**W-2 implemented 2026-09-02** (`ai/w2-retention` — §4 in full, migration 026;
+the live mark-then-collect check on the demo collection is lead-only and still
+owed). K-3 renumbered to migration 027 (§8 settled as the plans assumed).
 **Scope source:** the lead's question after measuring what an unbounded NODD
 association would do: "is there something we can do to configure a date window
 (begin/end, or begin and an open ended future time), and a max number of assets

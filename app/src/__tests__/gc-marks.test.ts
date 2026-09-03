@@ -28,6 +28,7 @@ beforeEach(() => {
       groupId: null,
       externallyWritable: false,
       retentionDays: null,
+      retentionMaxItems: null,
       gcGraceDays: 7,
       archived: false,
       servingEnabled: false,

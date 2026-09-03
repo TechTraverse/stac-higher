@@ -1,7 +1,7 @@
 /**
  * Collection Settings tab (M2-E, spec §7): group ownership,
- * `externally_writable`, retention & GC knobs (enforced by M2-F's sweeps,
- * ADR 0011), ADR 0009's `archived` state, and the link-level OGC serving
+ * `externally_writable`, retention & GC knobs — the age rule and W-2's count
+ * cap, both enforced by M2-F's sweeps (ADR 0011) — ADR 0009's `archived` state, and the link-level OGC serving
  * toggle (titiler-pgstac / tipg — docs/serving.md; effectively public until
  * I-1, the copy says so). Deletion-starting saves go through the counted
  * dry-run warn-and-proceed dialog (M2-F, spec §5.3).
@@ -73,6 +73,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
   const [groupId, setGroupId] = useState<string | null>(null);
   const [externallyWritable, setExternallyWritable] = useState(false);
   const [retentionDays, setRetentionDays] = useState<string>("");
+  const [retentionMaxItems, setRetentionMaxItems] = useState<string>("");
   const [gcGraceDays, setGcGraceDays] = useState<string>("30");
   const [archived, setArchived] = useState(false);
   const [servingEnabled, setServingEnabled] = useState(false);
@@ -91,6 +92,11 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
       setExternallyWritable(settings.externallyWritable);
       setRetentionDays(
         settings.retentionDays === null ? "" : String(settings.retentionDays),
+      );
+      setRetentionMaxItems(
+        settings.retentionMaxItems === null
+          ? ""
+          : String(settings.retentionMaxItems),
       );
       setGcGraceDays(String(settings.gcGraceDays));
       setArchived(settings.archived);
@@ -112,10 +118,15 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
 
   const retentionParsed =
     retentionDays.trim() === "" ? null : Number(retentionDays);
+  const retentionMaxParsed =
+    retentionMaxItems.trim() === "" ? null : Number(retentionMaxItems);
   const graceParsed = Number(gcGraceDays);
   const retentionInvalid =
     retentionParsed !== null &&
     (!Number.isInteger(retentionParsed) || retentionParsed < 1);
+  const retentionMaxInvalid =
+    retentionMaxParsed !== null &&
+    (!Number.isInteger(retentionMaxParsed) || retentionMaxParsed < 1);
   const graceInvalid = !Number.isInteger(graceParsed) || graceParsed < 0;
 
   // The current owner group may be outside the caller's groups (admin case);
@@ -131,6 +142,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
         group_id: groupId,
         externally_writable: externallyWritable,
         retention_days: retentionParsed,
+        retention_max_items: retentionMaxParsed,
         gc_grace_days: graceParsed,
         archived,
         serving_enabled: servingEnabled,
@@ -143,9 +155,9 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
   };
 
   // Warn-and-proceed (M2-F, spec §5.3 / ADR 0009 §6): saving a change that
-  // starts deleting data — enabling/tightening retention, or archiving —
-  // first shows the counted dry-run so the operator sees what the sweep will
-  // expire before it exists.
+  // starts deleting data — enabling/tightening retention (age or count), or
+  // archiving — first shows the counted dry-run so the operator sees what
+  // the sweep will expire before it exists.
   const save = async () => {
     const archiving = archived && !settings?.archived;
     const retentionTightened =
@@ -153,16 +165,27 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
       (settings?.retentionDays === null ||
         settings === undefined ||
         retentionParsed < (settings?.retentionDays ?? Infinity));
-    if (!archiving && !retentionTightened) {
+    const capTightened =
+      retentionMaxParsed !== null &&
+      (settings?.retentionMaxItems === null ||
+        settings === undefined ||
+        retentionMaxParsed < (settings?.retentionMaxItems ?? Infinity));
+    if (!archiving && !retentionTightened && !capTightened) {
       doSave();
       return;
     }
     setPreviewLoading(true);
     try {
+      // Both rules go to the dry-run when both are set: the sweep unions
+      // them, so the count shown is the count that gets deleted.
       const params = new URLSearchParams();
       if (archiving) params.set("archived", "true");
-      else if (retentionParsed !== null)
-        params.set("retention_days", String(retentionParsed));
+      else {
+        if (retentionParsed !== null)
+          params.set("retention_days", String(retentionParsed));
+        if (retentionMaxParsed !== null)
+          params.set("retention_max_items", String(retentionMaxParsed));
+      }
       const res = await fetch(
         `/api/collections/${encodeURIComponent(collectionId)}/settings/impact?${params}`,
         { credentials: "same-origin" },
@@ -178,6 +201,15 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
       setPreviewLoading(false);
     }
   };
+
+  // The dialog's description of what the sweep will match — one phrase per
+  // rule that is set, joined as the union the sweep applies.
+  const retentionRules = [
+    ...(retentionParsed !== null ? [`older than ${retentionParsed} days`] : []),
+    ...(retentionMaxParsed !== null
+      ? [`beyond the newest ${retentionMaxParsed}`]
+      : []),
+  ].join(" or ");
 
   return (
     <Card data-testid="settings-tab">
@@ -258,6 +290,30 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
           {retentionInvalid && (
             <p className="text-xs text-destructive">
               Retention must be a whole number of days (≥ 1) or empty.
+            </p>
+          )}
+        </div>
+
+        <div className="grid gap-1.5">
+          <Label htmlFor="settings-max-items">Maximum items</Label>
+          <Input
+            id="settings-max-items"
+            data-testid="settings-max-items"
+            inputMode="numeric"
+            placeholder="no cap"
+            value={retentionMaxItems}
+            onChange={(e) => setRetentionMaxItems(e.target.value)}
+            disabled={!canAct}
+          />
+          <p className="text-xs text-muted-foreground">
+            Empty = no cap. Keeps the newest N items by observation time;
+            older ones are deleted by the retention sweep and their assets
+            collected after the grace period, the same as the day-based rule.
+            Both rules apply when both are set.
+          </p>
+          {retentionMaxInvalid && (
+            <p className="text-xs text-destructive">
+              Maximum items must be a whole number (≥ 1) or empty.
             </p>
           )}
         </div>
@@ -366,6 +422,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
                 update.isPending ||
                 previewLoading ||
                 retentionInvalid ||
+                retentionMaxInvalid ||
                 graceInvalid
               }
               onClick={() => void save()}
@@ -394,8 +451,8 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
                     ? "Every item in this product will be deleted (count unavailable)."
                     : `All ${confirm.impact.total_items} items in this product will be deleted from the catalog.`
                   : confirm?.impact.expired_items === null
-                    ? `Items older than ${retentionParsed} days will be deleted (count unavailable).`
-                    : `${confirm?.impact.expired_items} of ${confirm?.impact.total_items} items are already older than ${retentionParsed} days and will be deleted by the first sweep.`}{" "}
+                    ? `Items ${retentionRules} will be deleted (count unavailable).`
+                    : `${confirm?.impact.expired_items} of ${confirm?.impact.total_items} items are already ${retentionRules} and will be deleted by the first sweep.`}{" "}
                 Their asset files leave object storage after the{" "}
                 {graceParsed}-day grace window. This is ADR 0009
                 warn-and-proceed: it does exactly what it says.

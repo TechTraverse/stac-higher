@@ -1382,6 +1382,26 @@ const MIGRATIONS = [
         WHERE status = 'queued' AND source_id IS NOT NULL;
     `,
   },
+  {
+    // W-2 (spec §4): a COUNT cap beside the age cap. Both are retention, both
+    // feed ADR 0011's single mark-then-collect queue, so this adds a rule to
+    // an existing sweep rather than a new way to delete.
+    //
+    // Nullable = no cap. The CHECK floors it at 1 because "keep zero" is not
+    // a retention policy — that is `archived`, which already exists and also
+    // blocks writes.
+    name: "026_collection_settings_retention_max_items",
+    sql: `
+      ALTER TABLE stac_higher.collection_settings
+        ADD COLUMN IF NOT EXISTS retention_max_items integer;
+
+      ALTER TABLE stac_higher.collection_settings
+        DROP CONSTRAINT IF EXISTS collection_settings_retention_max_items_check;
+      ALTER TABLE stac_higher.collection_settings
+        ADD CONSTRAINT collection_settings_retention_max_items_check
+        CHECK (retention_max_items IS NULL OR retention_max_items >= 1);
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

@@ -36,6 +36,7 @@ function settings(overrides: Partial<CollectionSettings> = {}): CollectionSettin
     groupId: null,
     externallyWritable: false,
     retentionDays: null,
+    retentionMaxItems: null,
     gcGraceDays: 30,
     archived: false,
     servingEnabled: false,
@@ -48,6 +49,7 @@ function payload(overrides: Record<string, unknown> = {}) {
     group_id: EO,
     externally_writable: true,
     retention_days: 30,
+    retention_max_items: null,
     gc_grace_days: 7,
     archived: false,
     serving_enabled: false,
@@ -122,10 +124,20 @@ describe("PUT /api/collections/[id]/settings", () => {
       groupId: EO,
       externallyWritable: true,
       retentionDays: 30,
+      retentionMaxItems: null,
       gcGraceDays: 7,
       archived: false,
       servingEnabled: false,
     });
+  });
+
+  it("passes a retention count cap through to the upsert (W-2)", async () => {
+    const res = await call(putRoute, authed(["operator"]), {
+      method: "PUT",
+      body: payload({ retention_max_items: 24 }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockUpsert.mock.calls[0][1].retentionMaxItems).toBe(24);
   });
 
   it("403s an operator on a collection owned by another group", async () => {
@@ -159,6 +171,8 @@ describe("PUT /api/collections/[id]/settings", () => {
   it("400s invalid documents (retention floor, unknown keys)", async () => {
     for (const body of [
       payload({ retention_days: 0 }),
+      payload({ retention_max_items: 0 }),
+      payload({ retention_max_items: 1.5 }),
       payload({ gc_grace_days: -1 }),
       payload({ bogus: true }),
       { group_id: null }, // missing required fields

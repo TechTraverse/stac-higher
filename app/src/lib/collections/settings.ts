@@ -10,6 +10,7 @@
  *                           (ADR 0003, docs/decisions/0003-preexisting-collections.md)
  *   - externally_writable → false
  *   - retention_days NULL → keep forever
+ *   - retention_max_items NULL → no count cap (W-2)
  *   - gc_grace_days       → 30
  */
 import { query } from "@/lib/db/connection";
@@ -23,6 +24,9 @@ export interface CollectionSettings {
   externallyWritable: boolean;
   /** null = keep forever. */
   retentionDays: number | null;
+  /** null = no count cap; otherwise keep the newest N by item datetime (W-2).
+   * Unions with `retentionDays`; `archived` overrides both. */
+  retentionMaxItems: number | null;
   gcGraceDays: number;
   /** ADR 0009's archived state (declarative until M2-F's GC honors it). */
   archived: boolean;
@@ -42,6 +46,7 @@ export function defaultCollectionSettings(
     groupId: null,
     externallyWritable: false,
     retentionDays: null,
+    retentionMaxItems: null,
     gcGraceDays: DEFAULT_GC_GRACE_DAYS,
     archived: false,
     servingEnabled: false,
@@ -53,6 +58,7 @@ interface CollectionSettingsRow {
   group_id: string | null;
   externally_writable: boolean;
   retention_days: number | null;
+  retention_max_items: number | null;
   gc_grace_days: number;
   archived: boolean;
   serving_enabled: boolean;
@@ -62,7 +68,8 @@ export async function getCollectionSettings(
   collectionId: string,
 ): Promise<CollectionSettings> {
   const result = await query<CollectionSettingsRow>(
-    `SELECT collection_id, group_id, externally_writable, retention_days, gc_grace_days, archived, serving_enabled
+    `SELECT collection_id, group_id, externally_writable, retention_days, retention_max_items,
+            gc_grace_days, archived, serving_enabled
        FROM stac_higher.collection_settings
       WHERE collection_id = $1`,
     [collectionId],
@@ -74,6 +81,7 @@ export async function getCollectionSettings(
     groupId: row.group_id,
     externallyWritable: row.externally_writable,
     retentionDays: row.retention_days,
+    retentionMaxItems: row.retention_max_items,
     gcGraceDays: row.gc_grace_days,
     archived: row.archived,
     servingEnabled: row.serving_enabled,
@@ -84,6 +92,7 @@ export interface CollectionSettingsUpdate {
   groupId: string | null;
   externallyWritable: boolean;
   retentionDays: number | null;
+  retentionMaxItems: number | null;
   gcGraceDays: number;
   archived: boolean;
   servingEnabled: boolean;
@@ -99,12 +108,14 @@ export async function upsertCollectionSettings(
 ): Promise<CollectionSettings> {
   await query(
     `INSERT INTO stac_higher.collection_settings
-       (collection_id, group_id, externally_writable, retention_days, gc_grace_days, archived, serving_enabled)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (collection_id, group_id, externally_writable, retention_days, retention_max_items,
+        gc_grace_days, archived, serving_enabled)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (collection_id) DO UPDATE SET
        group_id = EXCLUDED.group_id,
        externally_writable = EXCLUDED.externally_writable,
        retention_days = EXCLUDED.retention_days,
+       retention_max_items = EXCLUDED.retention_max_items,
        gc_grace_days = EXCLUDED.gc_grace_days,
        archived = EXCLUDED.archived,
        serving_enabled = EXCLUDED.serving_enabled,
@@ -114,6 +125,7 @@ export async function upsertCollectionSettings(
       update.groupId,
       update.externallyWritable,
       update.retentionDays,
+      update.retentionMaxItems,
       update.gcGraceDays,
       update.archived,
       update.servingEnabled,

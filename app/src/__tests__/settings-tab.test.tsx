@@ -44,6 +44,7 @@ function loaded(overrides: Partial<CollectionSettings> = {}) {
     groupId: null,
     externallyWritable: false,
     retentionDays: null,
+    retentionMaxItems: null,
     gcGraceDays: 30,
     archived: false,
     servingEnabled: false,
@@ -77,6 +78,7 @@ describe("SettingsTab", () => {
         group_id: null,
         externally_writable: false,
         retention_days: 30,
+        retention_max_items: null,
         gc_grace_days: 7,
         archived: false,
         serving_enabled: false,
@@ -157,6 +159,84 @@ describe("SettingsTab", () => {
     const impact = await screen.findByTestId("settings-impact");
     expect(impact.textContent).toContain("All 7 items");
     expect(updateMutate).not.toHaveBeenCalled();
+  });
+
+  // --- maximum items (W-2) ------------------------------------------------ //
+
+  function mockImpact(total: number, expired: number) {
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ total_items: total, expired_items: expired }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+    return global.fetch as unknown as ReturnType<typeof vi.fn>;
+  }
+
+  it("setting a maximum-items cap shows the dry-run, then saves it", async () => {
+    const fetchMock = mockImpact(5, 3);
+    render(<SettingsTab collectionId="sentinel-2" />);
+    fireEvent.change(screen.getByTestId("settings-max-items"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+
+    const impact = await screen.findByTestId("settings-impact");
+    expect(impact.textContent).toContain("3 of 5 items");
+    expect(impact.textContent).toContain("beyond the newest 2");
+    expect(String(fetchMock.mock.calls[0][0])).toContain("retention_max_items=2");
+    expect(updateMutate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("settings-confirm"));
+    expect(updateMutate).toHaveBeenCalledTimes(1);
+    expect(updateMutate.mock.calls[0][0].retention_max_items).toBe(2);
+  });
+
+  it("lowering an existing cap warns; raising it saves directly", async () => {
+    useSettingsMock.mockReturnValue(loaded({ retentionMaxItems: 100 }));
+    mockImpact(200, 150);
+    render(<SettingsTab collectionId="sentinel-2" />);
+    expect(
+      (screen.getByTestId("settings-max-items") as HTMLInputElement).value,
+    ).toBe("100");
+
+    fireEvent.change(screen.getByTestId("settings-max-items"), {
+      target: { value: "50" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    const impact = await screen.findByTestId("settings-impact");
+    expect(impact.textContent).toContain("150 of 200 items");
+    expect(updateMutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Cancel"));
+
+    fireEvent.change(screen.getByTestId("settings-max-items"), {
+      target: { value: "500" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    expect(updateMutate).toHaveBeenCalledTimes(1);
+    expect(updateMutate.mock.calls[0][0].retention_max_items).toBe(500);
+  });
+
+  it("clearing the cap sends null without a warning", () => {
+    useSettingsMock.mockReturnValue(loaded({ retentionMaxItems: 100 }));
+    render(<SettingsTab collectionId="sentinel-2" />);
+    fireEvent.change(screen.getByTestId("settings-max-items"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByTestId("settings-save"));
+    expect(updateMutate).toHaveBeenCalledTimes(1);
+    expect(updateMutate.mock.calls[0][0].retention_max_items).toBeNull();
+  });
+
+  it("blocks save and explains when the cap is invalid", () => {
+    render(<SettingsTab collectionId="sentinel-2" />);
+    fireEvent.change(screen.getByTestId("settings-max-items"), {
+      target: { value: "0" },
+    });
+    expect(screen.getByText(/Maximum items must be a whole number/)).toBeTruthy();
+    expect(
+      (screen.getByTestId("settings-save") as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it("shows the archived badge when archived", () => {
