@@ -70,10 +70,68 @@ def compose(c01, c02, c03, c13):
     return out.round().astype("uint8"), (mask * 255).astype("uint8")
 
 
+def build_output_item(out_path, *, out_id, source_item, when, visual_filename):
+    """The output item for `out_path`, footprinted from the SOURCE item.
+
+    rio-stac reprojects the raster's bounds to WGS84 to make the geometry, and
+    on the real geostationary grid GDAL refuses the whole call rather than
+    dropping the corners that fall off the Earth's limb ("Full reprojection
+    failed, but partial is possible if you define
+    OGR_ENABLE_PARTIAL_REPROJECTION") — the failure the extractor's footprint()
+    already works around. Two guards: that config option is set so a GDAL build
+    which honours it drops the off-limb vertices instead of raising, and one
+    that still refuses is retried against the file's OWN crs, an identity
+    transform that cannot fail. Either way the geometry and bbox are replaced
+    with the source item's — same pixel grid, already reprojected correctly by
+    the extractor — so only `proj:*` and the asset survive from rio-stac.
+    """
+    import rasterio
+    from rio_stac.stac import create_stac_item
+
+    def stac_item(dataset, **extra):
+        return create_stac_item(
+            source=dataset,
+            id=out_id,
+            collection=OUTPUT_COLLECTION,
+            input_datetime=when,
+            asset_name="visual",
+            asset_roles=["visual"],
+            asset_media_type="image/tiff; application=geotiff; profile=cloud-optimized",
+            asset_href=visual_filename,
+            with_proj=True,
+            with_raster=False,
+            properties={
+                "platform": source_item["properties"].get("platform"),
+                "instruments": source_item["properties"].get("instruments"),
+                "goes:derived_from": source_item["id"],
+            },
+            **extra,
+        ).to_dict()
+
+    geometry, bbox = source_item.get("geometry"), source_item.get("bbox")
+    with rasterio.Env(OGR_ENABLE_PARTIAL_REPROJECTION=True), rasterio.open(out_path) as dataset:
+        try:
+            item = stac_item(dataset)
+        except Exception:
+            # Without a source footprint to substitute there is nothing to
+            # fall back ON, so let the run fail rather than publish the
+            # file's own metres as if they were degrees.
+            if not (geometry and bbox):
+                raise
+            item = stac_item(dataset, geographic_crs=dataset.crs)
+
+    item["properties"] = {k: v for k, v in item["properties"].items() if v is not None}
+    if geometry:
+        item["geometry"] = geometry
+        if bbox:
+            item["bbox"] = bbox
+    item["links"] = []
+    return item
+
+
 def main():
     import boto3
     import rasterio
-    from rio_stac.stac import create_stac_item
 
     s3 = boto3.client("s3")
     bucket = os.environ["STAC_HIGHER_OUTPUT_BUCKET"]
@@ -118,28 +176,13 @@ def main():
                 dst.write_mask(mask)
 
             stamp = source_item["properties"]["datetime"].replace("Z", "+00:00")
-            when = dt.datetime.fromisoformat(stamp)
-            item = create_stac_item(
-                source=out_path,
-                id=out_id,
-                collection=OUTPUT_COLLECTION,
-                input_datetime=when,
-                asset_name="visual",
-                asset_roles=["visual"],
-                asset_media_type="image/tiff; application=geotiff; profile=cloud-optimized",
-                asset_href=visual,
-                with_proj=True,
-                with_raster=False,
-                properties={
-                    "platform": source_item["properties"].get("platform"),
-                    "instruments": source_item["properties"].get("instruments"),
-                    "goes:derived_from": source_item["id"],
-                },
-            ).to_dict()
-            item["properties"] = {
-                k: v for k, v in item["properties"].items() if v is not None
-            }
-            item["links"] = []
+            item = build_output_item(
+                out_path,
+                out_id=out_id,
+                source_item=source_item,
+                when=dt.datetime.fromisoformat(stamp),
+                visual_filename=visual,
+            )
 
             s3.upload_file(out_path, bucket, f"{prefix}{visual}")
         s3.put_object(

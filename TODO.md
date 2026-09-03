@@ -553,5 +553,10 @@ object stores only).
   - **The live gate (Task 7) is owed by the lead** — this task (Task 6) only
     lands the docs and runs the offline gates (`npm run verify`, pytest,
     ruff); nothing here was run against the real NODD bucket.
+  - **Live gate finding 2026-09-03**: rio-stac's `with_proj=True` bounds
+    transform raises `Full reprojection failed` on the real MCMIPC grid;
+    `geocolor.py` now reuses the source footprint under
+    `OGR_ENABLE_PARTIAL_REPROJECTION` (the branch review had rated this a
+    minor).
 
 (append here during iterations)

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
+from rasterio.warp import transform_geom
 
 from pipeline.demo.goes import OUTPUT_COLLECTION_TOKEN, extractor_code, geocolor_code
 
@@ -106,6 +107,57 @@ def test_read_band_applies_scale_offset_and_fill(geocolor, tmp_path):
     values, crs, tr = geocolor["read_band"](str(path), None)
     assert values[0, 0] == pytest.approx(1.0) and np.isnan(values[0, 1])
     assert crs is not None and tr == transform
+
+
+def test_build_output_item_reuses_the_source_footprint(geocolor, tmp_path):
+    # The G-7 live gate's failure (2026-09-03): rio-stac reprojects the
+    # raster's bounds itself, and on the real MCMIPC grid GDAL refuses the
+    # whole call ("Full reprojection failed") instead of dropping the off-limb
+    # corners. Same fixture as the extractor's off-disk test: a full-disk
+    # extent whose CORNERS are past the limb.
+    transform = from_origin(-5.0e6, 5.0e6, 1.0e6, 1.0e6)
+    path = tmp_path / "scene-geocolor.tif"
+    with MemoryFile() as mem:
+        with mem.open(driver="GTiff", width=10, height=10, count=3, dtype="uint8",
+                      crs=GEOS_CRS, transform=transform) as ds:
+            ds.write(np.zeros((3, 10, 10), dtype="uint8"))
+        path.write_bytes(mem.read())
+
+    # The failure mode itself, so this test fails loudly if GDAL ever changes.
+    bounds_box = {
+        "type": "Polygon",
+        "coordinates": [[[-5.0e6, -5.0e6], [5.0e6, -5.0e6], [5.0e6, 5.0e6],
+                         [-5.0e6, 5.0e6], [-5.0e6, -5.0e6]]],
+    }
+    with pytest.raises(Exception):  # noqa: B017 — a CPLE_* error, not a subclass we import
+        transform_geom(GEOS_CRS, "EPSG:4326", bounds_box)
+
+    geometry = {
+        "type": "Polygon",
+        "coordinates": [[[-100.0, 20.0], [-60.0, 20.0], [-60.0, 50.0],
+                         [-100.0, 50.0], [-100.0, 20.0]]],
+    }
+    source_item = {
+        "id": "scene",
+        "geometry": geometry,
+        "bbox": [-100.0, 20.0, -60.0, 50.0],
+        "properties": {"platform": "goes-19", "instruments": ["abi"]},
+    }
+    item = geocolor["build_output_item"](
+        str(path),
+        out_id="scene-geocolor",
+        source_item=source_item,
+        when=dt.datetime(2026, 9, 3, 4, 1, 17, tzinfo=dt.UTC),
+        visual_filename="scene-geocolor.tif",
+    )
+    assert item["geometry"] == geometry
+    assert item["bbox"] == source_item["bbox"]
+    assert item["collection"] == "goes-geocolor"
+    assert item["assets"]["visual"]["href"] == "scene-geocolor.tif"
+    assert item["links"] == []
+    # rio-stac 0.12 describes a CRS with no EPSG code as WKT2.
+    assert "proj:wkt2" in item["properties"]
+    assert item["properties"]["goes:derived_from"] == "scene"
 
 
 def test_footprint_drops_off_disk_vertices(extractor):
