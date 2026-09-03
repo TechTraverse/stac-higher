@@ -30,6 +30,7 @@ from pipeline.finalize.process_run import build_process_request
 from pipeline.finalize.repo import PgFinalizeRepo
 from pipeline.finalize.steps import run_finalize
 from pipeline.finalize.store import PlatformObjectStore
+from pipeline.ingest.repo import STATUS_FAILED, PgIngestRepo
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
@@ -185,6 +186,25 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         # lose their adapter path (the fetcher falls back to public-only).
         master_key = load_key_or_skip(settings, JOB_RUN_TICK)
         fetch_remote = build_remote_fetcher(settings, master_key)
+        ingest_repo = PgIngestRepo(settings.database_url)
+
+        async def _fail_extract_batch(run: QueuedRun, error: str) -> None:
+            """G-6: a dead extractor run's ingest rows must not sit in
+            `extracting` forever — they carry the run's error instead."""
+            ids = [str(lid) for ref in run.input_items for lid in ref.get("ledger_ids", [])]
+            if not ids:
+                return
+            await ingest_repo.set_ledger_status_many(
+                ids,
+                status=STATUS_FAILED,
+                item_id=None,
+                reason=f"extractor run {run.id}: {error}"[:500],
+            )
+            logger.warning(
+                "extractor run died; its ingest batch is failed",
+                extra={"run_id": run.id, "rows": len(ids)},
+            )
+
         finalize_payloads: list[dict[str, Any]] = []
         for run in runs:
             # Per-run isolation: one run's failure must never abandon the rest
@@ -200,6 +220,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     resolve_secret=resolver,
                     now=now,
                     fetch_remote=fetch_remote,
+                    on_dead=_fail_extract_batch,
                 )
             except Exception:
                 logger.exception(

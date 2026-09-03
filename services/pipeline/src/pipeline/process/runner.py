@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from pipeline.config import Settings
@@ -24,7 +25,13 @@ from pipeline.metrics import PROCESS_RUNS
 from pipeline.process.config import ProcessConfigError, parse_process_env, parse_process_runtime
 from pipeline.process.credentials import RunCredentialsError
 from pipeline.process.executor import Executor, ExecutorUnavailable
-from pipeline.process.inputs import KIND_TRANSFORM, InputPlanError, input_env, plan_inputs
+from pipeline.process.inputs import (
+    KIND_EXTRACT,
+    KIND_TRANSFORM,
+    InputPlanError,
+    input_env,
+    plan_inputs,
+)
 from pipeline.process.launch import (
     NetworkCapExceeded,
     SecretResolutionError,
@@ -61,6 +68,7 @@ async def run_one(
     now: dt.datetime | None = None,
     sts_client=None,
     fetch_remote: RemoteFetcher | None = None,
+    on_dead: Callable[[QueuedRun, str], Awaitable[None]] | None = None,
 ) -> RunResult:
     """Execute a claimed run and write its outcome. Never raises for a run
     that merely failed — that is a result, recorded in the ledger.
@@ -78,12 +86,21 @@ async def run_one(
         runtime = parse_process_runtime(run.runtime)
         env_entries = parse_process_env(run.env)
     except ProcessConfigError as err:
-        await _finish(repo, run, "dead", None, f"unusable revision: {err}", None, at)
+        await _finish(
+            repo, run, "dead", None, f"unusable revision: {err}", None, at, on_dead=on_dead
+        )
         return RunResult(run.id, "dead", error=str(err))
 
     if run.code is None:
         await _finish(
-            repo, run, "dead", None, "revision carries no code to execute", None, at
+            repo,
+            run,
+            "dead",
+            None,
+            "revision carries no code to execute",
+            None,
+            at,
+            on_dead=on_dead,
         )
         return RunResult(run.id, "dead", error="no code")
 
@@ -92,28 +109,44 @@ async def run_one(
     try:
         check_network_cap(runtime, settings)
     except NetworkCapExceeded as err:
-        await _finish(repo, run, "dead", None, str(err), None, at)
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
     # GOES spec §3: describe the inputs, stage the remote ones, THEN mint+launch.
-    source_collections = await repo.list_source_collections(run.process_id)
-    documents: dict[tuple[str, str], dict] = {}
-    for ref in run.input_items:
-        coll = ref.get("collection_id") or (
-            source_collections[0] if len(source_collections) == 1 else None
+    # §15: an extractor run (association-triggered) reads the collection its
+    # association ingests into — its refs name it — since it has no sources.
+    # Its refs also CARRY their documents (the draft), so pgstac is not read.
+    is_extract = run.association_id is not None
+    if is_extract:
+        source_collections = tuple(
+            sorted(
+                {
+                    str(ref["collection_id"])
+                    for ref in run.input_items
+                    if ref.get("collection_id")
+                }
+            )
         )
-        item_id = ref.get("item_id")
-        if coll and item_id and (coll, item_id) not in documents:
-            doc = await repo.get_item(coll, item_id)
-            if doc is not None:
-                documents[(coll, item_id)] = doc
+    else:
+        source_collections = await repo.list_source_collections(run.process_id)
+    documents: dict[tuple[str, str], dict] = {}
+    if not is_extract:
+        for ref in run.input_items:
+            coll = ref.get("collection_id") or (
+                source_collections[0] if len(source_collections) == 1 else None
+            )
+            item_id = ref.get("item_id")
+            if coll and item_id and (coll, item_id) not in documents:
+                doc = await repo.get_item(coll, item_id)
+                if doc is not None:
+                    documents[(coll, item_id)] = doc
     try:
         plan = plan_inputs(
             run_id=run.id,
             process_id=run.process_id,
             # Slice 1: exactly one batch per run (§3.1).
             batch_id=uuid.uuid4().hex,
-            kind=KIND_TRANSFORM,
+            kind=KIND_EXTRACT if is_extract else KIND_TRANSFORM,
             refs=run.input_items,
             documents=documents,
             source_collections=source_collections,
@@ -121,7 +154,9 @@ async def run_one(
             asset_href_base=settings.asset_href_base,
         )
     except InputPlanError as err:
-        await _finish(repo, run, "dead", None, f"unusable inputs: {err}", None, at)
+        await _finish(
+            repo, run, "dead", None, f"unusable inputs: {err}", None, at, on_dead=on_dead
+        )
         return RunResult(run.id, "dead", error=str(err))
 
     if fetch_remote is None:
@@ -150,7 +185,14 @@ async def run_one(
             error=str(err),
         )
         await _finish(
-            repo, run, transition.status, None, transition.error, transition.next_attempt_at, at
+            repo,
+            run,
+            transition.status,
+            None,
+            transition.error,
+            transition.next_attempt_at,
+            at,
+            on_dead=on_dead,
         )
         return RunResult(run.id, transition.status, error=transition.error)
 
@@ -191,7 +233,7 @@ async def run_one(
     except SecretResolutionError as err:
         # The revision names a secret that cannot be resolved. That is
         # configuration, and no amount of retrying fixes it.
-        await _finish(repo, run, "dead", None, str(err), None, at)
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
     transition = outcome_transition(
@@ -211,6 +253,7 @@ async def run_one(
         transition.error,
         transition.next_attempt_at,
         at,
+        on_dead=on_dead,
     )
     return RunResult(
         run.id, transition.status, log_ref=outcome.log_ref, error=transition.error
@@ -225,6 +268,8 @@ async def _finish(
     error: str | None,
     next_attempt_at: dt.datetime | None,
     at: dt.datetime,
+    *,
+    on_dead: Callable[[QueuedRun, str], Awaitable[None]] | None = None,
 ) -> None:
     PROCESS_RUNS.labels(outcome=status).inc()
     await repo.finish_run(
@@ -241,3 +286,8 @@ async def _finish(
         await repo.record_source_run(
             run.source_id, succeeded=status == "succeeded", at=at
         )
+    # G-6: a dead extractor run fails every ledger row in its batch (spec
+    # §6.2, §15: at TERMINAL dead, never on a retryable attempt — the retry
+    # may still land the batch).
+    if status == "dead" and run.association_id is not None and on_dead is not None:
+        await on_dead(run, error or "run died")

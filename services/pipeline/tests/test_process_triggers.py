@@ -9,6 +9,7 @@ backend that was down.
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pytest
 
@@ -497,6 +498,105 @@ async def test_run_one_marks_staging_failure_as_a_failed_attempt_and_never_launc
     assert executor.launched == []
     # ...and it spends an attempt (retry path), unlike an infrastructure fault.
     assert repo.finished[0]["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# a dead EXTRACTOR run fails its ingest batch (G-6, spec §6.2/§15)
+# ---------------------------------------------------------------------------
+
+ASSOC = "55555555-5555-4555-8555-555555555555"
+
+
+def _extract_run(**overrides) -> QueuedRun:
+    """An extractor run: association-anchored, source-less, and carrying the
+    draft plus the ledger rows its batch came from."""
+    return queued(
+        source_id=None,
+        association_id=ASSOC,
+        input_items=[
+            {
+                "item_id": "a",
+                "collection_id": "c",
+                "op": "insert",
+                "ledger_ids": ["1", "2"],
+                "draft": {"id": "a", "collection": "c", "assets": {}},
+            }
+        ],
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dead_extractor_run_reports_its_batch():
+    repo = FakeProcessRepo()
+    seen: list[tuple[str, str]] = []
+
+    async def on_dead(run, error):
+        seen.append((run.id, error))
+
+    # attempts at the budget, so the failing exit code is TERMINAL, not a retry.
+    run = _extract_run(attempts=3)
+    result = await run_one(
+        run,
+        repo=repo,
+        executor=MemoryExecutor(results=[ExitStatus(1)]),
+        settings=Settings.from_env({}),
+        storage_client=FakeStore(),
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=FakeSts(),
+        on_dead=on_dead,
+    )
+    assert result.status == "dead"
+    assert seen and seen[0][0] == run.id
+    assert seen[0][1]
+
+
+@pytest.mark.asyncio
+async def test_a_retryable_extractor_failure_leaves_its_batch_alone():
+    """The retry may still land the batch, so only a TERMINAL dead fails it."""
+    repo = FakeProcessRepo()
+    seen: list[str] = []
+
+    async def on_dead(run, error):
+        seen.append(run.id)
+
+    result = await run_one(
+        _extract_run(attempts=1),
+        repo=repo,
+        executor=MemoryExecutor(results=[ExitStatus(1)]),
+        settings=Settings.from_env({}),
+        storage_client=FakeStore(),
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=FakeSts(),
+        on_dead=on_dead,
+    )
+    assert result.status == "failed"
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_an_extractor_run_reads_its_draft_and_grants_its_own_collection():
+    """No pgstac read, no process_sources: the refs carry both (§15)."""
+    repo = FakeProcessRepo()  # no source_collections, no items
+    store = RecordingStore()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    result = await run_one(
+        _extract_run(),
+        repo=repo,
+        executor=executor,
+        settings=Settings.from_env({}),
+        storage_client=store,
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=FakeSts(),
+    )
+    assert result.status == "succeeded"
+    manifest_key = next(k for k in store.objects if k.endswith("/manifest.json"))
+    manifest = json.loads(store.objects[manifest_key])
+    assert manifest["kind"] == "extract"
+    assert manifest["items"][0]["item"] == {"id": "a", "collection": "c", "assets": {}}
 
 
 @pytest.mark.asyncio

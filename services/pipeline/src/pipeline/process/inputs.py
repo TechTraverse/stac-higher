@@ -32,6 +32,7 @@ from pipeline.storage.keys import (
 
 MANIFEST_VERSION = 1
 KIND_TRANSFORM = "transform"
+KIND_EXTRACT = "extract"
 OP_UNKNOWN = "unknown"
 SKIP_NOT_FOUND = "not_found"
 
@@ -124,6 +125,7 @@ def plan_inputs(
     ``refs`` are ``{"item_id", "collection_id"?, "op"?}``; a legacy ref with
     no collection (a run row written before G-2) falls back to the process's
     single source collection, and is an error when that is ambiguous. A ref
+    with a ``draft`` (extractor runs, GOES spec §6) is its own document. A ref
     whose document is missing (deleted between trigger and run) is skipped and
     recorded — not an error.
     """
@@ -146,7 +148,11 @@ def plan_inputs(
         collection = str(collection)
         op = str(ref.get("op") or OP_UNKNOWN)
 
-        document = documents.get((collection, item_id))
+        # G-6: an extractor ref CARRIES its document — the draft ITEMIZE built,
+        # which is not in pgstac yet. A transform ref names a catalogued item.
+        document = ref.get("draft") if isinstance(ref.get("draft"), dict) else None
+        if document is None:
+            document = documents.get((collection, item_id))
         if document is None:
             skipped.append({"item_id": item_id, "collection": collection, "reason": SKIP_NOT_FOUND})
             continue
