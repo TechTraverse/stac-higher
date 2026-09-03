@@ -838,6 +838,14 @@ fetch connects by hostname after validation (the same TLS-endpoint rebind
 residual as I-2), and it buffers the object in memory like the adapters
 (I-19). Both are inherited, not new.
 
+### I-103 · The live GOES e2e depends on NOAA availability 🟡
+`app/e2e/goes-loop.spec.ts` (G-7) needs the internet and the real
+`noaa-goes19` bucket to be reachable and current; it is gated behind
+`E2E_LIVE_NODD=1` and out of CI's default run for exactly that reason (spec
+§14). If a NOAA outage or a quiet hour makes it flaky in practice, the fix is
+a seeded offline variant driven by `pipeline.demo goes-seed --include`
+against a granule copied once into MinIO, rather than loosening the gate.
+
 ## Process compute — Kubernetes + Kueue (K queue, 2026-09-02)
 
 Opened by `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`

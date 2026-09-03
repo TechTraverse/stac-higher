@@ -11,8 +11,8 @@ just a wasted read.
 | Queue | What it is | State |
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
-| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-6 done. **G-7 planned 2026-09-02** (spec §15 addendum + plan) — the only slice left |
-| **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved |
+| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **G-1…G-7 done.** Live gate (Task 7) owed |
+| **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved — G-6/G-7 are both done, so once approval lands the process agent is free to start K-1 |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
@@ -241,7 +241,7 @@ slice text, before implementing.
       Plan: `2026-09-02-goes-g6-extractors.md` (spec §15 addendum records the
       deviations: association-keyed coalescing, ledger reason/run/mtime
       columns + the I-100 fix, process → collection graph edge, migration 027).
-- [ ] **G-7 · GOES worked example + live-gated e2e.** Spec §2, §9, §10. The
+- [x] **G-7 · GOES worked example + live-gated e2e.** Spec §2, §9, §10. The
       `goes-abi-metadata` extractor and `goes-geocolor` process on the CURRENT
       runtime image (rasterio `NETCDF:` subdatasets, numpy true colour + night
       IR, GDAL COG driver, rio-stac item); `docs/processes.md` worked example;
@@ -267,7 +267,9 @@ for the whole run at worker concurrency 1). Spec §13 lists eight decisions
 the agent took without a lead answer — confirm or overturn them at approval.
 
 Sequencing: the K queue is worked by the process agent after G-6/G-7 (same
-files). K-4 changes the worker's job model and must **coordinate with M3-D**
+files). **G-6 and G-7 are both done** — the process agent is free to start
+K-1 as soon as this spec's status line says approved; nothing else in the K
+queue is waiting on the G queue. K-4 changes the worker's job model and must **coordinate with M3-D**
 (the later merge into `ai/main` resolves; neither queue waits). K-7 is
 independent and may run in parallel with anything. K-8/K-9 are Phase 8 work
 and need a cloud account — lead-gated.
@@ -499,5 +501,57 @@ object stores only).
     filename — carries to G-7.
   - The loadgen teardown removes extractor rows AFTER the association
     delete, not before as the brief said; no FK path makes the order matter.
+
+- **G-6 live gate MET 2026-09-03 (lead, Docker, real NODD, reference mode).** Merged
+  `ai/goes-g6` → `ai/main` (598c8ae); migration 027 applied on first app request.
+  A pass-through extractor (the loadgen `EXTRACTOR_CODE`) created through the API
+  got the 600/h default and a 409 on `POST …/sources`; the seeded reference-mode
+  `goes-abi-mcmipc` association was switched to it. Next NODD file: `stored →
+  extracting` (item id kept, run id stamped) at 16:45:01Z → run claimed the same
+  second → `succeeded` 16:45:18Z (17 s including staging the ~50 MB file from
+  NODD through the ledger's `source_href`) → row `itemized` 16:45:19Z with the
+  extractor's properties; `source_mtime` = the object's modified time (I-100
+  closed for real). Failure leg: a `raise SystemExit(1)` revision → attempt 1
+  `failed` (row stays `extracting`), attempt 2 → run `dead` → row `failed`,
+  `reason = "extractor run <id>: run exited 1"`, `item_id` cleared. The
+  association was restored to `defaults_only` and the check extractor
+  soft-deleted. Owed still: a copy-mode extractor pass (the live check was
+  reference-only) and the loadgen `--metadata extractor` run at M3-D concurrency.
+
+- **G-7 landed 2026-09-03 (`ai/goes-g7`), deviations/details from the plan:**
+  - **Footprint bisection.** `extractor.footprint()` reprojects the densified
+    ring in one bulk `rasterio.warp.transform` call; GDAL raises for the
+    WHOLE call the instant any single vertex is off the Earth's disk rather
+    than returning it as infinities, so the extractor catches the exception
+    and bisects the point list, retrying each half recursively, until only
+    the off-limb vertices are dropped.
+  - **Per-item `{out_id}.tif`, not a shared `visual.tif`.** `geocolor.py`
+    writes and publishes one filename per output item (asset key stays
+    `visual`) — the spec's `visual.tif` would let a batch of more than one
+    output overwrite a shared name.
+  - **`scan_time` reads the href tail, not the asset key.** G-6 keys draft
+    assets by filename STEM (`build_assets`); the `_s…` scan-time token is
+    only reliably present in the href's actual filename, so the extractor
+    parses `asset["href"]`'s trailing path segment (falling back to the
+    asset key only if the href is missing) rather than the manifest's asset
+    key directly.
+  - **`REQUIRED_MIGRATION` is `027_extractors`** in both `pipeline.demo
+    __main__.py` and `goes/seed.py` — the same migration G-6 landed, since an
+    ingest association cannot name an extractor before it.
+  - **The e2e spec resolves its own directory with ESM's `import.meta.url`**
+    (`dirname(fileURLToPath(import.meta.url))`), not `__dirname`, to read the
+    two GOES scripts as the single source of truth for the deployed code —
+    `app/e2e/goes-loop.spec.ts` runs under Playwright's ESM config.
+  - **`proj:wkt2` is pinned, not `proj:epsg`.** The output COG's CRS is the
+    source file's own geostationary projection, which has no EPSG code, so
+    rio-stac's `with_proj=True` always lands on `proj:wkt2`.
+  - **The e2e datetime gate compares an instant, not a string.** Gate 1
+    asserts `Date.parse(source.properties.datetime) === expectedMs`, since
+    the extractor's ISO string and the test's independently-computed
+    expectation are not guaranteed to be byte-identical, only the same
+    instant.
+  - **The live gate (Task 7) is owed by the lead** — this task (Task 6) only
+    lands the docs and runs the offline gates (`npm run verify`, pytest,
+    ruff); nothing here was run against the real NODD bucket.
 
 (append here during iterations)

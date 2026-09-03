@@ -69,10 +69,97 @@ Flags exist for every endpoint (`--stac-url`, `--s3-endpoint`, `--database-url`,
 being created and the executor claiming it. Since G-3 that is single-digit
 milliseconds; before it, a run waited for the next minute tick.
 
+## GOES loop (`goes-seed`)
+
+The same CLI also builds the **GOES worked example** (G-7, spec §9) — the same
+shapes, but against the LIVE NOAA NODD bucket instead of a synthetic scene.
+This is the manual "full hour" recipe spec §10 names; `app/e2e/goes-loop.spec.ts`
+is the automated one-file version of the same loop.
+
+```
+goes-abi-mcmipc                an anonymous s3 connection to noaa-goes19,
+  │                            REFERENCE mode over ABI-L2-MCMIPC — the last
+  │                            hour, at most two new files per poll. Each
+  │                            granule's metadata comes from the
+  │                            goes-abi-metadata EXTRACTOR (scan time from the
+  │                            filename, footprint from the CMI_C02 grid),
+  │                            because a GOES netCDF defeats the built-in path
+  │  item write wakes the dispatcher, which queues the process run
+  ▼
+goes-geocolor (process)        a GeoColor-style true-colour COG per granule:
+  │                            day = C02/C03/C01, night = inverted C13,
+  │                            blended per pixel
+  ▼
+goes-geocolor (collection)     what it publishes into — tiling through the
+                               derived tile server, optionally DELIVERED to a
+                               MinIO bucket with `--deliver`
+```
+
+```sh
+uv run python -m pipeline.demo goes-seed          # add --deliver for the delivery leg
+uv run python -m pipeline.demo goes-status
+uv run python -m pipeline.demo goes-teardown
+```
+
+`goes-seed` takes `--include GLOB` (repeatable — pin one granule), `--window`
+(default `-1h`), `--max-files` (default 2) and `--internal-s3-endpoint` (how the
+PIPELINE reaches MinIO, default `http://minio:9000`); `goes-teardown` takes
+`--force`. Like `seed` it is idempotent: re-running replaces both revisions and
+leaves one association.
+
+The `goes-geocolor` revision asks for **2048 MB**, which is sized for MCMIP**C**
+(CONUS, 1500²). A full-disk product (MCMIPF, 5424²) needs several times that —
+raise `memory_mb` on the revision before pointing the association at one.
+
+### Preconditions (beyond the three above)
+
+1. **The internet**, and a bucket that is genuinely public: nothing is signed
+   against `noaa-goes19`.
+2. **Migration `027_extractors`** — an ingest association cannot name an
+   extractor before it. `goes-seed` checks and says so.
+3. **`CREDENTIALS_MASTER_KEY`** in the environment, for `--deliver` only: the
+   delivery connection's MinIO credentials are sealed with it, exactly as
+   `pipeline.loadgen` does. It is checked before anything is written.
+
+### It refuses a second ingest source
+
+If either GOES collection already has an ENABLED ingest association whose
+connection is not `goes-nodd`, `goes-seed` exits naming the association,
+collection and connection rather than seeding beside it — two associations
+polling the same product into the same collection ingest every file twice.
+The check runs BEFORE the first write, so a refused seed has changed nothing:
+not the collection documents, not the processes. Disable the other one first.
+
+### `goes-teardown` refuses to delete a collection somebody else uses
+
+`goes-abi-mcmipc` and `goes-geocolor` are fixed, well-known names shared by
+every `goes-seed` invocation, so another ingest association may be pointing at
+one of them (the W-1 seed association is, on the reference stack). Deleting the
+collection out from under it would leave it aimed at nothing — so `goes-teardown`
+lists any such association, ENABLED OR NOT, and exits without deleting
+anything. Pass `--force` to delete anyway.
+
+It still does not check whether a poll is mid-flight or a run is queued, so
+don't run it while another `goes-seed` session, or a manual poke at the shared
+collections, is in progress. (The gated e2e spec is unaffected either way: it
+creates its own uniquely named `e2e-goes-*` collections and connections and
+tears down only those.)
+
+### What to look at afterwards
+
+| Surface | Where |
+|---|---|
+| Granules catalogued in place | `http://localhost:4321/collections/goes-abi-mcmipc/items` |
+| The composites the process published | `http://localhost:4321/collections/goes-geocolor/items` |
+| Both processes, their runs and logs | `http://localhost:4321/processes` |
+| Tiles, straight from the tiler | `http://localhost:8084/collections/goes-geocolor/WebMercatorQuad/map?assets=visual` |
+| Runs + ingest ledger + item counts | `uv run python -m pipeline.demo goes-status` |
+
 ## Relationship to the other harnesses
 
 - **`pipeline.loadgen`** measures throughput with synthetic volume through an
   ingest association. This seeds one realistic flow and leaves it in place to
   look at. Different jobs; the demo is not a load test.
-- **G-7's e2e spec** will drive the real GOES/NODD loop and needs the internet,
-  a live NOAA bucket, and Docker. This needs only the local stack.
+- **G-7's e2e spec** drives the same GOES/NODD loop automatically, pinned to a
+  single granule. `goes-seed` is its manual, full-hour sibling; plain `seed`
+  needs no internet at all.

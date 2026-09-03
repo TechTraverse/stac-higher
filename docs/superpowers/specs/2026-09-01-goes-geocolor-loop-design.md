@@ -13,6 +13,7 @@ mesoscale file staged into `inputs/`, and was denied a non-source collection.
 Finding for §5: the item-write → dispatcher hop is ALREADY event-driven
 (outbox `pg_notify` → `dispatcher/listener.py`); two events 30 ms apart became
 two runs, which G-3's queued-run coalescing addresses. G-6 merged 2026-09-03.
+G-7 merged 2026-09-03; live gate owed (Task 7).
 **Scope source:** the lead's request for a real end-to-end use case: consume
 GOES ABI data from the NOAA Open Data Dissemination (NODD) buckets, produce a
 GeoColor-style Cloud-Optimized GeoTIFF (COG) with an operator-authored
