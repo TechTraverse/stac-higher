@@ -45,9 +45,7 @@ def item(item_id: str, **props):
 
 
 def source(trigger, source_id=SRC) -> ProcessSource:
-    return ProcessSource(
-        id=source_id, process_id=PROC, collection_id="c", trigger=trigger
-    )
+    return ProcessSource(id=source_id, process_id=PROC, collection_id="c", trigger=trigger)
 
 
 # ---------------------------------------------------------------------------
@@ -65,10 +63,7 @@ def test_cron_sources_never_match_a_landing_item():
     """They are the scheduler's business; matching one here would run a
     scheduled process on every item that lands."""
     assert (
-        match_process_sources(
-            item("i1"), [source({"kind": "cron", "schedule": "0 3 * * *"})]
-        )
-        == []
+        match_process_sources(item("i1"), [source({"kind": "cron", "schedule": "0 3 * * *"})]) == []
     )
 
 
@@ -118,8 +113,7 @@ async def test_many_items_produce_ONE_run_per_source():
     watched collection must not produce 50 runs."""
     repo = FakeDispatchRepo(
         events=[
-            ItemEvent(id=i, collection_id="c", item_id=f"i{i}", op="insert")
-            for i in range(1, 51)
+            ItemEvent(id=i, collection_id="c", item_id=f"i{i}", op="insert") for i in range(1, 51)
         ],
         items={("c", f"i{i}"): item(f"i{i}") for i in range(1, 51)},
         process_sources={"c": [source({"kind": "item_event"})]},
@@ -159,8 +153,7 @@ async def test_process_batch_entries_carry_collection_and_op():
 async def test_process_sources_are_looked_up_once_per_collection():
     repo = FakeDispatchRepo(
         events=[
-            ItemEvent(id=i, collection_id="c", item_id=f"i{i}", op="insert")
-            for i in (1, 2, 3)
+            ItemEvent(id=i, collection_id="c", item_id=f"i{i}", op="insert") for i in (1, 2, 3)
         ],
         items={("c", f"i{i}"): item(f"i{i}") for i in (1, 2, 3)},
         process_sources={"c": [source({"kind": "item_event"})]},
@@ -292,7 +285,11 @@ async def test_test_runs_are_subject_to_the_ceiling_too():
 
 def test_a_clean_exit_succeeds():
     t = outcome_transition(
-        exit_code=0, timed_out=False, attempts=1, max_attempts=3, now=NOW,
+        exit_code=0,
+        timed_out=False,
+        attempts=1,
+        max_attempts=3,
+        now=NOW,
         retry_wait_seconds=60,
     )
     assert t.status == "succeeded"
@@ -300,7 +297,11 @@ def test_a_clean_exit_succeeds():
 
 def test_a_failure_with_budget_left_retries():
     t = outcome_transition(
-        exit_code=1, timed_out=False, attempts=1, max_attempts=3, now=NOW,
+        exit_code=1,
+        timed_out=False,
+        attempts=1,
+        max_attempts=3,
+        now=NOW,
         retry_wait_seconds=60,
     )
     assert t.status == "failed"
@@ -309,7 +310,11 @@ def test_a_failure_with_budget_left_retries():
 
 def test_the_last_attempt_goes_dead():
     t = outcome_transition(
-        exit_code=1, timed_out=False, attempts=3, max_attempts=3, now=NOW,
+        exit_code=1,
+        timed_out=False,
+        attempts=3,
+        max_attempts=3,
+        now=NOW,
         retry_wait_seconds=60,
     )
     assert t.status == "dead"
@@ -318,7 +323,11 @@ def test_the_last_attempt_goes_dead():
 
 def test_a_timeout_is_reported_as_a_timeout_not_a_bare_exit_code():
     t = outcome_transition(
-        exit_code=137, timed_out=True, attempts=3, max_attempts=3, now=NOW,
+        exit_code=137,
+        timed_out=True,
+        attempts=3,
+        max_attempts=3,
+        now=NOW,
         retry_wait_seconds=60,
     )
     assert t.status == "dead"
@@ -368,12 +377,12 @@ class FakeSts:
         }
 
 
-async def _run(run, executor, repo, *, storage_client=None, fetch_remote=None):
+async def _run(run, executor, repo, *, storage_client=None, fetch_remote=None, settings=None):
     return await run_one(
         run,
         repo=repo,
         executor=executor,
-        settings=Settings.from_env({}),
+        settings=settings or Settings.from_env({}),
         storage_client=storage_client or FakeStore(),
         resolve_secret=lambda ref: "x",
         now=NOW,
@@ -611,9 +620,7 @@ async def test_an_extractor_run_stages_a_reference_mode_asset_from_its_source():
     static dict and cannot see that coupling — `test_ingest_itemize.py::
     test_parked_extracting_rows_keep_their_item_id` guards the other half.
     """
-    repo = FakeProcessRepo(
-        source_hrefs={("c", "a"): {"a.nc": "https://src.example/a.nc"}}
-    )
+    repo = FakeProcessRepo(source_hrefs={("c", "a"): {"a.nc": "https://src.example/a.nc"}})
     store = RecordingStore()
     seen: list[str] = []
 
@@ -656,6 +663,39 @@ async def test_an_extractor_run_stages_a_reference_mode_asset_from_its_source():
     assert asset["staged"] is True
     # The manifest keeps the CATALOG href, not the source URL.
     assert asset["href"] == "/api/assets/c/a/a.nc"
+
+
+@pytest.mark.asyncio
+async def test_run_one_dies_when_the_runtime_image_alias_has_no_image_here():
+    """X-queue spec §8: the launch-side half of the dual enforcement. The
+    alias parses (the app accepted it), but this deployment ships no
+    stactools image — the run dies naming the alias and the variable, and
+    nothing is staged, minted or launched."""
+    repo = _remote_input_repo()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    result = await _run(
+        _remote_input_run(runtime={"kind": "inline_python", "runtime_image": "stactools"}),
+        executor,
+        repo,
+        settings=Settings.from_env({"PROCESS_RUNTIME_IMAGE_STACTOOLS": ""}),
+    )
+    assert result.status == "dead"
+    assert "runtime_image 'stactools'" in (result.error or "")
+    assert "PROCESS_RUNTIME_IMAGE_STACTOOLS" in (result.error or "")
+    assert executor.launched == []
+
+
+@pytest.mark.asyncio
+async def test_run_one_launches_the_alias_image_when_configured():
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    result = await _run(
+        queued(runtime={"kind": "inline_python", "runtime_image": "stactools"}), executor, repo
+    )
+    assert result.status == "succeeded"
+    assert [spec.image for spec in executor.launched] == [
+        "stac-higher-process-runtime-stactools:local"
+    ]
 
 
 @pytest.mark.asyncio
@@ -917,12 +957,22 @@ ASSOC = "55555555-5555-4555-8555-555555555555"
 async def test_extractor_triggers_coalesce_per_association_until_claimed():
     repo = FakeProcessRepo()
     first = await trigger_run(
-        repo, process_id=PROC, revision_id=REV, source_id=None,
-        association_id=ASSOC, input_items=[{"item_id": "a", "ledger_ids": ["1"]}], now=NOW,
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=None,
+        association_id=ASSOC,
+        input_items=[{"item_id": "a", "ledger_ids": ["1"]}],
+        now=NOW,
     )
     second = await trigger_run(
-        repo, process_id=PROC, revision_id=REV, source_id=None,
-        association_id=ASSOC, input_items=[{"item_id": "b", "ledger_ids": ["2"]}], now=NOW,
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=None,
+        association_id=ASSOC,
+        input_items=[{"item_id": "b", "ledger_ids": ["2"]}],
+        now=NOW,
     )
     assert second.run_id == first.run_id and second.merged
     assert [i["item_id"] for i in repo.enqueued[0]["input_items"]] == ["a", "b"]
@@ -932,8 +982,13 @@ async def test_extractor_triggers_coalesce_per_association_until_claimed():
     assert claimed is not None and claimed.association_id == ASSOC
 
     third = await trigger_run(
-        repo, process_id=PROC, revision_id=REV, source_id=None,
-        association_id=ASSOC, input_items=[{"item_id": "c", "ledger_ids": ["3"]}], now=NOW,
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=None,
+        association_id=ASSOC,
+        input_items=[{"item_id": "c", "ledger_ids": ["3"]}],
+        now=NOW,
     )
     assert third.run_id != first.run_id and not third.merged
 
@@ -952,8 +1007,13 @@ async def test_a_source_less_association_less_trigger_never_coalesces():
 async def test_get_run_returns_the_batch_for_finalize():
     repo = FakeProcessRepo()
     r = await trigger_run(
-        repo, process_id=PROC, revision_id=REV, source_id=None, association_id=ASSOC,
-        input_items=[{"item_id": "a", "ledger_ids": ["1"], "draft": {"id": "a"}}], now=NOW,
+        repo,
+        process_id=PROC,
+        revision_id=REV,
+        source_id=None,
+        association_id=ASSOC,
+        input_items=[{"item_id": "a", "ledger_ids": ["1"], "draft": {"id": "a"}}],
+        now=NOW,
     )
     rec = await repo.get_run(r.run_id)
     assert rec is not None
@@ -972,15 +1032,30 @@ async def test_failing_a_dead_extractor_batch_only_touches_rows_it_still_owns():
 
     ingest = FakeIngestRepo()
     mine = await ingest.insert_ledger_version(
-        ASSOC, "a.nc", version=1, status="extracting", size=1, fingerprint="f",
+        ASSOC,
+        "a.nc",
+        version=1,
+        status="extracting",
+        size=1,
+        fingerprint="f",
         item_id="a",
     )
     theirs = await ingest.insert_ledger_version(
-        ASSOC, "b.nc", version=1, status="extracting", size=1, fingerprint="f",
+        ASSOC,
+        "b.nc",
+        version=1,
+        status="extracting",
+        size=1,
+        fingerprint="f",
         item_id="b",
     )
     landed = await ingest.insert_ledger_version(
-        ASSOC, "c.nc", version=1, status="itemized", size=1, fingerprint="f",
+        ASSOC,
+        "c.nc",
+        version=1,
+        status="itemized",
+        size=1,
+        fingerprint="f",
         item_id="c",
     )
     run = _extract_run()

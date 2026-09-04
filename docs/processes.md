@@ -87,6 +87,30 @@ The manifest shape is pinned by
 `tests/contract-fixtures/process-input-manifest.json` and ADR 0018; new keys
 may appear in later versions, so ignore what you do not know.
 
+## Runtime image
+
+Every run executes on a **platform-built** image — a user-supplied image
+(`runtime.image`) is refused (ADR 0013). A revision picks WHICH platform
+image with an alias:
+
+```json
+"runtime_image": "default"
+```
+
+| Alias | Image | Use |
+|---|---|---|
+| `default` | `PROCESS_RUNTIME_IMAGE` | Python 3.12 + the blessed set (boto3, pystac, rio-stac, rasterio). The default, and what every revision deployed before the field existed reads as. |
+| `stactools` | `PROCESS_RUNTIME_IMAGE_STACTOOLS` | The default plus `stactools` and the built-in extractor library's packages (`docs/processes.md` "Built-in extractors"). |
+
+The alias is resolved at launch, on the pipeline side. A deployment that
+ships no image for an alias sets its variable empty, and a run asking for
+that alias dies naming the alias and the variable — it never launches on a
+different image, where an `import` would fail less clearly. The set of
+aliases is fixed in both runtimes' schemas; a value outside it is refused at
+the deploy form and, should it ever reach the ledger, dies as an unusable
+revision. (K-1's hardware profiles will carry an image BASE; the alias
+selects the variant, so a GPU profile and `stactools` compose.)
+
 ## Network access
 
 A revision's runtime carries a `network` block:

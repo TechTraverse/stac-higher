@@ -35,9 +35,11 @@ from pipeline.process.inputs import (
 )
 from pipeline.process.launch import (
     NetworkCapExceeded,
+    RuntimeImageUnavailable,
     SecretResolutionError,
     check_network_cap,
     execute_run,
+    resolve_runtime_image,
 )
 from pipeline.process.ledger import infrastructure_transition, outcome_transition
 from pipeline.process.repo import ProcessRepo, QueuedRun
@@ -113,6 +115,15 @@ async def run_one(
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
+    # X-queue spec §8: same shape for the runtime image alias — a known alias
+    # this deployment ships no image for dies here, before anything is staged
+    # or minted, naming the alias and the variable.
+    try:
+        resolve_runtime_image(runtime, settings)
+    except RuntimeImageUnavailable as err:
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
+        return RunResult(run.id, "dead", error=str(err))
+
     # GOES spec §3: describe the inputs, stage the remote ones, THEN mint+launch.
     # §15: an extractor run (association-triggered) reads the collection its
     # association ingests into — its refs name it — since it has no sources.
@@ -121,11 +132,7 @@ async def run_one(
     if is_extract:
         source_collections = tuple(
             sorted(
-                {
-                    str(ref["collection_id"])
-                    for ref in run.input_items
-                    if ref.get("collection_id")
-                }
+                {str(ref["collection_id"]) for ref in run.input_items if ref.get("collection_id")}
             )
         )
     else:
@@ -177,9 +184,7 @@ async def run_one(
             source_hrefs=source_hrefs,
         )
     except InputPlanError as err:
-        await _finish(
-            repo, run, "dead", None, f"unusable inputs: {err}", None, at, on_dead=on_dead
-        )
+        await _finish(repo, run, "dead", None, f"unusable inputs: {err}", None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
     if fetch_remote is None:
@@ -278,9 +283,7 @@ async def run_one(
         at,
         on_dead=on_dead,
     )
-    return RunResult(
-        run.id, transition.status, log_ref=outcome.log_ref, error=transition.error
-    )
+    return RunResult(run.id, transition.status, log_ref=outcome.log_ref, error=transition.error)
 
 
 async def _finish(
@@ -306,9 +309,7 @@ async def _finish(
     # (both source-less) contributes nothing — otherwise an operator testing a
     # process would move the telemetry its expectation is judged against.
     if run.source_id and status in ("succeeded", "dead"):
-        await repo.record_source_run(
-            run.source_id, succeeded=status == "succeeded", at=at
-        )
+        await repo.record_source_run(run.source_id, succeeded=status == "succeeded", at=at)
     # G-6: a dead extractor run fails every ledger row in its batch (spec
     # §6.2, §15: at TERMINAL dead, never on a retryable attempt — the retry
     # may still land the batch).

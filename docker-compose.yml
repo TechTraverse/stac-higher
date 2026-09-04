@@ -282,6 +282,14 @@ services:
       # instead of quietly working.
       - DOCKER_HOST=${DOCKER_HOST:-tcp://docker-socket-proxy:2375}
       - PROCESS_RUNTIME_IMAGE=${PROCESS_RUNTIME_IMAGE:-stac-higher-process-runtime:local}
+      # X-queue spec §8: the image behind `runtime.runtime_image: "stactools"`
+      # (the built-in extractor library — `docker buildx bake -f
+      # services/process-runtime/docker-bake.hcl` builds it beside the base).
+      # Set it EMPTY to declare the deployment ships no such image: a run
+      # asking for the alias then dies naming this variable. (`${VAR-default}`
+      # on purpose, not `${VAR:-default}`: the colon form would replace an
+      # empty value with the default and make "no image here" unsayable.)
+      - PROCESS_RUNTIME_IMAGE_STACTOOLS=${PROCESS_RUNTIME_IMAGE_STACTOOLS-stac-higher-process-runtime-stactools:local}
       # Runs attach to this network. The default is `none` — no network at
       # all — because a process that needs egress should be an explicit
       # deployment decision, not something it inherits. Set it to

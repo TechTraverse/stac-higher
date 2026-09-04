@@ -49,6 +49,16 @@ DEFAULT_MAX_ATTEMPTS = 3
 #: the egress proxy (spec §11) lands.
 NETWORK_LEVELS = ("isolated", "inputs", "hosts", "open")
 DEFAULT_NETWORK_LEVEL = "isolated"
+#: Platform runtime image ALIASES (X-queue spec §8). An alias names one of the
+#: platform-built images — never a user-supplied reference (that is
+#: ``runtime.image``, refused by the app's write gate under ADR 0013). The
+#: launch path resolves an alias through settings (``PROCESS_RUNTIME_IMAGE``,
+#: ``PROCESS_RUNTIME_IMAGE_STACTOOLS``) and a run whose alias has no image in
+#: this deployment dies with a reason. Mirrors ``PROCESS_RUNTIME_IMAGE_ALIASES``
+#: in ``app/src/lib/processes/schemas.ts``. Every revision stored before the
+#: field existed reads as ``default``.
+RUNTIME_IMAGE_ALIASES = ("default", "stactools")
+DEFAULT_RUNTIME_IMAGE_ALIAS = "default"
 #: A `hosts` entry is a bare hostname: no scheme, no port, no whitespace.
 _HOST_FORBIDDEN = set("/: \t\n")
 
@@ -77,18 +87,14 @@ def _obj(raw: Any, what: str) -> dict[str, Any]:
     return raw
 
 
-def _enum(
-    raw: Any, allowed: Sequence[str], field_name: str, default: str | None = None
-) -> str:
+def _enum(raw: Any, allowed: Sequence[str], field_name: str, default: str | None = None) -> str:
     """Validate ``raw`` against ``allowed``; ``None`` yields ``default``, and a
     field with no default is required. Same rule as the ingest/delivery
     parsers' ``_enum`` — kept local until there is a shared reader module."""
     if raw is None and default is not None:
         return default
     if not isinstance(raw, str) or raw not in allowed:
-        raise ProcessConfigError(
-            f"{field_name} must be one of {allowed}, got {raw!r}"
-        )
+        raise ProcessConfigError(f"{field_name} must be one of {allowed}, got {raw!r}")
     return raw
 
 
@@ -169,6 +175,8 @@ class ProcessRuntime:
     #: level is "hosts".
     network_level: str = DEFAULT_NETWORK_LEVEL
     network_hosts: tuple[str, ...] = ()
+    #: X-queue spec §8 — one of RUNTIME_IMAGE_ALIASES, resolved at launch.
+    runtime_image: str = DEFAULT_RUNTIME_IMAGE_ALIAS
 
 
 def _parse_network(raw: Any) -> tuple[str, tuple[str, ...]]:
@@ -212,6 +220,12 @@ def parse_process_runtime(raw: Any) -> ProcessRuntime:
         image=image,
         network_level=network_level,
         network_hosts=network_hosts,
+        runtime_image=_enum(
+            doc.get("runtime_image"),
+            RUNTIME_IMAGE_ALIASES,
+            "runtime.runtime_image",
+            default=DEFAULT_RUNTIME_IMAGE_ALIAS,
+        ),
         memory_mb=_int_in_range(
             doc.get("memory_mb"),
             "runtime.memory_mb",
@@ -317,8 +331,7 @@ def parse_process_env(raw: Any) -> tuple[EnvEntry, ...]:
         entry = _env_entry(item)
         if entry.name in seen:
             raise ProcessConfigError(
-                f"duplicate env name {entry.name!r} — the resolved environment "
-                "would be ambiguous"
+                f"duplicate env name {entry.name!r} — the resolved environment would be ambiguous"
             )
         seen.add(entry.name)
         entries.append(entry)
@@ -341,6 +354,4 @@ def parse_process_expectation(raw: dict[str, Any] | None) -> int | None:
     doc = _obj(raw, "expectation")
     if doc.get("run_within_seconds") is None:
         return None
-    return _int_in_range(
-        doc["run_within_seconds"], "run_within_seconds", default=0, minimum=1
-    )
+    return _int_in_range(doc["run_within_seconds"], "run_within_seconds", default=0, minimum=1)

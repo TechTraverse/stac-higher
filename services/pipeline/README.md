@@ -61,6 +61,8 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `WEBHOOK_RETRY_SECONDS` | `60` | Cool-off before the notify sweep re-enqueues a `failed` webhook delivery. |
 | `WEBHOOK_TIMEOUT_SECONDS` | `10` | Per-POST webhook timeout. |
 | `WEBHOOK_STALL_SECONDS` | `900` | A webhook delivery stranded `delivering` this long is presumed crashed and re-enters the retry path (counts as an attempt). |
+| `PROCESS_RUNTIME_IMAGE` | `stac-higher-process-runtime:local` | The platform runtime image every `inline_python` run executes on (ADR 0013) — `runtime.runtime_image: "default"`. |
+| `PROCESS_RUNTIME_IMAGE_STACTOOLS` | `stac-higher-process-runtime-stactools:local` | The image behind `runtime.runtime_image: "stactools"` (X-3, the built-in extractor library). **Empty** declares the deployment ships no such image: a run asking for the alias dies naming this variable rather than launching on the base image. |
 
 ## Connections (Phase 2)
 

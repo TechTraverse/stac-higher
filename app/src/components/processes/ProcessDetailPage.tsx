@@ -293,6 +293,10 @@ export function CodeCard({
             // Slice 1: `hosts` is only meaningful at the `hosts` level, which
             // the write gate does not accept yet.
             network: { level: networkLevel, hosts: [] },
+            // Hand-written code runs on the base platform image; the
+            // `stactools` alias is what X-4's built-in template deploys
+            // (X-queue spec §8).
+            runtime_image: "default",
           },
           code,
           env,

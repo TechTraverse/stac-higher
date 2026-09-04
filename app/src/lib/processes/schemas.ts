@@ -127,6 +127,20 @@ export const processNetworkSchema = z
 
 export type ProcessNetwork = z.infer<typeof processNetworkSchema>;
 
+/**
+ * Platform runtime image ALIASES (X-queue spec §8). An alias names one of the
+ * platform-built images — never a user-supplied reference, which is what
+ * `runtime.image` would be and what ADR 0013 refuses — and the pipeline
+ * resolves it at launch through `PROCESS_RUNTIME_IMAGE` /
+ * `PROCESS_RUNTIME_IMAGE_STACTOOLS`, dying with a reason when the alias is
+ * unknown there (the `PROCESS_NETWORK_MAX` dual-enforcement pattern). Mirrors
+ * `RUNTIME_IMAGE_ALIASES` in `services/pipeline/src/pipeline/process/config.py`.
+ * K-1's hardware profiles carry an `image` BASE; the alias selects the
+ * variant (`<base>-stactools`), so the two compose.
+ */
+export const PROCESS_RUNTIME_IMAGE_ALIASES = ["default", "stactools"] as const;
+export type RuntimeImageAlias = (typeof PROCESS_RUNTIME_IMAGE_ALIASES)[number];
+
 const runtimeLimits = {
   memory_mb: z.number().int().min(MEMORY_MB_MIN).default(512),
   timeout_seconds: z.number().int().min(1).max(TIMEOUT_SECONDS_MAX).default(900),
@@ -134,6 +148,9 @@ const runtimeLimits = {
   // (applying the inner defaults) instead of stored as a bare `{}`.
   retry: processRetrySchema.default(() => processRetrySchema.parse({})),
   network: processNetworkSchema.default(() => processNetworkSchema.parse({})),
+  // Every stored revision predates this field: the Python reader treats an
+  // absent alias as `default`, and so does this default.
+  runtime_image: z.enum(PROCESS_RUNTIME_IMAGE_ALIASES).default("default"),
 };
 
 const inlinePythonRuntimeSchema = z

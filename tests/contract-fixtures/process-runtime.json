@@ -1,6 +1,6 @@
 {
   "style": "discriminated-union",
-  "$comment": "Golden fixture for the §5.6 process `runtime` shape (Phase 9 / M5-0), stored in stac_higher.process_revisions.runtime. Consumed by app/src/__tests__/contract-fixtures.test.ts (processRuntimeSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_process_runtime). THE SLICE-1 ASYMMETRY IS DELIBERATE AND PINNED HERE: the shape CARRIES the `container` arm so nothing is foreclosed, and the pipeline reader accepts it, while the app's write gate REJECTS it — user-supplied images are a supply-chain review surface that stays out of the first accreditation scope (spec §4). Every `container` case below is therefore app: reject / pipeline: accept. `memory_mb` and `timeout_seconds` become the executor's per-run HostConfig limits and wall-clock kill (ADR 0013); `retry` reuses the queue RetrySpec shape from §5.1's delivery config verbatim. `network` (GOES spec §4, ADR 0018) is the egress profile — `level` in isolated|inputs|hosts|open with `hosts` non-empty iff level is `hosts` — and carries a SECOND slice-1 asymmetry of the same kind: the reader accepts every level (so no revision changes meaning when the egress proxy lands) while the app's write gate accepts only `isolated` until then; malformed network blocks are reject/reject on both sides.",
+  "$comment": "Golden fixture for the §5.6 process `runtime` shape (Phase 9 / M5-0), stored in stac_higher.process_revisions.runtime. Consumed by app/src/__tests__/contract-fixtures.test.ts (processRuntimeSchema) and services/pipeline/tests/test_contract_fixtures.py (parse_process_runtime). THE SLICE-1 ASYMMETRY IS DELIBERATE AND PINNED HERE: the shape CARRIES the `container` arm so nothing is foreclosed, and the pipeline reader accepts it, while the app's write gate REJECTS it — user-supplied images are a supply-chain review surface that stays out of the first accreditation scope (spec §4). Every `container` case below is therefore app: reject / pipeline: accept. `memory_mb` and `timeout_seconds` become the executor's per-run HostConfig limits and wall-clock kill (ADR 0013); `retry` reuses the queue RetrySpec shape from §5.1's delivery config verbatim. `network` (GOES spec §4, ADR 0018) is the egress profile — `level` in isolated|inputs|hosts|open with `hosts` non-empty iff level is `hosts` — and carries a SECOND slice-1 asymmetry of the same kind: the reader accepts every level (so no revision changes meaning when the egress proxy lands) while the app's write gate accepts only `isolated` until then; malformed network blocks are reject/reject on both sides. `runtime_image` (X-queue spec §8) is an ALIAS of a platform-built image — `default` | `stactools` — that the pipeline resolves at launch through PROCESS_RUNTIME_IMAGE / PROCESS_RUNTIME_IMAGE_STACTOOLS; it is not `image` (a user-supplied reference, still refused). Absent ⇒ `default` on both sides, since every revision stored before X-3 lacks it; an alias outside the set is reject/reject — the pipeline reader refuses it and the run dies as an unusable revision, the app never stores it.",
   "discriminator": "kind",
   "variants": {
     "inline_python": {
@@ -11,7 +11,8 @@
         "memory_mb": 512,
         "timeout_seconds": 900,
         "retry": { "max_attempts": 3, "backoff": "exponential" },
-        "network": { "level": "isolated", "hosts": [] }
+        "network": { "level": "isolated", "hosts": [] },
+        "runtime_image": "default"
       }
     },
     "container": {
@@ -22,7 +23,8 @@
         "memory_mb": 512,
         "timeout_seconds": 900,
         "retry": { "max_attempts": 3, "backoff": "exponential" },
-        "network": { "level": "isolated", "hosts": [] }
+        "network": { "level": "isolated", "hosts": [] },
+        "runtime_image": "default"
       }
     }
   },
@@ -209,6 +211,42 @@
     {
       "name": "host with a scheme",
       "config": { "kind": "inline_python", "network": { "level": "hosts", "hosts": ["https://x.y"] } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "runtime_image stactools (X-3: the built-in extractor library's image)",
+      "config": { "kind": "inline_python", "runtime_image": "stactools" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "runtime_image default explicitly",
+      "config": { "kind": "inline_python", "runtime_image": "default" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "runtime_image naming an alias no platform image has",
+      "config": { "kind": "inline_python", "runtime_image": "cuda" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "runtime_image as a literal image reference (that is `image`, and refused)",
+      "config": { "kind": "inline_python", "runtime_image": "ghcr.io/example/proc:1.2.3" },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "runtime_image null (absent means default; null does not, for the writer)",
+      "config": { "kind": "inline_python", "runtime_image": null },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "runtime_image as a number",
+      "config": { "kind": "inline_python", "runtime_image": 1 },
       "app": "reject",
       "pipeline": "reject"
     }
