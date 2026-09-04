@@ -4,6 +4,10 @@ import {
   itemTileJsonUrl,
   itemViewerUrl,
   collectionInfoUrl,
+  tipgBaseUrl,
+  tipgLandingUrl,
+  tipgCollectionsUrl,
+  tipgTileJsonUrl,
 } from "@/lib/serving/urls";
 import { pickPreviewAsset } from "@/lib/serving/preview";
 import type { StacItem } from "@/lib/stac-api/types";
@@ -30,6 +34,22 @@ describe("serving urls", () => {
 
   it("builds the collection info url", () => {
     expect(collectionInfoUrl("c", "http://t")).toBe("http://t/collections/c/info");
+  });
+
+  it("defaults the tipg base and strips a trailing slash", () => {
+    expect(tipgBaseUrl({})).toBe("http://localhost:8085");
+    expect(tipgBaseUrl({ PUBLIC_TIPG_URL: "https://features.example//" })).toBe(
+      "https://features.example",
+    );
+  });
+
+  it("builds the tipg landing, collections and tilejson urls", () => {
+    expect(tipgLandingUrl("http://f")).toBe("http://f/");
+    expect(tipgCollectionsUrl("http://f")).toBe("http://f/collections");
+    expect(tipgTileJsonUrl("public.roads", "http://f")).toBe(
+      "http://f/collections/public.roads/tiles/WebMercatorQuad/tilejson.json",
+    );
+    expect(tipgTileJsonUrl("a b", "http://f")).toContain("/collections/a%20b/");
   });
 });
 
