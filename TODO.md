@@ -679,9 +679,7 @@ remaining slices must honour; they lived only in the review ledger until now:
   chain only on stable ids — never on a frame layer.
 - **V-3:** `resolveLayerFrame` must never hand a stack an out-of-range index
   — a negative index throws (`frames[-1].key`), an index ≥ count renders
-  every frame at opacity 0 and reads as "the tiler is down" — or make
-  `RasterFrameStack` total with `((index % count) + count) % count` and add
-  the 1-frame-series and out-of-range tests. Fix the frame DRAW ORDER on a
+  every frame at opacity 0 and reads as "the tiler is down". (`RasterFrameStack` has been total since V-1's fix wave `a575c91` — any index wraps into the series, tests included — so this is belt and braces.) Fix the frame DRAW ORDER on a
   backwards step: react-map-gl only calls `moveLayer` when a layer's
   `beforeId` prop changes, so after stepping 0→1→2→1 the still-mounted frame
   2 sits above frame 1 in maplibre's order and, both being opaque, paints
@@ -700,9 +698,7 @@ remaining slices must honour; they lived only in the review ledger until now:
   proxy (or sync it); add an ids-only `vectorTileLayerIds` beside
   `vectorTileLayers` for `interactiveLayerIds` / anchors; assert the
   default-opacity paint values (fill 0.2, line 1) in
-  `vector-tile-layer.test.tsx`; `useMemo` the `FeatureCollection` in
-  `FootprintLayer` on `[items, selectedId]` (react-map-gl deep-compares
-  `data` every render).
+  `vector-tile-layer.test.tsx`. (The `FootprintLayer` `useMemo` landed in V-1's fix wave `a575c91`.)
 
 ## Parked (do not start without the lead)
 
