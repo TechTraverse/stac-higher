@@ -555,6 +555,19 @@ byte-volume model is declared, not measured — a real size census belongs befor
 any contractual scale or storage-cost claim) and **I-83** (streaming reaches
 object stores only).
 
+- **Collection preview: no e2e coverage.** The Preview tab (2026-09-04) is
+  covered by unit + component tests and was verified live against the standing
+  `goes-geocolor` demo, but the suite has no spec for it: the tab needs a tile
+  server, which `test:e2e:ci` does not assume. If it earns one, gate it like
+  `goes-loop.spec.ts` does (`E2E_LIVE_NODD`-style env gate) rather than adding
+  a titiler precondition to the default run.
+- **Preview playback is paced by the tiler, not by `fps`.** The first pass
+  through 50 frames runs at ~1.5 fps because each frame is a fresh titiler
+  render off MinIO; replays run at the full rate off the browser cache. If a
+  demo needs the first pass smooth, the fix is warming the frames server-side
+  (a mosaic cache or a pre-render), not a deeper client lookahead — more
+  mounted sources starve the visible frame's own tile requests.
+
 - **`LineageStrip size="full"` is now unused.** P-4 replaced the `/graph`
   columns with `PipelineDag`, and nothing else renders the `full` size. The
   `mini`/`medium` sizes are still the product-card and Overview glyphs (P spec

@@ -6,6 +6,8 @@ export interface GetItemsParams {
   token?: string;
   bbox?: number[];
   datetime?: string;
+  /** STAC sort spec, e.g. `-datetime` for newest first. */
+  sortby?: string;
 }
 
 export function getItems(
@@ -18,6 +20,7 @@ export function getItems(
   if (params?.token) searchParams.set("token", params.token);
   if (params?.bbox) searchParams.set("bbox", params.bbox.join(","));
   if (params?.datetime) searchParams.set("datetime", params.datetime);
+  if (params?.sortby) searchParams.set("sortby", params.sortby);
 
   const query = searchParams.toString();
   const path = `/collections/${encodeURIComponent(collectionId)}/items${query ? `?${query}` : ""}`;

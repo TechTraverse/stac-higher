@@ -405,9 +405,9 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
                 page; tipg serves database tables, not STAC collections)
               </a>
               <p className="text-xs text-muted-foreground">
-                Raster tiling reads asset hrefs from item JSON — platform
-                (`/api/assets/…`) hrefs are app-relative and not resolvable by
-                the tiler; reference-mode items with absolute URLs serve
+                Raster tiling reads asset hrefs from item JSON — the tile
+                server maps platform (`/api/assets/…`) hrefs to the platform
+                bucket, and reference-mode items with absolute URLs serve
                 directly (docs/serving.md).
               </p>
             </div>

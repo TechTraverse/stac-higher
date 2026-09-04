@@ -59,3 +59,38 @@ export function itemViewerUrl(
     `/WebMercatorQuad/map?assets=${enc(assetKey)}`
   );
 }
+
+/**
+ * The tile template for ONE frame of the collection preview.
+ *
+ * titiler-pgstac's collection mosaic takes the same `datetime` filter pgstac
+ * does, so pinning it turns the collection endpoint into a per-timestep layer
+ * — no search registration, no POST, no CORS. `{z}/{x}/{y}` stay literal:
+ * maplibre substitutes them, so they must survive URL building intact, which
+ * is why the query is assembled by hand rather than through `URLSearchParams`
+ * over a whole URL.
+ */
+export function collectionTileUrlTemplate(
+  collectionId: string,
+  assetKey: string,
+  datetime: string,
+  base: string = titilerBaseUrl(),
+): string {
+  return (
+    `${base}/collections/${enc(collectionId)}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x` +
+    `?assets=${enc(assetKey)}&datetime=${enc(datetime)}`
+  );
+}
+
+/** titiler's own standalone viewer for a collection, pinned to a frame if given. */
+export function collectionViewerUrl(
+  collectionId: string,
+  assetKey: string,
+  datetime?: string,
+  base: string = titilerBaseUrl(),
+): string {
+  const url =
+    `${base}/collections/${enc(collectionId)}/WebMercatorQuad/map` +
+    `?assets=${enc(assetKey)}`;
+  return datetime ? `${url}&datetime=${enc(datetime)}` : url;
+}

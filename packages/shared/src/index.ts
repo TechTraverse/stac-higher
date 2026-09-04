@@ -89,6 +89,8 @@ export { DrawingToolbar } from "@shared/components/map/DrawingToolbar";
 export { FootprintLayer } from "@shared/components/map/FootprintLayer";
 export { RasterTileLayer } from "@shared/components/map/RasterTileLayer";
 export type { RasterTileLayerProps } from "@shared/components/map/RasterTileLayer";
+export { TimeSlider } from "@shared/components/map/TimeSlider";
+export type { TimeSliderProps } from "@shared/components/map/TimeSlider";
 export { ExtentLayer } from "@shared/components/map/ExtentLayer";
 
 // Layout components
@@ -120,6 +122,7 @@ export { Label } from "@shared/components/ui/label";
 export { Skeleton } from "@shared/components/ui/skeleton";
 export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@shared/components/ui/tooltip";
 export { Textarea } from "@shared/components/ui/textarea";
+export { Slider } from "@shared/components/ui/slider";
 export { Switch } from "@shared/components/ui/switch";
 export {
   Select,
