@@ -398,12 +398,13 @@ service's MinIO credentials) tile fine. Resolving it properly means choosing
 between absolute asset hrefs at ingest (`ASSET_HREF_BASE` set to an absolute
 base — couples items to a deployment hostname), a titiler-side href rewrite,
 or serving-path presign integration — a Phase 8 cloud-deployment decision,
-not a local one. The Settings-tab serving panel states the limitation.
+not a local one.
 **2026-09 (G-4):** the local half is closed — the compose tile server is a
 derived image that maps canonical hrefs to the platform bucket
-(`infra/titiler/`, GOES spec §7.1). Remaining: the cloud deployment's choice
-(same mapping vs presign integration) and the fact that the tiler's bucket
-credentials see everything (I-1).
+(`infra/titiler/`, GOES spec §7.1) — the Settings and Overview serving copy
+was corrected to say so when the collection preview landed. Remaining: the
+cloud deployment's choice (same mapping vs presign integration) and the fact
+that the tiler's bucket credentials see everything (I-1).
 - Tracked in: `docs/serving.md`, `infra/titiler/README.md`; cloud half decided in Phase 8.
 
 ### I-69 · Serving toggle is advisory until I-1 🟡
@@ -411,9 +412,10 @@ credentials see everything (I-1).
 the collection page advertises the titiler/tipg endpoints, not whether those
 services answer for the collection. Real gating needs the per-collection
 read-visibility layer (I-1) applied at/in front of the serving services. The
-UI copy says so. Revisit when I-1 lands. The G-5 item preview obeys the same
-toggle and is not a gate either — it decides whether the page ASKS the tile
-server, not whether the tile server would answer.
+UI copy says so. Revisit when I-1 lands. Both preview surfaces — the G-5 item
+overlay and the collection Preview tab — obey the same toggle and are not
+gates either: it decides whether the page ASKS the tile server, not whether
+the tile server would answer.
 - Tracked in: `docs/serving.md`, migration 019; depends on I-1.
 
 ---
@@ -882,6 +884,21 @@ be given. Shape when wanted: a catalogued reference collection granted
 read-only in the run's STS policy and named in the revision (`runtime.
 reference_inputs`), staged under `inputs/reference/` — an ADR-sized
 addition, not a slice of G-8.
+
+### I-108 · Collection preview playback is paced by the tile server 🟡
+The Preview tab's first pass through a 50-frame series runs at roughly 1.5
+frames a second, not the nominal rate: every frame is a fresh titiler render
+off the object store, and playback deliberately WAITS for tiles
+(`map.areTilesLoaded()`, 10 s cap) rather than advancing onto blank frames.
+Replays run at the full rate off the browser cache, so the limitation is the
+first pass — the one a demo watches. The fix is server-side warming (a mosaic
+tile cache, or pre-rendering a series' tiles), NOT a deeper client lookahead:
+every mounted maplibre source competes for the same handful of connections to
+the tiler, and widening the window measurably starves the frame on screen —
+that is what the shipped implementation had to back out of. Related: the tab
+has no e2e coverage, since the suite does not assume a tile server; gate any
+future spec the way `goes-loop.spec.ts` gates on `E2E_LIVE_NODD`.
+- Tracked in: `docs/serving.md` "Collection preview", `CollectionPreviewTab`.
 
 ### I-107 · Three curated stactools packages have no release to pin 🟡
 The lead's curated set (X-queue spec §2) named fourteen packages; three of

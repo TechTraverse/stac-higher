@@ -100,7 +100,10 @@ docker-compose runs the full local platform stack:
   (migration 019) only controls whether the collection page advertises the
   endpoints — nothing gates the services until I-1. The compose tiler is a
   derived image (`infra/titiler/`) that maps platform `/api/assets/...`
-  hrefs to the bucket (G-4; I-68 keeps the cloud half). Full design +
+  hrefs to the bucket (G-4; I-68 keeps the cloud half). Two UI surfaces
+  read the toggle: the item page's raster overlay (G-5) and the product
+  page's **Preview** tab, which animates a collection one frame per
+  timestep off the collection mosaic with `datetime` pinned. Full design +
   caveats: `docs/serving.md`.
 
 Users configure additional catalogs in the `/catalogs` page (localStorage).
