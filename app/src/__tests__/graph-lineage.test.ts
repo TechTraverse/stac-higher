@@ -3,7 +3,7 @@
  * product's pipeline". Pure: no React, no fetch, no database.
  */
 import { describe, it, expect } from "vitest";
-import { FIXTURE_GRAPH, lineage } from "@stac-higher/shared";
+import { capLineage, FIXTURE_GRAPH, lineage } from "@stac-higher/shared";
 import type { Graph } from "@stac-higher/shared";
 
 const ids = (graph: { nodes: { id: string }[] }) =>
@@ -134,5 +134,85 @@ describe("lineage", () => {
       edges: [],
     };
     expect(lineage(orphan, "coll:orphan").nodes).toHaveLength(1);
+  });
+});
+
+describe("capLineage", () => {
+  /** One product feeding `n` consumers — spec §8's sprawling row. */
+  const fanOut = (n: number): Graph => ({
+    nodes: [
+      {
+        id: "coll:fan",
+        type: "collection",
+        label: "fan",
+        group_id: null,
+        meta: {},
+      },
+      ...Array.from({ length: n }, (_, i) => ({
+        id: `proc:p${i}`,
+        type: "process" as const,
+        label: `p${i}`,
+        group_id: null,
+        meta: {},
+      })),
+    ],
+    edges: Array.from({ length: n }, (_, i) => ({
+      from: "coll:fan",
+      to: `proc:p${i}`,
+      kind: "process_source" as const,
+      id: `s${i}`,
+    })),
+  });
+
+  it("keeps every node when the row is already short", () => {
+    const capped = capLineage(lineage(FIXTURE_GRAPH, "coll:goes-geocolor"), 8);
+    expect(capped.hidden).toBe(0);
+    expect(capped.nodes).toHaveLength(6);
+  });
+
+  it("trims downstream to the cap and reports what it dropped", () => {
+    const capped = capLineage(lineage(fanOut(12), "coll:fan"), 4);
+    expect(capped.hidden).toBe(8);
+    expect(capped.nodes).toHaveLength(5); // the focus plus four consumers
+    expect(capped.edges).toHaveLength(4);
+  });
+
+  it("never trims upstream — that is the half the row exists for", () => {
+    // A long ingest → process → product chain, capped at zero downstream.
+    const capped = capLineage(lineage(FIXTURE_GRAPH, "coll:goes-geocolor"), 0);
+    expect(capped.nodes.map((n) => n.id)).toContain("conn:goes-nodd");
+    expect(capped.nodes.map((n) => n.id)).toContain("proc:goes-abi-metadata");
+    // Only the delivery destination is downstream of the focus.
+    expect(capped.nodes.map((n) => n.id)).not.toContain("conn:goes-geocolor-dest");
+    expect(capped.hidden).toBe(1);
+  });
+
+  it("does not spend budget on a node that is also upstream", () => {
+    // deliver → re-ingest through one connection: the destination is both
+    // downstream of the product and upstream of it.
+    const looped: Graph = {
+      nodes: FIXTURE_GRAPH.nodes,
+      edges: [
+        ...FIXTURE_GRAPH.edges,
+        {
+          from: "conn:goes-geocolor-dest",
+          to: "coll:goes-abi-mcmipc",
+          kind: "ingest",
+          id: "assoc-loop",
+        },
+      ],
+    };
+    const capped = capLineage(lineage(looped, "coll:goes-geocolor"), 0);
+    expect(capped.hidden).toBe(0);
+    expect(capped.nodes).toHaveLength(6);
+  });
+
+  it("is a no-op for a node the graph does not contain", () => {
+    expect(capLineage(lineage(FIXTURE_GRAPH, "coll:nope"), 3)).toEqual({
+      nodes: [],
+      edges: [],
+      focus: "",
+      hidden: 0,
+    });
   });
 });

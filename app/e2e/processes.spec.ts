@@ -55,19 +55,66 @@ test.describe("Pipeline graph", () => {
     ).toBeVisible();
   });
 
-  test("renders the pipeline columns or the nothing-wired empty state", async ({
+  test("opens on the Pipelines view, or the nothing-wired empty state", async ({
     page,
   }) => {
     await page.goto("/graph");
-    // UI-7 renamed the columns to the five-stage pipeline; the empty state is
+    // P-3 made Pipelines the default view (spec §9.1); the empty state is
     // still the other legal outcome on a bare database.
     await expect(
-      page
-        .getByText(
-          /Nothing wired yet|Source connections|Source products|Processes|Derived products|Destinations/,
-        )
-        .first(),
+      page.getByText(/Nothing wired yet|One row per product/).first(),
     ).toBeVisible();
+  });
+
+  test("puts the chosen view in the URL", async ({ page }) => {
+    await page.goto("/graph");
+    const graphTab = page.getByRole("tab", { name: "Graph" });
+    // Skipped on a bare database, where there are no tabs to switch.
+    if ((await graphTab.count()) === 0) return;
+    await graphTab.click();
+    await expect(page).toHaveURL(/[?&]view=graph/);
+  });
+
+  test("draws real edges for a wired product", async ({ page }) => {
+    await page.goto("/graph");
+    // Wait for the graph query to settle FIRST: the rows and the empty state
+    // are both async, and counting paths before either exists reads as "no
+    // edges" on a perfectly healthy platform.
+    await expect(
+      page.getByText(/Nothing wired yet|One row per product/).first(),
+    ).toBeVisible();
+    if ((await page.getByText("Nothing wired yet").count()) > 0) return;
+
+    // Nothing wired is a legal state for this suite's shared database; when
+    // something IS wired, the row must draw its edges as paths rather than
+    // implying them with columns (spec §5.1).
+    const paths = page.locator("svg path[data-edge-kind]");
+    if ((await paths.count()) === 0) {
+      await expect(
+        page.getByText(/No products are wired|Not wired/).first(),
+      ).toBeVisible();
+      return;
+    }
+    // `toBeAttached`, not `toBeVisible`: a level hop is a horizontal line, and
+    // a zero-height bounding box reads as hidden to Playwright.
+    await expect(paths.first()).toBeAttached();
+
+    // When the standing GOES demo is seeded its extractor is in the picture,
+    // badged — the thing the old five-column view could not show at all.
+    const extractor = page.locator('svg path[data-edge-kind="extractor"]');
+    if ((await extractor.count()) > 0) {
+      await expect(
+        page.locator('[data-node-badge="extractor"]').first(),
+      ).toBeVisible();
+    }
+  });
+
+  test("filters the product rows by search", async ({ page }) => {
+    await page.goto("/graph");
+    const search = page.getByLabel("Find a product");
+    if ((await search.count()) === 0) return;
+    await search.fill("zzz-no-such-product");
+    await expect(page.getByText(/No product matches/)).toBeVisible();
   });
 
   test("does not surface an error state", async ({ page }) => {
@@ -113,10 +160,10 @@ test.describe("Collection lineage panel", () => {
 
     await expect(page.getByRole("heading", { name: "Lineage" })).toBeVisible();
     // A brand-new collection is wired to nothing, and the panel must say so
-    // rather than render an empty box.
+    // rather than render an empty box. P-3 replaced the two one-hop lists with
+    // the lineage row, so there is now ONE such message.
     await expect(
-      page.getByText("Nothing feeds this collection"),
+      page.getByText("Nothing is wired to this collection yet."),
     ).toBeVisible();
-    await expect(page.getByText("This collection feeds nothing")).toBeVisible();
   });
 });
