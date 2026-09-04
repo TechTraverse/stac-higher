@@ -291,7 +291,7 @@ the agent took, approved as written. P-1 first, then P-2; P-3 and P-4 are
 independent of each other. The screenshot the feedback refers to is
 `docs/superpowers/specs/assets/2026-09-04-pipeline-graph-before.png`.
 
-- [ ] **P-1 · Ghost nodes in "Not wired".** ISSUES I-104. `loadGraph`'s
+- [x] **P-1 · Ghost nodes in "Not wired".** ISSUES I-104. `loadGraph`'s
       collection-node union (`app/src/lib/graph/storage.ts`) takes
       `process_sources` / `process_outputs` collection ids without excluding
       soft-deleted processes, while `loadGraphEdges` does — so every e2e run
