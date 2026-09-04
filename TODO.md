@@ -298,7 +298,7 @@ independent of each other. The screenshot the feedback refers to is
       leaves its `e2e-goes-*` collections as degree-0 orphans. Join
       `processes` and require `deleted_at IS NULL` on both branches; storage
       test with one live and one soft-deleted process; close I-104. Bounded.
-- [ ] **P-2 · Lineage + layout (shared, pure).** Spec §4.
+- [x] **P-2 · Lineage + layout (shared, pure).** Spec §4.
       `packages/shared/src/lib/graph/{lineage,layout}.ts`: `lineage(graph,
       nodeId)` (transitive closure both ways; `extractor` edges followed
       upstream only) and `layeredLayout(graph)` (longest-path ranks, an
