@@ -89,6 +89,7 @@ export type {
 export { StacMap } from "@shared/components/map/StacMap";
 export { DrawingToolbar } from "@shared/components/map/DrawingToolbar";
 export { FootprintLayer } from "@shared/components/map/FootprintLayer";
+export type { FootprintLayerProps } from "@shared/components/map/FootprintLayer";
 export { RasterTileLayer } from "@shared/components/map/RasterTileLayer";
 export type { RasterTileLayerProps } from "@shared/components/map/RasterTileLayer";
 export { TimeSlider } from "@shared/components/map/TimeSlider";
