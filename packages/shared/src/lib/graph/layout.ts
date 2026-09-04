@@ -226,12 +226,9 @@ export function layeredLayout(graph: Graph, options: LayoutOptions = {}): Layout
   }
 
   const positionOf = new Map<string, number>();
-  const recordPositions = () => {
-    for (const column of columns) {
-      column.forEach((id, i) => positionOf.set(id, i));
-    }
-  };
-  recordPositions();
+  const record = (column: readonly string[]) =>
+    column.forEach((id, i) => positionOf.set(id, i));
+  for (const column of columns) record(column);
 
   const sweep = (column: string[], reference: number) => {
     const target = columns[reference];
@@ -256,12 +253,15 @@ export function layeredLayout(graph: Graph, options: LayoutOptions = {}): Layout
         (barycenter.get(a) ?? (positionOf.get(a) as number)) -
         (barycenter.get(b) ?? (positionOf.get(b) as number)),
     );
+    // Record IMMEDIATELY: the next column's barycenters must be taken against
+    // this column's new order, not the order it had before the sweep. Batching
+    // the update to the end of a sweep makes the two passes disagree, and a
+    // crossing appears where neither pass wanted one.
+    record(column);
   };
 
   for (let r = 1; r <= maxRank; r++) sweep(columns[r], r - 1);
-  recordPositions();
   for (let r = maxRank - 1; r >= 0; r--) sweep(columns[r], r + 1);
-  recordPositions();
 
   // --- 4. coordinates ---------------------------------------------------
   const columnHeight = (count: number) =>

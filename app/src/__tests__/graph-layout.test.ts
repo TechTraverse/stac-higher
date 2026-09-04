@@ -204,6 +204,57 @@ describe("layeredLayout — geometry", () => {
   });
 });
 
+describe("layeredLayout — ordering", () => {
+  /**
+   * The seeded demo's real shape: two chains of DIFFERENT depth, with the
+   * nodes in `loadGraph`'s own emission order (connections, then processes,
+   * then collections). The short chain ends at rank 2; the long one runs to
+   * rank 4.
+   */
+  const twoChains: Graph = {
+    nodes: [
+      { id: "conn:nodd", type: "connection", label: "nodd", group_id: null, meta: {} },
+      { id: "conn:dest", type: "connection", label: "dest", group_id: null, meta: {} },
+      { id: "proc:extract", type: "process", label: "extract", group_id: null, meta: {} },
+      { id: "proc:geocolor", type: "process", label: "geocolor", group_id: null, meta: {} },
+      { id: "proc:downscale", type: "process", label: "downscale", group_id: null, meta: {} },
+      { id: "coll:mcmipc", type: "collection", label: "mcmipc", group_id: null, meta: {} },
+      { id: "coll:geocolor", type: "collection", label: "geocolor", group_id: null, meta: {} },
+      { id: "coll:scenes", type: "collection", label: "scenes", group_id: null, meta: {} },
+      { id: "coll:thumbs", type: "collection", label: "thumbs", group_id: null, meta: {} },
+    ],
+    edges: [
+      { from: "conn:nodd", to: "coll:mcmipc", kind: "ingest", id: "e1" },
+      { from: "proc:extract", to: "coll:mcmipc", kind: "extractor", id: "e1" },
+      { from: "coll:mcmipc", to: "proc:geocolor", kind: "process_source", id: "e2" },
+      { from: "proc:geocolor", to: "coll:geocolor", kind: "process_output", id: "e3" },
+      { from: "coll:geocolor", to: "conn:dest", kind: "deliver", id: "e4" },
+      { from: "coll:scenes", to: "proc:downscale", kind: "process_source", id: "e5" },
+      { from: "proc:downscale", to: "coll:thumbs", kind: "process_output", id: "e6" },
+    ],
+  };
+
+  it("orders a rank against its neighbours' FINAL order, not a stale one", () => {
+    // The backward sweep must read the positions the forward sweep just
+    // produced. Batching the position update to the end of a pass made the
+    // two passes disagree: rank 1 flipped while rank 0 did not, crossing the
+    // two chains' first hop for no reason. Seen on the seeded demo (P-4).
+    const layout = layeredLayout(twoChains);
+    const at = (id: string) => {
+      const placed = layout.nodes.find((n) => n.node.id === id);
+      if (!placed) throw new Error(`${id} was not placed`);
+      return placed;
+    };
+
+    // Each chain keeps one horizontal band: whichever of the two source nodes
+    // sits above, its own product sits above too.
+    const goesFirst = at("conn:nodd").order < at("coll:scenes").order;
+    expect(at("coll:mcmipc").order < at("proc:downscale").order).toBe(goesFirst);
+    // …and the extractor stays with the connection it shares a column with.
+    expect(Math.abs(at("proc:extract").order - at("conn:nodd").order)).toBe(1);
+  });
+});
+
 describe("layeredLayout — determinism", () => {
   it("gives identical output for identical input", () => {
     expect(layeredLayout(FIXTURE_GRAPH)).toEqual(layeredLayout(FIXTURE_GRAPH));

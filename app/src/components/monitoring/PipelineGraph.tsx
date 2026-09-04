@@ -10,22 +10,18 @@ import {
   Input,
   KIND_COLOR_VAR,
   lineage,
-  LineageStrip,
   LoadingState,
   PipelineDag,
   type DagNodeDecoration,
-  type LineageGroup,
   type LineageKind,
 } from "@stac-higher/shared";
-import { Search, Share2 } from "lucide-react";
+import { ExternalLink, Search, Share2, X } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAlerts } from "@/lib/monitoring/queries";
 import { usePipelineGraph } from "@/lib/monitoring/graph-queries";
 import {
   degreeMap,
   makeDecorator,
-  nodeDetail,
-  nodeHealth,
   nodeHref,
   unhealthyNodeIds,
 } from "@/lib/monitoring/graph-decorate";
@@ -43,10 +39,13 @@ import type { GraphEdge } from "@/lib/graph/edges";
  * that is the next process's source) appears in its own row and inside its
  * neighbours' rows, which a column layout cannot show at all.
  *
- * **Graph** is the whole platform at once. P-4 replaces it with the same
- * `PipelineDag` over the full graph; until then it keeps M5-F's five columns,
- * whose own design note explains what they do and do not claim: adjacency is
- * the direction of flow, NOT which node feeds which.
+ * **Graph** is the whole platform at once, the same `PipelineDag` over the
+ * whole group-scoped graph (P-4). It replaced M5-F's five columns, whose own
+ * design note said what they could not do: five columns cannot align arbitrary
+ * N:M wiring without drawing edges that are wrong, so adjacency there was the
+ * direction of flow and never a claim about which node feeds which. Clicking a
+ * node fades everything outside its lineage — a whole-platform picture is
+ * legible at a glance but not readable node by node without one.
  *
  * The Flows list sits under both views as the text truth for edges.
  *
@@ -213,89 +212,90 @@ function PipelinesView({
 }
 
 /**
- * M5-F's five columns, kept until P-4 replaces them with a full `PipelineDag`.
+ * The whole platform in one picture (P-4, spec §5.2).
  *
- * Adjacency between columns is the direction of flow. It is NOT a claim about
- * which node feeds which — five columns cannot align arbitrary N:M wiring
- * without drawing edges that are wrong, which is exactly what the Pipelines
- * view and P-4 fix.
+ * Degree-0 nodes are deliberately NOT in the SVG: a floating chip attached to
+ * nothing reads as a layout bug rather than as a fact about the platform, so
+ * they get their own "Not wired" row beneath (spec §9.4).
+ *
+ * Clicking a node fades everything outside `lineage(node)` and offers an Open
+ * link — the chip itself becomes a button while a selection is possible, so
+ * the link lives in the selection bar rather than in the chip, where it would
+ * swallow a middle-click.
  */
-function ColumnsView({
+function GraphView({
   graph,
-  unhealthy,
-  degree,
+  decorate,
 }: {
   graph: Graph;
-  unhealthy: ReadonlySet<string>;
-  degree: ReadonlyMap<string, number>;
+  decorate: (node: GraphNode) => DagNodeDecoration;
 }) {
-  const groups = useMemo(() => {
-    const edges = graph.edges;
-    const ingestOut = new Set(
-      edges.filter((e) => e.kind === "ingest").map((e) => e.from),
+  const [selected, setSelected] = useState<GraphNode | null>(null);
+
+  const wired = useMemo(() => {
+    const degree = degreeMap(graph.edges);
+    return {
+      nodes: graph.nodes.filter((node) => (degree.get(node.id) ?? 0) > 0),
+      edges: graph.edges,
+    };
+  }, [graph]);
+
+  const highlight = useMemo(() => {
+    if (!selected) return null;
+    return new Set(lineage(wired, selected.id).nodes.map((node) => node.id));
+  }, [wired, selected]);
+
+  if (wired.nodes.length === 0) {
+    return (
+      <Card>
+        <CardContent className="px-5 py-4">
+          <p className="text-sm text-muted-foreground">
+            Nothing is wired yet — every node below is an island.
+          </p>
+        </CardContent>
+      </Card>
     );
-    const deliverIn = new Set(
-      edges.filter((e) => e.kind === "deliver").map((e) => e.to),
-    );
-    // An `extractor` edge does not make a collection derived: the extractor
-    // fixes up items ingested INTO it.
-    const derived = new Set(
-      edges.filter((e) => e.kind === "process_output").map((e) => e.to),
-    );
-
-    const sourceConnections: GraphNode[] = [];
-    const destinations: GraphNode[] = [];
-    const sourceProducts: GraphNode[] = [];
-    const derivedProducts: GraphNode[] = [];
-    const processes: GraphNode[] = [];
-
-    for (const node of graph.nodes) {
-      if ((degree.get(node.id) ?? 0) === 0) continue;
-      if (node.type === "process") {
-        processes.push(node);
-        continue;
-      }
-      if (node.type === "connection") {
-        // A connection wired both ways legitimately appears in BOTH columns —
-        // that is what "used as a source and a destination" looks like.
-        if (ingestOut.has(node.id)) sourceConnections.push(node);
-        if (deliverIn.has(node.id)) destinations.push(node);
-        continue;
-      }
-      if (derived.has(node.id)) derivedProducts.push(node);
-      else sourceProducts.push(node);
-    }
-
-    const byLabel = (a: GraphNode, b: GraphNode) => a.label.localeCompare(b.label);
-    const toGroup = (
-      kind: LineageKind,
-      label: string,
-      list: GraphNode[],
-    ): LineageGroup => ({
-      kind,
-      label,
-      nodes: list.sort(byLabel).map((node) => ({
-        id: node.id,
-        label: node.label,
-        detail: nodeDetail(node, degree.get(node.id) ?? 0),
-        health: nodeHealth(node, unhealthy),
-        href: nodeHref(node),
-      })),
-    });
-
-    return [
-      toGroup("connection", "Source connections", sourceConnections),
-      toGroup("collection", "Source products", sourceProducts),
-      toGroup("process", "Processes", processes),
-      toGroup("collection", "Derived products", derivedProducts),
-      toGroup("connection", "Destinations", destinations),
-    ];
-  }, [graph, unhealthy, degree]);
+  }
 
   return (
     <Card>
       <CardContent className="px-5 py-4">
-        <LineageStrip size="full" groups={groups} />
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+            <h2 className="text-sm font-bold">Graph</h2>
+            <p className="text-xs text-muted-foreground">
+              Every wiring at once. Click a node to follow its chain.
+            </p>
+          </div>
+          {selected && (
+            <div className="flex items-center gap-2 text-[12.5px]">
+              <span className="font-medium">{selected.label}</span>
+              <a
+                href={nodeHref(selected)}
+                className="inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                Open <ExternalLink aria-hidden="true" className="h-3 w-3" />
+              </a>
+              <button
+                type="button"
+                onClick={() => setSelected(null)}
+                className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+              >
+                Clear <X aria-hidden="true" className="h-3 w-3" />
+              </button>
+            </div>
+          )}
+        </div>
+        <PipelineDag
+          graph={wired}
+          size="full"
+          decorate={decorate}
+          focus={selected?.id}
+          highlight={highlight}
+          onNodeClick={setSelected}
+          onBackgroundClick={() => setSelected(null)}
+          label="The whole pipeline graph"
+        />
       </CardContent>
     </Card>
   );
@@ -414,7 +414,7 @@ function GraphContent() {
         </TabsContent>
 
         <TabsContent value="graph">
-          <ColumnsView graph={graph} unhealthy={unhealthy} degree={degree} />
+          <GraphView graph={graph} decorate={decorate} />
         </TabsContent>
       </Tabs>
 

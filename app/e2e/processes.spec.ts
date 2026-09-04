@@ -109,6 +109,34 @@ test.describe("Pipeline graph", () => {
     }
   });
 
+  test("draws the whole graph, with click-to-highlight", async ({ page }) => {
+    await page.goto("/graph?view=graph");
+    await expect(
+      page.getByText(/Nothing wired yet|Every wiring at once/).first(),
+    ).toBeVisible();
+    if ((await page.getByText("Nothing wired yet").count()) > 0) return;
+
+    const svg = page.getByLabel("The whole pipeline graph");
+    if ((await svg.count()) === 0) {
+      // Every node an island — legal on a bare shared database.
+      await expect(page.getByText(/every node below is an island/)).toBeVisible();
+      return;
+    }
+
+    // The seeded demo wires GOES (ingest, extractor, source, output, deliver)
+    // and the demo chain, so the whole-platform picture is well past four
+    // edges. `toBeAttached`: a level hop is a zero-height line to Playwright.
+    const paths = svg.locator("path[data-edge-kind]");
+    expect(await paths.count()).toBeGreaterThanOrEqual(4);
+    await expect(paths.first()).toBeAttached();
+
+    // Clicking a node offers a way into it and fades the rest.
+    await page.locator('[data-node-badge="extractor"]').first().click();
+    await expect(page.getByRole("link", { name: /Open/ })).toBeVisible();
+    await page.getByRole("button", { name: /Clear/ }).click();
+    await expect(page.getByRole("link", { name: /Open/ })).toHaveCount(0);
+  });
+
   test("filters the product rows by search", async ({ page }) => {
     await page.goto("/graph");
     const search = page.getByLabel("Find a product");
