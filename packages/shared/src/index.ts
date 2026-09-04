@@ -92,6 +92,8 @@ export { FootprintLayer } from "@shared/components/map/FootprintLayer";
 export type { FootprintLayerProps } from "@shared/components/map/FootprintLayer";
 export { RasterTileLayer } from "@shared/components/map/RasterTileLayer";
 export type { RasterTileLayerProps } from "@shared/components/map/RasterTileLayer";
+export { RasterFrameStack, RASTER_FRAME_LOOKAHEAD } from "@shared/components/map/RasterFrameStack";
+export type { RasterFrame, RasterFrameStackProps } from "@shared/components/map/RasterFrameStack";
 export { TimeSlider } from "@shared/components/map/TimeSlider";
 export type { TimeSliderProps } from "@shared/components/map/TimeSlider";
 export { ExtentLayer } from "@shared/components/map/ExtentLayer";
