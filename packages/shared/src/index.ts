@@ -28,8 +28,8 @@ export type {
   GraphNode,
   GraphNodeType,
 } from "@shared/lib/graph/types";
-export { lineage } from "@shared/lib/graph/lineage";
-export type { Lineage } from "@shared/lib/graph/lineage";
+export { lineage, capLineage } from "@shared/lib/graph/lineage";
+export type { CappedLineage, Lineage } from "@shared/lib/graph/lineage";
 export { layeredLayout, LAYOUT_DEFAULTS } from "@shared/lib/graph/layout";
 export type {
   Layout,
@@ -76,6 +76,12 @@ export type {
   LineageStripProps,
 } from "@shared/components/shared/LineageStrip";
 export { LoadingState } from "@shared/components/shared/LoadingState";
+export { PipelineDag } from "@shared/components/shared/PipelineDag";
+export type {
+  DagNodeDecoration,
+  PipelineDagProps,
+  PipelineDagSize,
+} from "@shared/components/shared/PipelineDag";
 
 // Map components
 export { StacMap } from "@shared/components/map/StacMap";
