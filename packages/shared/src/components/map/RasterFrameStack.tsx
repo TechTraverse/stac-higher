@@ -69,15 +69,26 @@ export function RasterFrameStack({
   const count = frames.length;
   if (count === 0) return null;
 
+  // A non-finite index shows the first frame rather than nothing.
+  const safeIndex = Number.isFinite(index) ? index : 0;
+
+  // Normalised into the series so an index from a caller's own arithmetic
+  // (a shared time axis, a series that shrank under a stale ref) can never
+  // reach past the array: previous and current are both taken modulo the
+  // series, which also keeps the previous frame painted when the series
+  // shrinks below the index it remembers.
+  const current = ((safeIndex % count) + count) % count;
+  const previous = ((previousIndex.current % count) + count) % count;
+
   // Draw order, bottom to top: previous, current, then the lookahead frames
   // loading invisibly. Deduped — a series shorter than the window would
   // otherwise repeat itself.
   const mounted = [
     ...new Set([
-      previousIndex.current % count,
+      previous,
       ...Array.from(
         { length: RASTER_FRAME_LOOKAHEAD + 1 },
-        (_, offset) => (index + offset) % count,
+        (_, offset) => (current + offset) % count,
       ),
     ]),
   ];
@@ -92,11 +103,7 @@ export function RasterFrameStack({
           bounds={bounds}
           minzoom={minzoom}
           maxzoom={maxzoom}
-          opacity={
-            frameIndex === index || frameIndex === previousIndex.current % count
-              ? opacity
-              : 0
-          }
+          opacity={frameIndex === current || frameIndex === previous ? opacity : 0}
           opacityTransitionMs={0}
           beforeId={beforeId}
         />

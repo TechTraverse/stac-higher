@@ -418,6 +418,30 @@ gates either: it decides whether the page ASKS the tile server, not whether
 the tile server would answer.
 - Tracked in: `docs/serving.md`, migration 019; depends on I-1.
 
+### I-112 · Stepping a raster frame series backward can show the wrong frame 🟡
+
+**Observed (2026-09-04, V-1 final review).** `RasterFrameStack` (and the
+collection Preview tab before it) keeps the previous frame painted beneath
+the current one and relies on React child order for draw order. maplibre
+fixes draw order at `addLayer` time and only `moveLayer`s when `beforeId`
+changes, so a frame that is ALREADY mounted stays where it was. Walk
+1 → 2 → 1: frame 1 was added below frame 2; stepping back to 1 leaves both at
+full opacity with 2 on top — the viewer sees frame 2 while the slider says 1.
+Forward playback is unaffected (the incoming frame is always newly mounted,
+hence on top), which is why the live GOES check never saw it.
+
+**Impact.** Single-step backward scrubbing on the Preview tab, and on every
+imagery layer of the `/map` page (V queue), where the shared axis makes it
+routine.
+
+**Fix (V-3).** Chain `beforeId` INSIDE the stack: render top-down, give the
+lookahead the caller's `beforeId`, the current frame the lookahead's layer
+id, the previous frame the current's — a changed chain triggers `moveLayer`
+and order is always explicit. Guard `moveLayer` against a just-unmounted
+target. Not done in V-1 because the plan mandated the preview's behaviour
+(and its tests' order assertions) stay untouched. Spec amendment:
+`docs/superpowers/specs/2026-09-04-map-page-design.md` §11.
+
 ---
 
 ## Phase 7 — push ingest (2026-08-30)

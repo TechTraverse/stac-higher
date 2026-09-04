@@ -103,4 +103,32 @@ describe("RasterFrameStack", () => {
     render(<RasterFrameStack id="s" frames={[]} index={0} />);
     expect(screen.queryAllByTestId("source")).toHaveLength(0);
   });
+
+  it("collapses to one frame at full opacity for a one-frame series", () => {
+    render(<RasterFrameStack id="s" frames={FRAMES.slice(0, 1)} index={0} />);
+
+    expect(layers().map((l) => [l.source, l.opacity])).toEqual([["s-frame-0", 1]]);
+  });
+
+  it("wraps an out-of-range index into the series instead of blanking the map", () => {
+    // A shared time axis or a series that shrank can hand this component an
+    // index past the end; it must still show a frame, not paint everything 0.
+    render(<RasterFrameStack id="s" frames={FRAMES} index={5} />);
+
+    expect(layers().map((l) => [l.source, l.opacity])).toEqual([
+      ["s-frame-1", 1],
+      ["s-frame-2", 0],
+    ]);
+  });
+
+  it("survives a negative or non-finite index", () => {
+    const { rerender } = render(<RasterFrameStack id="s" frames={FRAMES} index={-1} />);
+    expect(layers().map((l) => [l.source, l.opacity])).toEqual([
+      ["s-frame-3", 1],
+      ["s-frame-0", 0],
+    ]);
+
+    rerender(<RasterFrameStack id="s" frames={FRAMES} index={Number.NaN} />);
+    expect(layers().some((l) => l.opacity === 1)).toBe(true);
+  });
 });
