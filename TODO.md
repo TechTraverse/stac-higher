@@ -12,7 +12,7 @@ just a wasted read.
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
-| **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | Spec **approved 2026-09-04**. P-1 first (bounded), then P-2; P-3 and P-4 are independent of each other |
+| **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 goes first; X-3 coordinates with K-1; X-4 takes migration **028** |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
