@@ -403,13 +403,25 @@ variant alias compose — whichever lands first adds the other's field).
       and sentinel1 with doubles (no usable in-repo fixture). SAFE products
       and NAIP need the source path (reference-mode hrefs) — **I-110**.
       `containers.yml` builds both runtime images via `docker/bake-action`.
-- [ ] **X-3 · Image alias.** Spec §8. `runtime_image: "default" |
+- [x] **X-3 · Image alias.** Spec §8. `runtime_image: "default" |
       "stactools"` on `runtimeLimits` (lenient Python reader — stored
       revisions lack it), `PROCESS_RUNTIME_IMAGE_STACTOOLS` resolved at launch,
       unknown alias ⇒ dead run with reason (write gate AND launch, the
       `PROCESS_NETWORK_MAX` pattern), `process-runtime.json` cases.
       `runtime.image` stays `null` for inline processes (ADR 0013 intact).
       Coordinates with K-1. Depends on X-1.
+      **Merged 2026-09-04.** `runtime_image` on `runtimeLimits` (Zod enum
+      `default | stactools`, default `default`; Python `RUNTIME_IMAGE_ALIASES`
+      with the same default for the revisions that predate it);
+      `PROCESS_RUNTIME_IMAGE_STACTOOLS` (empty ⇒ "no such image here");
+      `resolve_runtime_image` in `launch.py` feeds `build_run_spec`, and
+      `runner.py` dies the run by name before staging/minting when the alias's
+      image is unset — an alias OUTSIDE the set never gets that far (schema at
+      the form, reader as an unusable revision). Six fixture cases. K-1 was
+      not yet on `ai/main`, so the K spec gained the one-line composition
+      note (profile `image` = base, alias = variant) and K-1 adds `hardware`
+      beside `runtime_image`. No picker: the deploy card posts `default`
+      explicitly; X-4's built-in template posts `stactools`.
 - [ ] **X-4 · Built-in processes in the app.** Spec §7. Migration 028
       (`processes.builtin_id`, unique per live group); `GET
       /api/extractors/builtin`; `POST /api/processes/builtin` create-or-reuse

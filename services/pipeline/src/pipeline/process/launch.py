@@ -45,6 +45,38 @@ class NetworkCapExceeded(Exception):
     configuration, so the run dies rather than retries."""
 
 
+class RuntimeImageUnavailable(Exception):
+    """The revision's ``runtime_image`` alias names a platform image this
+    deployment has not configured — configuration, so the run dies naming
+    the alias and the variable rather than launching on the wrong image."""
+
+
+def resolve_runtime_image(runtime: ProcessRuntime, settings: Settings) -> str:
+    """X-queue spec §8: the alias → image reference, through settings.
+
+    ``default`` is ``PROCESS_RUNTIME_IMAGE``; ``stactools`` is
+    ``PROCESS_RUNTIME_IMAGE_STACTOOLS``, which a deployment sets EMPTY to say
+    it ships no such image. An alias outside ``RUNTIME_IMAGE_ALIASES`` never
+    reaches here — the reader refuses it, and the run dies as an unusable
+    revision — so the branch below is exhaustive by construction.
+    """
+    alias = runtime.runtime_image
+    if alias == "default":
+        image = settings.process_runtime_image
+        variable = "PROCESS_RUNTIME_IMAGE"
+    elif alias == "stactools":
+        image = settings.process_runtime_image_stactools
+        variable = "PROCESS_RUNTIME_IMAGE_STACTOOLS"
+    else:  # pragma: no cover - refused by parse_process_runtime
+        raise RuntimeImageUnavailable(f"unknown runtime_image alias {alias!r}")
+    if not image:
+        raise RuntimeImageUnavailable(
+            f"revision requests runtime_image {alias!r} but this deployment has no "
+            f"image for it ({variable} is empty)"
+        )
+    return image
+
+
 def check_network_cap(runtime: ProcessRuntime, settings: Settings) -> None:
     """GOES spec §4: a revision above ``PROCESS_NETWORK_MAX`` never launches
     at a lower level silently — it fails, naming the level and the cap. The
@@ -123,10 +155,11 @@ def build_run_spec(
     return RunSpec(
         run_id=run_id,
         process_id=process_id,
-        # Slice 1 always runs the platform image: `container` runtimes are
-        # refused at the app's write gate, so a revision carrying one is a
-        # contract violation rather than something to honour here.
-        image=settings.process_runtime_image,
+        # Always a PLATFORM image, chosen by the revision's `runtime_image`
+        # alias (X-queue spec §8): `container` runtimes are refused at the
+        # app's write gate, so a revision carrying `image` is a contract
+        # violation rather than something to honour here.
+        image=resolve_runtime_image(runtime, settings),
         env=run_env,
         memory_mb=runtime.memory_mb,
         timeout_seconds=runtime.timeout_seconds,
@@ -209,6 +242,4 @@ def execute_run(
             "log_ref": log_ref,
         },
     )
-    return RunOutcome(
-        status=status, log_ref=log_ref, credentials_prefix=credentials.prefix
-    )
+    return RunOutcome(status=status, log_ref=log_ref, credentials_prefix=credentials.prefix)

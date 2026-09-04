@@ -363,3 +363,9 @@ need it would bake the wrong answer into the contract.
 - **Measured**: the variant is 1.18 GB against the 525 MB base — §11's
   "multi-GB" did not materialise; no split into `stactools-noaa` /
   `stactools-optical` is needed yet.
+- **X-3 (§8), same day**: `runtime_image` is an enum on both sides
+  (`default | stactools`), absent ⇒ `default`; the pipeline resolves it in
+  `launch.py` and a known alias with an EMPTY `PROCESS_RUNTIME_IMAGE_STACTOOLS`
+  dies in `runner.py` by name — the launch-side half of the dual pattern.
+  K-1 had not landed, so the K spec carries the composition note and K-1
+  adds `hardware` beside the alias.

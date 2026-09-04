@@ -40,11 +40,13 @@ from pipeline.process.executor import ExecutorUnavailable, ExitStatus, RunHandle
 from pipeline.process.inputs import input_env
 from pipeline.process.launch import (
     NetworkCapExceeded,
+    RuntimeImageUnavailable,
     SecretResolutionError,
     build_run_spec,
     check_network_cap,
     execute_run,
     resolve_env,
+    resolve_runtime_image,
 )
 from pipeline.process.logs import TRUNCATION_MARKER, cap, store_run_log
 from pipeline.process.memory_executor import MemoryExecutor
@@ -163,9 +165,7 @@ def test_launch_sets_limits_network_and_never_mounts():
 
 def test_a_failed_start_reaps_the_created_container():
     """Otherwise every failed start leaks a container."""
-    api = FakeApi(
-        {"create": {"Id": "c1"}, "start": ExecutorUnavailable("daemon said no")}
-    )
+    api = FakeApi({"create": {"Id": "c1"}, "start": ExecutorUnavailable("daemon said no")})
     ex = executor_with(api)
     with pytest.raises(ExecutorUnavailable):
         ex.launch(
@@ -213,8 +213,10 @@ def test_logs_survive_an_unavailable_daemon():
 
 def test_reap_is_idempotent_for_an_already_gone_container():
     api = FakeApi(
-        {"kill": ExecutorUnavailable("no such container"),
-         "c1?force": ExecutorUnavailable("no such container")}
+        {
+            "kill": ExecutorUnavailable("no such container"),
+            "c1?force": ExecutorUnavailable("no such container"),
+        }
     )
     executor_with(api).reap(RunHandle(id="c1"))  # must not raise
 
@@ -267,9 +269,7 @@ def test_a_revision_cannot_shadow_its_own_credentials_or_code():
         runtime=ProcessRuntime(kind="inline_python"),
         code="real",
         env={"AWS_SESSION_TOKEN": "attacker", CODE_ENV_VAR: encode_code("evil")},
-        credentials=RunCredentials(
-            "AK", "SK", "REAL", "b", run_staging_prefix(RUN), None, "r"
-        ),
+        credentials=RunCredentials("AK", "SK", "REAL", "b", run_staging_prefix(RUN), None, "r"),
     )
     assert spec.env["AWS_SESSION_TOKEN"] == "REAL"
     assert spec.env[CODE_ENV_VAR] == encode_code("real")
@@ -285,9 +285,7 @@ def test_slice_1_always_runs_the_platform_image():
         runtime=ProcessRuntime(kind="container", image="ghcr.io/evil/x:1"),
         code="print(1)",
         env={},
-        credentials=RunCredentials(
-            "AK", "SK", "TOK", "b", run_staging_prefix(RUN), None, "r"
-        ),
+        credentials=RunCredentials("AK", "SK", "TOK", "b", run_staging_prefix(RUN), None, "r"),
     )
     assert spec.image == settings().process_runtime_image
 
@@ -302,9 +300,7 @@ def test_secret_refs_resolve_through_the_injected_resolver():
 
 
 def test_an_unresolvable_secret_aborts_the_run_without_leaking_the_value():
-    entries = (
-        EnvEntry(name="TOKEN", secret_ref=SecretRef(connection_id=PROC, key="password")),
-    )
+    entries = (EnvEntry(name="TOKEN", secret_ref=SecretRef(connection_id=PROC, key="password")),)
 
     def boom(_ref):
         raise ValueError("super-secret-plaintext")
@@ -332,9 +328,7 @@ def test_session_policy_is_bounded_to_the_run_prefix():
     assert listing["Condition"]["StringLike"]["s3:prefix"] == [f"{prefix}*"]
     # Nothing grants access outside the prefix.
     assert not any(
-        r.endswith("/*") and prefix not in r
-        for st in policy["Statement"]
-        for r in st["Resource"]
+        r.endswith("/*") and prefix not in r for st in policy["Statement"] for r in st["Resource"]
     )
 
 
@@ -641,3 +635,62 @@ def test_execute_run_mints_with_read_prefixes():
         read_prefixes=["assets/goes/"],
     )
     assert "assets/goes/*" in sts.kwargs["Policy"]
+
+
+# ---------------------------------------------------------------------------
+# runtime image aliases (X-queue spec §8)
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_image_alias_defaults_and_is_an_enum():
+    from pipeline.process.config import RUNTIME_IMAGE_ALIASES
+
+    assert RUNTIME_IMAGE_ALIASES == ("default", "stactools")
+    assert parse_process_runtime({"kind": "inline_python"}).runtime_image == "default"
+    assert parse_process_runtime(
+        {"kind": "inline_python", "runtime_image": None}
+    ).runtime_image == ("default")
+    stactools = parse_process_runtime({"kind": "inline_python", "runtime_image": "stactools"})
+    assert stactools.runtime_image == "stactools" and stactools.image is None
+    with pytest.raises(ProcessConfigError, match=r"runtime\.runtime_image"):
+        parse_process_runtime({"kind": "inline_python", "runtime_image": "cuda"})
+    with pytest.raises(ProcessConfigError, match=r"runtime\.runtime_image"):
+        parse_process_runtime({"kind": "inline_python", "runtime_image": "ghcr.io/x/y:1"})
+
+
+def test_runtime_image_alias_resolves_through_settings():
+    default = parse_process_runtime({"kind": "inline_python"})
+    variant = parse_process_runtime({"kind": "inline_python", "runtime_image": "stactools"})
+    assert resolve_runtime_image(default, settings()) == "stac-higher-process-runtime:local"
+    assert (
+        resolve_runtime_image(variant, settings()) == "stac-higher-process-runtime-stactools:local"
+    )
+    custom = settings(PROCESS_RUNTIME_IMAGE_STACTOOLS="ghcr.io/org/rt-stactools:1.2")
+    assert resolve_runtime_image(variant, custom) == "ghcr.io/org/rt-stactools:1.2"
+    assert resolve_runtime_image(default, custom) == "stac-higher-process-runtime:local"
+
+
+def test_runtime_image_alias_without_an_image_here_is_refused_by_name():
+    variant = parse_process_runtime({"kind": "inline_python", "runtime_image": "stactools"})
+    none_here = settings(PROCESS_RUNTIME_IMAGE_STACTOOLS="")
+    with pytest.raises(RuntimeImageUnavailable, match="PROCESS_RUNTIME_IMAGE_STACTOOLS"):
+        resolve_runtime_image(variant, none_here)
+    # The default alias is unaffected by the variant being absent.
+    assert resolve_runtime_image(parse_process_runtime({"kind": "inline_python"}), none_here)
+    # And whitespace is "empty" too — a stray space must not become an image name.
+    with pytest.raises(RuntimeImageUnavailable):
+        resolve_runtime_image(variant, settings(PROCESS_RUNTIME_IMAGE_STACTOOLS="  "))
+
+
+def test_run_spec_carries_the_alias_image():
+    creds = RunCredentials("AK", "SK", "TOK", "b", run_staging_prefix(RUN), None, "r")
+    spec = build_run_spec(
+        settings(),
+        run_id=RUN,
+        process_id=PROC,
+        runtime=parse_process_runtime({"kind": "inline_python", "runtime_image": "stactools"}),
+        code="from stac_higher_stactools import run\nrun('stactools-goes')",
+        env={},
+        credentials=creds,
+    )
+    assert spec.image == "stac-higher-process-runtime-stactools:local"

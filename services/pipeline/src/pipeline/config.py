@@ -109,6 +109,12 @@ DEFAULT_DOCKER_HOST = "tcp://docker-socket-proxy:2375"
 #: inline_python on this image only; user-supplied images are refused at the
 #: app's write gate (ADR 0013 slice-1 scope).
 DEFAULT_PROCESS_RUNTIME_IMAGE = "stac-higher-process-runtime:local"
+#: The `stactools` variant (X-queue spec §8): the built-in extractor library's
+#: image, selected by `runtime.runtime_image: "stactools"`. Set it EMPTY to
+#: declare that this deployment has no such image — a run asking for the
+#: alias then dies naming the variable, rather than launching on the base
+#: image where `import stac_higher_stactools` would fail less clearly.
+DEFAULT_PROCESS_RUNTIME_IMAGE_STACTOOLS = "stac-higher-process-runtime-stactools:local"
 #: Dedicated network for run containers — the egress-policy analog at the
 #: executor boundary. `none` means no network at all, which is the right
 #: default: a process that needs egress is an explicit deployment decision.
@@ -205,6 +211,8 @@ class Settings:
     #: DEFAULT_DOCKER_HOST constants.
     docker_host: str = DEFAULT_DOCKER_HOST
     process_runtime_image: str = DEFAULT_PROCESS_RUNTIME_IMAGE
+    #: Empty string ⇒ the alias is unavailable here (see the DEFAULT_ constant).
+    process_runtime_image_stactools: str = DEFAULT_PROCESS_RUNTIME_IMAGE_STACTOOLS
     process_network: str = DEFAULT_PROCESS_NETWORK
     process_log_max_bytes: int = DEFAULT_PROCESS_LOG_MAX_BYTES
     process_credential_grace_seconds: int = DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS
@@ -229,8 +237,7 @@ class Settings:
             log_level=env.get("LOG_LEVEL", "INFO").upper(),
             credentials_master_key=env.get("CREDENTIALS_MASTER_KEY") or None,
             egress_allow_hosts=_parse_allow_hosts(env.get("EGRESS_ALLOW_HOSTS")),
-            staging_s3_endpoint=env.get("STAGING_S3_ENDPOINT", DEFAULT_STAGING_S3_ENDPOINT)
-            or None,
+            staging_s3_endpoint=env.get("STAGING_S3_ENDPOINT", DEFAULT_STAGING_S3_ENDPOINT) or None,
             staging_s3_region=env.get("STAGING_S3_REGION", DEFAULT_STAGING_S3_REGION),
             staging_s3_access_key=env.get(
                 "STAGING_S3_ACCESS_KEY_ID", DEFAULT_STAGING_S3_ACCESS_KEY
@@ -239,9 +246,7 @@ class Settings:
                 "STAGING_S3_SECRET_ACCESS_KEY", DEFAULT_STAGING_S3_SECRET_KEY
             ),
             staging_bucket=env.get("STAGING_BUCKET", DEFAULT_STAGING_BUCKET),
-            staging_s3_force_path_style=_parse_bool(
-                env.get("STAGING_S3_FORCE_PATH_STYLE"), True
-            ),
+            staging_s3_force_path_style=_parse_bool(env.get("STAGING_S3_FORCE_PATH_STYLE"), True),
             staging_ttl_seconds=int(
                 env.get("STAGING_TTL_SECONDS", str(DEFAULT_STAGING_TTL_SECONDS))
             ),
@@ -258,9 +263,7 @@ class Settings:
                     str(DEFAULT_INGEST_FAILED_RETRY_SECONDS),
                 )
             ),
-            ingest_max_retries=int(
-                env.get("INGEST_MAX_RETRIES", str(DEFAULT_INGEST_MAX_RETRIES))
-            ),
+            ingest_max_retries=int(env.get("INGEST_MAX_RETRIES", str(DEFAULT_INGEST_MAX_RETRIES))),
             ingest_max_window_prefixes=int(
                 env.get(
                     "INGEST_MAX_WINDOW_PREFIXES",
@@ -314,9 +317,10 @@ class Settings:
                 env.get("WEBHOOK_STALL_SECONDS", str(DEFAULT_WEBHOOK_STALL_SECONDS))
             ),
             docker_host=env.get("DOCKER_HOST", DEFAULT_DOCKER_HOST),
-            process_runtime_image=env.get(
-                "PROCESS_RUNTIME_IMAGE", DEFAULT_PROCESS_RUNTIME_IMAGE
-            ),
+            process_runtime_image=env.get("PROCESS_RUNTIME_IMAGE", DEFAULT_PROCESS_RUNTIME_IMAGE),
+            process_runtime_image_stactools=env.get(
+                "PROCESS_RUNTIME_IMAGE_STACTOOLS", DEFAULT_PROCESS_RUNTIME_IMAGE_STACTOOLS
+            ).strip(),
             process_network=env.get("PROCESS_NETWORK", DEFAULT_PROCESS_NETWORK),
             process_log_max_bytes=int(
                 env.get("PROCESS_LOG_MAX_BYTES", str(DEFAULT_PROCESS_LOG_MAX_BYTES))
@@ -327,9 +331,7 @@ class Settings:
                     str(DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS),
                 )
             ),
-            process_sts_role_arn=env.get(
-                "PROCESS_STS_ROLE_ARN", DEFAULT_PROCESS_STS_ROLE_ARN
-            ),
+            process_sts_role_arn=env.get("PROCESS_STS_ROLE_ARN", DEFAULT_PROCESS_STS_ROLE_ARN),
             process_run_s3_endpoint=env.get("PROCESS_RUN_S3_ENDPOINT") or None,
             process_run_stall_seconds=int(
                 env.get(

@@ -112,6 +112,13 @@ that pair with:
 `cases[]` keeps the ordinary `{ name, config, app, pipeline }` format across
 both arms.
 
+`process-runtime.json` also carries `runtime_image` (X-3): an ALIAS of a
+platform-built image (`default` | `stactools`), absent ⇒ `default` on both
+sides because every revision stored before it lacks it, and an alias outside
+the set reject/reject — the pipeline resolves a known alias through
+`PROCESS_RUNTIME_IMAGE*` at launch and dies the run by name when the
+deployment has left that image empty.
+
 **`process-runtime.json` carries the M5 slice-1 asymmetry**, and it is a
 decision rather than an oversight: the `container` arm is part of the contract
 (the pipeline reader parses it, so nothing is foreclosed) while the app's

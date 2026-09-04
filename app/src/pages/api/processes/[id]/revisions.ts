@@ -20,6 +20,9 @@
  * `network.level: isolated` this slice; the deployment cap
  * (`PROCESS_NETWORK_MAX`, GOES spec §4) is checked here as well so that once
  * the gate opens, a level above the cap is still refused at the form.
+ * `runtime.runtime_image` (X-queue spec §8) is an alias of a PLATFORM image,
+ * validated by the schema's enum — the same set the pipeline resolves at
+ * launch, where an alias it has no image for dies with a reason.
  */
 import type { APIRoute } from "astro";
 import { jsonResponse } from "@/lib/http/response";

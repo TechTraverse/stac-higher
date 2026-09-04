@@ -149,6 +149,12 @@ Rules:
 - Bounds are inclusive; the write gate clamps nothing — it rejects.
 - `max_queue_wait_seconds` is the profile's promise to the credential
   minting path (§5.4) and the UI's "expected wait" hint.
+- A profile's `image` is a **base**; the X-queue's `runtime.runtime_image`
+  alias (X-3, landed 2026-09-04 as `"default" | "stactools"` on
+  `runtimeLimits`, resolved through `PROCESS_RUNTIME_IMAGE*` at launch)
+  selects the variant — `<base>-stactools` — so a GPU profile and the
+  stactools library compose. K-1 adds `hardware` beside `runtime_image`;
+  the executor resolves base then variant.
 
 ### 3.3 What the app exposes
 
