@@ -588,3 +588,27 @@ sections above, this addendum wins.
   assets from `ingest_files.source_href` instead — for both transform and
   extract runs. This closes a gap G-2 shipped with, found while wiring G-7's
   reference-mode GOES flow.
+
+## 16. §9 addendum — the night side (G-8, 2026-09-04)
+
+§9's night branch was scoped as the inverted C13 blended in by per-pixel
+maximum, and it worked as written: measured 2026-09-04, a night COG is ~1 %
+colour pixels against 57 % for a daytime one, so the "black and white" the
+lead saw was the grey night layer, not a broken true-colour path. G-8 changes
+`compose()` only, and only in two ways. **The ramp:** the inverted brightness
+temperature `night = 1 − clip((K − 90) / (313 − 90), 0, 1)` now drives a
+linear interpolation between `NIGHT_WARM_RGB = (0.02, 0.05, 0.18)` — a deep
+blue for warm surfaces and low cloud — and `NIGHT_COLD_RGB = (1, 1, 1)` for
+the coldest tops, per channel, instead of being written to all three as grey.
+**The blend:** day and night are mixed by the per-pixel solar zenith angle
+rather than by `np.maximum`, linearly across a twilight band of
+`TWILIGHT_DAY_DEG = 80` to `TWILIGHT_NIGHT_DEG = 96` degrees, so dusk fades
+instead of flipping. The angle comes from `solar_zenith()`: pixel centres
+every `ZENITH_STEP = 64` pixels reprojected to WGS84 (bisecting to isolate the
+off-limb samples GDAL refuses, then nearest-filling them), the NOAA
+low-precision sun position at the granule's scan time, and a bilinear
+upsample — no new dependency, and the sampling error is two orders of
+magnitude inside the twilight band. `compose()` takes the zenith array as a
+fifth argument, since it cannot be derived from the radiances. City lights
+stay out of scope (they need a static reference-asset input the platform does
+not have — I-106).

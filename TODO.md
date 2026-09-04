@@ -11,7 +11,7 @@ just a wasted read.
 | Queue | What it is | State |
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
-| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-7 done, standing demo running since 2026-09-04. **G-8 (night-side tint) is open** — bounded, may start now |
+| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | Spec **approved 2026-09-04**. P-1 first (bounded), then P-2; P-3 and P-4 are independent of each other |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 goes first; X-3 coordinates with K-1; X-4 takes migration **028** |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
@@ -255,7 +255,7 @@ slice text, before implementing.
       `2026-09-02-goes-g7-worked-example.md` (both scripts under
       `pipeline/demo/goes/`, `pipeline.demo goes-seed`, inputs read from local
       disk — the runtime image cannot open netCDF over `/vsi`).
-- [ ] **G-8 · GeoColor night side: NOAA-style tint + solar-zenith blend.**
+- [x] **G-8 · GeoColor night side: NOAA-style tint + solar-zenith blend.**
       Feedback 2026-09-04 item 4 ("the geocolor image looks black and
       white") — measured that day: a night COG is ~1 % colour pixels, a
       daytime one 57 %, so the true-colour path works and the grey is the
@@ -280,6 +280,10 @@ slice text, before implementing.
       2026-09-04 measure (`|r−g| > 8 or |g−b| > 8`), the day COG must stay
       within a few percent of today's. Spec §9 gets a one-paragraph addendum
       recording the ramp constants. Bounded — no plan document.
+      **Merged 2026-09-04** (`ai/goes-g8`): the ramp constants and the
+      `solar_zenith()` sampling are recorded in the spec's §16 addendum. The
+      live gate above is NOT yet run — it needs Docker and the live bucket;
+      see the follow-up below.
 
 ## P queue — pipeline graph: lineage lines + full graph view (feedback 2026-09-04)
 
@@ -536,6 +540,16 @@ Residual gaps that are not slices are logged as issues instead — **I-82** (the
 byte-volume model is declared, not measured — a real size census belongs before
 any contractual scale or storage-cost claim) and **I-83** (streaming reaches
 object stores only).
+
+- **G-8's night-side live gate (LEAD ONLY, Docker + internet).** The unit
+  tests pin the ramp and the terminator blend on synthetic grids, and a
+  synthetic night scene (25 % cloud at 200–260 K over surface at 285–300 K)
+  measures 100 % colour pixels by the 2026-09-04 `|r−g| > 8 or |g−b| > 8`
+  rule against ~1 % before. What is unverified is the real thing: re-run
+  `pipeline.demo goes-seed` (idempotent — it re-deploys the revision), wait
+  for one night granule and one day granule, and check that the night COG
+  clears 30 % colour pixels and the day COG stays within a few percent of the
+  2026-09-04 baseline of 57 %.
 
 - **Re-run vs. a leftover container (M3-W-1 discovery).** A re-run reuses the
   run id, so `launch` asks for the container name `stac-run-{run_id}` — which

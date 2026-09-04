@@ -84,13 +84,81 @@ def test_compose_daylight_night_and_fill(geocolor):
     c02 = np.array([[0.9, 0.0, 0.0, np.nan]])
     c03 = np.array([[0.7, 0.0, 0.0, np.nan]])
     c13 = np.array([[220.0, 300.0, 200.0, np.nan]])
-    rgb, mask = geocolor["compose"](c01, c02, c03, c13)
+    zenith = np.array([[20.0, 150.0, 150.0, 150.0]])
+    rgb, mask = geocolor["compose"](c01, c02, c03, c13, zenith)
     assert rgb.shape == (3, 1, 4) and rgb.dtype == np.uint8 and mask.dtype == np.uint8
     assert rgb[0, 0, 0] > 200                       # day: red from C02 after gamma
     assert 0 < rgb[0, 0, 1] < 40                    # warm night surface: faint IR
     assert rgb[0, 0, 2] > rgb[0, 0, 1]              # cold cloud brighter than warm land at night
     assert (rgb[:, 0, 3] == 0).all() and mask[0, 3] == 0   # fill: black + masked
     assert (mask[0, :3] == 255).all()
+
+
+def test_compose_tints_the_night_side_blue_to_white(geocolor):
+    # G-8: the night layer is a ramp, not grey. Warm surface -> deep blue,
+    # cold cloud top -> white. The 2026-09-04 "colour pixel" measure is
+    # |r-g| > 8 or |g-b| > 8; the whole warm-to-mid range must clear it.
+    kelvin = np.array([[300.0, 280.0, 250.0, 220.0, 95.0]])
+    zeros = np.zeros_like(kelvin)
+    rgb, _ = geocolor["compose"](zeros, zeros, zeros, kelvin, 150.0)
+    r, g, b = (rgb[i, 0].astype(int) for i in range(3))
+    warm = slice(0, 4)                                      # everything but the top
+    assert (b[warm] > g[warm]).all() and (g[warm] >= r[warm]).all()   # blue-leaning
+    assert (np.abs(g - b)[warm] > 8).all()                  # colour, not grey
+    assert b[0] < 60 and r[0] < 25 and b[0] - r[0] > 30     # warm surface: deep blue
+    assert r[-1] > 230 and g[-1] > 230 and b[-1] > 230      # coldest tops: white
+    assert (np.diff(r) > 0).all()                           # colder -> brighter
+
+
+def test_compose_fades_across_the_terminator(geocolor):
+    # One radiance everywhere, only the solar zenith varies: the blend must be
+    # a gradient across the twilight band, flat outside it.
+    row = np.full((1, 9), 0.6)
+    c13 = np.full((1, 9), 240.0)
+    zenith = np.array([[60.0, 75.0, 80.0, 84.0, 88.0, 92.0, 96.0, 110.0, 150.0]])
+    rgb, _ = geocolor["compose"](row, row, row, c13, zenith)
+    blue = rgb[2, 0].astype(int)
+    assert blue[0] == blue[1] == blue[2]        # <= 80 deg: pure day
+    assert blue[6] == blue[7] == blue[8]        # >= 96 deg: pure night
+    band = blue[2:7]
+    assert (np.diff(band) < 0).all()            # every step inside the band moves
+    day_only = geocolor["compose"](row, row, row, c13, 0.0)[0]
+    assert blue[0] == int(day_only[2, 0, 0])    # the band's day end IS the day render
+
+
+def test_solar_zenith_finds_the_subsolar_point(geocolor):
+    # A one-degree lat/lon grid at the June solstice, noon UTC: the sun is
+    # overhead near (23.4 N, 0 E) and straight down through the Earth on the
+    # far side.
+    when = dt.datetime(2026, 6, 21, 12, 0, tzinfo=dt.UTC)
+    zenith = geocolor["solar_zenith"](
+        "EPSG:4326", from_origin(-180.0, 90.0, 1.0, 1.0), (180, 360), when, step=4
+    )
+    assert zenith.shape == (180, 360) and zenith.dtype == np.float32
+    assert np.isfinite(zenith).all() and zenith.min() >= 0 and zenith.max() <= 180
+    row, col = np.unravel_index(int(np.argmin(zenith)), zenith.shape)
+    lat, lon = 90.0 - (row + 0.5), (col + 0.5) - 180.0
+    assert abs(lat - 23.4) < 2.0 and abs(lon) < 2.0
+    assert zenith.min() < 3.0 and zenith.max() > 175.0
+    # Half a world away in longitude the sun is well below the horizon.
+    assert zenith[row, (col + 180) % 360] > 130.0
+
+
+def test_solar_zenith_fills_the_off_disk_samples(geocolor):
+    # A geostationary grid wide enough that its corners fall off the limb and
+    # do not reproject: those samples must not leak infinities into the blend.
+    transform = from_origin(-5_500_000.0, 5_500_000.0, 20_000.0, 20_000.0)
+    zenith = geocolor["solar_zenith"](
+        GEOS_CRS,
+        transform,
+        (550, 550),
+        dt.datetime(2026, 9, 4, 18, 0, tzinfo=dt.UTC),
+        step=16,
+    )
+    assert np.isfinite(zenith).all()
+    assert zenith.min() >= 0.0 and zenith.max() <= 180.0
+    # The sub-satellite point (lon -75) at 18:00 UTC is near local noon.
+    assert zenith[275, 275] < 25.0
 
 
 def test_read_band_applies_scale_offset_and_fill(geocolor, tmp_path):
