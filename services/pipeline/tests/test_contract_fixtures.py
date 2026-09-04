@@ -18,6 +18,7 @@ from pipeline.finalize.status import StatusContractError, validate_status_doc
 from pipeline.flow.expectation import parse_delivery_expectation, parse_ingest_expectation
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.notify.config import parse_webhook_config
+from pipeline.process.builtin import parse_builtin_extractor, parse_builtin_extractors
 from pipeline.process.config import (
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_MEMORY_MB,
@@ -50,6 +51,7 @@ PROCESS_ENV = _load("process-env.json")
 PROCESS_EXPECTATION = _load("process-expectation.json")
 S3_CONFIG = _load("s3-connection-config.json")
 PROCESS_INPUT_MANIFEST = _load("process-input-manifest.json")
+BUILTIN_EXTRACTORS = _load("builtin-extractors.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -303,3 +305,23 @@ def test_process_input_manifest_fixture_is_registered():
     loaded where the README says every fixture is loaded."""
     assert PROCESS_INPUT_MANIFEST["style"] == "producer-golden"
     assert PROCESS_INPUT_MANIFEST["version"] == 1
+
+
+# ---------------------------------------------------------------------------
+# X-1: the built-in extractor registry (X-queue spec §5). The `registry` style
+# has no minimal/defaults pair — the document IS the golden value — so the
+# cases run against a single entry and the whole file is parsed as one.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", BUILTIN_EXTRACTORS["cases"], ids=lambda c: c["name"])
+def test_builtin_extractor_cases(case):
+    _check(parse_builtin_extractor, case)
+
+
+def test_builtin_extractor_registry_parses():
+    entries = parse_builtin_extractors(BUILTIN_EXTRACTORS)
+    assert BUILTIN_EXTRACTORS["style"] == "registry"
+    assert [e.id for e in entries] == [
+        e["id"] for e in BUILTIN_EXTRACTORS["extractors"]
+    ]

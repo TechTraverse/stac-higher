@@ -862,10 +862,10 @@ is. Regression test: `app/src/__tests__/graph-storage.test.ts` (SQL shape
 plus a fake-database run asserting no surviving node has degree 0). Spec:
 `docs/superpowers/specs/2026-09-04-pipeline-graph-views-design.md` §1, §10.
 
-### I-105 · Seven curated stactools packages ship without a live gate 🟡
-Opened by the X-queue spec (§3.5, §10): `viirs`, `modis`, `hls`
-(Earthdata login), `landsat`, `sentinel1`, `sentinel2`, `naip`
-(requester-pays) have no anonymous public source, so X-5 can only
+### I-105 · Six curated stactools packages ship without a live gate 🟡
+Opened by the X-queue spec (§3.5, §10): `viirs`, `modis` (Earthdata
+login), `landsat`, `sentinel1`, `sentinel2`, `naip` (requester-pays) have
+no anonymous public source, so X-5 can only
 import-smoke and unit-test their adapters against the packages' own
 fixture files. Their live gate is owed the first time a credentialed
 connection to one of those archives exists. Until then a registry entry
@@ -882,6 +882,22 @@ be given. Shape when wanted: a catalogued reference collection granted
 read-only in the run's STS policy and named in the revision (`runtime.
 reference_inputs`), staged under `inputs/reference/` — an ADR-sized
 addition, not a slice of G-8.
+
+### I-107 · Three curated stactools packages have no release to pin 🟡
+The lead's curated set (X-queue spec §2) named fourteen packages; three of
+them — `noaa-nwm`, `noaa-sst` and `hls` — have **never been published to
+PyPI**. They exist only as repos under `stactools-packages` with no tags or
+releases at all (last pushed 2023-10, 2021-09 and 2022-08 respectively), so
+there is no `package==version` to pin and nothing for the image's build-time
+import smoke test to prove. X-1 therefore ships **eleven** registry entries,
+not fourteen (lead's call, 2026-09-04), and X-5's live gate B covers the four
+remaining anonymous packages (`goes-glm`, `noaa-hrrr`, `noaa-mrms-qpe`,
+`noaa-cdr`) beside gate A's `goes`. Shape if wanted later: a `source`
+discriminator on the registry entry (`pypi` with a version, or `git` with an
+immutable commit SHA) so the three can be installed from their repos — a
+supply-chain decision, not a registry-schema one, which is why it was not
+taken unilaterally. Cheaper trigger: one of the three cutting a release.
+- Tracked in: X-queue spec §2/§3.5; `tests/contract-fixtures/README.md`.
 
 ## Process compute — Kubernetes + Kueue (K queue, 2026-09-02)
 

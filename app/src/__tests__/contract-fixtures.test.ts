@@ -33,6 +33,12 @@ import {
 import { EXPECTATION_BREACH_KIND } from "@/lib/monitoring/api";
 import { ALERT_KIND_LABEL } from "@/components/monitoring/shared";
 import {
+  builtinExtractorSchema,
+  moduleName,
+  parseBuiltinExtractors,
+  pinFor,
+} from "@/lib/extractors/schemas";
+import {
   processEnvSchema,
   processExpectationSchema,
   processRuntimeReadSchema,
@@ -308,5 +314,53 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
     for (const kind of fixture.kinds) {
       expect(ALERT_KIND_LABEL[kind], `label for ${kind}`).toBeTruthy();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// X-1: the built-in extractor registry (X-queue spec §5). `registry` style —
+// the document IS the golden value, so there is no minimal/defaults pair: the
+// cases run against a single entry and the file is parsed whole.
+// ---------------------------------------------------------------------------
+
+describe("built-in extractor registry (tests/contract-fixtures/builtin-extractors.json)", () => {
+  const fixture = loadFixture("builtin-extractors.json") as unknown as {
+    style: string;
+    extractors: unknown[];
+    cases: FixtureCase[];
+  };
+
+  it.each(fixture.cases)("$app: $name", ({ config, app }) => {
+    expect(builtinExtractorSchema.safeParse(config).success).toBe(
+      app === "accept",
+    );
+  });
+
+  it("parses the whole registry", () => {
+    const entries = parseBuiltinExtractors(fixture);
+    expect(fixture.style).toBe("registry");
+    expect(entries).toHaveLength(fixture.extractors.length);
+    // Eleven, not the spec's fourteen: noaa-nwm, noaa-sst and hls exist only
+    // as untagged GitHub repos and have never been released to PyPI, so they
+    // carry no pin (lead's call 2026-09-04; I-107).
+    expect(entries).toHaveLength(11);
+  });
+
+  it("derives the import name and the image pin the same way the pipeline does", () => {
+    const entries = parseBuiltinExtractors(fixture);
+    const byId = Object.fromEntries(entries.map((e) => [e.id, e]));
+    expect(moduleName(byId["stactools-goes"])).toBe("stactools.goes");
+    expect(moduleName(byId["stactools-goes-glm"])).toBe("stactools.goes_glm");
+    expect(pinFor(byId["stactools-goes"])).toBe("stactools-goes==0.1.8");
+    for (const entry of entries) {
+      expect(moduleName(entry)).not.toContain("-");
+    }
+  });
+
+  it("refuses a registry with a duplicate id", () => {
+    const one = fixture.extractors[0];
+    expect(() =>
+      parseBuiltinExtractors({ ...fixture, extractors: [one, one] }),
+    ).toThrow();
   });
 });

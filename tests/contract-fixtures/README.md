@@ -170,6 +170,56 @@ is what the ledger says about reference-mode assets; a canonical href with a
 matching entry is staged from that source and keeps its catalog href in the
 manifest.
 
+## Additional fixture styles (X queue, X-1)
+
+### `registry` — `builtin-extractors.json`
+
+The built-in extractor library (X-queue spec §5): the curated stactools
+packages an operator picks in the Data flow form instead of writing an
+extractor. Unlike every other fixture here it is not a *shape* both sides
+validate — **it is the data itself**, versioned with the runtime image that
+installs the packages it names. Consumers:
+`app/src/lib/extractors/schemas.ts` (the picker and the process template) and
+`services/pipeline/src/pipeline/process/builtin.py` (adapter dispatch and the
+launch-time check).
+
+The file has no `minimal`/`defaults` pair, because a registry entry has no
+defaults to apply — the document IS the golden value:
+
+- `extractors[]` — the registry, in the picker's order. Each entry is
+  `{id, label, package, version, adapter, supports, products, access, runtime,
+  extensions}`. `version` is a **concrete** pin (a range would make the pin
+  check meaningless), `package` is always in the `stactools-` namespace, and
+  the import name both runtimes derive from it (`stactools-goes-glm` →
+  `stactools.goes_glm`) is part of the contract — the image's build-time
+  import smoke test uses exactly that string.
+- `cases[]` — the ordinary `{name, config, app, pipeline}` format, run against
+  ONE entry rather than the whole document.
+
+The `app`/`pipeline` asymmetry holds with the writer being a person editing
+the registry rather than a form: Zod rejects unknown keys, so a typo fails CI
+at review time, while the Python reader ignores them, so a registry that grows
+a key cannot brick a pipeline image built before it.
+
+**The pin check** (`pin_drift` in the Python module, exercised by
+`services/pipeline/tests/test_builtin_extractors.py`) compares the registry's
+`package==version` pairs against `services/process-runtime/Dockerfile.stactools`
+in both directions — a registry entry the image does not install, an image pin
+the registry does not name, or a version that differs — so the two cannot
+disagree about what a run will import. That file lands with X-2; until it
+exists the check against the real Dockerfile skips and the drift logic itself
+is covered against sample text.
+
+**Packaging is not decided here.** Both readers take a *document*; how the
+file reaches each image (a COPY, a mount, an env override) is X-2's and X-4's
+call, since neither the app's nor the pipeline's build context includes
+`tests/` today.
+
+The lead's curated set was fourteen packages. Three — `noaa-nwm`, `noaa-sst`
+and `hls` — exist only as untagged GitHub repos under `stactools-packages`
+and have never been published to PyPI, so they carry no pinnable release and
+are not in the registry (I-107).
+
 ## Why `app` and `pipeline` expectations can differ
 
 The contract is deliberately asymmetric. Zod is the **strict write gatekeeper**

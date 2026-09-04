@@ -1,0 +1,334 @@
+{
+  "style": "registry",
+  "version": 1,
+  "description": "The built-in extractor library (X queue spec §5): the curated stactools packages an operator can pick in the Data flow form instead of writing an extractor. Both runtimes read it — the app for the picker and the process template, the pipeline for adapter dispatch and the launch-time check — and the image the entries describe (services/process-runtime/Dockerfile.stactools) pins exactly these `package==version` pairs, which is what makes the registry versioned WITH the image rather than a DB table. The lead's curated set was fourteen packages; three of them (noaa-nwm, noaa-sst, hls) exist only as untagged GitHub repos under stactools-packages and have never been published to PyPI, so this registry ships the ELEVEN that have a pinnable release and I-107 records the three (lead's call, 2026-09-04).",
+  "extractors": [
+    {
+      "id": "stactools-goes",
+      "label": "GOES-R ABI (L1b / L2)",
+      "package": "stactools-goes",
+      "version": "0.1.8",
+      "adapter": "goes",
+      "supports": "single_file",
+      "products": ["ABI-L1b-*", "ABI-L2-*"],
+      "access": "anonymous",
+      "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "raster", "processing"]
+    },
+    {
+      "id": "stactools-goes-glm",
+      "label": "GOES-R GLM lightning (L2 LCFA)",
+      "package": "stactools-goes-glm",
+      "version": "0.2.4",
+      "adapter": "goes_glm",
+      "supports": "single_file",
+      "products": ["GLM-L2-LCFA"],
+      "access": "anonymous",
+      "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "processing"]
+    },
+    {
+      "id": "stactools-noaa-hrrr",
+      "label": "NOAA HRRR forecast (GRIB2 + .idx)",
+      "package": "stactools-noaa-hrrr",
+      "version": "1.0.1",
+      "adapter": "noaa_hrrr",
+      "supports": "grouped",
+      "products": ["hrrr.*.wrfsfcf*.grib2", "hrrr.*.wrfprsf*.grib2"],
+      "access": "anonymous",
+      "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "datacube", "forecast"]
+    },
+    {
+      "id": "stactools-noaa-mrms-qpe",
+      "label": "NOAA MRMS quantitative precipitation estimate",
+      "package": "stactools-noaa-mrms-qpe",
+      "version": "0.3.1",
+      "adapter": "noaa_mrms_qpe",
+      "supports": "single_file",
+      "products": ["MRMS_MultiSensor_QPE_*.grib2.gz", "MRMS_RadarOnly_QPE_*.grib2.gz"],
+      "access": "anonymous",
+      "runtime": { "memory_mb": 1024, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "raster"]
+    },
+    {
+      "id": "stactools-noaa-cdr",
+      "label": "NOAA Climate Data Records",
+      "package": "stactools-noaa-cdr",
+      "version": "0.2.1",
+      "adapter": "noaa_cdr",
+      "supports": "single_file",
+      "products": ["*.nc"],
+      "access": "anonymous",
+      "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "raster"]
+    },
+    {
+      "id": "stactools-viirs",
+      "label": "VIIRS surface products (NASA)",
+      "package": "stactools-viirs",
+      "version": "0.1.0",
+      "adapter": "viirs",
+      "supports": "single_file",
+      "products": ["VNP*.h5"],
+      "access": "credentialed",
+      "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "raster", "classification"]
+    },
+    {
+      "id": "stactools-modis",
+      "label": "MODIS land products (NASA)",
+      "package": "stactools-modis",
+      "version": "0.2.0",
+      "adapter": "modis",
+      "supports": "grouped",
+      "products": ["M*D*.hdf"],
+      "access": "credentialed",
+      "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "raster", "classification"]
+    },
+    {
+      "id": "stactools-landsat",
+      "label": "Landsat Collection 2 (USGS)",
+      "package": "stactools-landsat",
+      "version": "0.5.0",
+      "adapter": "landsat",
+      "supports": "grouped",
+      "products": ["L*_MTL.xml"],
+      "access": "credentialed",
+      "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "raster", "eo", "view"]
+    },
+    {
+      "id": "stactools-sentinel1",
+      "label": "Sentinel-1 GRD (ESA)",
+      "package": "stactools-sentinel1",
+      "version": "0.8.1",
+      "adapter": "sentinel1",
+      "supports": "grouped",
+      "products": ["S1*_GRD*.SAFE"],
+      "access": "credentialed",
+      "runtime": { "memory_mb": 4096, "timeout_seconds": 600, "network": { "level": "isolated" } },
+      "extensions": ["proj", "sar", "sat"]
+    },
+    {
+      "id": "stactools-sentinel2",
+      "label": "Sentinel-2 L1C / L2A (ESA)",
+      "package": "stactools-sentinel2",
+      "version": "0.8.0",
+      "adapter": "sentinel2",
+      "supports": "grouped",
+      "products": ["S2*.SAFE"],
+      "access": "credentialed",
+      "runtime": { "memory_mb": 4096, "timeout_seconds": 600, "network": { "level": "isolated" } },
+      "extensions": ["proj", "eo", "sat", "view"]
+    },
+    {
+      "id": "stactools-naip",
+      "label": "NAIP aerial imagery (USDA)",
+      "package": "stactools-naip",
+      "version": "0.5.0",
+      "adapter": "naip",
+      "supports": "grouped",
+      "products": ["m_*.tif"],
+      "access": "credentialed",
+      "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+      "extensions": ["proj", "raster", "eo"]
+    }
+  ],
+  "cases": [
+    {
+      "name": "a complete entry",
+      "config": {
+        "id": "stactools-goes",
+        "label": "GOES-R ABI (L1b / L2)",
+        "package": "stactools-goes",
+        "version": "0.1.8",
+        "adapter": "goes",
+        "supports": "single_file",
+        "products": ["ABI-L2-*"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 2048, "timeout_seconds": 300, "network": { "level": "isolated" } },
+        "extensions": ["proj"]
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "no extensions declared is an empty list, not a failure",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "isolated" } }
+      },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "an unknown key is a writer typo, tolerated by the reader",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "isolated" } },
+        "notes": "helpful prose"
+      },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "an unknown `supports` value",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "directory",
+        "products": ["*.nc"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "isolated" } }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "an unknown `access` value",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "public",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "isolated" } }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "a version that is not a concrete pin",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "0.1.x",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "isolated" } }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "a package name outside the stactools namespace",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "requests",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "isolated" } }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "an adapter name that is not an importable module segment",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "adapters/x.py",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "isolated" } }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "no products at all — the picker would have nothing to hint",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": [],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "isolated" } }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "an unknown network level",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 1024, "timeout_seconds": 120, "network": { "level": "everywhere" } }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "memory below the process runtime floor",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "anonymous",
+        "runtime": { "memory_mb": 64, "timeout_seconds": 120, "network": { "level": "isolated" } }
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "a missing runtime block",
+      "config": {
+        "id": "stactools-x",
+        "label": "X",
+        "package": "stactools-x",
+        "version": "1.0.0",
+        "adapter": "x",
+        "supports": "single_file",
+        "products": ["*.nc"],
+        "access": "anonymous"
+      },
+      "app": "reject",
+      "pipeline": "reject"
+    }
+  ]
+}
