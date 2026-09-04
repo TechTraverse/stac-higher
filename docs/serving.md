@@ -43,6 +43,32 @@ Version pins follow eoAPI's tested combination for pgstac 0.9.x.
   layer", never an error on the item page. URL builders and the asset picker
   live in `app/src/lib/serving/`; the overlay is the shared
   `RasterTileLayer`.
+- **Collection preview.** With serving on, a product page gains a **Preview**
+  tab: an animated raster map of the product, one frame per timestep. Frames
+  are the collection mosaic endpoint with `datetime` pinned —
+  `{PUBLIC_TITILER_URL}/collections/{c}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets={a}&datetime={t}`
+  — so a timestep tiled across several items composites for free, and no
+  search registration, POST or CORS handling is involved. Three things about
+  it are load-bearing:
+  - **The `datetime` is the catalog's own string, unmodified.** The filter
+    matches the instant exactly: `2026-09-04T06:11:17.300000Z` renders and the
+    same instant written `…17Z` returns an empty tile.
+  - **Playback waits for tiles.** A tick advances only when
+    `map.areTilesLoaded()` (capped at 10 s), so the first pass runs at the tile
+    server's pace and replays run at the full rate off the browser cache. The
+    outgoing frame stays painted beneath the incoming one, so a step never
+    flashes an empty map. Only ONE frame is warmed ahead: every mounted source
+    competes for the same few connections to the tiler, and a deeper window
+    starves the frame on screen.
+  - **The zoom range comes from the newest item's TileJSON.** The collection
+    mosaic advertises 0–24 over the whole extent, which would have maplibre
+    asking the tiler to oversample a five-level pyramid.
+
+  The tab is hidden unless serving is on and the recent items carry a
+  tileable asset. Frame count (25/50/100/200) and — when a product publishes
+  more than one rendering — the asset are pickable. Code:
+  `app/src/lib/serving/frames.ts`, `CollectionPreviewTab`, and the shared
+  `TimeSlider`.
 - **Canonical hrefs are mapped in the tile server.** Items keep their
   app-relative `/api/assets/{collection}/{item}/{filename}` hrefs (ADR 0005 —
   bytes are only reachable through the app); the derived image rewrites them

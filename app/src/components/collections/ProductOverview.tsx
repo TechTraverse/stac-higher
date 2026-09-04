@@ -261,9 +261,9 @@ export function ProductOverview({
           {settings?.servingEnabled && (
             <p className="mt-2 border-t border-border pt-2 text-[11.5px] text-muted-foreground">
               Display only — the toggle advertises these endpoints, it does not
-              gate the services. Rasters tile only where item asset hrefs are
-              absolute (platform <span className="tech">/api/assets/…</span>{" "}
-              hrefs are not resolvable by the tiler).
+              gate the services. Platform{" "}
+              <span className="tech">/api/assets/…</span> hrefs tile as they
+              are: the tile server maps them to the platform bucket (G-4).
             </p>
           )}
         </CardContent>

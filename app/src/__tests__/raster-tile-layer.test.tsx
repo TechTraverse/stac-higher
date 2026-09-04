@@ -62,4 +62,27 @@ describe("RasterTileLayer", () => {
     );
     expect(propsOf("source")).toMatchObject({ minzoom: 2, maxzoom: 16 });
   });
+
+  it("namespaces the source and layer when given an id, so frames can coexist", () => {
+    // The collection preview mounts several of these at once (current frame
+    // plus lookahead); sharing the default ids would collide in maplibre.
+    render(<RasterTileLayer id="frame-3" tiles={["http://t/{z}/{x}/{y}.png"]} />);
+
+    expect(propsOf("source")).toMatchObject({ id: "frame-3" });
+    expect(propsOf("layer")).toMatchObject({ id: "frame-3-layer", source: "frame-3" });
+  });
+
+  it("pins the opacity transition when a duration is given", () => {
+    render(
+      <RasterTileLayer
+        tiles={["http://t/{z}/{x}/{y}.png"]}
+        opacity={0}
+        opacityTransitionMs={0}
+      />,
+    );
+
+    expect(propsOf("layer")).toMatchObject({
+      paint: { "raster-opacity": 0, "raster-opacity-transition": { duration: 0, delay: 0 } },
+    });
+  });
 });

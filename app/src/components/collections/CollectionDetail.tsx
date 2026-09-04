@@ -10,6 +10,7 @@ import { Skeleton } from "@stac-higher/shared";
 import { ItemCard } from "@stac-higher/shared";
 import { AssetManager } from "@/components/assets/AssetManager";
 import { DataFlowTab } from "./DataFlowTab";
+import { CollectionPreviewTab } from "./CollectionPreviewTab";
 import { CollectionMetadata } from "./CollectionMetadata";
 import { ProductOverview } from "./ProductOverview";
 import { SettingsTab } from "./SettingsTab";
@@ -31,6 +32,8 @@ import {
 } from "@/components/ui/dialog";
 import { Pencil, Trash2, Plus, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
+import { useCollectionSettings } from "@/lib/collections/settings-client";
+import { previewAssetCandidates } from "@/lib/serving/preview";
 
 interface CollectionDetailInnerProps {
   collectionId: string;
@@ -42,6 +45,7 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
   const { data: collection, isLoading, error, refetch } = useCollection(endpointUrl, collectionId);
   const { data: itemsData } = useItems(endpointUrl, collectionId, { limit: 10 });
   const deleteMutation = useDeleteCollection(endpointUrl);
+  const { data: settings } = useCollectionSettings(collectionId);
   const [deleteOpen, setDeleteOpen] = useState(false);
   // Controlled so the product Overview panel can hand off to Data flow.
   const [tab, setTab] = useState("overview");
@@ -99,6 +103,13 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
 
   const items = itemsData?.features ?? [];
 
+  // The Preview tab is advertised on the same terms as every other serving
+  // link (I-69): only when the product opts in AND its recent items carry
+  // something a raster tiler can open. Anything less and the tab would open
+  // onto an empty map.
+  const previewAvailable =
+    settings?.servingEnabled === true && previewAssetCandidates(items).length > 0;
+
   return (
     <>
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
@@ -137,6 +148,7 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
         <Tabs value={tab} onValueChange={setTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
+            {previewAvailable && <TabsTrigger value="preview">Preview</TabsTrigger>}
             <TabsTrigger value="items">
               Items {itemsData?.context?.matched !== undefined && `(${itemsData.context.matched})`}
             </TabsTrigger>
@@ -163,6 +175,16 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
             <CollectionMetadata collection={collection} />
 
           </TabsContent>
+
+          {previewAvailable && (
+            <TabsContent value="preview">
+              <CollectionPreviewTab
+                collection={collection}
+                collectionId={collectionId}
+                endpointUrl={endpointUrl}
+              />
+            </TabsContent>
+          )}
 
           <TabsContent value="items">
             <div className="flex items-center justify-between mb-4">
