@@ -4,7 +4,7 @@ import { ExternalLink, ImageOff } from "lucide-react";
 import {
   bboxToLngLatBounds,
   EmptyState,
-  RasterTileLayer,
+  RasterFrameStack,
   Select,
   SelectContent,
   SelectItem,
@@ -26,19 +26,8 @@ import { collectionTileUrlTemplate, collectionViewerUrl } from "@/lib/serving/ur
 const FRAME_COUNTS = [25, 50, 100, 200];
 const DEFAULT_FRAME_COUNT = 50;
 
-/**
- * Frames kept mounted ahead of the current one, warming while it plays. ONE:
- * every mounted frame competes for the same handful of connections to the tile
- * server, so a deeper window starves the frame the viewer is actually looking
- * at.
- */
-const LOOKAHEAD = 1;
-
 /** Ticks to wait for tiles before advancing regardless — 10s at the default rate. */
 const MAX_WAIT_TICKS = 40;
-
-/** The maplibre source id for a frame. */
-const frameSourceId = (frameIndex: number) => `preview-frame-${frameIndex}`;
 
 interface CollectionPreviewTabProps {
   collection: StacCollection;
@@ -54,7 +43,8 @@ interface CollectionPreviewTabProps {
  * catalog actually has items for — the mosaic then composites whatever falls
  * in that instant, so a product tiled across several items per timestep works
  * with no extra machinery. Nothing is fetched per frame before it renders;
- * maplibre asks for the tiles.
+ * maplibre asks for the tiles. The frame window (previous + current + one
+ * lookahead) is `RasterFrameStack`, shared with the /map page.
  *
  * Degradation is silent throughout, as it is for the item preview (G-5): no
  * serving, no tileable asset, or a tiler that cannot open one all mean "no
@@ -80,6 +70,19 @@ export function CollectionPreviewTab({
   const [chosenAsset, setChosenAsset] = useState<string | null>(null);
   const asset = chosenAsset && candidates.includes(chosenAsset) ? chosenAsset : candidates[0];
 
+  // What RasterFrameStack mounts: one tile template per timestep, keyed by
+  // the datetime the tiler filters on.
+  const rasterFrames = useMemo(
+    () =>
+      asset
+        ? frames.map((f) => ({
+            key: f.datetime,
+            tiles: [collectionTileUrlTemplate(collectionId, asset, f.datetime)],
+          }))
+        : [],
+    [frames, asset, collectionId],
+  );
+
   // Open on the newest frame — the end of the axis — and return there when the
   // span changes, which is the only thing that reshapes the series. Held as
   // "no choice yet" rather than an index set by an effect, so the first render
@@ -88,16 +91,6 @@ export function CollectionPreviewTab({
   useEffect(() => setChosenIndex(null), [frameCount]);
   const lastFrame = Math.max(frames.length - 1, 0);
   const index = chosenIndex === null ? lastFrame : Math.min(chosenIndex, lastFrame);
-
-  // The frame shown before this one, kept painted underneath. Tiles take far
-  // longer to render than a playback tick, so without it every step to a cold
-  // frame flashes an empty map.
-  const previousIndex = useRef(index);
-  const lastIndex = useRef(index);
-  if (lastIndex.current !== index) {
-    previousIndex.current = lastIndex.current;
-    lastIndex.current = index;
-  }
 
   // Playback waits for tiles rather than dropping frames: the first pass runs
   // at the tile server's pace, replays at full speed off the browser cache.
@@ -156,19 +149,6 @@ export function CollectionPreviewTab({
   const current = frames[index];
   const bbox = collection.extent?.spatial?.bbox?.[0];
 
-  // Draw order, bottom to top: the previous frame, then the current one over
-  // it, then the lookahead frames loading invisibly. Deduped — a series
-  // shorter than the window would otherwise repeat itself.
-  const mounted = [
-    ...new Set([
-      previousIndex.current % frames.length,
-      ...Array.from(
-        { length: LOOKAHEAD + 1 },
-        (_, offset) => (index + offset) % frames.length,
-      ),
-    ]),
-  ];
-
   return (
     <div className="space-y-4">
       <div className="h-[540px] rounded-lg overflow-hidden border border-border">
@@ -183,25 +163,16 @@ export function CollectionPreviewTab({
                 : undefined
           }
         >
-          {hintSettled &&
-            mounted.map((frameIndex) => (
-              <RasterTileLayer
-                key={frames[frameIndex].datetime}
-                id={`preview-frame-${frameIndex}`}
-                tiles={[
-                  collectionTileUrlTemplate(collectionId, asset, frames[frameIndex].datetime),
-                ]}
-                bounds={hint?.bounds}
-                minzoom={hint?.minzoom}
-                maxzoom={hint?.maxzoom}
-                // Frames are swapped by opacity against tiles maplibre already
-                // holds; a fade would smear one timestep into the next.
-                opacity={
-                  frameIndex === index || frameIndex === previousIndex.current ? 1 : 0
-                }
-                opacityTransitionMs={0}
-              />
-            ))}
+          {hintSettled && (
+            <RasterFrameStack
+              id="preview"
+              frames={rasterFrames}
+              index={index}
+              bounds={hint?.bounds}
+              minzoom={hint?.minzoom}
+              maxzoom={hint?.maxzoom}
+            />
+          )}
         </StacMap>
       </div>
 

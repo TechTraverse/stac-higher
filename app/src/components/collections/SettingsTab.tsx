@@ -47,15 +47,9 @@ import {
   useCollectionSettings,
   useUpdateCollectionSettings,
 } from "@/lib/collections/settings-client";
-import { collectionInfoUrl } from "@/lib/serving/urls";
+import { collectionInfoUrl, tipgLandingUrl } from "@/lib/serving/urls";
 
 const UNOWNED = "__unowned__";
-
-// Local OGC serving services (docker compose; docs/serving.md). Link-level
-// exposure only — the toggle controls whether this page advertises them.
-// The titiler base + URL shapes come from lib/serving/urls so this page, the
-// product overview and the item preview cannot drift apart.
-const TIPG_URL = import.meta.env.PUBLIC_TIPG_URL ?? "http://localhost:8085";
 
 export function SettingsTab({ collectionId }: { collectionId: string }) {
   const { data: auth } = useAuthMe();
@@ -396,7 +390,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
               </a>
               <a
                 className="flex items-center gap-1.5 text-primary hover:underline"
-                href={`${TIPG_URL}/`}
+                href={tipgLandingUrl()}
                 target="_blank"
                 rel="noreferrer"
               >

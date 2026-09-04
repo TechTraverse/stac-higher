@@ -35,7 +35,7 @@ import {
   successRate,
   unanchoredAlerts,
 } from "@/components/layout/overview";
-import { collectionInfoUrl } from "@/lib/serving/urls";
+import { collectionInfoUrl, tipgLandingUrl } from "@/lib/serving/urls";
 
 const HEALTH_LABEL: Record<LineageHealth, string> = {
   ok: "Healthy",
@@ -50,10 +50,6 @@ const HEALTH_BADGE: Record<LineageHealth, string> = {
   error: "border-danger-border bg-danger-subtle text-danger",
   unknown: "border-border bg-muted text-muted-foreground",
 };
-
-/** Browser-facing OGC bases; defaults match the compose stack (docs/serving.md).
- *  The titiler base lives in lib/serving/urls (one definition, three surfaces). */
-const TIPG_URL = import.meta.env.PUBLIC_TIPG_URL ?? "http://localhost:8085";
 
 function EndpointRow({
   label,
@@ -247,7 +243,7 @@ export function ProductOverview({
                 />
                 <EndpointRow
                   label="Vector features"
-                  href={`${TIPG_URL}/`}
+                  href={tipgLandingUrl()}
                   note="tipg — stack-wide, not per-product"
                 />
               </>

@@ -1,6 +1,6 @@
 /**
- * Tile-server (titiler-pgstac) URL builders — the ONE place the browser-facing
- * base lives, so the Settings tab, the product overview and the item preview
+ * Tile-server (titiler-pgstac) and tipg URL builders — the ONE place the browser-facing bases live,
+ * so the Settings tab, the product overview and the item preview
  * cannot drift apart (docs/serving.md).
  *
  * Link-level only: nothing here gates access. Until per-collection read
@@ -93,4 +93,35 @@ export function collectionViewerUrl(
     `${base}/collections/${enc(collectionId)}/WebMercatorQuad/map` +
     `?assets=${enc(assetKey)}`;
   return datetime ? `${url}&datetime=${enc(datetime)}` : url;
+}
+
+// ---------------------------------------------------------------------------
+// tipg (OGC API Features + Tiles for vector tables) — same rules as titiler:
+// one browser-facing base, link-level only (docs/serving.md).
+
+const DEFAULT_TIPG_URL = "http://localhost:8085";
+
+/** The browser-facing tipg base, without a trailing slash. */
+export function tipgBaseUrl(
+  env: Record<string, string | undefined> = import.meta.env as Record<
+    string,
+    string | undefined
+  >,
+): string {
+  return (env.PUBLIC_TIPG_URL ?? DEFAULT_TIPG_URL).replace(/\/+$/, "");
+}
+
+/** tipg's landing page — the stack-wide vector surface the product pages link. */
+export function tipgLandingUrl(base: string = tipgBaseUrl()): string {
+  return `${base}/`;
+}
+
+/** The collections list (tables + functions tipg serves). */
+export function tipgCollectionsUrl(base: string = tipgBaseUrl()): string {
+  return `${base}/collections`;
+}
+
+/** TileJSON for one tipg collection's vector tiles (WebMercatorQuad). */
+export function tipgTileJsonUrl(collectionId: string, base: string = tipgBaseUrl()): string {
+  return `${base}/collections/${enc(collectionId)}/tiles/WebMercatorQuad/tilejson.json`;
 }
