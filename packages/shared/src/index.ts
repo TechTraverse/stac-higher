@@ -51,6 +51,7 @@ export {
   selectedLineLayer,
   RASTER_PREVIEW_SOURCE,
   RASTER_PREVIEW_LAYER,
+  vectorTileLayers,
 } from "@shared/lib/map/styles";
 
 // Stores
@@ -94,6 +95,8 @@ export { RasterTileLayer } from "@shared/components/map/RasterTileLayer";
 export type { RasterTileLayerProps } from "@shared/components/map/RasterTileLayer";
 export { RasterFrameStack, RASTER_FRAME_LOOKAHEAD } from "@shared/components/map/RasterFrameStack";
 export type { RasterFrame, RasterFrameStackProps } from "@shared/components/map/RasterFrameStack";
+export { VectorTileLayer } from "@shared/components/map/VectorTileLayer";
+export type { VectorTileLayerProps } from "@shared/components/map/VectorTileLayer";
 export { TimeSlider } from "@shared/components/map/TimeSlider";
 export type { TimeSliderProps } from "@shared/components/map/TimeSlider";
 export { ExtentLayer } from "@shared/components/map/ExtentLayer";

@@ -118,3 +118,50 @@ export const selectedLineLayer: LayerSpecification = {
   },
   filter: ["==", ["get", "selected"], true],
 };
+
+/** Vector-tile layers (tipg / any MVT): one colour family, three geometry types. */
+const VECTOR_COLOR = "#8b5cf6";
+
+/**
+ * Fill + line + circle specs over one MVT source layer, each geometry type
+ * drawn once: polygons are filled and outlined, lines drawn, points as
+ * circles. `opacity` (0..1) scales all three.
+ */
+export function vectorTileLayers(
+  sourceId: string,
+  sourceLayer: string,
+  opacity = 1,
+): { fill: LayerSpecification; line: LayerSpecification; circle: LayerSpecification } {
+  return {
+    fill: {
+      id: `${sourceId}-fill`,
+      type: "fill",
+      source: sourceId,
+      "source-layer": sourceLayer,
+      filter: ["==", ["geometry-type"], "Polygon"],
+      paint: { "fill-color": VECTOR_COLOR, "fill-opacity": 0.2 * opacity },
+    },
+    line: {
+      id: `${sourceId}-line`,
+      type: "line",
+      source: sourceId,
+      "source-layer": sourceLayer,
+      paint: { "line-color": VECTOR_COLOR, "line-width": 1.5, "line-opacity": opacity },
+    },
+    circle: {
+      id: `${sourceId}-circle`,
+      type: "circle",
+      source: sourceId,
+      "source-layer": sourceLayer,
+      filter: ["==", ["geometry-type"], "Point"],
+      paint: {
+        "circle-color": VECTOR_COLOR,
+        "circle-radius": 4,
+        "circle-opacity": opacity,
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-stroke-opacity": opacity,
+      },
+    },
+  };
+}
