@@ -1,0 +1,77 @@
+# The stactools variant of the platform process-runtime image (X queue spec
+# §6, ADR 0013 "platform-built images only").
+#
+# Extends the base runtime image with `stactools` and the ELEVEN curated
+# stactools packages the registry names, pinned to exactly the
+# `package==version` pairs in tests/contract-fixtures/builtin-extractors.json
+# — the pin check in services/pipeline/tests/test_builtin_extractors.py fails
+# CI when this file and the registry disagree in either direction — plus the
+# platform wrapper `stac_higher_stactools` that a built-in extractor process
+# calls in its two-line body.
+#
+# Build it through the bake file next to this Dockerfile, which chains the
+# base image and supplies the `fixtures` build context the registry COPY
+# needs (neither build context contains tests/ on its own), from the repo
+# root:
+#
+#   docker buildx bake -f services/process-runtime/docker-bake.hcl
+#
+# or by hand against an already-built base:
+#
+#   docker build -f services/process-runtime/Dockerfile.stactools \
+#     --build-context fixtures=tests/contract-fixtures \
+#     -t stac-higher-process-runtime-stactools:local services/process-runtime
+ARG BASE_IMAGE=stac-higher-process-runtime:local
+FROM ${BASE_IMAGE}
+
+USER root
+
+# uv, for ONE flag pip does not have: `--override`. Three of the eleven
+# packages (goes-glm, noaa-hrrr, sentinel1) declare an upper bound on pystac
+# (<1.12, <1.12, ~=1.9) that predates the platform's 1.15.1; all eleven
+# import and build items against 1.15.1 (verified 2026-09-04, and re-proved
+# by the pipeline suite's adapter tests on every CI run), so the bound is
+# overridden rather than the entries dropped — spec §11's fallback — or a
+# second pystac shipped. See docs/ISSUES.md I-109.
+# (From PyPI rather than the ghcr.io/astral-sh/uv image: one registry for
+# the whole build, and it is uninstalled again below.)
+RUN pip install --no-cache-dir "uv==0.10.0" \
+ && printf 'pystac==1.15.1\n' > /opt/stac-higher/overrides.txt
+
+# setuptools<81: `pkg_resources` was removed in setuptools 81 and eight of
+# the eleven packages still import it (fragment/asset templates loaded via
+# pkg_resources.resource_stream). The pin stays until upstream moves to
+# importlib.resources.
+RUN uv pip install --system --no-cache --override /opt/stac-higher/overrides.txt \
+      "setuptools<81" \
+      "stactools==0.5.3" \
+      "stactools-goes==0.1.8" \
+      "stactools-goes-glm==0.2.4" \
+      "stactools-noaa-hrrr==1.0.1" \
+      "stactools-noaa-mrms-qpe==0.3.1" \
+      "stactools-noaa-cdr==0.2.1" \
+      "stactools-viirs==0.1.0" \
+      "stactools-modis==0.2.0" \
+      "stactools-landsat==0.5.0" \
+      "stactools-sentinel1==0.8.1" \
+      "stactools-sentinel2==0.8.0" \
+      "stactools-naip==0.5.0" \
+ && pip uninstall -y uv
+
+# The wrapper and the registry it dispatches on. The registry arrives from the
+# `fixtures` build context — the ONE copy in tests/contract-fixtures — and
+# its path is published so stac_higher_stactools.registry and the pipeline's
+# reader find it the same way (STAC_HIGHER_BUILTIN_REGISTRY).
+COPY stac_higher_stactools /opt/stac-higher/lib/stac_higher_stactools
+COPY --from=fixtures builtin-extractors.json /opt/stac-higher/builtin-extractors.json
+ENV PYTHONPATH=/opt/stac-higher/lib \
+    STAC_HIGHER_BUILTIN_REGISTRY=/opt/stac-higher/builtin-extractors.json
+
+# Build-time smoke test (spec §6): import every registry entry's module —
+# derived from `package` exactly as both readers derive it — and its adapter,
+# and check the installed version equals the registry's pin. A stale package
+# fails the BUILD, not a run.
+RUN python -m stac_higher_stactools.smoke
+
+USER runner
+WORKDIR /home/runner

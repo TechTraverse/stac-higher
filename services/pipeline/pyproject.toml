@@ -24,6 +24,25 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The built-in extractor library's packages (X queue spec §6/§10): the SAME
+# pins as services/process-runtime/Dockerfile.stactools, so the adapter tests
+# in tests/test_stactools_adapters.py run against what the image installs.
+# setuptools<81 because eight of the eleven still import pkg_resources.
+stactools = [
+    "setuptools<81",
+    "stactools==0.5.3",
+    "stactools-goes==0.1.8",
+    "stactools-goes-glm==0.2.4",
+    "stactools-noaa-hrrr==1.0.1",
+    "stactools-noaa-mrms-qpe==0.3.1",
+    "stactools-noaa-cdr==0.2.1",
+    "stactools-viirs==0.1.0",
+    "stactools-modis==0.2.0",
+    "stactools-landsat==0.5.0",
+    "stactools-sentinel1==0.8.1",
+    "stactools-sentinel2==0.8.0",
+    "stactools-naip==0.5.0",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
@@ -60,6 +79,13 @@ select = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# stac_higher_stactools ships in the runtime image, not this package; its
+# unit tests (merge rules, adapters) run here with the `stactools` extra.
+pythonpath = ["../process-runtime"]
 
 [tool.uv]
 no-build-package = ["rasterio"]
+# Three stactools packages (goes-glm, noaa-hrrr, sentinel1) cap pystac below
+# the platform's pin; all eleven work on 1.15.1 (the adapter tests prove it
+# each run). Same override Dockerfile.stactools applies — docs/ISSUES.md I-109.
+override-dependencies = ["pystac==1.15.1"]

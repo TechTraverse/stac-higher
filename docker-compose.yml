@@ -248,7 +248,14 @@ services:
     restart: unless-stopped
 
   pipeline:
-    build: ./services/pipeline
+    build:
+      context: ./services/pipeline
+      # The built-in extractor registry (tests/contract-fixtures/
+      # builtin-extractors.json) is COPY --from=fixtures'd into the image —
+      # the one copy, reached through a named build context because the
+      # pipeline's own context is services/pipeline alone (X-2).
+      additional_contexts:
+        fixtures: ./tests/contract-fixtures
     image: stac-higher-pipeline
     environment:
       - DATABASE_URL=postgresql://username:password@database:5432/postgis

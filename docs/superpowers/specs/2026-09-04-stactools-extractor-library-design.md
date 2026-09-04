@@ -322,3 +322,44 @@ document, because neither the app's build context (`COPY app`,
 `COPY packages/shared`) nor the pipeline's (`services/pipeline`) contains
 `tests/`, and choosing a COPY, a mount or an env override before X-2 and X-4
 need it would bake the wrong answer into the contract.
+
+## 15. X-2 addendum — what the build proved and the calls it forced (2026-09-04)
+
+- **§11's stale-package risk was real, and the resolver found it first.**
+  `goes-glm` and `noaa-hrrr` cap `pystac<1.12`, `sentinel1` `~=1.9.0`, all
+  below the platform's `pystac==1.15.1`. §11's fallback — drop the entry —
+  would have cost two of gate B's four packages, and every one of the eleven
+  imports and builds an item on 1.15.1. Decision: the image installs with a
+  uv `--override pystac==1.15.1`, mirrored in the pipeline's `[tool.uv]`, and
+  the build-time smoke plus the adapter tests are what keep it honest
+  (**I-109**). Beside it `setuptools<81`: `pkg_resources` left setuptools in
+  81 and eight packages still import it.
+- **Packaging (§5's "reaches both runtimes")**: a named build context
+  `fixtures` → `tests/contract-fixtures`, `COPY --from=fixtures` in the
+  pipeline's Dockerfile and `Dockerfile.stactools`, the path published in
+  `STAC_HIGHER_BUILTIN_REGISTRY`, readers falling back to the checkout. The
+  runtime images build through `services/process-runtime/docker-bake.hcl`
+  (base → variant chained, run from the repo root), locally and in
+  `containers.yml` via `docker/bake-action`.
+- **The smoke is registry-driven**, not a hand-typed import list:
+  `python -m stac_higher_stactools.smoke` imports every entry's derived
+  module and its adapter and checks the installed distribution's version
+  equals the pin — stronger than the text pin check, which cannot see what
+  pip resolved.
+- **Merge conventions settled in the wrapper** (§6): a null `datetime` with
+  `start_datetime` set (noaa-cdr, modis) becomes `datetime = start_datetime`;
+  produced assets are matched to draft assets by the staged file's path or
+  basename (noaa-hrrr emits the archive URL, mrms the decompressed name —
+  its adapter puts the `.gz` back); properties are OVERLAID on the draft's
+  rather than replacing them; nothing invents a geometry.
+- **Flat staging vs product trees**: SAFE products and NAIP's state need the
+  source path, which only reference-mode hrefs carry (**I-110**). The
+  adapters rebuild the tree from hrefs and fail clearly otherwise.
+- **Fixtures**: nine adapters run against the package's own test file,
+  vendored at the pinned tag (1.4 MB, `services/pipeline/tests/data/
+  stactools/README.md` records provenance); `viirs` and `sentinel1` use
+  doubles (I-105 amended). `noaa-hrrr` keeps no files in its repo, so its
+  `.idx` fixture is hand-written in the archive's format.
+- **Measured**: the variant is 1.18 GB against the 525 MB base — §11's
+  "multi-GB" did not materialise; no split into `stactools-noaa` /
+  `stactools-optical` is needed yet.

@@ -203,6 +203,27 @@ default of the deploy FORM only, so an API caller posting a revision should
 set `runtime.timeout_seconds` explicitly (the schema default is 900 s).
 Back-to-back files coalesce into one run while a run is still queued.
 
+**Built-in extractors.** The platform ships a library of extractors backed
+by [stactools packages](https://github.com/stactools-packages) — GOES ABI,
+GLM, HRRR, MRMS, CDR, VIIRS, MODIS, Landsat, Sentinel-1/2, NAIP — on a second
+runtime image. Their body is two lines:
+
+```python
+from stac_higher_stactools import run
+run("stactools-goes")
+```
+
+`run` stages each draft's files, calls the package, and **merges** the item
+it builds onto the draft under exactly the rules above (the draft's id,
+collection, asset keys and hrefs win; properties, geometry, bbox, extensions
+and per-asset metadata are copied; assets the package adds — COGs,
+thumbnails — are dropped and logged). Which packages exist, and what each
+needs from the group, is the registry
+`tests/contract-fixtures/builtin-extractors.json`; picking one from the Data
+flow form (X-4) and the image alias that puts the run on the right image
+(X-3) follow. Until then the body runs only on
+`stac-higher-process-runtime-stactools:local`.
+
 A minimal extractor:
 
 ```python

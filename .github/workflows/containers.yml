@@ -28,6 +28,9 @@ jobs:
           - name: pipeline
             dockerfile: services/pipeline/Dockerfile
             context: services/pipeline
+            # The built-in extractor registry reaches the image through a
+            # named build context (X-2) — compose's additional_contexts.
+            build-contexts: fixtures=tests/contract-fixtures
           - name: titiler
             dockerfile: infra/titiler/Dockerfile
             context: .
@@ -69,6 +72,7 @@ jobs:
           load: ${{ env.PUSH != 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-contexts: ${{ matrix.image.build-contexts || '' }}
           cache-from: type=gha,scope=${{ matrix.image.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
       - name: Trivy image scan (informational)
@@ -76,6 +80,84 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  runtime:
+    # The two platform process-runtime images (ADR 0013): the base every
+    # inline_python process runs on and the stactools variant of the built-in
+    # extractor library (X-2). Built through services/process-runtime/
+    # docker-bake.hcl, which chains the variant off the base TARGET — no
+    # published base is needed to build the variant on a PR — and supplies the
+    # `fixtures` context the registry COPY needs. The variant's build runs the
+    # registry-driven import smoke (spec §6), so a stale package fails here.
+    name: Image · process-runtime (+ stactools)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUSH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata (runtime)
+        id: meta-runtime
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}-process-runtime
+          bake-target: runtime
+          tags: |
+            type=ref,event=pr
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Image metadata (stactools)
+        id: meta-stactools
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}-process-runtime-stactools
+          bake-target: stactools
+          tags: |
+            type=ref,event=pr
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build${{ env.PUSH == 'true' && ' + push' || '' }}
+        uses: docker/bake-action@v6
+        with:
+          source: .
+          # Bake resolves the file's paths against the working directory —
+          # the repo root, as the bake file's comment says.
+          files: |
+            ./services/process-runtime/docker-bake.hcl
+            cwd://${{ steps.meta-runtime.outputs.bake-file }}
+            cwd://${{ steps.meta-stactools.outputs.bake-file }}
+          push: ${{ env.PUSH == 'true' }}
+          load: ${{ env.PUSH != 'true' }}
+          set: |
+            *.platform=${{ env.PUSH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+            *.cache-from=type=gha,scope=process-runtime
+            *.cache-to=type=gha,mode=max,scope=process-runtime
+      - name: Trivy image scan (informational)
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ fromJSON(steps.meta-stactools.outputs.json).tags[0] }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"

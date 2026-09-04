@@ -210,10 +210,17 @@ disagree about what a run will import. That file lands with X-2; until it
 exists the check against the real Dockerfile skips and the drift logic itself
 is covered against sample text.
 
-**Packaging is not decided here.** Both readers take a *document*; how the
-file reaches each image (a COPY, a mount, an env override) is X-2's and X-4's
-call, since neither the app's nor the pipeline's build context includes
-`tests/` today.
+**Packaging (settled by X-2 for the pipeline and runtime images).** Both
+readers take a *document*, and the file reaches each image as a
+`COPY --from=fixtures builtin-extractors.json` out of a **named build
+context** pointing at this directory — compose `build.additional_contexts`
+for the pipeline, `build-contexts` in `containers.yml`, and
+`services/process-runtime/docker-bake.hcl` for the runtime images — with the
+copy's path published in `STAC_HIGHER_BUILTIN_REGISTRY`, which both
+`pipeline.process.builtin.load_builtin_registry` and the image's
+`stac_higher_stactools.registry` read (falling back to the checkout when
+unset). One file, no vendored copy to drift. The app image (X-4) is expected
+to do the same.
 
 The lead's curated set was fourteen packages. Three — `noaa-nwm`, `noaa-sst`
 and `hls` — exist only as untagged GitHub repos under `stactools-packages`
