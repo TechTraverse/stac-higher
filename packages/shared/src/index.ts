@@ -43,6 +43,8 @@ export {
   EXTENT_SOURCE,
   footprintFillLayer,
   footprintLineLayer,
+  footprintLayerIds,
+  footprintLayers,
   extentFillLayer,
   extentLineLayer,
   selectedFillLayer,
