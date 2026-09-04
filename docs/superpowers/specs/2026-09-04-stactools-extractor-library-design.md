@@ -168,7 +168,7 @@ rebuilding the image and re-deploying (§7), never by editing the body.
   `create`) with `{builtin_id, group_id}` — finds the group's process
   with that `builtin_id` or inserts one: `kind = extractor`, name from the
   registry label, `max_runs_per_hour 600`, and deploys revision 1 from the
-  template in the same transaction. Migration **029** (K-3 takes 028 —
+  template in the same transaction. Migration **028** (settled 2026-09-04: X is worked first; K-3 takes 029 —
   whichever merges second renumbers) adds `processes.builtin_id text
   NULL` + a unique index on `(group_id, builtin_id) WHERE builtin_id IS
   NOT NULL AND deleted_at IS NULL`.
@@ -264,7 +264,7 @@ note; whichever lands first adds the other's field.
    only; a COG wants a transform.
 5. Image variant selected by a `runtime_image` alias, composed with K-1's
    profile `image` as base + variant.
-6. Migration number 029 with the same renumbering rule the K/W queues
+6. Migration number 028 (K-3 → 029), settled at approval rather than by the renumbering rule the K/W queues
    used.
 7. The seven credentialed packages ship without a live gate.
 
@@ -279,7 +279,7 @@ note; whichever lands first adds the other's field.
 - **X-3 · Image alias.** `runtime_image` on `runtimeLimits` + Python
   reader, executor resolution, launch-time refusal, `process-runtime.json`
   cases. Coordinates with K-1. Depends on X-1.
-- **X-4 · Built-in processes in the app.** Migration 029, create-or-
+- **X-4 · Built-in processes in the app.** Migration 028, create-or-
   reuse route, template deploy, read-only card + Update to current,
   `built-in` badge, ingest-form optgroup. Depends on X-1, X-3.
 - **X-5 · Live gates (LEAD).** Gate A against the standing GOES demo,

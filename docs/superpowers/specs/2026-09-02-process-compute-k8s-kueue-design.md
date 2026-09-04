@@ -1,11 +1,11 @@
 # Process compute — Kubernetes Jobs + Kueue, hardware profiles — design
 
 **Date:** 2026-09-02
-**Status:** **draft for lead review** (written from the 2026-09-02 direction
-"plan on Kubernetes and Kueue"; the decisions in §13 were taken by the agent
-without a lead answer and are the ones to confirm or overturn). The K queue
-in `TODO.md` is copied from §14 and must not start before this spec is
-approved.
+**Status:** **approved by the lead 2026-09-04** (the §13 decisions stand as
+written unless overturned later; written from the 2026-09-02 direction
+"plan on Kubernetes and Kueue"). The K queue in `TODO.md` is copied from
+§14; K-1 may start. Migration numbering settled at approval: the X queue
+(worked first) takes **028**, so K-3's ledger migration is **029**.
 **Scope source:** ADR 0013 (executor isolation — the boundary this spec
 works inside; its cloud-backend recommendation is superseded here), ADR 0018
 (inputs + network profiles), ROADMAP §5.6 / §6.7 / §9 Phase 8, Phase 9 spec
@@ -236,7 +236,7 @@ removed from the ABC; the Docker backend's long-poll becomes its `watch()`
 implementation (Engine `/events` filtered by the `stac-higher.run-id`
 label).
 
-### 5.2 Ledger changes (migration 028, app-owned per ADR 0001; 026 taken by W-2's retention cap, 027 by G-6's extractors, both of which landed first)
+### 5.2 Ledger changes (migration 029, app-owned per ADR 0001; 028 taken by X-4's builtin_id, 026 by W-2's retention cap, 027 by G-6's extractors, both of which landed first)
 
 `process_runs` gains:
 
@@ -619,7 +619,7 @@ per-profile platform images cover CUDA without lifting it.
   section. Depends on K-1.
 - **K-3 · DockerExecutor honours the profile.** §8. `NanoCpus`,
   `DeviceRequests`, per-profile capacity → `pending_capacity` requeue
-  (needs the `phase` columns — lands the migration 028 columns except
+  (needs the `phase` columns — lands the migration 029 columns except
   `cancelled`). Depends on K-1.
 - **K-4 · Submit-then-reconcile executor model + cancel.** §5. New ABC,
   Docker `watch()` off Engine events, the run watcher singleton, run-tick
