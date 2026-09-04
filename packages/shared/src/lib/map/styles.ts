@@ -36,7 +36,7 @@ export function footprintLayers(
   opacity = 1,
 ): { fill: LayerSpecification; line: LayerSpecification } {
   const ids = footprintLayerIds(sourceId);
-  const scaled = opacity === 1;
+  const full = opacity === 1;
   return {
     fill: {
       id: ids.fill,
@@ -44,7 +44,7 @@ export function footprintLayers(
       source: sourceId,
       paint: {
         "fill-color": "#3b82f6",
-        "fill-opacity": scaled
+        "fill-opacity": full
           ? FOOTPRINT_FILL_OPACITY
           : (["*", opacity, FOOTPRINT_FILL_OPACITY] as ExpressionSpecification),
       },
@@ -61,7 +61,7 @@ export function footprintLayers(
           3,
           1.5,
         ],
-        ...(scaled ? {} : { "line-opacity": opacity }),
+        ...(full ? {} : { "line-opacity": opacity }),
       },
     },
   };
