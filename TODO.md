@@ -16,7 +16,7 @@ just a wasted read.
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
-| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. **V-1 goes first** (it extracts what V-2…V-4 consume); V-4 depends on V-2 only. No migrations |
+| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04; **V-2 next**; V-4 depends on V-2 only. No migrations |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
 off `ai/main`, and `npm run verify` — plus the pipeline's `pytest` and `ruff`
@@ -630,7 +630,7 @@ tab consume them — the preview's four test files must stay green unchanged.
 No migrations. The tilers are still called straight from the browser
 (I-1/I-69 unchanged).
 
-- [ ] **V-1 · Shared pieces + preview refactor.** Spec §3. `RasterFrameStack`
+- [x] **V-1 · Shared pieces + preview refactor.** Spec §3. `RasterFrameStack`
       (previous + current + one lookahead, opacity swap, no transition) in
       `packages/shared/src/components/map/`; `FootprintLayer` gains `id` /
       `opacity` / `beforeId` and `lib/map/styles.ts` becomes functions of the
