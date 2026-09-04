@@ -12,8 +12,8 @@ just a wasted read.
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-7 done, standing demo running since 2026-09-04. **G-8 (night-side tint) is open** — bounded, may start now |
-| **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | Spec is **DRAFT** (2026-09-04). **P-1 is a bounded bug fix and may start now**; P-2…P-4 wait for the spec's status line |
-| **X** | Built-in extractor library: stactools packages as one-click extractors | Spec is **DRAFT** (2026-09-04). Do not start X-1 until its status line says approved; X-3 coordinates with K-1 |
+| **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | Spec **approved 2026-09-04**. P-1 first (bounded), then P-2; P-3 and P-4 are independent of each other |
+| **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**. X-1 goes first; X-3 coordinates with K-1; migration 029 |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved — G-6/G-7 are both done, so once approval lands the process agent is free to start K-1 |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
@@ -284,11 +284,10 @@ slice text, before implementing.
 ## P queue — pipeline graph: lineage lines + full graph view (feedback 2026-09-04)
 
 **Read first:** `docs/superpowers/specs/2026-09-04-pipeline-graph-views-design.md`
-— **draft, awaiting lead approval.** Written from `FEEDBACK.md` items 1–3
+— **approved 2026-09-04.** Written from `FEEDBACK.md` items 1–3
 and the lead's three answers (both views; a line is one PRODUCT's full
 lineage; in-house layered layout, no dependency). §9 lists five decisions
-the agent took — confirm or overturn at approval. **P-1 is a bounded bug
-fix and may start before approval**; P-2…P-4 wait. P-3 and P-4 are
+the agent took, approved as written. P-1 first, then P-2; P-3 and P-4 are
 independent of each other. The screenshot the feedback refers to is
 `docs/superpowers/specs/assets/2026-09-04-pipeline-graph-before.png`.
 
@@ -323,13 +322,12 @@ independent of each other. The screenshot the feedback refers to is
 ## X queue — built-in extractor library: stactools packages (feedback 2026-09-04)
 
 **Read first:** `docs/superpowers/specs/2026-09-04-stactools-extractor-library-design.md`
-— **draft, awaiting lead approval; do not start X-1 until the spec's
-status line says approved.** Written from `FEEDBACK.md` item 5 and the
+— **approved 2026-09-04.** Written from `FEEDBACK.md` item 5 and the
 lead's two answers (curated fourteen-package NOAA/public-archive set; pick
 it in the Data flow form and a group-owned read-only process is created).
 §3 records the facts that shape it (no uniform stactools entry point;
 the §6.1 immutability rules force a MERGE; seven packages are on anonymous
-buckets, seven need credentials), §12 the seven agent-taken decisions.
+buckets, seven need credentials), §12 the seven agent-taken decisions, approved as written.
 **X-3 coordinates with K-1** (both touch `runtimeLimits`; base image +
 variant alias compose — whichever lands first adds the other's field).
 **Migration 029** (K-3 has 028; whichever merges second renumbers).
@@ -737,8 +735,8 @@ object stores only).
   (graph) → the P queue + its draft spec; item 4 (grey GeoColor) → G-8,
   after measuring that night COGs are ~1 % colour and a daytime e2e COG 57 %
   — the compose night branch, not a bug; item 5 (stactools) → the X queue +
-  its draft spec. Both specs are DRAFT; P-1 and G-8 are bounded and may
-  start now. Issues opened: I-104 (ghost graph nodes), I-105 (credentialed
+  its draft spec. Both specs were approved by the lead the same day; every
+  P, X and G-8 slice may start. Issues opened: I-104 (ghost graph nodes), I-105 (credentialed
   stactools packages ship without a live gate), I-106 (no static
   reference-asset input for processes — what city lights would need).
 

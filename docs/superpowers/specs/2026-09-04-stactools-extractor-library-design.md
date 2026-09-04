@@ -1,12 +1,13 @@
 # Built-in extractor library — stactools packages as one-click extractors — design
 
 **Date:** 2026-09-04
-**Status:** **draft for lead review.** Written from the lead's 2026-09-04
+**Status:** **approved by the lead 2026-09-04** (the §12 decisions stand
+as written unless overturned later). Written from the lead's 2026-09-04
 feedback (`FEEDBACK.md` item 5: "can we make use of stactools-packages to
 offer a built-in list of metadata extractors?") and two answers given in
 the same session (§2). The decisions in §12 were taken by the agent
-without a lead answer. The X queue in `TODO.md` is copied from §13 and
-must not start before this spec is approved.
+without a lead answer. The X queue in `TODO.md` is copied from §13; X-1
+may start.
 **Scope source:** GOES spec §6 / §15 (extractors: `processes.kind`, the
 `build_item → validate_item` seam, the §6.1 immutability rules in
 `finalize/extract_run.py`), ADR 0013 (one platform-built runtime image;

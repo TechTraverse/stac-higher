@@ -1,13 +1,13 @@
 # Pipeline graph — per-product lineage lines + a full graph view — design
 
 **Date:** 2026-09-04
-**Status:** **draft for lead review.** Written from the lead's 2026-09-04
+**Status:** **approved by the lead 2026-09-04** (the §9 decisions stand as
+written unless overturned later). Written from the lead's 2026-09-04
 feedback (`FEEDBACK.md` items 1–3, screenshot
 `assets/2026-09-04-pipeline-graph-before.png`) and three answers given in
 the same session (§2). The decisions in §9 were taken by the agent without
-a lead answer. The P queue in `TODO.md` is copied from §10 and must not
-start past P-1 before this spec is approved (P-1 is a bounded bug fix and
-may start now).
+a lead answer. The P queue in `TODO.md` is copied from §10; every
+slice may start.
 **Scope source:** M5-E (`/api/monitoring/graph`, `lib/graph/*`), M5-F
 (`/graph` page, `LineagePanel`), UI-7 (`LineageStrip`), ADR 0017 (lineage
 language, theme tokens), GOES spec §6.6 / §15 (the display-only
