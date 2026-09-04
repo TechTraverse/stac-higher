@@ -340,3 +340,31 @@ No ADR: no hard-to-reverse choice is made.
 - **V-4 · tipg vector layers + docs.** §4.5 Vector tiles section,
   `useTipgCollections`, `VectorTileLayer` on the page, source-layer name
   verified live, §7 docs, §8 deferrals logged. Depends on V-2 (not V-3).
+
+## 11. Amendments (2026-09-04, after the V-1 final review)
+
+Three gaps between §3.2's prop lists and §4.5's panel, found once the
+pieces existed. All are additive now and breaking once `MapPage` is written
+against the interfaces, so they are settled here and built first in V-2.
+
+1. **`visible?: boolean` on `FootprintLayer`, `RasterFrameStack` and
+   `VectorTileLayer`** (default `true`), mapped to maplibre
+   `layout: { visibility: "none" }` on every layer the component owns.
+   §4.5's visibility toggle must NOT unmount the layer: unmounting drops the
+   source and refetches up to three raster frames per imagery layer from the
+   tiler on every toggle (§5's contention note).
+2. **A stable anchor for `beforeId` chaining against a raster stack.**
+   `RasterFrameStack` mounts an always-present, zero-opacity, empty-tile
+   layer at `rasterFrameStackAnchorId(id)` (= `${id}-anchor`) as its bottom;
+   frames mount above it. §4.5's "imagery never covers footprints of a layer
+   above it" chains each layer's `beforeId` to the anchor of the layer above.
+   Frame layer ids (`${id}-frame-${n}-layer`) stay internal.
+3. **Backward-step stacking (I-112)** is fixed inside the stack in V-3 by
+   chaining `beforeId` internally (lookahead ← caller's `beforeId`, current ←
+   lookahead's layer id, previous ← current's), so a changed chain
+   triggers `moveLayer`. V-3 owns it because V-3 is the first slice that
+   scrubs backward routinely; the fix must keep the Preview tab's tests green
+   or update them with the reason in the commit.
+
+Also settled: the `opacity` clamp (0..1) lands ONCE, in `lib/map/styles.ts`,
+as part of V-2's slider work — not per component.
