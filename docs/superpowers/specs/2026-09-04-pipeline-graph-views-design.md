@@ -8,6 +8,14 @@ feedback (`FEEDBACK.md` items 1–3, screenshot
 the same session (§2). The decisions in §9 were taken by the agent without
 a lead answer. The P queue in `TODO.md` is copied from §10; every
 slice may start.
+**Implemented 2026-09-04** — the whole queue, in four worktree branches
+merged to `ai/main`: `ai/p1-ghost-nodes` (§10 P-1, closes I-104),
+`ai/p2-lineage-layout` (§4), `ai/p3-pipelines-view` (§5.1, §6, §8) and
+`ai/p4-graph-view` (§5.2). The §9 decisions shipped as written. Two
+observations are logged in `TODO.md`'s follow-ups rather than changed
+unilaterally: `LineageStrip size="full"` is now dead code, and clicking an
+extractor in the Graph view highlights only itself — correct per §4, but
+possibly not what the Graph view wants.
 **Scope source:** M5-E (`/api/monitoring/graph`, `lib/graph/*`), M5-F
 (`/graph` page, `LineagePanel`), UI-7 (`LineageStrip`), ADR 0017 (lineage
 language, theme tokens), GOES spec §6.6 / §15 (the display-only
