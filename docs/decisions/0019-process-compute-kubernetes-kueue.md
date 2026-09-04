@@ -1,9 +1,8 @@
 # ADR 0019 — Process compute: Kubernetes Jobs + Kueue, hardware profiles as the portable vocabulary
 
-- **Status:** proposed (2026-09-02 — by the process-compute design spec,
-  `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`;
-  accepted when the lead approves that spec; implemented by the K queue in
-  `TODO.md`)
+- **Status:** accepted (2026-09-04 — the lead approved the process-compute
+  design spec `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`;
+  proposed 2026-09-02; implemented by the K queue in `TODO.md`)
 - **Supersedes, in part:** ADR 0013's "Recommended backend pair" — the
   cloud half (ECS/Fargate RunTask primary, K8s-Job-on-EKS fallback). Every
   isolation invariant in ADR 0013 stands unchanged; only the cloud backend

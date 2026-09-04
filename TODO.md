@@ -13,8 +13,8 @@ just a wasted read.
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-7 done, standing demo running since 2026-09-04. **G-8 (night-side tint) is open** — bounded, may start now |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | Spec **approved 2026-09-04**. P-1 first (bounded), then P-2; P-3 and P-4 are independent of each other |
-| **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**. X-1 goes first; X-3 coordinates with K-1; migration 029 |
-| **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved — G-6/G-7 are both done, so once approval lands the process agent is free to start K-1 |
+| **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 goes first; X-3 coordinates with K-1; X-4 takes migration **028** |
+| **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
@@ -330,7 +330,7 @@ the §6.1 immutability rules force a MERGE; seven packages are on anonymous
 buckets, seven need credentials), §12 the seven agent-taken decisions, approved as written.
 **X-3 coordinates with K-1** (both touch `runtimeLimits`; base image +
 variant alias compose — whichever lands first adds the other's field).
-**Migration 029** (K-3 has 028; whichever merges second renumbers).
+**Migration 028** for X-4 (settled 2026-09-04 — X is worked first; K-3 takes 029).
 
 - [ ] **X-1 · Registry fixture + both readers.** Spec §5.
       `tests/contract-fixtures/builtin-extractors.json` with the fourteen
@@ -357,7 +357,7 @@ variant alias compose — whichever lands first adds the other's field).
       `PROCESS_NETWORK_MAX` pattern), `process-runtime.json` cases.
       `runtime.image` stays `null` for inline processes (ADR 0013 intact).
       Coordinates with K-1. Depends on X-1.
-- [ ] **X-4 · Built-in processes in the app.** Spec §7. Migration 029
+- [ ] **X-4 · Built-in processes in the app.** Spec §7. Migration 028
       (`processes.builtin_id`, unique per live group); `GET
       /api/extractors/builtin`; `POST /api/processes/builtin` create-or-reuse
       (operator+, audited) deploying revision 1 from the two-line template
@@ -379,19 +379,17 @@ variant alias compose — whichever lands first adds the other's field).
 ## K queue — process compute: Kubernetes + Kueue + hardware profiles (AFTER G-6/G-7)
 
 **Read first:** `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`
-— **draft, awaiting lead approval; do not start K-1 until the spec's status
-line says approved.** ADR 0019 (proposed) records the decision: GPU/CUDA
+— **approved 2026-09-04.** ADR 0019 (accepted) records the decision: GPU/CUDA
 processes need hardware the Fargate backend ADR 0013 recommended cannot
 provide, so the cloud backend is **Kubernetes Jobs admitted by Kueue**,
 operators pick a **hardware profile** in the UI, and the executor becomes
 **submit-then-reconcile** (today `execute_run` blocks the worker's event loop
 for the whole run at worker concurrency 1). Spec §13 lists eight decisions
-the agent took without a lead answer — confirm or overturn them at approval.
+the agent took without a lead answer, approved as written.
 
 Sequencing: the K queue is worked by the process agent after G-6/G-7 (same
-files). **G-6 and G-7 are both done** — the process agent is free to start
-K-1 as soon as this spec's status line says approved; nothing else in the K
-queue is waiting on the G queue. K-4 changes the worker's job model and must **coordinate with M3-D**
+files). **G-6 and G-7 are both done** and the spec is approved — K-1 may start;
+nothing in the K queue is waiting on the G queue. K-4 changes the worker's job model and must **coordinate with M3-D**
 (the later merge into `ai/main` resolves; neither queue waits). K-7 is
 independent and may run in parallel with anything. K-8/K-9 are Phase 8 work
 and need a cloud account — lead-gated.
@@ -422,8 +420,8 @@ and need a cloud account — lead-gated.
       per-profile `capacity`: the claim path counts `running` rows on the
       profile and, when full, releases the run back to `queued` with
       `phase = pending_capacity` and `next_attempt_at = now + 15 s`, no
-      attempt spent. Migration **028** (026 taken by W-2, 027 by G-6's
-      extractors) lands the `executor_backend`,
+      attempt spent. Migration **029** (026 taken by W-2, 027 by G-6's
+      extractors, 028 by X-4's `builtin_id`) lands the `executor_backend`,
       `executor_handle`, `phase`, `phase_detail`, `submitted_at`,
       `cancel_requested_at` columns (the `cancelled` status waits for K-4).
       Depends on K-1.
@@ -493,7 +491,8 @@ live e2e needs and the GOES loop spec §5 flagged as an unsettled gap.
 The two slices are independent and may run in parallel in separate worktrees.
 Both have detailed plans. **W-2 took migration 026**; K-3's spec and its
 slice text above were renumbered to 027 as part of W-2 Task 1, and then to
-**028** once G-6 (G queue) took 027 for its own migration.
+**028** once G-6 (G queue) took 027 for its own migration, and to **029** on
+2026-09-04 when the X queue, worked first, took 028.
 
 - [x] **W-1 · Ingest date window + prefix expansion + per-poll cap.** Spec §3.
       New pure `ingest/window.py` (bound grammar `-<n>[smhd]` or RFC3339,
