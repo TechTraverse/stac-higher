@@ -26,7 +26,7 @@ import type { ProcessKind } from "./schemas";
 
 const PROCESS_COLUMNS = `
   id, name, description, group_id, kind, current_revision, enabled,
-  max_runs_per_hour, created_by, created_at, updated_at
+  max_runs_per_hour, builtin_id, created_by, created_at, updated_at
 `;
 
 const REVISION_COLUMNS = `
@@ -65,6 +65,7 @@ interface ProcessRow {
   current_revision: string | null;
   enabled: boolean;
   max_runs_per_hour: number;
+  builtin_id: string | null;
   created_by: string;
   created_at: Date | string;
   updated_at: Date | string;
@@ -79,6 +80,10 @@ export interface ApiProcess {
   current_revision: string | null;
   enabled: boolean;
   max_runs_per_hour: number;
+  /** X-4: the built-in extractor registry id this process was created from,
+   * or null for a hand-written process. A built-in process is read-only in
+   * the editor — its revision moves only through "Update to current". */
+  builtin_id: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -94,6 +99,7 @@ function toApiProcess(row: ProcessRow): ApiProcess {
     current_revision: row.current_revision,
     enabled: row.enabled,
     max_runs_per_hour: row.max_runs_per_hour,
+    builtin_id: row.builtin_id ?? null,
     created_by: row.created_by,
     created_at: iso(row.created_at) as string,
     updated_at: iso(row.updated_at) as string,
@@ -182,6 +188,97 @@ export async function createProcess(
       throw new DuplicateProcessNameError(input.name, input.groupId);
     }
     throw err;
+  }
+}
+
+/** The group's LIVE process for a registry id, or null (X-4 create-or-reuse). */
+export async function findBuiltinProcess(
+  groupId: string,
+  builtinId: string,
+): Promise<ApiProcess | null> {
+  await runMigrations();
+  const result = await query<ProcessRow>(
+    `SELECT ${PROCESS_COLUMNS} FROM stac_higher.processes
+      WHERE group_id = $1 AND builtin_id = $2 AND deleted_at IS NULL`,
+    [groupId, builtinId],
+  );
+  return result.rows[0] ? toApiProcess(result.rows[0]) : null;
+}
+
+export interface CreateBuiltinProcessInput {
+  name: string;
+  description: string;
+  groupId: string;
+  builtinId: string;
+  maxRunsPerHour: number;
+  createdBy: string;
+  /** Revision 1, from the registry template (X-queue spec §7). */
+  revision: { runtime: Json; code: string; env: unknown[] };
+}
+
+/**
+ * X-4 create-or-reuse, the CREATE half: insert the process (kind extractor,
+ * marked with its registry id) and deploy revision 1 from the template in ONE
+ * transaction — a built-in process must never exist without something to run,
+ * since the picker stores its id the moment it is created. Returns null when
+ * another request created the same (group, registry id) first (the partial
+ * unique index), so the caller re-reads and reuses; a NAME collision with a
+ * hand-written process surfaces as DuplicateProcessNameError.
+ */
+export async function createBuiltinProcess(
+  input: CreateBuiltinProcessInput,
+): Promise<ApiProcess | null> {
+  await runMigrations();
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+    const inserted = await client.query<ProcessRow>(
+      `INSERT INTO stac_higher.processes
+         (name, description, group_id, kind, enabled, max_runs_per_hour, builtin_id, created_by)
+       VALUES ($1, $2, $3, 'extractor', true, $4, $5, $6)
+       RETURNING ${PROCESS_COLUMNS}`,
+      [
+        input.name,
+        input.description,
+        input.groupId,
+        input.maxRunsPerHour,
+        input.builtinId,
+        input.createdBy,
+      ],
+    );
+    const process = inserted.rows[0];
+    const revision = await client.query<{ id: string }>(
+      `INSERT INTO stac_higher.process_revisions
+         (process_id, runtime, code, env, created_by)
+       VALUES ($1, $2::jsonb, $3, $4::jsonb, $5)
+       RETURNING id`,
+      [
+        process.id,
+        JSON.stringify(input.revision.runtime),
+        input.revision.code,
+        JSON.stringify(input.revision.env),
+        input.createdBy,
+      ],
+    );
+    const repointed = await client.query<ProcessRow>(
+      `UPDATE stac_higher.processes
+          SET current_revision = $1, updated_at = now()
+        WHERE id = $2
+        RETURNING ${PROCESS_COLUMNS}`,
+      [revision.rows[0].id, process.id],
+    );
+    await client.query("COMMIT");
+    return toApiProcess(repointed.rows[0]);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (isUniqueViolation(err)) {
+      const detail = String((err as { constraint?: string }).constraint ?? "");
+      if (detail.includes("builtin")) return null;
+      throw new DuplicateProcessNameError(input.name, input.groupId);
+    }
+    throw err;
+  } finally {
+    client.release();
   }
 }
 

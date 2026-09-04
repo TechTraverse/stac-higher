@@ -226,8 +226,12 @@ for the pipeline, `build-contexts` in `containers.yml`, and
 copy's path published in `STAC_HIGHER_BUILTIN_REGISTRY`, which both
 `pipeline.process.builtin.load_builtin_registry` and the image's
 `stac_higher_stactools.registry` read (falling back to the checkout when
-unset). One file, no vendored copy to drift. The app image (X-4) is expected
-to do the same.
+unset). One file, no vendored copy to drift. The **app** (X-4) imports the
+file at BUILD time (`app/src/lib/extractors/registry.ts`, bundled by Vite —
+no runtime read, no env var), and `app/Dockerfile` copies it out of the same
+`fixtures` context to the path that import resolves to before `npm run
+build`, so `GET /api/extractors/builtin` serves exactly the registry the
+image was built with.
 
 The lead's curated set was fourteen packages. Three — `noaa-nwm`, `noaa-sst`
 and `hls` — exist only as untagged GitHub repos under `stactools-packages`

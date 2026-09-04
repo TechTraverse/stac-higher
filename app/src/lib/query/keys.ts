@@ -67,6 +67,11 @@ export const channelKeys = {
   list: () => [...channelKeys.all(), "list"] as const,
 };
 
+export const extractorKeys = {
+  all: () => ["extractors"] as const,
+  builtin: () => [...extractorKeys.all(), "builtin"] as const,
+};
+
 export const processKeys = {
   all: () => ["processes"] as const,
   list: () => [...processKeys.all(), "list"] as const,

@@ -127,7 +127,9 @@ export { Switch } from "@shared/components/ui/switch";
 export {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@shared/components/ui/select";

@@ -958,6 +958,24 @@ asset) so every adapter — and any hand-written extractor — sees the tree.
 - Tracked in: `stac_higher_stactools/adapters/_files.py` (`rebuild_tree`),
   `test_stactools_adapters.py`.
 
+### I-111 · A built-in process is named from its registry label, so a hand-written process with that name blocks the pick 🟡
+`POST /api/processes/builtin` creates the group's process with the registry
+entry's `label` as its name (spec §7), and migration 022's live-name index is
+per `(group_id, name)`. A group that already has a hand-written process
+called "GOES-R ABI (L1b / L2)" gets a 409 from the pick, naming the
+collision; renaming that process clears it. Not resolved automatically
+because a suffix ("… (2)") would make the built-in one harder to find than
+the collision is to fix. Two smaller X-4 limits recorded with it: the
+picker's `supports` filter is the spec's rule taken literally (`single_file`
+⇔ grouping `none`, `grouped` ⇔ `shared_basename`), so a single-file package
+cannot be picked for a grouped association even where its adapter would
+cope; and a built-in process whose registry id has since left the registry
+keeps running its deployed revision but cannot "Update to current" (409
+naming the drift) — the operator recreates it from whatever replaced the
+entry.
+- Tracked in: `app/src/pages/api/processes/builtin.ts`,
+  `IngestFormDialog.tsx` (`builtinSupportsGrouping`), `api-processes-builtin.test.ts`.
+
 ## Process compute — Kubernetes + Kueue (K queue, 2026-09-02)
 
 Opened by `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`

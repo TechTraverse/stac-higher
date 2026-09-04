@@ -105,6 +105,26 @@ export async function deployRevision(
   });
 }
 
+/** X-4 "Update to current": a built-in process's next revision, from the
+ * registry template the platform currently ships. Same route as a deploy. */
+export async function deployBuiltinRevision(id: string): Promise<ProcessRevision> {
+  return processFetch<ProcessRevision>(`/${enc(id)}/revisions`, {
+    method: "POST",
+    body: JSON.stringify({ from_builtin: true }),
+  });
+}
+
+/** X-4 create-or-reuse: the group's process for a built-in extractor. */
+export async function createBuiltinProcess(input: {
+  builtin_id: string;
+  group_id: string;
+}): Promise<Process> {
+  return processFetch<Process>("/builtin", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function listSources(id: string): Promise<ProcessSource[]> {
   return (await processFetch<{ sources: ProcessSource[] }>(`/${enc(id)}/sources`))
     .sources;

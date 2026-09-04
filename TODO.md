@@ -422,7 +422,7 @@ variant alias compose — whichever lands first adds the other's field).
       note (profile `image` = base, alias = variant) and K-1 adds `hardware`
       beside `runtime_image`. No picker: the deploy card posts `default`
       explicitly; X-4's built-in template posts `stactools`.
-- [ ] **X-4 · Built-in processes in the app.** Spec §7. Migration 028
+- [x] **X-4 · Built-in processes in the app.** Spec §7. Migration 028
       (`processes.builtin_id`, unique per live group); `GET
       /api/extractors/builtin`; `POST /api/processes/builtin` create-or-reuse
       (operator+, audited) deploying revision 1 from the two-line template
@@ -435,6 +435,34 @@ variant alias compose — whichever lands first adds the other's field).
       `app/Dockerfile` copies only `app/` and `packages/shared/`, so the
       fixture is not in the image today (X-1 left the choice open; X-2 makes
       the same call for the pipeline side). Depends on X-1, X-3.
+      **Merged 2026-09-04.** Migration **028** (`processes.builtin_id text
+      NULL` + partial unique index `(group_id, builtin_id) WHERE builtin_id IS
+      NOT NULL AND deleted_at IS NULL` — the create-or-reuse arbiter);
+      `GET /api/extractors/builtin` (member+); `POST /api/processes/builtin`
+      `{builtin_id, group_id}` → 200 the group's live process or 201 a new
+      one — `kind: extractor`, named from the label, 600 runs/h, revision 1
+      from the template (`from stac_higher_stactools import run` /
+      `run("<id>")`, `runtime_image: "stactools"`, the entry's memory/timeout/
+      network) in ONE transaction; two racing picks converge on the index
+      winner; a NAME collision with a hand-written process is a 409 (I-111).
+      **Update to current** = `POST …/revisions {from_builtin: true}` on a
+      built-in process (same deploy verb + audit row); a code deploy on one is
+      a 409, `from_builtin` on a hand-written one a 400, a registry id that
+      vanished a 409 naming the drift. UI: the process page swaps the code
+      editor for the read-only **Built-in** card (label, package==version,
+      image `stactools`, products, the two-line body, Update to current);
+      `built-in` badge on the list and the page; the ingest form's picker
+      gains a **Built-in** group (registry entries the group has NOT yet
+      instantiated, filtered by `supports` vs the grouping rule — `grouped` ⇔
+      `shared_basename`, `single_file` ⇔ `none`) beside "Your extractors"
+      (group processes, built-ins suffixed `· built-in`); picking one calls
+      create-or-reuse in the connection's group and stores the returned
+      `process_id` exactly as before. **APP packaging decided**: the registry
+      is imported at BUILD time (`app/src/lib/extractors/registry.ts` →
+      `tests/contract-fixtures/builtin-extractors.json`, bundled by Vite);
+      `app/Dockerfile` `COPY --from=fixtures` places it where the import
+      resolves before `npm run build` and `containers.yml` supplies the same
+      `fixtures` context the pipeline and runtime images use.
 - [ ] **X-5 · Live gates (LEAD ONLY, Docker + internet).** Spec §10. Gate A:
       switch the standing demo's `goes-abi-mcmipc` association to built-in
       `stactools-goes`; the next granule must match the hand-written

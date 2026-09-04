@@ -410,6 +410,42 @@ export const processRevisionCreateSchema = z
 
 export type ProcessRevisionCreate = z.infer<typeof processRevisionCreateSchema>;
 
+// ---------------------------------------------------------------------------
+// Built-in processes (X-4, X-queue spec §7)
+// ---------------------------------------------------------------------------
+
+/** `POST /api/processes/builtin` — create-or-reuse the group's process for a
+ * registry entry. Group ownership is enforced in-route. */
+export const processBuiltinCreateSchema = z
+  .object({
+    builtin_id: nonBlank("builtin_id is required"),
+    group_id: nonBlank("group_id is required"),
+  })
+  .strict();
+
+export type ProcessBuiltinCreate = z.infer<typeof processBuiltinCreateSchema>;
+
+/** `POST /api/processes/[id]/revisions` for a BUILT-IN process: "Update to
+ * current" — a new revision from the registry template, the only way a
+ * built-in process's revision moves. No runtime, no code: both come from the
+ * registry the app was built with. */
+export const processRevisionFromBuiltinSchema = z
+  .object({ from_builtin: z.literal(true) })
+  .strict();
+
+/** Pinned so the route and its tests agree. */
+export const BUILTIN_CODE_DEPLOY_REFUSAL =
+  "This is a built-in extractor: its code comes from the platform's stactools " +
+  "library and is read-only. Use \"Update to current\" to move it to the " +
+  "registry the platform currently ships, or create a hand-written extractor.";
+
+export const BUILTIN_TEMPLATE_ONLY_FOR_BUILTIN =
+  "from_builtin applies only to processes created from the built-in extractor library";
+
+export const BUILTIN_REGISTRY_DRIFT =
+  "This built-in extractor is no longer in the platform's registry, so no " +
+  "current template exists to deploy. The deployed revision keeps running.";
+
 export const processSourceCreateSchema = z
   .object({
     collection_id: nonBlank("collection_id is required"),

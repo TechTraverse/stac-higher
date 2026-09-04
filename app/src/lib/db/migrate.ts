@@ -1454,6 +1454,22 @@ const MIGRATIONS = [
         WHERE status = 'queued' AND association_id IS NOT NULL;
     `,
   },
+  {
+    // X-4 (X-queue spec §7): a process created from the built-in extractor
+    // registry carries the registry id it was instantiated from. NULL for
+    // every hand-written process; the partial unique index is the
+    // create-or-reuse arbiter — one LIVE built-in process per (group,
+    // registry id), and a soft-deleted one never blocks re-creating it.
+    // Migration number settled 2026-09-04 (X is worked first; K-3 takes 029).
+    name: "028_builtin_processes",
+    sql: `
+      ALTER TABLE stac_higher.processes
+        ADD COLUMN IF NOT EXISTS builtin_id text;
+      CREATE UNIQUE INDEX IF NOT EXISTS processes_live_builtin_idx
+        ON stac_higher.processes (group_id, builtin_id)
+        WHERE builtin_id IS NOT NULL AND deleted_at IS NULL;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

@@ -135,3 +135,24 @@ describe("migration 027 (extractors — G-6)", () => {
     expect(sql).toContain("WHERE status = 'queued' AND association_id IS NOT NULL");
   });
 });
+
+describe("migration 028 (built-in processes — X-4)", () => {
+  const sql = migrationEntry("028_builtin_processes");
+
+  it("runs after G-6's 027", () => {
+    expect(migrate.indexOf('"028_builtin_processes"')).toBeGreaterThan(
+      migrate.indexOf('"027_extractors"'),
+    );
+  });
+
+  it("adds a nullable registry id — NULL for every hand-written process", () => {
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS builtin_id text");
+    expect(sql).not.toMatch(/builtin_id text NOT NULL/);
+  });
+
+  it("is the create-or-reuse arbiter: one LIVE process per (group, registry id)", () => {
+    expect(sql).toContain("CREATE UNIQUE INDEX IF NOT EXISTS processes_live_builtin_idx");
+    expect(sql).toContain("ON stac_higher.processes (group_id, builtin_id)");
+    expect(sql).toContain("WHERE builtin_id IS NOT NULL AND deleted_at IS NULL");
+  });
+});

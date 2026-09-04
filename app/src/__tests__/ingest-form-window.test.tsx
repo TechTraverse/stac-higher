@@ -21,6 +21,12 @@ vi.mock("@/lib/associations/queries", () => ({
 
 vi.mock("@/lib/processes/queries", () => ({
   useProcesses: () => ({ data: [] }),
+  useCreateBuiltinProcess: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+// X-4: the picker also reads the built-in registry; not under test here.
+vi.mock("@/lib/extractors/queries", () => ({
+  useBuiltinExtractors: () => ({ data: [] }),
 }));
 
 import { IngestFormDialog } from "@/components/collections/IngestFormDialog";

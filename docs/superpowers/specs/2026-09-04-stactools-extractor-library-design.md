@@ -369,3 +369,15 @@ need it would bake the wrong answer into the contract.
   dies in `runner.py` by name — the launch-side half of the dual pattern.
   K-1 had not landed, so the K spec carries the composition note and K-1
   adds `hardware` beside the alias.
+- **X-4 (§7), same day**: migration 028 as settled; create-or-reuse is one
+  transaction (process + revision 1) with the partial unique index as the
+  arbiter under a race; "Update to current" reuses the deploy verb with a
+  `{from_builtin: true}` body rather than a second route, so one audit row
+  and one code path move a revision. The picker hides registry entries the
+  group has already instantiated (they appear as its processes) and
+  filters by `supports` against the grouping rule. **App packaging**: the
+  registry is imported at build time and bundled — `app/Dockerfile` copies
+  it from the `fixtures` context to the import's path before the build —
+  which keeps the §5 promise literally: the API serves the registry the
+  image was built with. A name collision with a hand-written process is a
+  409 (**I-111**).

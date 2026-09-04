@@ -1,8 +1,12 @@
 # syntax=docker/dockerfile:1
 # STAC Higher app — Astro SSR (@astrojs/node, standalone) built from the
 # npm-workspaces root (single lockfile + packages/shared are required).
-# Build context is the REPO ROOT:
-#   docker build -f app/Dockerfile .
+# Build context is the REPO ROOT, plus the `fixtures` named context that
+# carries the built-in extractor registry (X-4 — the repo-root .dockerignore
+# excludes tests/, and the registry is imported at BUILD time by
+# app/src/lib/extractors/registry.ts, so it must be at the path that import
+# resolves to before `npm run build`):
+#   docker build -f app/Dockerfile --build-context fixtures=tests/contract-fixtures .
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /srv
@@ -12,6 +16,7 @@ COPY packages/shared/package.json packages/shared/
 RUN npm ci
 COPY app app
 COPY packages/shared packages/shared
+COPY --from=fixtures builtin-extractors.json tests/contract-fixtures/builtin-extractors.json
 # The SSR bundle externalizes runtime deps (pg, @aws-sdk, react, zod, ...), so
 # prune to production node_modules and ship them alongside dist/.
 RUN npm run build --workspace app \

@@ -155,6 +155,9 @@ function ProcessCard({
               {process.kind === "extractor" && (
                 <Badge variant="outline">extractor</Badge>
               )}
+              {process.builtin_id !== null && (
+                <Badge variant="outline">built-in</Badge>
+              )}
             </div>
             <p
               className={`mt-0.5 text-[12px] text-muted-foreground ${trigger.mono ? "tech" : ""}`}
