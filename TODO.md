@@ -659,6 +659,47 @@ No migrations. The tilers are still called straight from the browser
       tipg, `docs/FEATURES.md` + `docs/serving.md`, the §8 deferrals logged
       in `docs/ISSUES.md` / follow-ups. Depends on V-2 (not V-3).
 
+**Carried forward from the V-1 final review (2026-09-04)** — constraints the
+remaining slices must honour; they lived only in the review ledger until now:
+
+- **V-2:** the layer-row opacity control clamps to 0..1 BEFORE the value
+  reaches `footprintLayers` / `vectorTileLayers` / `RasterFrameStack` — none
+  of them clamp, and maplibre rejects an opacity above 1 as a style error.
+  One `clamp01` in `packages/shared/src/lib/map/styles.ts` used by all three
+  is the cheapest shape. Decide the `beforeId` anchoring scheme BEFORE
+  writing the chaining code: `RasterFrameStack`'s frame layer ids
+  (`${id}-frame-${n}-layer`) come and go every step, and react-map-gl's
+  `addLayer` throws on a `beforeId` naming a layer that is not there (the
+  pinned `ItemDetailView` regression). Give each stack a stable anchor layer
+  (an always-mounted `${id}-anchor`, or one spacer layer per list slot) and
+  chain only on stable ids — never on a frame layer.
+- **V-3:** `resolveLayerFrame` must never hand a stack an out-of-range index
+  — a negative index throws (`frames[-1].key`), an index ≥ count renders
+  every frame at opacity 0 and reads as "the tiler is down" — or make
+  `RasterFrameStack` total with `((index % count) + count) % count` and add
+  the 1-frame-series and out-of-range tests. Fix the frame DRAW ORDER on a
+  backwards step: react-map-gl only calls `moveLayer` when a layer's
+  `beforeId` prop changes, so after stepping 0→1→2→1 the still-mounted frame
+  2 sits above frame 1 in maplibre's order and, both being opaque, paints
+  over it. Pre-existing in the preview tab (forward playback is always
+  correct, which is why the live GOES check never saw it); routine once a
+  scrubbable shared axis drives several stacks. The robust fix chains
+  `beforeId` inside the stack so a reorder triggers `moveLayer`; that
+  inverts the child order `collection-preview-tab.test.tsx`'s "keeps the
+  previous frame painted" assertion reads — **the lead permits that
+  assertion to change in V-3** (the behaviour it protects, two opaque
+  frames with the current one on top, stays). Keep the `hintSettled` gate
+  from §4.3: react-map-gl's source update applies only one changed key per
+  render and warns on the rest.
+- **V-4:** delete the now-consumerless `footprintFillLayer` /
+  `footprintLineLayer` exports and the stale `app/src/lib/map/styles.ts`
+  proxy (or sync it); add an ids-only `vectorTileLayerIds` beside
+  `vectorTileLayers` for `interactiveLayerIds` / anchors; assert the
+  default-opacity paint values (fill 0.2, line 1) in
+  `vector-tile-layer.test.tsx`; `useMemo` the `FeatureCollection` in
+  `FootprintLayer` on `[items, selectedId]` (react-map-gl deep-compares
+  `data` every render).
+
 ## Parked (do not start without the lead)
 
 - **OGC API — Processes facade** (Phase 9 spec §11, I-66) — posture and

@@ -37,7 +37,7 @@ describe("VectorTileLayer", () => {
     ]);
   });
 
-  it("draws each geometry type once, via $type filters", () => {
+  it("draws each geometry type once, via geometry-type filters", () => {
     render(<VectorTileLayer id="v" url="http://t/tilejson.json" />);
 
     const [fill, line, circle] = layers();

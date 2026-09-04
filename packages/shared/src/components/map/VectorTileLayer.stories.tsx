@@ -37,5 +37,5 @@ export const Points: Story = {
 };
 
 export const Blended: Story = {
-  args: { id: "demo", url: DEMO_TILEJSON, sourceLayer: "countries", opacity: 0.4 },
+  args: { id: "demo", url: DEMO_TILEJSON, sourceLayer: "countries", opacity: 0.7 },
 };
