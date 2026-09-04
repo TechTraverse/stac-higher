@@ -89,9 +89,9 @@ carry over unchanged and are restated here so nobody re-learns them:
   page. The style helpers in `lib/map/styles.ts` become functions of the
   source id where they currently hard-code it. It also gains
   `opacity?: number` (applied to fill and line) and `beforeId?`.
-- **`VectorTileLayer`** (new, shared). Props: `id`, `tiles: string[]`
-  (or a `url` to a TileJSON — maplibre accepts either on a vector source),
-  `sourceLayer` (tipg's is `default`; verified against the running tipg in
+- **`VectorTileLayer`** (new, shared). Props: `id`, `url` (a TileJSON
+  document URL — maplibre fetches it and takes tiles, bounds and zoom range
+  from it, which is what tipg publishes), `sourceLayer` (tipg's is `default`; verified against the running tipg in
   V-4 before it is hard-coded as the default), `opacity?`, `beforeId?`.
   Renders three maplibre layers on the one source: fill (polygons), line
   (all), circle (points), with `filter` on `$type` so each geometry type is
@@ -279,7 +279,8 @@ omitted, as G-5 does; I-1/I-69 still apply and are not changed here.
 - **Storybook:** `VectorTileLayer.stories.tsx`, `RasterFrameStack.stories.tsx`.
 - **E2E:** `app/e2e/map.spec.ts` — page loads, sidebar entry active, picker
   lists the built-in catalog's collections, adding a footprints layer shows
-  a row and a `stac-footprints-*` source. Needs only pgstac (:8082), which
+  a row in the layer list and a footprint source under that layer's
+  namespaced id on the map. Needs only pgstac (:8082), which
   the suite already assumes for some specs. Imagery and tipg paths are
   live-only (an env gate like `goes-loop.spec.ts`), since CI has no tiler.
 - **Live check before the V-3 and V-4 merges:** the standing GOES demo —
