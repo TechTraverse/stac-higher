@@ -211,8 +211,10 @@ def upsert_connection(
     group: str,
     created_by: str,
 ) -> uuid.UUID:
-    """Find-or-make one connection by name. `credentials=None` is the
-    anonymous case (a public bucket signs nothing — G-1)."""
+    """Find-or-make one connection by name. `credentials` is the SEALED
+    envelope; pass `seal("{}", key)` for an anonymous connection (G-1) — the
+    pipeline's build_adapter treats a NULL column as "no credentials" and
+    refuses it, so None is never the anonymous case."""
     row = cur_or_conn.execute(
         "SELECT id FROM stac_higher.connections WHERE name = %s AND deleted_at IS NULL",
         (name,),

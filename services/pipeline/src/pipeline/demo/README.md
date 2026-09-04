@@ -117,9 +117,12 @@ raise `memory_mb` on the revision before pointing the association at one.
    against `noaa-goes19`.
 2. **Migration `027_extractors`** — an ingest association cannot name an
    extractor before it. `goes-seed` checks and says so.
-3. **`CREDENTIALS_MASTER_KEY`** in the environment, for `--deliver` only: the
-   delivery connection's MinIO credentials are sealed with it, exactly as
-   `pipeline.loadgen` does. It is checked before anything is written.
+3. **`CREDENTIALS_MASTER_KEY`** in the environment, for every `goes-seed`: the
+   anonymous NODD connection stores an encrypted EMPTY envelope (the app does
+   the same — the pipeline refuses a connection with no envelope at all), and
+   `--deliver` seals the delivery connection's MinIO credentials with the same
+   key, exactly as `pipeline.loadgen` does. It is checked before anything is
+   written. From the repo root: `set -a; source .env; set +a`.
 
 ### It refuses a second ingest source
 

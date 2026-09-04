@@ -295,6 +295,8 @@ def goes_seed_module(monkeypatch):
     from pipeline.demo.goes import seed as module
 
     conn = _FakeConn()
+    # Every seed needs the master key (the anonymous envelope is sealed with it).
+    monkeypatch.setenv("CREDENTIALS_MASTER_KEY", _SEED_KEY_B64)
     monkeypatch.setattr(module.psycopg, "connect", lambda *a, **k: conn)
     monkeypatch.setattr(module, "check_migrations", lambda *a, **k: None)
     monkeypatch.setattr(module, "say", lambda *a, **k: None)
@@ -373,3 +375,63 @@ def test_goes_teardown_subparser_takes_force(monkeypatch):
     assert demo_main.main(["goes-teardown", "--force"]) == 0
     assert demo_main.main(["goes-teardown"]) == 0
     assert seen == [True, False]
+
+
+_SEED_KEY_B64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
+
+def _stub_seed_writes(module, monkeypatch, connections: list[dict]):
+    """Silence every write in `seed` except the connection upsert, which is
+    captured so the test can inspect what the NODD connection was stored with."""
+    monkeypatch.setattr(module, "competing_ingest_associations", lambda *a, **k: [])
+    monkeypatch.setattr(module, "put_collection", lambda *a, **k: None)
+    monkeypatch.setattr(module, "enable_serving", lambda *a, **k: None)
+    monkeypatch.setattr(module, "install_process", lambda *a, **k: None)
+    monkeypatch.setattr(module, "upsert_association", lambda *a, **k: "assoc")
+    monkeypatch.setattr(
+        module,
+        "upsert_connection",
+        lambda *a, **k: connections.append(k) or "conn",
+    )
+
+
+def test_goes_seed_stores_an_empty_envelope_for_the_anonymous_connection(
+    goes_seed_module, monkeypatch
+):
+    """The app stores an ENCRYPTED `{}` for an anonymous s3 connection because
+    the pipeline's build_adapter treats a NULL credentials column as a
+    configuration error. The seed must write the same shape, or discover fails
+    on every poll with "connection has no stored credentials"."""
+    import json
+
+    from pipeline.connections.envelope import decrypt, load_master_key
+
+    module = goes_seed_module
+    monkeypatch.setenv("CREDENTIALS_MASTER_KEY", _SEED_KEY_B64)
+    connections: list[dict] = []
+    _stub_seed_writes(module, monkeypatch, connections)
+
+    assert module.seed(_goes_args()) == 0
+
+    nodd = next(c for c in connections if c["name"] == module.CONNECTION_NAME)
+    assert nodd["credentials"] is not None
+    key = load_master_key({"CREDENTIALS_MASTER_KEY": _SEED_KEY_B64})
+    assert json.loads(decrypt(nodd["credentials"], key)) == {}
+
+
+def test_goes_seed_requires_the_master_key_before_any_write(goes_seed_module, monkeypatch):
+    """The key is needed for the ingest leg too (the anonymous envelope), not
+    just for `--deliver`, so its absence must stop the seed before the catalog
+    is touched."""
+    from pipeline.connections.envelope import CredentialKeyError
+
+    module = goes_seed_module
+    monkeypatch.delenv("CREDENTIALS_MASTER_KEY", raising=False)
+    written: list[tuple] = []
+    monkeypatch.setattr(module, "competing_ingest_associations", lambda *a, **k: [])
+    monkeypatch.setattr(module, "put_collection", lambda *a, **k: written.append(a))
+
+    with pytest.raises(CredentialKeyError):
+        module.seed(_goes_args())
+
+    assert written == []
