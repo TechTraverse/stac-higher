@@ -872,7 +872,12 @@ import-smoke and unit-test their adapters against the packages' own
 fixture files. Their live gate is owed the first time a credentialed
 connection to one of those archives exists. Until then a registry entry
 marked `access: credentialed` is a promise the platform has not verified
-end to end.
+end to end. X-2 narrowed it: `modis`, `landsat`, `naip` and `sentinel2` ARE
+tested against their packages' own fixture files (metadata-only where the
+rasters are not vendored); `viirs` (no fixture in its repo) and `sentinel1`
+(3 MB of SAFE annotation) are tested with the package's `create_item`
+replaced by a double, so for those two only the platform's half — file
+picking and the SAFE rebuild — is proved.
 
 ### I-106 · A process cannot take a static reference asset as an input 🟡
 ADR 0018 stages the TRIGGERING items into a run; there is no way to hand a
@@ -915,6 +920,43 @@ immutable commit SHA) so the three can be installed from their repos — a
 supply-chain decision, not a registry-schema one, which is why it was not
 taken unilaterally. Cheaper trigger: one of the three cutting a release.
 - Tracked in: X-queue spec §2/§3.5; `tests/contract-fixtures/README.md`.
+
+### I-109 · Three stactools packages cap pystac below the platform pin — overridden, not dropped 🟡
+Found by X-2's first step (the resolver, in one second): `stactools-goes-glm
+0.2.4` and `stactools-noaa-hrrr 1.0.1` declare `pystac<1.12`,
+`stactools-sentinel1 0.8.1` `pystac~=1.9.0`, against the platform's
+`pystac==1.15.1`. Spec §11's fallback was to drop such entries, but that
+would have removed two of gate B's four anonymous packages — and all eleven
+import, build items and pass their adapter tests on 1.15.1 (the runtime
+image's smoke and the pipeline suite's adapter tests re-prove it on every
+build and CI run). So `Dockerfile.stactools` installs with a uv
+`--override pystac==1.15.1` and the pipeline's `[tool.uv]
+override-dependencies` carries the same line. The cost: an upstream release
+that REALLY needs an old pystac would fail at the smoke or the adapter test
+rather than at resolution — which is the earliest visible point anyway. Also
+pinned beside it: `setuptools<81`, because eight of the eleven still import
+`pkg_resources` (removed in setuptools 81). Revisit when the three lift
+their caps; the pin check does not see the override, only the eleven.
+- Tracked in: `services/process-runtime/Dockerfile.stactools`,
+  `services/pipeline/pyproject.toml`, `test_stactools_runtime.py`.
+
+### I-110 · SAFE products and NAIP need the SOURCE path, which only reference-mode hrefs carry 🟡
+The ingest stages a group's files flat, under their basenames
+(`staging/runs/{run}/inputs/{batch}/{item}/{filename}`); the relative path
+inside a product survives only in the draft's asset hrefs, and only when the
+association is reference-mode (a canonical-mode ingest's hrefs are
+`/api/assets/{collection}/{item}/{filename}`). The `sentinel1` and
+`sentinel2` adapters rebuild the `.SAFE` tree from those hrefs (symlinks in a
+scratch dir) and the `naip` adapter reads the state from the archive's
+`/{state}/{year}/` segment; with canonical hrefs they fail the item with a
+reason naming reference mode. Also a limit on the platform side, not the
+adapters: a SAFE's files are keyed by stem, so two files with the same
+basename in different subdirectories (rare in SAFE, not impossible) would
+collide when staged. Shape if it bites: stage grouped files under their
+source-relative path (an ADR 0018 manifest addition, `relative_path` per
+asset) so every adapter — and any hand-written extractor — sees the tree.
+- Tracked in: `stac_higher_stactools/adapters/_files.py` (`rebuild_tree`),
+  `test_stactools_adapters.py`.
 
 ## Process compute — Kubernetes + Kueue (K queue, 2026-09-02)
 

@@ -351,7 +351,7 @@ variant alias compose — whichever lands first adds the other's field).
       `Dockerfile.stactools` skips until X-2 creates that file, then arms
       itself. Packaging (how the fixture reaches each image) is left to X-2
       and X-4 on purpose — neither build context includes `tests/`.
-- [ ] **X-2 · stactools runtime image + wrapper + adapters.** Spec §6.
+- [x] **X-2 · stactools runtime image + wrapper + adapters.** Spec §6.
       `services/process-runtime/Dockerfile.stactools` (extends the runtime
       image; stactools + the **eleven** pinned packages the registry names —
       I-107; `python -c "import stactools.<pkg>"` smoke for every entry at
@@ -375,6 +375,33 @@ variant alias compose — whichever lands first adds the other's field).
       pytest extra FIRST and let the resolver surface conflicts in seconds,
       then write the Dockerfile, then build. Still no dev server, no e2e, no
       compose stack.
+      **Merged 2026-09-04.** The resolver surfaced §11's risk in one second:
+      `goes-glm` and `noaa-hrrr` cap `pystac<1.12`, `sentinel1` `~=1.9.0`,
+      against the platform's 1.15.1 — but all eleven import AND build items
+      on 1.15.1, so the image installs with a uv `--override` (same override
+      in the pipeline's `[tool.uv]`) rather than dropping three entries, two
+      of them gate-B packages — **I-109**, spec §15. Also `setuptools<81`
+      (eight packages still import `pkg_resources`, removed in 81). Image
+      built and smoke-tested locally: 1.18 GB vs the 525 MB base; the smoke
+      is registry-driven (`python -m stac_higher_stactools.smoke` imports
+      every entry's module + adapter and checks the installed version equals
+      the pin). **Packaging decided**: the registry reaches the pipeline and
+      runtime images as `COPY --from=fixtures` out of a named build context
+      on `tests/contract-fixtures` (compose `additional_contexts`, CI
+      `build-contexts`, `services/process-runtime/docker-bake.hcl` chaining
+      base → variant), each image publishing its copy's path in
+      `STAC_HIGHER_BUILTIN_REGISTRY`; `load_builtin_registry` falls back to
+      the checkout. One file, no vendored copy — X-4 can do the same for the
+      app image. Wrapper `stac_higher_stactools` (in the image, unit-tested
+      from the pipeline suite via `pythonpath`): `run()` per-item failure,
+      dead only when nothing landed; merge fills `datetime` from
+      `start_datetime` (noaa-cdr, modis emit null) and matches produced
+      assets to draft assets by staged path/basename. Adapters ×11, nine
+      tested against the package's own fixture file (vendored, 1.4 MB,
+      `tests/data/stactools/README.md`) through the REAL finalize gate; viirs
+      and sentinel1 with doubles (no usable in-repo fixture). SAFE products
+      and NAIP need the source path (reference-mode hrefs) — **I-110**.
+      `containers.yml` builds both runtime images via `docker/bake-action`.
 - [ ] **X-3 · Image alias.** Spec §8. `runtime_image: "default" |
       "stactools"` on `runtimeLimits` (lenient Python reader — stored
       revisions lack it), `PROCESS_RUNTIME_IMAGE_STACTOOLS` resolved at launch,

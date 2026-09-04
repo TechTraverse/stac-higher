@@ -12,16 +12,22 @@ to the right adapter inside the stactools runtime image (X-2) and refusing a
 run whose ``builtin_id`` is no longer in the registry (X-3/§9). Both come
 later; this slice is the reader and the pin check.
 
-**Packaging is deliberately not decided here.** ``parse_builtin_extractors``
-takes a document. How the file reaches each image — a COPY, a mount, an env
-override — is X-2's and X-4's call; neither build context includes ``tests/``
-today, and guessing now would bake the wrong answer into the contract.
+**Packaging (settled by X-2):** the registry reaches the pipeline image and
+the stactools runtime image as a ``COPY --from=fixtures`` out of a named build
+context pointing at ``tests/contract-fixtures`` (compose
+``additional_contexts``, CI ``build-contexts``, the runtime bake file), and
+each image publishes the copy's path in ``STAC_HIGHER_BUILTIN_REGISTRY``.
+``load_builtin_registry`` reads that path, falling back to the repo checkout
+when the env var is unset (dev, pytest). One file, no vendored copies.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from pipeline.process.config import MAX_TIMEOUT_SECONDS, MIN_MEMORY_MB, NETWORK_LEVELS
@@ -45,6 +51,38 @@ _PACKAGE_PREFIX = "stactools-"
 
 class BuiltinRegistryError(ValueError):
     """A registry document the reader cannot use."""
+
+
+#: Where the image's copy of the registry is (Dockerfile ENV); unset outside
+#: an image, where the repo checkout is used instead.
+REGISTRY_ENV_VAR = "STAC_HIGHER_BUILTIN_REGISTRY"
+_CHECKOUT_REGISTRY = (
+    Path(__file__).resolve().parents[5] / "tests" / "contract-fixtures" / "builtin-extractors.json"
+)
+
+
+def builtin_registry_path(env: dict[str, str] | None = None) -> Path:
+    """The registry file this process should read: ``STAC_HIGHER_BUILTIN_REGISTRY``
+    when set (the image), else the repo checkout (dev / tests)."""
+    override = (os.environ if env is None else env).get(REGISTRY_ENV_VAR)
+    if override:
+        return Path(override)
+    if _CHECKOUT_REGISTRY.exists():
+        return _CHECKOUT_REGISTRY
+    raise BuiltinRegistryError(
+        f"no built-in extractor registry: set {REGISTRY_ENV_VAR} (the image copies it from "
+        "the `fixtures` build context) or run from a repo checkout"
+    )
+
+
+def load_builtin_registry(path: Path | None = None) -> tuple[BuiltinExtractor, ...]:
+    """Parse the registry at ``path`` (default: ``builtin_registry_path()``)."""
+    where = path or builtin_registry_path()
+    try:
+        document = json.loads(where.read_text())
+    except (OSError, ValueError) as exc:
+        raise BuiltinRegistryError(f"could not read the registry at {where}: {exc}") from exc
+    return parse_builtin_extractors(document)
 
 
 @dataclass(frozen=True)

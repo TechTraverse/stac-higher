@@ -1,0 +1,12 @@
+1:0:d=2022061512:REFC:entire atmosphere:6 hour fcst:
+2:366520:d=2022061512:RETOP:cloud top:6 hour fcst:
+3:459187:d=2022061512:VIL:entire atmosphere:6 hour fcst:
+4:620931:d=2022061512:VIS:surface:6 hour fcst:
+5:1012741:d=2022061512:REFD:1000 m above ground:6 hour fcst:
+6:1201388:d=2022061512:REFD:4000 m above ground:6 hour fcst:
+7:1349542:d=2022061512:GUST:surface:6 hour fcst:
+8:1880613:d=2022061512:UGRD:250 mb:6 hour fcst:
+9:2334214:d=2022061512:VGRD:250 mb:6 hour fcst:
+10:2794056:d=2022061512:TMP:surface:6 hour fcst:
+11:3305287:d=2022061512:PRATE:surface:6 hour fcst:
+12:3542012:d=2022061512:APCP:surface:0-6 hour acc fcst:

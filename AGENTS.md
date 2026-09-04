@@ -92,7 +92,12 @@ docker-compose runs the full local platform stack:
   `/var/run/docker.sock`; `DOCKER_HOST` must be the proxy or the executor
   refuses to start. Runs attach to the internal `process-runs` network (or
   `none`, the default) and execute the platform image built from
-  `services/process-runtime/`.
+  `services/process-runtime/` — two images, built together by
+  `docker buildx bake -f services/process-runtime/docker-bake.hcl` from the
+  repo root: the base, and the `stactools` variant carrying the built-in
+  extractor library (X-2; the bake file also supplies the `fixtures` build
+  context through which `tests/contract-fixtures/builtin-extractors.json`
+  reaches the pipeline and runtime images).
 - **OGC serving**: **titiler-pgstac** at :8084 (OGC API Tiles for rasters,
   per STAC collection off pgstac) and **tipg** at :8085 (OGC API
   Features/Tiles for vector tables in the shared PostGIS). LINK-LEVEL

@@ -86,9 +86,11 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: services/pipeline/uv.lock
-      - run: uv sync --frozen --extra dev
+      - run: uv sync --frozen --extra dev --extra stactools
       - name: Lint (ruff check)
-        run: uv run ruff check .
+        # ../process-runtime/stac_higher_stactools ships in the runtime image but
+        # is unit-tested (and so linted) from this suite — X-2.
+        run: uv run ruff check . ../process-runtime/stac_higher_stactools
       - name: Tests (DB integration included)
         env:
           DATABASE_URL: postgresql://username:password@localhost:5433/postgis

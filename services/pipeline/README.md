@@ -328,6 +328,9 @@ Requires [uv](https://docs.astral.sh/uv/) (falls back to `python3 -m venv` +
 ```sh
 cd services/pipeline
 uv sync --extra dev      # create .venv and install
+uv sync --extra dev --extra stactools   # + the built-in extractor library's eleven
+                                        #   packages (X-2): tests/test_stactools_adapters.py
+                                        #   skips without them; CI installs them
 uv run pytest            # unit tests (no database needed)
 uv run ruff check .      # lint
 uv run pipeline          # run the service (needs Postgres per DATABASE_URL)
