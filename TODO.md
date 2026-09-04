@@ -11,7 +11,7 @@ just a wasted read.
 | Queue | What it is | State |
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
-| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-03** — G-1…G-7 merged, both live gates met against real NODD. Only the manual `goes-seed` recipe and the loadgen extractor run remain (follow-ups) |
+| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-03** — G-1…G-7 merged, both live gates met against real NODD. The standing `goes-seed --deliver` demo ran 2026-09-04; only the loadgen extractor run at M3-D concurrency remains (follow-ups) |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved — G-6/G-7 are both done, so once approval lands the process agent is free to start K-1 |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
@@ -585,5 +585,28 @@ object stores only).
   same checkout — the gate ran from a detached worktree on :4322. Still owed:
   the manual `pipeline.demo goes-seed --deliver` recipe against the full hour
   (the W-1 seed association on `goes-abi-mcmipc` must be deleted first).
+
+- **Standing GOES demo seeded 2026-09-04 (lead, Docker + internet, real NODD)**
+  via `pipeline.demo goes-seed --deliver` — the manual recipe the G-7 gate left
+  owed. First run found ONE defect the e2e could not see: the seed wrote a NULL
+  `credentials` column for the anonymous NODD connection, but `build_adapter`
+  treats NULL as "connection has no stored credentials" and refused it, so
+  every `ingest_discover` poll failed before listing (the e2e passed because
+  the app's `POST /api/connections` stores an encrypted `{}` for exactly this
+  reason). Fixed on `ai/goes-seed-anon-creds`: the seed seals `{}` with the
+  master key, which every `goes-seed` now requires up front, not only
+  `--deliver` (`platform.upsert_connection`'s docstring had called `None` the
+  anonymous case — corrected). Measured after the fix, window `-1h`, cap 2 per
+  poll: first two polls admitted 4 granules → extractor `succeeded` 26 s
+  after claim → GeoColor run of 4 `succeeded` ~1.5 min later → 4 COGs
+  (~3.2 MB each) delivered to `s3://stac-higher-deliveries/goes/` within the
+  same minute; the tiler served a z4 JPEG tile of `goes-geocolor`; source
+  items carry the scan-time `datetime`, `platform goes-19`, `goes:*` and a
+  93-vertex extractor footprint. Claim latency 95–265 ms. Preconditions that
+  bit: the W-1 seed association on `goes-abi-mcmipc` had to be deleted first
+  (its 230 `defaults_only` reference items went with it, by design), and the
+  seed must be run with the repo `.env` exported (`set -a; source .env;
+  set +a`). The demo is left ENABLED and keeps ingesting the trailing hour.
+  Still owed: the loadgen `--metadata extractor` run at M3-D concurrency.
 
 (append here during iterations)

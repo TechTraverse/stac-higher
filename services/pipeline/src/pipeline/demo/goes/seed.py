@@ -7,9 +7,12 @@ against the LIVE NODD bucket (the manual recipe for spec §10's "full hour").
     goes-geocolor     <- the goes-geocolor process, triggered per source item
                           (optionally delivered to a MinIO bucket, --deliver)
 
-Needs the internet, the process runtime image, and — for --deliver —
-CREDENTIALS_MASTER_KEY in the environment (the delivery connection's MinIO
-credentials are sealed with it, exactly as pipeline.loadgen does).
+Needs the internet, the process runtime image, and CREDENTIALS_MASTER_KEY in
+the environment: the anonymous NODD connection stores an ENCRYPTED empty
+envelope (`{}`), exactly as the app does — the pipeline's build_adapter
+treats a NULL credentials column as a configuration error, not as anonymous —
+and --deliver seals the delivery connection's MinIO credentials with the same
+key, exactly as pipeline.loadgen does.
 """
 
 from __future__ import annotations
@@ -209,7 +212,7 @@ def _refuse_competing_ingest(conn: psycopg.Connection) -> None:
 def seed(args: argparse.Namespace) -> int:
     check_migrations(args.database_url, REQUIRED_MIGRATION)
 
-    _require_master_key(args)
+    master_key = _require_master_key()
 
     # The connection opens FIRST so the competing-association refusal happens
     # before the catalog is touched, not after two collections were replaced.
@@ -268,7 +271,11 @@ def seed(args: argparse.Namespace) -> int:
             name=CONNECTION_NAME,
             protocol="s3",
             config=nodd_connection_config(),
-            credentials=None,
+            # An anonymous connection stores an EMPTY envelope, not no
+            # envelope (the app's POST /api/connections does the same):
+            # build_adapter refuses a NULL credentials column outright, and
+            # `{}` is exactly what the unsigned adapter needs.
+            credentials=seal("{}", master_key),
             group=GROUP,
             created_by=CREATED_BY,
         )
@@ -297,7 +304,7 @@ def seed(args: argparse.Namespace) -> int:
                 json.dumps(
                     {"access_key_id": "minioadmin", "secret_access_key": "minioadmin"}
                 ),
-                load_master_key(dict(os.environ)),
+                master_key,
             )
             dest_connection = upsert_connection(
                 conn,
@@ -335,11 +342,11 @@ def seed(args: argparse.Namespace) -> int:
     return 0
 
 
-def _require_master_key(args: argparse.Namespace) -> None:
+def _require_master_key() -> bytes:
     """Fail on a missing master key BEFORE the catalog is touched, rather than
-    at the last write of a seed that otherwise succeeded."""
-    if getattr(args, "deliver", False):
-        load_master_key(dict(os.environ))
+    at the last write of a seed that otherwise succeeded. Every seed needs it:
+    the anonymous NODD connection's empty envelope is sealed with it too."""
+    return load_master_key(dict(os.environ))
 
 
 # --------------------------------------------------------------------------- #
