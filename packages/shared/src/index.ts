@@ -19,6 +19,25 @@ export { StacApiError } from "@shared/lib/stac-api/types";
 // Utilities
 export { cn } from "@shared/lib/utils";
 export { bboxToPolygon, bboxToLngLatBounds, geometryToBbox } from "@shared/lib/map/bbox";
+
+// Pipeline graph — pure lineage + layout (P-2)
+export type {
+  Graph,
+  GraphEdge,
+  GraphEdgeKind,
+  GraphNode,
+  GraphNodeType,
+} from "@shared/lib/graph/types";
+export { lineage } from "@shared/lib/graph/lineage";
+export type { Lineage } from "@shared/lib/graph/lineage";
+export { layeredLayout, LAYOUT_DEFAULTS } from "@shared/lib/graph/layout";
+export type {
+  Layout,
+  LayoutOptions,
+  PlacedEdge,
+  PlacedNode,
+} from "@shared/lib/graph/layout";
+export { FIXTURE_GRAPH } from "@shared/lib/graph/fixtures";
 export {
   FOOTPRINT_SOURCE,
   EXTENT_SOURCE,
