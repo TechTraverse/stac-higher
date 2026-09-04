@@ -285,3 +285,40 @@ note; whichever lands first adds the other's field.
 - **X-5 · Live gates (LEAD).** Gate A against the standing GOES demo,
   gate B across the six other anonymous packages; ISSUES entry for the
   credentialed seven. Depends on X-2, X-4.
+
+## 14. X-1 addendum — the set is eleven, not fourteen (2026-09-04)
+
+Verified against PyPI while writing the registry: three of §2's fourteen —
+`noaa-nwm`, `noaa-sst` and `hls` — have never been **published**. They exist
+only as repos under `stactools-packages`, with no tags or releases at all
+(last pushed 2023-10, 2021-09, 2022-08), so there is no `package==version` for
+`Dockerfile.stactools` to pin and nothing for the §6 import smoke test to
+prove. The lead's call (2026-09-04) is to ship the eleven that have a release
+and log the three: **I-107**. Consequences elsewhere in this spec:
+
+- §5's registry holds eleven entries. The concrete pins are `stactools-goes`
+  0.1.8, `goes-glm` 0.2.4, `noaa-hrrr` 1.0.1, `noaa-mrms-qpe` 0.3.1,
+  `noaa-cdr` 0.2.1, `viirs` 0.1.0, `modis` 0.2.0, `landsat` 0.5.0,
+  `sentinel1` 0.8.1, `sentinel2` 0.8.0, `naip` 0.5.0. §5's illustrative
+  `"version": "0.1.x"` is not a legal value: both readers refuse a range,
+  because the pin check compares the registry and the Dockerfile literally.
+- §10's **live gate B** covers the four remaining anonymous packages —
+  `goes-glm`, `noaa-hrrr`, `noaa-mrms-qpe`, `noaa-cdr` — beside gate A's
+  `goes`.
+- §3.5's "credentialed seven" is **six** (`hls` is gone): `viirs`, `modis`,
+  `landsat`, `sentinel1`, `sentinel2`, `naip`. I-105 is amended.
+
+Two smaller findings from reading the packages' own sources, recorded for
+X-2's adapters: `stactools-noaa-hrrr`'s `create_item` takes
+`(region, product, cloud_provider, reference_datetime, forecast_hour)` rather
+than an href — its `create_item_from_idx_df` is the file-driven door, so the
+entry is `supports: grouped` (the GRIB2 plus its `.idx` sidecar) — and
+`stactools-sentinel1` has no top-level `stac.py`: the entry points live under
+`grd/`, `rtc/` and `slc/`, so the adapter must name one (GRD, the public
+product).
+
+X-1 also leaves **packaging undecided on purpose**: both readers take a
+document, because neither the app's build context (`COPY app`,
+`COPY packages/shared`) nor the pipeline's (`services/pipeline`) contains
+`tests/`, and choosing a COPY, a mount or an env override before X-2 and X-4
+need it would bake the wrong answer into the contract.

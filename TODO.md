@@ -13,7 +13,7 @@ just a wasted read.
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
-| **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 goes first; X-3 coordinates with K-1; X-4 takes migration **028** |
+| **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
@@ -336,17 +336,30 @@ buckets, seven need credentials), §12 the seven agent-taken decisions, approved
 variant alias compose — whichever lands first adds the other's field).
 **Migration 028** for X-4 (settled 2026-09-04 — X is worked first; K-3 takes 029).
 
-- [ ] **X-1 · Registry fixture + both readers.** Spec §5.
+- [x] **X-1 · Registry fixture + both readers.** Spec §5.
       `tests/contract-fixtures/builtin-extractors.json` with the fourteen
       entries (`id`, `label`, `package`, `version`, `adapter`, `supports`,
       `products`, `access`, `runtime`, `extensions`); Zod loader in the app,
       Python loader in the pipeline; a CI check that
       `Dockerfile.stactools`'s pins equal the fixture's `package==version`
       pairs. Fixture README entry.
+      **Merged 2026-09-04.** The set is **eleven**, not fourteen: `noaa-nwm`,
+      `noaa-sst` and `hls` have never been published to PyPI (untagged repos
+      only), so nothing can pin them — lead's call, **I-107**, spec §14
+      addendum. The pin check is real logic (`pin_drift`, both directions)
+      unit-tested against sample text; its assertion against the actual
+      `Dockerfile.stactools` skips until X-2 creates that file, then arms
+      itself. Packaging (how the fixture reaches each image) is left to X-2
+      and X-4 on purpose — neither build context includes `tests/`.
 - [ ] **X-2 · stactools runtime image + wrapper + adapters.** Spec §6.
       `services/process-runtime/Dockerfile.stactools` (extends the runtime
-      image; stactools + fourteen pinned packages; `python -c "import
-      stactools.<pkg>"` smoke for every entry at build); the platform module
+      image; stactools + the **eleven** pinned packages the registry names —
+      I-107; `python -c "import stactools.<pkg>"` smoke for every entry at
+      build, the module name derived as X-1's readers derive it). **Also
+      decides how the registry reaches the pipeline and the runtime image**
+      (COPY, mount or env override — X-1 left it open); the pin check in
+      `tests/test_builtin_extractors.py` arms itself the moment the Dockerfile
+      exists; the platform module
       `stac_higher_stactools` — `run(builtin_id)` reads the ADR 0018 extract
       manifest, calls the entry's adapter, and MERGES the pystac item onto
       the draft (keep id/collection/asset keys/hrefs; copy properties,
@@ -375,9 +388,10 @@ variant alias compose — whichever lands first adds the other's field).
       `stactools-goes`; the next granule must match the hand-written
       extractor's scan-time `datetime` to the second, overlap its footprint
       ≥ 95 % IoU, and carry `platform` + the `goes:*` fields. Gate B: one
-      granule each through `goes-glm`, `noaa-hrrr`, `noaa-mrms-qpe`,
-      `noaa-nwm`, `noaa-cdr`, `noaa-sst` from their public buckets, recorded
-      as a table. ISSUES entry for the credentialed seven (I-105). Depends on
+      granule each through `goes-glm`, `noaa-hrrr`, `noaa-mrms-qpe` and
+      `noaa-cdr` from their public buckets, recorded as a table (`noaa-nwm`
+      and `noaa-sst` are not in the registry — I-107). ISSUES entry for the
+      credentialed six (I-105). Depends on
       X-2, X-4.
 
 ## K queue — process compute: Kubernetes + Kueue + hardware profiles (AFTER G-6/G-7)
