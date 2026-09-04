@@ -8,9 +8,10 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import type { Association } from "@/lib/associations/types";
 import type { Connection } from "@/lib/connections/types";
 
-const { createMutate, updateMutate } = vi.hoisted(() => ({
+const { createMutate, updateMutate, builtinMutate } = vi.hoisted(() => ({
   createMutate: vi.fn(),
   updateMutate: vi.fn(),
+  builtinMutate: vi.fn(),
 }));
 
 vi.mock("@/lib/associations/queries", () => ({
@@ -18,7 +19,18 @@ vi.mock("@/lib/associations/queries", () => ({
   useUpdateAssociation: () => ({ mutate: updateMutate, isPending: false }),
 }));
 
+vi.mock("@/lib/extractors/queries", () => ({
+  useBuiltinExtractors: () => ({
+    data: [
+      { id: "stactools-goes", label: "GOES-R ABI (L1b / L2)", supports: "single_file" },
+      { id: "stactools-goes-glm", label: "GOES-R GLM lightning (L2 LCFA)", supports: "single_file" },
+      { id: "stactools-sentinel2", label: "Sentinel-2 L1C / L2A (ESA)", supports: "grouped" },
+    ],
+  }),
+}));
+
 vi.mock("@/lib/processes/queries", () => ({
+  useCreateBuiltinProcess: () => ({ mutate: builtinMutate, isPending: false }),
   useProcesses: () => ({
     data: [
       {
@@ -26,6 +38,14 @@ vi.mock("@/lib/processes/queries", () => ({
         name: "goes-abi-metadata",
         kind: "extractor",
         group_id: "g1",
+        builtin_id: null,
+      },
+      {
+        id: "5c9f1c2e-0000-4000-8000-0000000000e4",
+        name: "GOES-R GLM lightning (L2 LCFA)",
+        kind: "extractor",
+        group_id: "g1",
+        builtin_id: "stactools-goes-glm",
       },
       {
         id: "5c9f1c2e-0000-4000-8000-0000000000e2",
@@ -176,5 +196,53 @@ describe("IngestFormDialog — extractor metadata strategy (G-6)", () => {
     expect(
       screen.getByRole("combobox", { name: "Extractor process" }),
     ).toHaveTextContent("goes-abi-metadata");
+  });
+});
+
+describe("IngestFormDialog — built-in extractors (X-4)", () => {
+  it("offers the registry under Built-in, minus what the group already has, filtered by grouping", () => {
+    renderDialog();
+    pickConnection();
+    pickExtractorStrategy();
+    fireEvent.click(screen.getByRole("combobox", { name: "Extractor process" }));
+    // Not yet instantiated in g1 and single_file ⇒ offered for grouping "none".
+    expect(screen.getByRole("option", { name: "GOES-R ABI (L1b / L2)" })).toBeInTheDocument();
+    // Already instantiated in g1: listed as the group's process, not as a registry pick.
+    expect(
+      screen.getByRole("option", { name: "GOES-R GLM lightning (L2 LCFA) · built-in" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("option", { name: /GLM lightning/ })).toHaveLength(1);
+    // grouped ⇒ hidden while the grouping rule is "none".
+    expect(
+      screen.queryByRole("option", { name: "Sentinel-2 L1C / L2A (ESA)" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("resolves a built-in pick to a group process before storing its id", () => {
+    builtinMutate.mockImplementation((_input, callbacks) =>
+      callbacks.onSuccess({ id: "5c9f1c2e-0000-4000-8000-0000000000e9" }),
+    );
+    renderDialog();
+    pickConnection();
+    fireEvent.change(screen.getByLabelText("Source path"), {
+      target: { value: "ABI-L2-MCMIPC/" },
+    });
+    pickExtractorStrategy();
+    fireEvent.click(screen.getByRole("combobox", { name: "Extractor process" }));
+    fireEvent.click(screen.getByRole("option", { name: "GOES-R ABI (L1b / L2)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+
+    expect(builtinMutate).toHaveBeenCalledTimes(1);
+    expect(builtinMutate.mock.calls[0][0]).toEqual({
+      builtin_id: "stactools-goes",
+      group_id: "g1",
+    });
+    expect(createMutate).toHaveBeenCalledTimes(1);
+    expect(createMutate.mock.calls[0][0].config.metadata).toEqual({
+      strategy: "extractor",
+      extractor: { process_id: "5c9f1c2e-0000-4000-8000-0000000000e9" },
+      defaults: {},
+    });
   });
 });

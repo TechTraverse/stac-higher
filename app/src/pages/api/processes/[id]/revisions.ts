@@ -23,6 +23,11 @@
  * `runtime.runtime_image` (X-queue spec §8) is an alias of a PLATFORM image,
  * validated by the schema's enum — the same set the pipeline resolves at
  * launch, where an alias it has no image for dies with a reason.
+ *
+ * A BUILT-IN process (X-4, `builtin_id` set) is read-only: a code deploy is a
+ * 409, and the only body it accepts is `{ from_builtin: true }` — "Update to
+ * current", a new revision from the registry template the app was built with.
+ * Same verb, same audit row (`deploy`), one place that moves a revision.
  */
 import type { APIRoute } from "astro";
 import { jsonResponse } from "@/lib/http/response";
@@ -37,7 +42,15 @@ import {
   getNetworkMax,
   networkLevelWithinCap,
 } from "@/lib/processes/network";
-import { processRevisionCreateSchema } from "@/lib/processes/schemas";
+import { findBuiltinExtractor } from "@/lib/extractors/registry";
+import { builtinRevisionTemplate } from "@/lib/extractors/template";
+import {
+  BUILTIN_CODE_DEPLOY_REFUSAL,
+  BUILTIN_REGISTRY_DRIFT,
+  BUILTIN_TEMPLATE_ONLY_FOR_BUILTIN,
+  processRevisionCreateSchema,
+  processRevisionFromBuiltinSchema,
+} from "@/lib/processes/schemas";
 import { deployRevision, listRevisions } from "@/lib/processes/storage";
 
 export const GET: APIRoute = async ({ params, locals }) => {
@@ -59,6 +72,30 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
 
   try {
     const body = await request.json().catch(() => null);
+
+    // X-4: a built-in process moves only by "Update to current".
+    const fromBuiltin = processRevisionFromBuiltinSchema.safeParse(body).success;
+    if (loaded.process.builtin_id !== null) {
+      if (!fromBuiltin) {
+        return jsonResponse(409, { error: BUILTIN_CODE_DEPLOY_REFUSAL });
+      }
+      const entry = findBuiltinExtractor(loaded.process.builtin_id);
+      if (!entry) return jsonResponse(409, { error: BUILTIN_REGISTRY_DRIFT });
+      const template = builtinRevisionTemplate(entry);
+      const revision = await deployRevision({
+        processId: loaded.process.id,
+        runtime: template.runtime,
+        code: template.code,
+        env: template.env,
+        createdBy: loaded.identity.sub,
+      });
+      if (!revision) return processNotFound();
+      return jsonResponse(201, revision);
+    }
+    if (fromBuiltin) {
+      return jsonResponse(400, { error: BUILTIN_TEMPLATE_ONLY_FOR_BUILTIN });
+    }
+
     const parsed = processRevisionCreateSchema.safeParse(body);
     if (!parsed.success) {
       return jsonResponse(400, {

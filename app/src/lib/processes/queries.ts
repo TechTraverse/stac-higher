@@ -8,12 +8,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { processKeys } from "@/lib/query/keys";
 import {
+  createBuiltinProcess,
   createOutput,
   createProcess,
   createSource,
   deleteOutput,
   deleteProcess,
   deleteSource,
+  deployBuiltinRevision,
   deployRevision,
   getProcess,
   listOutputs,
@@ -111,6 +113,16 @@ export function useUpdateProcess() {
 
 export function useDeleteProcess() {
   return useProcessMutation((id: string) => deleteProcess(id));
+}
+
+export function useDeployBuiltinRevision() {
+  return useProcessMutation((id: string) => deployBuiltinRevision(id));
+}
+
+export function useCreateBuiltinProcess() {
+  return useProcessMutation((input: { builtin_id: string; group_id: string }) =>
+    createBuiltinProcess(input),
+  );
 }
 
 export function useDeployRevision() {

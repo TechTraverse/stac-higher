@@ -186,6 +186,11 @@ export function matchGatedRoute(
   if (m === "POST" && path === "/api/processes") {
     return { action: "create", resourceType: "process", resourceId: null };
   }
+  // X-4: create-or-reuse of a built-in extractor process. Audited as a
+  // process create; on reuse the body still carries the (existing) id.
+  if (m === "POST" && path === "/api/processes/builtin") {
+    return { action: "create", resourceType: "process", resourceId: null };
+  }
   const processSourceId = path.match(
     /^\/api\/processes\/[^/]+\/sources\/([^/]+)$/,
   );

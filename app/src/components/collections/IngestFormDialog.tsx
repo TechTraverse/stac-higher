@@ -12,7 +12,9 @@ import {
   Label,
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@stac-higher/shared";
@@ -33,7 +35,9 @@ import {
 import type { Association } from "@/lib/associations/types";
 import { ingestConfigSchema } from "@/lib/associations/schemas";
 import { expectationSecondsField, parseExpectationSeconds, splitCsv } from "./shared";
-import { useProcesses } from "@/lib/processes/queries";
+import { useBuiltinExtractors } from "@/lib/extractors/queries";
+import type { BuiltinSupports } from "@/lib/extractors/schemas";
+import { useCreateBuiltinProcess, useProcesses } from "@/lib/processes/queries";
 
 interface IngestFormState {
   connectionId: string;
@@ -46,6 +50,10 @@ interface IngestFormState {
   metadataStrategy: "raster_auto" | "sidecar" | "defaults_only" | "extractor";
   /** The extractor process id, when `metadataStrategy` is "extractor". */
   extractorProcessId: string;
+  /** X-4: a built-in extractor picked from the registry instead — resolved to
+   * a group-owned process id (create-or-reuse) at submit time. Exclusive with
+   * `extractorProcessId`. */
+  builtinId: string;
   postIngest: "leave" | "delete" | "move";
   movePath: string;
   /** §5.1 expectation window (M2-A) — "" = no expectation declared. */
@@ -55,6 +63,18 @@ interface IngestFormState {
   windowEnd: string;
   pathTemplate: string;
   maxFilesPerPoll: string;
+}
+
+/** Picker values for registry entries — a process id never starts with this. */
+const BUILTIN_VALUE_PREFIX = "builtin:";
+
+/** X-queue spec §3.6: `grouped` packages need the group the grouping rule
+ * assembles; `single_file` packages are refused for grouped associations. */
+export function builtinSupportsGrouping(
+  supports: BuiltinSupports,
+  rule: IngestFormState["groupingRule"],
+): boolean {
+  return supports === "grouped" ? rule !== "none" : rule === "none";
 }
 
 function emptyForm(): IngestFormState {
@@ -68,6 +88,7 @@ function emptyForm(): IngestFormState {
     groupingRule: "none",
     metadataStrategy: "raster_auto",
     extractorProcessId: "",
+    builtinId: "",
     postIngest: "leave",
     movePath: "",
     expectActivity: "",
@@ -105,6 +126,7 @@ function formFromAssociation(a: Association): IngestFormState {
     groupingRule: c.grouping.rule,
     metadataStrategy: c.metadata.strategy,
     extractorProcessId: c.metadata.extractor?.process_id ?? "",
+    builtinId: "",
     postIngest: isMove ? "move" : c.post_ingest === "delete" ? "delete" : "leave",
     movePath: isMove ? c.post_ingest.slice("move:".length) : "",
     expectActivity,
@@ -172,6 +194,8 @@ export function IngestFormDialog({
     editing ? formFromAssociation(editing) : emptyForm(),
   );
   const { data: processes } = useProcesses();
+  const { data: builtinRegistry } = useBuiltinExtractors();
+  const createBuiltin = useCreateBuiltinProcess();
 
   const update = (patch: Partial<IngestFormState>) =>
     setForm((prev) => ({ ...prev, ...patch }));
@@ -183,6 +207,22 @@ export function IngestFormDialog({
   const extractors = (processes ?? []).filter(
     (p) => p.kind === "extractor" && p.group_id === connectionGroup,
   );
+  // X-4: the registry entries this group has NOT instantiated yet (an
+  // instantiated one is already in `extractors`, as a process), filtered by
+  // what the entry's package can build against this form's grouping rule
+  // (spec §3.6): a `grouped` package needs the group, a `single_file` one
+  // is refused for grouped associations.
+  const instantiated = new Set(
+    extractors.map((p) => p.builtin_id).filter((id): id is string => id !== null),
+  );
+  const builtinChoices = (builtinRegistry ?? []).filter(
+    (entry) =>
+      !instantiated.has(entry.id) &&
+      builtinSupportsGrouping(entry.supports, form.groupingRule),
+  );
+  const pickerValue = form.builtinId
+    ? `${BUILTIN_VALUE_PREFIX}${form.builtinId}`
+    : form.extractorProcessId;
 
   const submit = () => {
     if (!editing && !form.connectionId) {
@@ -197,10 +237,35 @@ export function IngestFormDialog({
       toast.error("A destination path is required for the move action");
       return;
     }
-    if (form.metadataStrategy === "extractor" && !form.extractorProcessId) {
+    if (
+      form.metadataStrategy === "extractor" &&
+      !form.extractorProcessId &&
+      !form.builtinId
+    ) {
       toast.error("Pick an extractor process");
       return;
     }
+    // X-4: a built-in pick is resolved to a group-owned process FIRST
+    // (create-or-reuse, audited), then stored exactly as a hand-written
+    // extractor is — nothing downstream knows the difference.
+    if (form.metadataStrategy === "extractor" && form.builtinId) {
+      if (!connectionGroup) {
+        toast.error("Pick a connection first — the built-in extractor is created in its group");
+        return;
+      }
+      createBuiltin.mutate(
+        { builtin_id: form.builtinId, group_id: connectionGroup },
+        {
+          onSuccess: (process) => persist({ ...form, extractorProcessId: process.id }),
+          onError: (err: Error) => toast.error(err.message),
+        },
+      );
+      return;
+    }
+    persist(form);
+  };
+
+  const persist = (form: IngestFormState) => {
     // The write contract validates the rest (numeric bounds included), so the
     // form can't drift from the server's schema.
     const parsedConfig = ingestConfigSchema.safeParse(buildConfig(form));
@@ -442,21 +507,61 @@ export function IngestFormDialog({
             <div className="space-y-1.5">
               <Label htmlFor="df-extractor">Extractor process</Label>
               <Select
-                value={form.extractorProcessId}
-                onValueChange={(v) => update({ extractorProcessId: v })}
+                value={pickerValue}
+                onValueChange={(v) =>
+                  v.startsWith(BUILTIN_VALUE_PREFIX)
+                    ? update({
+                        builtinId: v.slice(BUILTIN_VALUE_PREFIX.length),
+                        extractorProcessId: "",
+                      })
+                    : update({ extractorProcessId: v, builtinId: "" })
+                }
               >
                 <SelectTrigger id="df-extractor" aria-label="Extractor process">
-                  <SelectValue placeholder={extractors.length ? "Pick an extractor" : "No extractor in this connection's group"} />
+                  <SelectValue
+                    placeholder={
+                      extractors.length || builtinChoices.length
+                        ? "Pick an extractor"
+                        : "No extractor in this connection's group"
+                    }
+                  />
                 </SelectTrigger>
                 <SelectContent>
-                  {extractors.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                  ))}
+                  {extractors.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel>Your extractors</SelectLabel>
+                      {extractors.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.builtin_id ? `${p.name} · built-in` : p.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {builtinChoices.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel>Built-in</SelectLabel>
+                      {builtinChoices.map((entry) => (
+                        <SelectItem
+                          key={entry.id}
+                          value={`${BUILTIN_VALUE_PREFIX}${entry.id}`}
+                        >
+                          {entry.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
                 </SelectContent>
               </Select>
               <p className="text-[12px] text-muted-foreground">
                 Each file's draft item is handed to this process before it is
                 catalogued. Reference-mode files are staged for the run.
+                {form.builtinId && (
+                  <>
+                    {" "}
+                    Picking a built-in extractor creates a read-only process in
+                    this connection's group on save (or reuses the one it has).
+                  </>
+                )}
               </p>
             </div>
           )}

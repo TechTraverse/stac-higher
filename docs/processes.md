@@ -243,10 +243,24 @@ collection, asset keys and hrefs win; properties, geometry, bbox, extensions
 and per-asset metadata are copied; assets the package adds — COGs,
 thumbnails — are dropped and logged). Which packages exist, and what each
 needs from the group, is the registry
-`tests/contract-fixtures/builtin-extractors.json`; picking one from the Data
-flow form (X-4) and the image alias that puts the run on the right image
-(X-3) follow. Until then the body runs only on
-`stac-higher-process-runtime-stactools:local`.
+`tests/contract-fixtures/builtin-extractors.json`, served by
+`GET /api/extractors/builtin`.
+
+You do not write that body yourself. In a collection's Data flow form, the
+**Extractor process** picker lists your group's extractors and, under
+**Built-in**, the registry entries your group has not instantiated yet
+(filtered by what the package can build against the form's grouping rule —
+a `grouped` package such as Sentinel-2 needs `shared_basename`, a
+`single_file` one such as GOES ABI needs `none`). Picking one creates a
+group-owned process for it (or reuses the one the group already has) and
+stores its id exactly as a hand-written extractor is stored; nothing
+downstream tells them apart. The process page shows a read-only **Built-in**
+card instead of the editor: the code cannot be changed, and its revision
+moves only through **Update to current** — a new revision from the registry
+the platform currently ships, which is how a package upgrade reaches an
+existing built-in process after the image is rebuilt. Enable/disable and
+soft-delete work as for any process (still a 409 while an association names
+it).
 
 A minimal extractor:
 

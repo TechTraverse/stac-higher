@@ -25,6 +25,8 @@ jobs:
           - name: app
             dockerfile: app/Dockerfile
             context: .
+            # The built-in extractor registry, bundled at build time (X-4).
+            build-contexts: fixtures=tests/contract-fixtures
           - name: pipeline
             dockerfile: services/pipeline/Dockerfile
             context: services/pipeline

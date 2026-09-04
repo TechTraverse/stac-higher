@@ -14,7 +14,7 @@ import {
   LoadingState,
   Switch,
 } from "@stac-higher/shared";
-import { FileText, Loader2, Play, RotateCcw, Rocket, Trash2 } from "lucide-react";
+import { FileText, Loader2, Package, Play, RotateCcw, Rocket, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { EnvEditor } from "@/components/processes/EnvEditor";
 import { CodeEditor } from "@/components/processes/CodeEditor";
@@ -25,11 +25,13 @@ import { healthDotClass, type LineageHealth } from "@stac-higher/shared";
 import { useConnections } from "@/lib/connections/queries";
 import { useAuthMe } from "@/lib/query/auth";
 import { getTestRun, requestTestRun } from "@/lib/processes/api";
+import { useBuiltinExtractors } from "@/lib/extractors/queries";
 import {
   useCreateOutput,
   useCreateSource,
   useDeleteOutput,
   useDeleteSource,
+  useDeployBuiltinRevision,
   useDeployRevision,
   useOutputs,
   useProcess,
@@ -938,6 +940,92 @@ function SourceHistory({ source }: { source: ProcessSource }) {
   );
 }
 
+/**
+ * X-4: a built-in process is read-only — its code is the two-line body that
+ * hands the run to the stactools library in the runtime image, and the ONLY
+ * way its revision moves is "Update to current": a new revision from the
+ * registry the platform currently ships. This card replaces the code editor.
+ */
+export function BuiltinCard({
+  id,
+  builtinId,
+  currentRevision,
+  canMutate,
+}: {
+  id: string;
+  builtinId: string;
+  currentRevision: string | null;
+  canMutate: boolean;
+}) {
+  const { data: registry } = useBuiltinExtractors();
+  const entry = registry?.find((e) => e.id === builtinId) ?? null;
+  const update = useDeployBuiltinRevision();
+  const onUpdate = async () => {
+    try {
+      await update.mutateAsync(id);
+      toast.success("Deployed the current built-in revision");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Update failed");
+    }
+  };
+  return (
+    <Card data-testid="builtin-card">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Package className="h-4 w-4" aria-hidden="true" />
+          Built-in
+        </CardTitle>
+        <CardDescription>
+          {entry
+            ? `${entry.label} — ${entry.package} ${entry.version}, on the stactools runtime image.`
+            : "This built-in extractor is no longer in the platform's registry; the deployed revision keeps running, but there is no current template to update to."}
+          {" "}
+          The code is managed by the platform and read-only: each run hands the
+          staged files to the package and merges the item it builds onto the
+          draft.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[12.5px]">
+          <dt className="text-muted-foreground">Registry id</dt>
+          <dd className="tech">{builtinId}</dd>
+          <dt className="text-muted-foreground">Image</dt>
+          <dd className="tech">stactools</dd>
+          {entry && (
+            <>
+              <dt className="text-muted-foreground">Products</dt>
+              <dd className="tech">{entry.products.join(", ")}</dd>
+              <dt className="text-muted-foreground">Files</dt>
+              <dd>{entry.supports === "grouped" ? "one item per group" : "one item per file"}</dd>
+            </>
+          )}
+          <dt className="text-muted-foreground">Revision</dt>
+          <dd className="tech">{currentRevision ?? "none"}</dd>
+        </dl>
+        <pre className="tech overflow-x-auto rounded-sm border bg-muted/40 p-3 text-[12px]">
+          {`from stac_higher_stactools import run\nrun(${JSON.stringify(builtinId)})`}
+        </pre>
+        {canMutate && (
+          <div>
+            <Button
+              size="sm"
+              onClick={onUpdate}
+              disabled={update.isPending || entry === null}
+            >
+              {update.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Rocket className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              Update to current
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ExtractorCard() {
   return (
     <Card>
@@ -993,6 +1081,9 @@ function ProcessDetailContent({ id }: { id: string }) {
             {process.kind === "extractor" && (
               <Badge variant="outline">extractor</Badge>
             )}
+            {process.builtin_id !== null && (
+              <Badge variant="outline">built-in</Badge>
+            )}
           </div>
           <p className="tech mt-0.5 text-[11.5px] text-muted-foreground">
             {process.id}
@@ -1027,15 +1118,24 @@ function ProcessDetailContent({ id }: { id: string }) {
         </div>
 
         <div className="space-y-5 xl:sticky xl:top-20">
-          <CodeCard
-            id={process.id}
-            groupId={process.group_id}
-            currentCode={current?.code ?? null}
-            currentEnv={(current?.env ?? []) as ProcessEnv}
-            currentRevision={process.current_revision}
-            canMutate={canMutate}
-            kind={process.kind}
-          />
+          {process.builtin_id !== null ? (
+            <BuiltinCard
+              id={process.id}
+              builtinId={process.builtin_id}
+              currentRevision={process.current_revision}
+              canMutate={canMutate}
+            />
+          ) : (
+            <CodeCard
+              id={process.id}
+              groupId={process.group_id}
+              currentCode={current?.code ?? null}
+              currentEnv={(current?.env ?? []) as ProcessEnv}
+              currentRevision={process.current_revision}
+              canMutate={canMutate}
+              kind={process.kind}
+            />
+          )}
           <TestRunCard
             id={process.id}
             hasRevision={process.current_revision !== null}

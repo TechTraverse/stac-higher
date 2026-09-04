@@ -101,6 +101,7 @@ function process(overrides: Partial<ApiProcess> = {}): ApiProcess {
     current_revision: REVISION_ID,
     enabled: true,
     max_runs_per_hour: 60,
+    builtin_id: null,
     created_by: "user-1",
     created_at: "2026-08-30T00:00:00.000Z",
     updated_at: "2026-08-30T00:00:00.000Z",
