@@ -201,6 +201,12 @@ export async function loadGraph(groups: string[] | null): Promise<Graph> {
     // Collections are named by the edges that touch them: pgstac owns the
     // collection list, and a graph of every collection in the catalog would
     // be noise rather than a pipeline view.
+    //
+    // The process branches join `processes` and require `deleted_at IS NULL`
+    // to match `loadGraphEdges` exactly (I-104): a soft-deleted process keeps
+    // its `process_sources` / `process_outputs` rows, so without the join its
+    // collections became nodes that no edge could ever touch — ghosts in the
+    // "Not wired" row long after the process (and the collection) was gone.
     query<CollectionNodeRow>(
       `SELECT DISTINCT c.collection_id,
               s.group_id, coalesce(s.archived, false) AS archived,
@@ -209,9 +215,15 @@ export async function loadGraph(groups: string[] | null): Promise<Graph> {
            SELECT collection_id FROM stac_higher.collection_connections
             WHERE deleted_at IS NULL
            UNION
-           SELECT collection_id FROM stac_higher.process_sources
+           SELECT ps.collection_id
+             FROM stac_higher.process_sources ps
+             JOIN stac_higher.processes p ON p.id = ps.process_id
+            WHERE p.deleted_at IS NULL
            UNION
-           SELECT collection_id FROM stac_higher.process_outputs
+           SELECT po.collection_id
+             FROM stac_higher.process_outputs po
+             JOIN stac_higher.processes p ON p.id = po.process_id
+            WHERE p.deleted_at IS NULL
          ) c
          LEFT JOIN stac_higher.collection_settings s
                 ON s.collection_id = c.collection_id`,

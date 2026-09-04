@@ -846,17 +846,21 @@ residual as I-2), and it buffers the object in memory like the adapters
 a seeded offline variant driven by `pipeline.demo goes-seed --include`
 against a granule copied once into MinIO, rather than loosening the gate.
 
-### I-104 · The pipeline graph lists soft-deleted processes' collections as "Not wired" ghosts 🟡
-`loadGraph` (`app/src/lib/graph/storage.ts`) mints collection nodes from
+### I-104 · The pipeline graph lists soft-deleted processes' collections as "Not wired" ghosts ✅ (closed 2026-09-04)
+`loadGraph` (`app/src/lib/graph/storage.ts`) minted collection nodes from
 the union of `collection_connections`, `process_sources` and
-`process_outputs` collection ids, but only the first branch excludes
+`process_outputs` collection ids, but only the first branch excluded
 soft-deleted rows; `loadGraphEdges` excludes deleted processes on every
-branch. A soft-deleted process therefore contributes collection NODES with
-no EDGES — degree-0 orphans that the `/graph` page shows under "Not wired".
+branch. A soft-deleted process therefore contributed collection NODES with
+no EDGES — degree-0 orphans that the `/graph` page showed under "Not wired".
 Seen 2026-09-04 after four live e2e runs: eight `e2e-goes-{src,out}-*`
-collections that no longer exist in pgstac. Fix: P-1 (join `processes`,
-`deleted_at IS NULL` on both branches). Spec:
-`docs/superpowers/specs/2026-09-04-pipeline-graph-views-design.md` §1.
+collections that no longer exist in pgstac.
+**Fixed by P-1**: both process branches of the union now join `processes`
+and require `deleted_at IS NULL`, matching `loadGraphEdges` exactly, so the
+node set and the edge set can no longer disagree about what a live process
+is. Regression test: `app/src/__tests__/graph-storage.test.ts` (SQL shape
+plus a fake-database run asserting no surviving node has degree 0). Spec:
+`docs/superpowers/specs/2026-09-04-pipeline-graph-views-design.md` §1, §10.
 
 ### I-105 · Seven curated stactools packages ship without a live gate 🟡
 Opened by the X-queue spec (§3.5, §10): `viirs`, `modis`, `hls`
