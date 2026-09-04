@@ -317,7 +317,7 @@ independent of each other. The screenshot the feedback refers to is
       collection page swaps its two one-hop lists for the same row, keeping
       its 30-day strips; Storybook story; e2e against the seeded demo.
       Depends on P-2.
-- [ ] **P-4 · Graph view.** Spec §5.2. Full-graph `PipelineDag` with the
+- [x] **P-4 · Graph view.** Spec §5.2. Full-graph `PipelineDag` with the
       alert-join health dots, click-to-highlight `lineage(node)` with an
       Open link, horizontal-scroll container, orphans row beneath; e2e (≥ 4
       edges rendered against the seeded demo). Depends on P-2; independent
@@ -540,6 +540,20 @@ Residual gaps that are not slices are logged as issues instead — **I-82** (the
 byte-volume model is declared, not measured — a real size census belongs before
 any contractual scale or storage-cost claim) and **I-83** (streaming reaches
 object stores only).
+
+- **`LineageStrip size="full"` is now unused.** P-4 replaced the `/graph`
+  columns with `PipelineDag`, and nothing else renders the `full` size. The
+  `mini`/`medium` sizes are still the product-card and Overview glyphs (P spec
+  §3 non-goal), so the component stays; the dead `full` branch and its
+  `LineageGroup` column plumbing could be trimmed in a later tidy-up.
+- **Clicking an extractor in the Graph view highlights only itself.** That is
+  `lineage()` behaving exactly as the P spec §4 specifies — an `extractor` edge
+  is followed upstream only, which is what keeps two collections that share an
+  extractor in separate rows. In the whole-graph view an operator may instead
+  expect the product it feeds to light up. Not changed unilaterally: the rule
+  is approved and the Pipelines view depends on it. If the lead wants the other
+  behaviour, it is a Graph-view-only tweak (seed the highlight set with the
+  extractor's outgoing edges), not a change to `lineage`.
 
 - **G-8's night-side live gate (LEAD ONLY, Docker + internet).** The unit
   tests pin the ramp and the terminator blend on synthetic grids, and a

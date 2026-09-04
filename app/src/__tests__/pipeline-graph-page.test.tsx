@@ -185,6 +185,106 @@ describe("/graph — the view switch", () => {
   });
 });
 
+describe("/graph — Graph view", () => {
+  const openGraph = async () => {
+    const user = userEvent.setup();
+    render(<PipelineGraphPage />);
+    await user.click(screen.getByRole("tab", { name: "Graph" }));
+    return user;
+  };
+
+  it("draws the whole graph — one <path> per edge", async () => {
+    await openGraph();
+    const svg = screen.getByLabelText("The whole pipeline graph");
+    expect(svg.querySelectorAll("path[data-edge-kind]")).toHaveLength(
+      FIXTURE_GRAPH.edges.length,
+    );
+    expect(FIXTURE_GRAPH.edges.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("keeps unwired nodes out of the SVG and in the Not-wired row", async () => {
+    usePipelineGraphMock.mockReturnValue({
+      data: {
+        nodes: [
+          ...FIXTURE_GRAPH.nodes,
+          {
+            id: "conn:lonely",
+            type: "connection",
+            label: "lonely",
+            group_id: null,
+            meta: {},
+          },
+        ],
+        edges: FIXTURE_GRAPH.edges,
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    await openGraph();
+
+    const chips = screen.getByLabelText("The whole pipeline graph")
+      .parentElement as HTMLElement;
+    expect(within(chips).queryByText("lonely")).not.toBeInTheDocument();
+    expect(screen.getByText("Not wired")).toBeInTheDocument();
+  });
+
+  it("fades everything outside a clicked node's lineage", async () => {
+    const user = await openGraph();
+    const chips = screen.getByLabelText("The whole pipeline graph")
+      .parentElement as HTMLElement;
+
+    await user.click(within(chips).getByText("goes-abi-mcmipc"));
+
+    const dimmed = (label: string) =>
+      (within(chips).getByText(label).closest("button") as HTMLElement).className;
+    // Everything in the GOES lineage stays lit…
+    expect(dimmed("goes-abi-mcmipc")).not.toContain("opacity-25");
+    expect(dimmed("NOAA NODD goes19")).not.toContain("opacity-25");
+    // …and the unrelated demo pipeline fades.
+    expect(dimmed("demo-scenes")).toContain("opacity-25");
+  });
+
+  it("offers an Open link for the selected node, and clears", async () => {
+    const user = await openGraph();
+    const chips = screen.getByLabelText("The whole pipeline graph")
+      .parentElement as HTMLElement;
+
+    await user.click(within(chips).getByText("geocolor-dest"));
+    expect(screen.getByRole("link", { name: /Open/ })).toHaveAttribute(
+      "href",
+      "/connections",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Clear/ }));
+    expect(screen.queryByRole("link", { name: /Open/ })).not.toBeInTheDocument();
+  });
+
+  it("says so when every node is an island", async () => {
+    usePipelineGraphMock.mockReturnValue({
+      data: {
+        nodes: [
+          {
+            id: "conn:lonely",
+            type: "connection",
+            label: "lonely",
+            group_id: null,
+            meta: {},
+          },
+        ],
+        edges: [],
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    await openGraph();
+    expect(
+      screen.getByText(/Nothing is wired yet — every node below is an island/),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("/graph — states", () => {
   it("shows the empty state on a bare platform", () => {
     usePipelineGraphMock.mockReturnValue({
