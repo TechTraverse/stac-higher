@@ -367,6 +367,14 @@ variant alias compose — whichever lands first adds the other's field).
       and staged-path hrefs, logged); one adapter per package unit-tested
       against the package's own fixture file; `containers.yml` builds it.
       Depends on X-1.
+      **Docker is authorised for this slice** (lead, 2026-09-04) — the
+      standing "no Docker" constraint is lifted far enough to BUILD the image
+      and run its import smoke, because a Dockerfile that has never been built
+      proves nothing about spec §11's real risk (a stale package pinning an
+      old `pystac`). Cheapest order: install the eleven pins in the pipeline's
+      pytest extra FIRST and let the resolver surface conflicts in seconds,
+      then write the Dockerfile, then build. Still no dev server, no e2e, no
+      compose stack.
 - [ ] **X-3 · Image alias.** Spec §8. `runtime_image: "default" |
       "stactools"` on `runtimeLimits` (lenient Python reader — stored
       revisions lack it), `PROCESS_RUNTIME_IMAGE_STACTOOLS` resolved at launch,
@@ -382,7 +390,11 @@ variant alias compose — whichever lands first adds the other's field).
       **Update to current** (the only way its revision moves; code deploy ⇒
       409); `built-in` badge; the ingest form's "Built-in" optgroup filtered
       by `supports` against the grouping rule, storing the returned
-      `process_id` exactly as today. Depends on X-1, X-3.
+      `process_id` exactly as today. **Also decides how the registry reaches
+      the APP image** — `GET /api/extractors/builtin` serves it at runtime and
+      `app/Dockerfile` copies only `app/` and `packages/shared/`, so the
+      fixture is not in the image today (X-1 left the choice open; X-2 makes
+      the same call for the pipeline side). Depends on X-1, X-3.
 - [ ] **X-5 · Live gates (LEAD ONLY, Docker + internet).** Spec §10. Gate A:
       switch the standing demo's `goes-abi-mcmipc` association to built-in
       `stactools-goes`; the next granule must match the hand-written
@@ -574,15 +586,16 @@ object stores only).
   behaviour, it is a Graph-view-only tweak (seed the highlight set with the
   extractor's outgoing edges), not a change to `lineage`.
 
-- **G-8's night-side live gate (LEAD ONLY, Docker + internet).** The unit
-  tests pin the ramp and the terminator blend on synthetic grids, and a
-  synthetic night scene (25 % cloud at 200–260 K over surface at 285–300 K)
-  measures 100 % colour pixels by the 2026-09-04 `|r−g| > 8 or |g−b| > 8`
-  rule against ~1 % before. What is unverified is the real thing: re-run
-  `pipeline.demo goes-seed` (idempotent — it re-deploys the revision), wait
-  for one night granule and one day granule, and check that the night COG
-  clears 30 % colour pixels and the day COG stays within a few percent of the
-  2026-09-04 baseline of 57 %.
+- **G-8's night-side live gate — MEASURED 2026-09-04, criterion met.** The
+  gate asked for a night granule over 30 % colour pixels and a day granule
+  within a few percent of the baseline. Both were measured directly on real
+  NODD granules (no compose stack needed — G-8 changed `compose()` only, and
+  the surrounding loop is G-7's, unchanged): night **0.0 % → 100.0 %**,
+  terminator 13.9 % → 91.4 %, day 62.5 % → 62.5 % and bit-identical. Numbers
+  and method: spec §16. What is NOT proven is only that the run CONTAINER
+  produces the same arrays — the same read/write code G-7 already gated — so
+  what remains is a look at the standing demo's next night frame after a
+  re-seed, not a gate.
 
 - **Re-run vs. a leftover container (M3-W-1 discovery).** A re-run reuses the
   run id, so `launch` asks for the container name `stac-run-{run_id}` — which

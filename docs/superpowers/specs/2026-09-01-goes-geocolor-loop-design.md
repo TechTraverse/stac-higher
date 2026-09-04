@@ -612,3 +612,20 @@ magnitude inside the twilight band. `compose()` takes the zenith array as a
 fifth argument, since it cannot be derived from the radiances. City lights
 stay out of scope (they need a static reference-asset input the platform does
 not have — I-106).
+
+Measured 2026-09-04 on three real `noaa-goes19` MCMIPC granules from
+2026-09-03 (DOY 246), run through the process's own code — `read_band` →
+`solar_zenith` → `compose` — with the pre-G-8 `compose()` alongside it for a
+same-granule before/after. Colour = `|r−g| > 8 or |g−b| > 8` over the on-disk
+pixels:
+
+| granule | solar zenith | in the 80–96° band | colour before | colour after |
+|---|---|---|---|---|
+| 07:01:17Z (night) | 105.6–157.2° | 0.0 % | **0.0 %** | **100.0 %** |
+| 11:01:17Z (terminator) | 69.9–123.3° | 35.0 % | 13.9 % | 91.4 % |
+| 18:01:17Z (day) | 6.9–61.9° | 0.0 % | 62.5 % | 62.5 % |
+
+The day granule's output is **bit-identical** before and after — zero pixels
+changed, maximum channel delta 0 — so the true-colour path is provably
+untouched, and the 11:01Z granule (a third of the scene inside the twilight
+band) is what exercises the blend rather than just the ramp.
