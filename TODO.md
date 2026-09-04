@@ -309,7 +309,7 @@ independent of each other. The screenshot the feedback refers to is
       extractor ranked beside the ingest connection, barycenter ordering two
       sweeps, orthogonal edge paths, total over a synthetic cycle,
       deterministic). Fixture graph = GOES + demo. Unit tests only.
-- [ ] **P-3 · Pipelines view.** Spec §5.1, §6. Shared `PipelineDag` SVG
+- [x] **P-3 · Pipelines view.** Spec §5.1, §6. Shared `PipelineDag` SVG
       renderer over P-2's output (theme tokens, `NodeChip` visuals, links,
       edge kind on hover, extractor drawn INTO its product); `/graph` gains
       the **Pipelines | Graph** switch (`?view=`, default `pipelines`) and a
