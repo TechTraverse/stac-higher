@@ -846,6 +846,39 @@ residual as I-2), and it buffers the object in memory like the adapters
 a seeded offline variant driven by `pipeline.demo goes-seed --include`
 against a granule copied once into MinIO, rather than loosening the gate.
 
+### I-104 · The pipeline graph lists soft-deleted processes' collections as "Not wired" ghosts 🟡
+`loadGraph` (`app/src/lib/graph/storage.ts`) mints collection nodes from
+the union of `collection_connections`, `process_sources` and
+`process_outputs` collection ids, but only the first branch excludes
+soft-deleted rows; `loadGraphEdges` excludes deleted processes on every
+branch. A soft-deleted process therefore contributes collection NODES with
+no EDGES — degree-0 orphans that the `/graph` page shows under "Not wired".
+Seen 2026-09-04 after four live e2e runs: eight `e2e-goes-{src,out}-*`
+collections that no longer exist in pgstac. Fix: P-1 (join `processes`,
+`deleted_at IS NULL` on both branches). Spec:
+`docs/superpowers/specs/2026-09-04-pipeline-graph-views-design.md` §1.
+
+### I-105 · Seven curated stactools packages ship without a live gate 🟡
+Opened by the X-queue spec (§3.5, §10): `viirs`, `modis`, `hls`
+(Earthdata login), `landsat`, `sentinel1`, `sentinel2`, `naip`
+(requester-pays) have no anonymous public source, so X-5 can only
+import-smoke and unit-test their adapters against the packages' own
+fixture files. Their live gate is owed the first time a credentialed
+connection to one of those archives exists. Until then a registry entry
+marked `access: credentialed` is a promise the platform has not verified
+end to end.
+
+### I-106 · A process cannot take a static reference asset as an input 🟡
+ADR 0018 stages the TRIGGERING items into a run; there is no way to hand a
+process a fixed reference raster (a nighttime-lights layer, a DEM, a land
+mask) on every run. The lead chose GeoColor's night side as tint-only
+(G-8) for exactly this reason: NOAA's city-lights layer needs a static
+Black Marble raster the run cannot fetch (network `isolated`) and cannot
+be given. Shape when wanted: a catalogued reference collection granted
+read-only in the run's STS policy and named in the revision (`runtime.
+reference_inputs`), staged under `inputs/reference/` — an ADR-sized
+addition, not a slice of G-8.
+
 ## Process compute — Kubernetes + Kueue (K queue, 2026-09-02)
 
 Opened by `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`

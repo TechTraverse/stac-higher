@@ -1,6 +1,6 @@
 # TODO — implementation queues
 
-**This file holds FOUR INDEPENDENT QUEUES. It is not one list.** Work only the
+**This file holds SIX INDEPENDENT QUEUES. It is not one list.** Work only the
 queue you were asked for, top-down within it. The first unchecked item in the
 FILE belongs to M3 and is rarely the right default.
 
@@ -11,7 +11,9 @@ just a wasted read.
 | Queue | What it is | State |
 |---|---|---|
 | **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
-| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-03** — G-1…G-7 merged, both live gates met against real NODD. The standing `goes-seed --deliver` demo ran 2026-09-04; only the loadgen extractor run at M3-D concurrency remains (follow-ups) |
+| **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | G-1…G-7 done, standing demo running since 2026-09-04. **G-8 (night-side tint) is open** — bounded, may start now |
+| **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | Spec is **DRAFT** (2026-09-04). **P-1 is a bounded bug fix and may start now**; P-2…P-4 wait for the spec's status line |
+| **X** | Built-in extractor library: stactools packages as one-click extractors | Spec is **DRAFT** (2026-09-04). Do not start X-1 until its status line says approved; X-3 coordinates with K-1 |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec is **DRAFT**. Do not start K-1 until its status line says approved — G-6/G-7 are both done, so once approval lands the process agent is free to start K-1 |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 
@@ -253,6 +255,128 @@ slice text, before implementing.
       `2026-09-02-goes-g7-worked-example.md` (both scripts under
       `pipeline/demo/goes/`, `pipeline.demo goes-seed`, inputs read from local
       disk — the runtime image cannot open netCDF over `/vsi`).
+- [ ] **G-8 · GeoColor night side: NOAA-style tint + solar-zenith blend.**
+      Feedback 2026-09-04 item 4 ("the geocolor image looks black and
+      white") — measured that day: a night COG is ~1 % colour pixels, a
+      daytime one 57 %, so the true-colour path works and the grey is the
+      night branch of `compose()` (inverted C13, no tint, `np.maximum` with
+      the day side) working as spec §9 scoped it. Lead chose **tint only**
+      (no city lights — that needs a static reference-asset input the
+      platform lacks; ISSUES I-106). Change `pipeline/demo/goes/geocolor.py`
+      `compose()` only: (1) render the inverted-C13 night layer through a
+      NOAA-style ramp — warm surface deep blue, cold cloud tops white — instead
+      of grey; (2) blend day and night by **solar zenith angle** per pixel
+      (lat/lon from the geostationary grid via `rasterio.warp.transform` on a
+      coarse grid upsampled, sun position from the scan time — no new
+      dependency; a twilight band of roughly 80°–96° fading linearly) instead
+      of the hard per-pixel max, so dusk fades instead of flipping. Keep the
+      signature, the uint8 RGB + mask output, the float32 discipline and the
+      2048 MB envelope. Tests: a synthetic day/terminator/night grid gives
+      colour on the day side, blue-to-white on the night side, and a gradient
+      across the terminator; the existing compose test keeps passing on its
+      day-side assertions. **Live gate (lead):** re-run `goes-seed` (idempotent
+      — it re-deploys the revision), wait for a night granule and a day
+      granule; the night COG must exceed 30 % colour pixels by the
+      2026-09-04 measure (`|r−g| > 8 or |g−b| > 8`), the day COG must stay
+      within a few percent of today's. Spec §9 gets a one-paragraph addendum
+      recording the ramp constants. Bounded — no plan document.
+
+## P queue — pipeline graph: lineage lines + full graph view (feedback 2026-09-04)
+
+**Read first:** `docs/superpowers/specs/2026-09-04-pipeline-graph-views-design.md`
+— **draft, awaiting lead approval.** Written from `FEEDBACK.md` items 1–3
+and the lead's three answers (both views; a line is one PRODUCT's full
+lineage; in-house layered layout, no dependency). §9 lists five decisions
+the agent took — confirm or overturn at approval. **P-1 is a bounded bug
+fix and may start before approval**; P-2…P-4 wait. P-3 and P-4 are
+independent of each other. The screenshot the feedback refers to is
+`docs/superpowers/specs/assets/2026-09-04-pipeline-graph-before.png`.
+
+- [ ] **P-1 · Ghost nodes in "Not wired".** ISSUES I-104. `loadGraph`'s
+      collection-node union (`app/src/lib/graph/storage.ts`) takes
+      `process_sources` / `process_outputs` collection ids without excluding
+      soft-deleted processes, while `loadGraphEdges` does — so every e2e run
+      leaves its `e2e-goes-*` collections as degree-0 orphans. Join
+      `processes` and require `deleted_at IS NULL` on both branches; storage
+      test with one live and one soft-deleted process; close I-104. Bounded.
+- [ ] **P-2 · Lineage + layout (shared, pure).** Spec §4.
+      `packages/shared/src/lib/graph/{lineage,layout}.ts`: `lineage(graph,
+      nodeId)` (transitive closure both ways; `extractor` edges followed
+      upstream only) and `layeredLayout(graph)` (longest-path ranks, an
+      extractor ranked beside the ingest connection, barycenter ordering two
+      sweeps, orthogonal edge paths, total over a synthetic cycle,
+      deterministic). Fixture graph = GOES + demo. Unit tests only.
+- [ ] **P-3 · Pipelines view.** Spec §5.1, §6. Shared `PipelineDag` SVG
+      renderer over P-2's output (theme tokens, `NodeChip` visuals, links,
+      edge kind on hover, extractor drawn INTO its product); `/graph` gains
+      the **Pipelines | Graph** switch (`?view=`, default `pipelines`) and a
+      searchable one-row-per-collection list; `LineagePanel` on the
+      collection page swaps its two one-hop lists for the same row, keeping
+      its 30-day strips; Storybook story; e2e against the seeded demo.
+      Depends on P-2.
+- [ ] **P-4 · Graph view.** Spec §5.2. Full-graph `PipelineDag` with the
+      alert-join health dots, click-to-highlight `lineage(node)` with an
+      Open link, horizontal-scroll container, orphans row beneath; e2e (≥ 4
+      edges rendered against the seeded demo). Depends on P-2; independent
+      of P-3.
+
+## X queue — built-in extractor library: stactools packages (feedback 2026-09-04)
+
+**Read first:** `docs/superpowers/specs/2026-09-04-stactools-extractor-library-design.md`
+— **draft, awaiting lead approval; do not start X-1 until the spec's
+status line says approved.** Written from `FEEDBACK.md` item 5 and the
+lead's two answers (curated fourteen-package NOAA/public-archive set; pick
+it in the Data flow form and a group-owned read-only process is created).
+§3 records the facts that shape it (no uniform stactools entry point;
+the §6.1 immutability rules force a MERGE; seven packages are on anonymous
+buckets, seven need credentials), §12 the seven agent-taken decisions.
+**X-3 coordinates with K-1** (both touch `runtimeLimits`; base image +
+variant alias compose — whichever lands first adds the other's field).
+**Migration 029** (K-3 has 028; whichever merges second renumbers).
+
+- [ ] **X-1 · Registry fixture + both readers.** Spec §5.
+      `tests/contract-fixtures/builtin-extractors.json` with the fourteen
+      entries (`id`, `label`, `package`, `version`, `adapter`, `supports`,
+      `products`, `access`, `runtime`, `extensions`); Zod loader in the app,
+      Python loader in the pipeline; a CI check that
+      `Dockerfile.stactools`'s pins equal the fixture's `package==version`
+      pairs. Fixture README entry.
+- [ ] **X-2 · stactools runtime image + wrapper + adapters.** Spec §6.
+      `services/process-runtime/Dockerfile.stactools` (extends the runtime
+      image; stactools + fourteen pinned packages; `python -c "import
+      stactools.<pkg>"` smoke for every entry at build); the platform module
+      `stac_higher_stactools` — `run(builtin_id)` reads the ADR 0018 extract
+      manifest, calls the entry's adapter, and MERGES the pystac item onto
+      the draft (keep id/collection/asset keys/hrefs; copy properties,
+      geometry, bbox, stac_extensions, per-asset metadata; DROP added assets
+      and staged-path hrefs, logged); one adapter per package unit-tested
+      against the package's own fixture file; `containers.yml` builds it.
+      Depends on X-1.
+- [ ] **X-3 · Image alias.** Spec §8. `runtime_image: "default" |
+      "stactools"` on `runtimeLimits` (lenient Python reader — stored
+      revisions lack it), `PROCESS_RUNTIME_IMAGE_STACTOOLS` resolved at launch,
+      unknown alias ⇒ dead run with reason (write gate AND launch, the
+      `PROCESS_NETWORK_MAX` pattern), `process-runtime.json` cases.
+      `runtime.image` stays `null` for inline processes (ADR 0013 intact).
+      Coordinates with K-1. Depends on X-1.
+- [ ] **X-4 · Built-in processes in the app.** Spec §7. Migration 029
+      (`processes.builtin_id`, unique per live group); `GET
+      /api/extractors/builtin`; `POST /api/processes/builtin` create-or-reuse
+      (operator+, audited) deploying revision 1 from the two-line template
+      in one transaction; the process page's read-only "Built-in" card with
+      **Update to current** (the only way its revision moves; code deploy ⇒
+      409); `built-in` badge; the ingest form's "Built-in" optgroup filtered
+      by `supports` against the grouping rule, storing the returned
+      `process_id` exactly as today. Depends on X-1, X-3.
+- [ ] **X-5 · Live gates (LEAD ONLY, Docker + internet).** Spec §10. Gate A:
+      switch the standing demo's `goes-abi-mcmipc` association to built-in
+      `stactools-goes`; the next granule must match the hand-written
+      extractor's scan-time `datetime` to the second, overlap its footprint
+      ≥ 95 % IoU, and carry `platform` + the `goes:*` fields. Gate B: one
+      granule each through `goes-glm`, `noaa-hrrr`, `noaa-mrms-qpe`,
+      `noaa-nwm`, `noaa-cdr`, `noaa-sst` from their public buckets, recorded
+      as a table. ISSUES entry for the credentialed seven (I-105). Depends on
+      X-2, X-4.
 
 ## K queue — process compute: Kubernetes + Kueue + hardware profiles (AFTER G-6/G-7)
 
@@ -608,5 +732,14 @@ object stores only).
   seed must be run with the repo `.env` exported (`set -a; source .env;
   set +a`). The demo is left ENABLED and keeps ingesting the trailing hour.
   Still owed: the loadgen `--metadata extractor` run at M3-D concurrency.
+
+- **Feedback triage 2026-09-04 (lead's `FEEDBACK.md`, five items).** Items 1–3
+  (graph) → the P queue + its draft spec; item 4 (grey GeoColor) → G-8,
+  after measuring that night COGs are ~1 % colour and a daytime e2e COG 57 %
+  — the compose night branch, not a bug; item 5 (stactools) → the X queue +
+  its draft spec. Both specs are DRAFT; P-1 and G-8 are bounded and may
+  start now. Issues opened: I-104 (ghost graph nodes), I-105 (credentialed
+  stactools packages ship without a live gate), I-106 (no static
+  reference-asset input for processes — what city lights would need).
 
 (append here during iterations)
