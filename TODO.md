@@ -1,6 +1,6 @@
 # TODO — implementation queues
 
-**This file holds SIX INDEPENDENT QUEUES. It is not one list.** Work only the
+**This file holds SEVEN INDEPENDENT QUEUES. It is not one list.** Work only the
 queue you were asked for, top-down within it. The first unchecked item in the
 FILE belongs to M3 and is rarely the right default.
 
@@ -16,6 +16,7 @@ just a wasted read.
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
+| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. **V-1 goes first** (it extracts what V-2…V-4 consume); V-4 depends on V-2 only. No migrations |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
 off `ai/main`, and `npm run verify` — plus the pipeline's `pytest` and `ruff`
@@ -546,6 +547,50 @@ slice text above were renumbered to 027 as part of W-2 Task 1, and then to
       both rules) and a Maximum-items control on the Settings tab. Renumbers
       K-3 to migration 027 (later 028 — G-6 took 027). Plan:
       `2026-09-02-w2-retention-cap.md`.
+
+## V queue — map page: products as map layers on one time axis (feedback 2026-09-04)
+
+**Read first:** `docs/superpowers/specs/2026-09-04-map-page-design.md`
+— **approved 2026-09-04.** A `/map` page (sidebar, operate group) where
+built-in-catalog products are added as layers: item footprints (GeoJSON,
+any collection), imagery through titiler-pgstac's collection mosaic with
+`datetime` pinned (the collection preview's approach, commit `935ebf7` —
+NOT search registration), and tipg vector tiles. Every time-aware layer
+keeps its own frames; the page's time axis is their union, resolved
+hold-last per layer; playback is the preview's tiler-paced rule. V-1
+extracts the preview tab's frame machinery into shared pieces and makes the
+tab consume them — the preview's four test files must stay green unchanged.
+No migrations. The tilers are still called straight from the browser
+(I-1/I-69 unchanged).
+
+- [ ] **V-1 · Shared pieces + preview refactor.** Spec §3. `RasterFrameStack`
+      (previous + current + one lookahead, opacity swap, no transition) in
+      `packages/shared/src/components/map/`; `FootprintLayer` gains `id` /
+      `opacity` / `beforeId` and `lib/map/styles.ts` becomes functions of the
+      source id; new `VectorTileLayer` (fill + line + circle on one MVT
+      source); `tipgBaseUrl` + `tipgCollectionsUrl` + `tipgTileJsonUrl` in
+      `serving/urls.ts` replacing the two inline `PUBLIC_TIPG_URL` reads;
+      `CollectionPreviewTab` mounts `RasterFrameStack`; stories for both
+      new components. Goes first.
+- [ ] **V-2 · Page shell, state, footprint layers.** Spec §4.1, §4.2, §4.3
+      (footprints), §4.5 (list + Products/Footprints), §4.6, §4.7.
+      `map.astro` + `MapPage` island, sidebar entry + top-bar title, the
+      `lib/map/state.ts` reducer + tests, layer list (visibility, opacity,
+      move, remove), Add-layer popover, hover tooltip + click-through,
+      first-add camera fit, `MapPage` component tests, `e2e/map.spec.ts`
+      smoke (pgstac only). Depends on V-1.
+- [ ] **V-3 · Imagery layers + the shared time axis.** Spec §4.3 (imagery),
+      §4.4. `lib/map/axis.ts` (`buildAxis`, `resolveLayerFrame`) + tests;
+      the Imagery option gated on serving + a newest-items probe; per-row
+      asset select; the docked `TimeSlider` with `areTilesLoaded` pacing;
+      span select resets the axis. Live check on the standing GOES demo
+      (`goes-geocolor` imagery + `goes-abi-mcmipc` footprints, 50 frames).
+      Depends on V-2.
+- [ ] **V-4 · tipg vector layers + docs.** Spec §4.5 Vector tiles section,
+      §7, §8. `useTipgCollections` (silent on failure), `VectorTileLayer`
+      on the page with the source-layer name verified against the running
+      tipg, `docs/FEATURES.md` + `docs/serving.md`, the §8 deferrals logged
+      in `docs/ISSUES.md` / follow-ups. Depends on V-2 (not V-3).
 
 ## Parked (do not start without the lead)
 
