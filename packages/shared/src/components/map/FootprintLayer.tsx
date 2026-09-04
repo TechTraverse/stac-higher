@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Source, Layer } from "react-map-gl/maplibre";
 import { FOOTPRINT_SOURCE, footprintLayers } from "@shared/lib/map/styles";
 import type { StacItem } from "@shared/lib/stac-api/types";
@@ -32,21 +33,27 @@ export function FootprintLayer({
   const sourceId = id ?? FOOTPRINT_SOURCE;
   const { fill, line } = footprintLayers(sourceId, opacity);
 
-  const geojson: GeoJSON.FeatureCollection = {
-    type: "FeatureCollection",
-    features: items
-      .filter((item) => item.geometry)
-      .map((item) => ({
-        type: "Feature" as const,
-        id: item.id,
-        properties: {
+  // The source diff-compares the whole FeatureCollection on every render,
+  // and the /map page mounts several of these and re-renders every playback
+  // tick.
+  const geojson: GeoJSON.FeatureCollection = useMemo(
+    () => ({
+      type: "FeatureCollection",
+      features: items
+        .filter((item) => item.geometry)
+        .map((item) => ({
+          type: "Feature" as const,
           id: item.id,
-          datetime: item.properties.datetime,
-          selected: item.id === selectedId,
-        },
-        geometry: item.geometry!,
-      })),
-  };
+          properties: {
+            id: item.id,
+            datetime: item.properties.datetime,
+            selected: item.id === selectedId,
+          },
+          geometry: item.geometry!,
+        })),
+    }),
+    [items, selectedId],
+  );
 
   return (
     <Source id={sourceId} type="geojson" data={geojson}>
