@@ -266,7 +266,7 @@ then `rasterio.open(f'NETCDF:"{path}":CMI_C02')`. Everything else —
 platform, instruments, `goes:*` — is read off the container's global
 attributes (`dataset.tags()["NC_GLOBAL#scene_id"]`).
 
-**The process** is about sixty lines: read C01/C02/C03/C13 as reflectance
+**The process** is a couple of hundred lines: read C01/C02/C03/C13 as reflectance
 and brightness temperature (`values = raw * scale + offset`, fill → NaN),
 compose, write, publish. Everything stays in **float32** — four float64 bands
 of a full-disk grid plus compose's intermediates run past the revision's
@@ -276,15 +276,33 @@ Abridged (`geocolor.py` is the source of truth — it carries the explicit
 float32 casts this quote drops):
 
 ```python
-def compose(c01, c02, c03, c13):
+def compose(c01, c02, c03, c13, zenith):
     red, blue, veggie = (np.clip(np.nan_to_num(b), 0, 1) for b in (c02, c01, c03))
     green = np.clip(0.45 * red + 0.10 * veggie + 0.45 * blue, 0, 1)   # synthetic green
     rgb = np.stack([red, green, blue]) ** (1 / 2.2)                     # gamma
     night = 1 - np.clip((np.nan_to_num(c13, nan=313.0) - 90.0) / (313.0 - 90.0), 0, 1)
-    rgb = np.maximum(rgb, night[None])                                  # night IR by max
+    alpha = np.clip((zenith - 80.0) / (96.0 - 80.0), 0, 1)               # twilight band
+    for band, (warm, cold) in enumerate(zip((0.02, 0.05, 0.18), (1.0, 1.0, 1.0))):
+        rgb[band] = rgb[band] * (1 - alpha) + (warm + night * (cold - warm)) * alpha
     mask = np.isfinite(c02) & np.isfinite(c13)
     return np.where(mask[None], rgb * 255, 0).round().astype("uint8"), (mask * 255).astype("uint8")
 ```
+
+The night layer is a **ramp, not a grey**: the inverted C13 runs from a deep
+blue for warm surfaces and low cloud to white for the coldest tops, which is
+what makes a night granule read as an image rather than a monochrome plate.
+And the two layers are mixed by the **per-pixel solar zenith angle** rather
+than by a maximum, so the terminator fades over a twilight band instead of
+flipping. `solar_zenith(crs, transform, shape, when)` supplies that angle: it
+reprojects pixel centres every 64 pixels to WGS84 — bisecting the batch to
+isolate the off-limb samples GDAL refuses outright, then filling them from
+their nearest finite neighbour — evaluates the NOAA low-precision sun position
+at the granule's **scan time** (not "now": a run may be minutes behind the
+granule), and bilinearly upsamples. One degree of zenith is about 110 km, so a
+64-pixel cell is two orders of magnitude finer than the 80–96 degree band it
+feeds, and the whole thing costs a few hundred reprojected points instead of
+one per pixel. City lights are deliberately absent — they need a static
+reference asset the platform cannot yet hand a run (I-106).
 
 The COG is written in the file's native geostationary CRS (`driver="COG"`,
 deflate, 512 blocks, `overviews="AUTO"`, an internal mask for off-disk
