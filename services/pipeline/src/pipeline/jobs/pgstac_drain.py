@@ -6,7 +6,9 @@ staleness bound on partition statistics (spec §4.6) — one minute is the
 scheduler's granularity, and the two `REFRESH MATERIALIZED VIEW`s inside a
 drain scale with partition count, not write rate, so the cost to watch is
 `pipeline_job_seconds{job="pipeline.pgstac_queue_drain"}` against
-`SELECT count(*) FROM pgstac.partitions`.
+`SELECT count(*) FROM pgstac.partitions_view` — the live relation; `pgstac.partitions`
+is a materialized view refreshed only by this same drain, so counting it instead
+would report a stale, self-flattering number exactly when the drainer stops.
 """
 
 from __future__ import annotations

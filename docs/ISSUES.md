@@ -1146,6 +1146,26 @@ lifetime, so the fix belongs to a later M3 slice.
 - Tracked in: `services/pipeline/src/pipeline/stac/pgstac_writer.py`
   (`_open_pgstac`); found in the M3-A docs review (Task 8).
 
+### I-114 · A newly created partition is invisible to datetime-ordered search until the queue drains 🟡
+Under `use_queue` (M3-A), a brand-new partition — a new collection, or a new
+month on a `partition_trunc` collection — has no row in `pgstac.partition_steps`
+(a materialized view refreshed only inside `update_partition_stats`, pinned
+`pgstac.0.9.11.sql` ~L2621) until the queue drains it. `chunker` joins the
+search planner's chosen relation names against `partition_steps`, so a
+partition absent from that matview contributes no chunk range and is silently
+dropped from datetime-ordered STAC search — not a planning slowdown, an
+absence. Only NEW partitions are affected: a running deployment's existing
+data already has its range in the matview. The window is bounded by one drain
+tick (the job runs every minute, `pipeline.pgstac_queue_drain`) but is
+UNBOUNDED if the drainer stops, which is why the stale-queue WARNING
+(`pipeline_pgstac_query_queue_oldest_seconds`) matters beyond a performance
+signal. A fresh `docker compose down -v` → `demo seed` → look-at-the-UI path
+now has a roughly one-minute blind window on newly seeded data that did not
+exist before this branch.
+- Tracked in: `services/pipeline/src/pipeline/metrics.py` (queue-depth gauge
+  comment), `services/pipeline/README.md` (`PGSTAC_QUEUE_DRAINER`); found in
+  the M3-A final whole-branch review.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

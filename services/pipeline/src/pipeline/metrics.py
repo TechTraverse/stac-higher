@@ -168,7 +168,10 @@ ALERTS = Counter(
 # `use_queue` is a SESSION GUC on the writer's connections, so nothing outside
 # the process can see it is in effect — except the queue it feeds. Depth and
 # age together are that evidence, and a drainer that silently stops shows up
-# here as a rising age long before search planning degrades.
+# here as a rising age — which matters more than a performance number: a
+# partition queued but not yet drained is not merely slower to search, it is
+# ABSENT from datetime-ordered STAC search results until it drains (I-114).
+# A stopped drainer turns that one-tick blind window unbounded.
 PGSTAC_QUEUE_DEPTH = Gauge(
     "pipeline_pgstac_query_queue_depth",
     "Statements waiting in pgstac.query_queue after the last drain tick",
@@ -180,7 +183,7 @@ PGSTAC_QUEUE_OLDEST_SECONDS = Gauge(
     registry=REGISTRY,
 )
 PGSTAC_QUEUE_QUERIES = Counter(
-    "pipeline_pgstac_queue_queries_total",
+    "pipeline_pgstac_query_queue_queries_total",
     "Queued pgstac statements executed by the pipeline's drain tick",
     ["outcome"],  # ok | error (pgstac records the error in query_queue_history)
     registry=REGISTRY,

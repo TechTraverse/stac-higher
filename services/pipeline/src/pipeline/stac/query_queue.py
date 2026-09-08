@@ -109,7 +109,7 @@ class PgPgstacQueueRepo(PgstacQueueRepo):
 
     database_url: str
 
-    async def _connect(self):  # pragma: no cover - thin psycopg wrapper
+    async def _connect(self):
         import psycopg
 
         conn = await psycopg.AsyncConnection.connect(self.database_url, autocommit=True)
@@ -136,7 +136,7 @@ class PgPgstacQueueRepo(PgstacQueueRepo):
         age = float(row[1]) if row and row[1] is not None else None
         return QueueSample(depth=depth, oldest_age_seconds=age)
 
-    async def drain(self) -> DrainOutcome:  # pragma: no cover - DB integration suite
+    async def drain(self) -> DrainOutcome:
         async with await self._connect() as conn:
             cur = await conn.execute("SELECT clock_timestamp()")
             started = (await cur.fetchone())[0]

@@ -23,12 +23,16 @@ from typing import Protocol
 #: *inside* `update_partition_stats` that refreshes the collection's
 #: advertised extent — but that call runs later, in whichever session
 #: DRAINS the queue (`run_queued_queries()`), so setting it here on the
-#: writer has no effect: `pgstac_settings` defaults it to `false`, and the
-#: drainer is the session that must carry it (Task 4). The two travel
-#: together in this module only because the writer needs `use_queue`; the
-#: drainer needs the opposite pairing (`update_collection_extent` on,
-#: `use_queue` off, or it would re-queue the extent refresh instead of
-#: running it).
+#: writer has no effect on that nested call: `pgstac_settings` defaults it
+#: to `false`, and the drainer is the session that must carry it (Task 4).
+#: It is still set here, on the writer, because spec §4.2 directs both
+#: statements together and doing so is harmless — the writer's own copy of
+#: the GUC is simply never read by anything. The two travel together in
+#: this module only because the writer needs `use_queue`; the drainer needs
+#: the opposite pairing (`update_collection_extent` on, `use_queue`
+#: explicitly FALSE — not merely left unset, so it cannot silently inherit
+#: whatever `pgstac_settings` or an `ALTER DATABASE`/`ALTER ROLE` says — or
+#: it would re-queue the extent refresh instead of running it).
 PGSTAC_SESSION_SQL: tuple[str, ...] = (
     "SET pgstac.use_queue TO TRUE",
     "SET pgstac.update_collection_extent TO TRUE",
