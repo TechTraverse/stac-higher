@@ -62,4 +62,15 @@ describe("VectorTileLayer", () => {
     const specs = vectorTileLayers("v", "default");
     expect(Object.values(specs).map((s) => s.id)).toEqual(["v-fill", "v-line", "v-circle"]);
   });
+
+  it("hides all three layers without dropping the vector source", () => {
+    render(<VectorTileLayer id="v" url="http://t/tilejson.json" visible={false} />);
+
+    expect(source()).toMatchObject({ id: "v", type: "vector" });
+    expect(layers().map((l) => l.layout)).toEqual([
+      { visibility: "none" },
+      { visibility: "none" },
+      { visibility: "none" },
+    ]);
+  });
 });

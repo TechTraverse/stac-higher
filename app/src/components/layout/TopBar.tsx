@@ -40,6 +40,7 @@ const ROUTE_TITLES: Array<[RegExp, string]> = [
   [/^\/connections$/, "Connections"],
   [/^\/graph$/, "Pipeline graph"],
   [/^\/monitoring$/, "Monitoring"],
+  [/^\/map$/, "Map"],
   [/^\/catalogs\/[^/]+\/collections\/[^/]+\/items\/[^/]+$/, "Browse item"],
   [/^\/catalogs\/[^/]+\/collections\/[^/]+\/items$/, "Browse items"],
   [/^\/catalogs\/[^/]+\/collections\/[^/]+$/, "Browse collection"],

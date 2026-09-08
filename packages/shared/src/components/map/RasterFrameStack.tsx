@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { Layer } from "react-map-gl/maplibre";
 import { RasterTileLayer } from "./RasterTileLayer";
 
 export interface RasterFrame {
@@ -21,6 +22,8 @@ export interface RasterFrameStackProps {
   maxzoom?: number;
   /** The layer's own opacity (0..1), applied to the visible frames. */
   opacity?: number;
+  /** Hides every mounted frame (the anchor is unaffected — it paints nothing). */
+  visible?: boolean;
   /** Draw beneath this layer id. */
   beforeId?: string;
 }
@@ -32,6 +35,17 @@ export interface RasterFrameStackProps {
  * looking at.
  */
 export const RASTER_FRAME_LOOKAHEAD = 1;
+
+/**
+ * The stack's stable `beforeId` target (spec §11.2). Frame layer ids
+ * (`${id}-frame-${n}-layer`) are mounted and unmounted on every step, and
+ * maplibre no-ops an `addLayer` whose `beforeId` names a layer that is not
+ * in the style — so a layer drawn above a stack chains to THIS id, never to
+ * a frame.
+ */
+export function rasterFrameStackAnchorId(id: string): string {
+  return `${id}-anchor`;
+}
 
 /**
  * A time series of raster tile layers shown one frame at a time.
@@ -54,6 +68,7 @@ export function RasterFrameStack({
   minzoom,
   maxzoom,
   opacity = 1,
+  visible = true,
   beforeId,
 }: RasterFrameStackProps) {
   // The frame shown before this one. Tracked in refs rather than state so a
@@ -66,8 +81,22 @@ export function RasterFrameStack({
     lastIndex.current = index;
   }
 
+  // Always mounted, even for an empty series: a chaining target that appears
+  // only once data arrives is not a chaining target. A `background` layer
+  // needs no source and fetches nothing — at zero opacity it paints nothing
+  // and costs one no-op draw, where an "empty tile" raster source would sit
+  // in the style making requests.
+  const anchor = (
+    <Layer
+      id={rasterFrameStackAnchorId(id)}
+      type="background"
+      beforeId={beforeId}
+      paint={{ "background-opacity": 0 }}
+    />
+  );
+
   const count = frames.length;
-  if (count === 0) return null;
+  if (count === 0) return anchor;
 
   // A non-finite index shows the first frame rather than nothing.
   const safeIndex = Number.isFinite(index) ? index : 0;
@@ -95,6 +124,7 @@ export function RasterFrameStack({
 
   return (
     <>
+      {anchor}
       {mounted.map((frameIndex) => (
         <RasterTileLayer
           key={frames[frameIndex].key}
@@ -105,6 +135,7 @@ export function RasterFrameStack({
           maxzoom={maxzoom}
           opacity={frameIndex === current || frameIndex === previous ? opacity : 0}
           opacityTransitionMs={0}
+          visible={visible}
           beforeId={beforeId}
         />
       ))}

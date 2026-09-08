@@ -1165,6 +1165,28 @@ exist before this branch.
 - Tracked in: `services/pipeline/src/pipeline/metrics.py` (queue-depth gauge
   comment), `services/pipeline/README.md` (`PGSTAC_QUEUE_DRAINER`); found in
   the M3-A final whole-branch review.
+## Map page (V queue, 2026-09-07)
+
+### I-115 · Layer opacity slider has no accessible name 🟡
+`LayerRow` sets `aria-label="Layer opacity"` on the shared `Slider`, but that
+prop lands on Radix's `SliderPrimitive.Root` — the element that actually
+carries `role="slider"` is the Thumb, which takes its own label from a
+`getLabel(index, count)` fallback that returns `undefined` for a single-thumb
+slider. So `/map`'s opacity control ships with no accessible name. The real
+fix is in `packages/shared/src/components/ui/slider.tsx` (thread a label
+prop down to the Thumb), which is a hook-blocked shadcn primitive and needs
+its own decision rather than a drive-by patch.
+- Found in: V-2 whole-branch review.
+
+### I-116 · `bboxToLngLatBounds` mis-fits a 3D bbox 🟡
+`packages/shared/src/lib/map/bbox.ts` assumes a 4-element `[minx,miny,maxx,maxy]`
+bbox. A STAC collection with a 6-element `[minx,miny,minz,maxx,maxy,maxz]`
+extent fits to `[[minx,miny],[minz,maxx]]` — no error, just a camera that
+lands somewhere wrong and a user who has to pan away. Pre-existing helper
+limitation, but `/map`'s first-add camera fit (V-2, spec §4.6) is the first
+caller that feeds it arbitrary user-chosen collection extents, making it
+reachable.
+- Found in: V-2 whole-branch review.
 
 ## Resolved — archived
 

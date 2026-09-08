@@ -41,6 +41,7 @@ export { FIXTURE_GRAPH } from "@shared/lib/graph/fixtures";
 export {
   FOOTPRINT_SOURCE,
   EXTENT_SOURCE,
+  clamp01,
   footprintFillLayer,
   footprintLineLayer,
   footprintLayerIds,
@@ -93,7 +94,11 @@ export { FootprintLayer } from "@shared/components/map/FootprintLayer";
 export type { FootprintLayerProps } from "@shared/components/map/FootprintLayer";
 export { RasterTileLayer } from "@shared/components/map/RasterTileLayer";
 export type { RasterTileLayerProps } from "@shared/components/map/RasterTileLayer";
-export { RasterFrameStack, RASTER_FRAME_LOOKAHEAD } from "@shared/components/map/RasterFrameStack";
+export {
+  RasterFrameStack,
+  RASTER_FRAME_LOOKAHEAD,
+  rasterFrameStackAnchorId,
+} from "@shared/components/map/RasterFrameStack";
 export type { RasterFrame, RasterFrameStackProps } from "@shared/components/map/RasterFrameStack";
 export { VectorTileLayer } from "@shared/components/map/VectorTileLayer";
 export type { VectorTileLayerProps } from "@shared/components/map/VectorTileLayer";

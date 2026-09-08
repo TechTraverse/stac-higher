@@ -14,6 +14,11 @@ export interface FootprintLayerProps {
   id?: string;
   /** 0..1, default 1 — scales fill and line together. */
   opacity?: number;
+  /**
+   * Hidden layers stay MOUNTED (`visibility: "none"`): unmounting would drop
+   * the source and re-diff the whole feature collection on every toggle.
+   */
+  visible?: boolean;
   /** Draw beneath this layer id. */
   beforeId?: string;
 }
@@ -28,10 +33,14 @@ export function FootprintLayer({
   selectedId,
   id,
   opacity = 1,
+  visible = true,
   beforeId,
 }: FootprintLayerProps) {
   const sourceId = id ?? FOOTPRINT_SOURCE;
   const { fill, line } = footprintLayers(sourceId, opacity);
+  const layout: { visibility: "visible" | "none" } = {
+    visibility: visible ? "visible" : "none",
+  };
 
   // The source diff-compares the whole FeatureCollection on every render,
   // and the /map page mounts several of these and re-renders every playback
@@ -57,8 +66,8 @@ export function FootprintLayer({
 
   return (
     <Source id={sourceId} type="geojson" data={geojson}>
-      <Layer {...fill} beforeId={beforeId} />
-      <Layer {...line} beforeId={beforeId} />
+      <Layer {...fill} layout={layout} beforeId={beforeId} />
+      <Layer {...line} layout={layout} beforeId={beforeId} />
     </Source>
   );
 }

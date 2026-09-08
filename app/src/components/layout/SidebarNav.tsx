@@ -20,6 +20,7 @@ import {
   Cpu,
   Database,
   Layers,
+  Map as MapIcon,
   Plug,
   Puzzle,
   Search,
@@ -52,6 +53,7 @@ interface NavItem {
 
 const OPERATE: NavItem[] = [
   { href: "/", label: "Products", icon: Layers, alsoMatches: ["/collections"] },
+  { href: "/map", label: "Map", icon: MapIcon },
   { href: "/processes", label: "Processes", icon: Cpu },
   { href: "/connections", label: "Connections", icon: Plug },
   { href: "/graph", label: "Pipeline graph", icon: Share2 },

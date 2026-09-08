@@ -82,4 +82,22 @@ describe("FootprintLayer", () => {
     expect(data.features).toHaveLength(1);
     expect(data.features[0].properties).toMatchObject({ id: "a", selected: true });
   });
+
+  it("hides both layers without unmounting the source", () => {
+    // Unmounting would drop the GeoJSON source and re-diff the whole feature
+    // collection on every toggle; visibility is a layout property.
+    const { rerender } = render(<FootprintLayer id="layer-a" items={[item("a")]} />);
+    expect(layers().map((l) => l.layout)).toEqual([
+      { visibility: "visible" },
+      { visibility: "visible" },
+    ]);
+
+    rerender(<FootprintLayer id="layer-a" items={[item("a")]} visible={false} />);
+
+    expect(sources().map((s) => s.id)).toEqual(["layer-a"]);
+    expect(layers().map((l) => l.layout)).toEqual([
+      { visibility: "none" },
+      { visibility: "none" },
+    ]);
+  });
 });

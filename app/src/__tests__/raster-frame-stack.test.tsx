@@ -12,7 +12,11 @@ vi.mock("react-map-gl/maplibre", () => ({
   ),
 }));
 
-import { RasterFrameStack, RASTER_FRAME_LOOKAHEAD } from "@stac-higher/shared";
+import {
+  RasterFrameStack,
+  RASTER_FRAME_LOOKAHEAD,
+  rasterFrameStackAnchorId,
+} from "@stac-higher/shared";
 
 const FRAMES = ["a", "b", "c", "d"].map((key) => ({
   key,
@@ -25,16 +29,26 @@ interface Rendered {
   transition: unknown;
 }
 
+function allLayers(): Record<string, unknown>[] {
+  return screen.queryAllByTestId("layer").map((el) => JSON.parse(el.dataset.props as string));
+}
+
+/**
+ * The FRAME layers only. The stack also mounts a zero-opacity background
+ * layer as the stable `beforeId` anchor (spec §11.2) — not a frame, no
+ * source, no raster paint.
+ */
 function layers(): Rendered[] {
-  return screen.queryAllByTestId("layer").map((el) => {
-    const props = JSON.parse(el.dataset.props as string);
-    const paint = props.paint as Record<string, unknown>;
-    return {
-      source: props.source as string,
-      opacity: paint["raster-opacity"] as number,
-      transition: paint["raster-opacity-transition"],
-    };
-  });
+  return allLayers()
+    .filter((props) => props.type === "raster")
+    .map((props) => {
+      const paint = props.paint as Record<string, unknown>;
+      return {
+        source: props.source as string,
+        opacity: paint["raster-opacity"] as number,
+        transition: paint["raster-opacity-transition"],
+      };
+    });
 }
 
 describe("RasterFrameStack", () => {
@@ -99,9 +113,33 @@ describe("RasterFrameStack", () => {
     }
   });
 
-  it("renders nothing for an empty series", () => {
+  it("keeps the anchor mounted for an empty series, but no sources", () => {
+    // The anchor is what a layer ABOVE this one chains its beforeId to. If it
+    // came and went with the data, that chaining would silently break every
+    // time a product had no frames yet.
     render(<RasterFrameStack id="s" frames={[]} index={0} />);
+
+    expect(allLayers().map((l) => l.id)).toEqual(["s-anchor"]);
     expect(screen.queryAllByTestId("source")).toHaveLength(0);
+  });
+
+  it("mounts the anchor first, beneath the frames, at zero opacity", () => {
+    render(<RasterFrameStack id="s" frames={FRAMES} index={0} beforeId="top" />);
+
+    expect(rasterFrameStackAnchorId("s")).toBe("s-anchor");
+    const [anchor, ...rest] = allLayers();
+    expect(anchor).toMatchObject({
+      id: "s-anchor",
+      type: "background",
+      beforeId: "top",
+      paint: { "background-opacity": 0 },
+    });
+    // A background layer takes no source — that is why it can never 404 or
+    // sit in the style waiting for empty tiles.
+    expect(anchor).not.toHaveProperty("source");
+    // Frames keep the CALLER's beforeId: both they and the anchor insert
+    // before "top", and the anchor got there first, so it stays lowest.
+    expect(rest.every((l) => l.beforeId === "top")).toBe(true);
   });
 
   it("collapses to one frame at full opacity for a one-frame series", () => {
@@ -130,5 +168,19 @@ describe("RasterFrameStack", () => {
 
     rerender(<RasterFrameStack id="s" frames={FRAMES} index={Number.NaN} />);
     expect(layers().some((l) => l.opacity === 1)).toBe(true);
+  });
+
+  it("hides every mounted frame when not visible, and leaves the anchor alone", () => {
+    render(<RasterFrameStack id="s" frames={FRAMES} index={1} visible={false} />);
+
+    const [anchor, ...frames] = allLayers();
+    expect(frames.map((l) => l.layout)).toEqual([
+      { visibility: "none" },
+      { visibility: "none" },
+    ]);
+    // The anchor paints nothing in either state; hiding it would only risk
+    // maplibre dropping it as a chaining target.
+    expect(anchor).not.toHaveProperty("layout");
+    expect(screen.queryAllByTestId("source")).toHaveLength(2);
   });
 });
