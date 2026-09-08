@@ -4,8 +4,10 @@
  */
 import { Layers } from "lucide-react";
 import { EmptyState } from "@stac-higher/shared";
+import { AddLayerPopover } from "@/components/map/AddLayerPopover";
+import { LayerRow } from "@/components/map/LayerRow";
 import type { StacCollection } from "@/lib/stac-api/types";
-import type { FrameSpan, MapLayer } from "@/lib/map/state";
+import type { FrameSpan, LayerKind, MapLayer } from "@/lib/map/state";
 
 export interface LayerPanelProps {
   /** Draw order, bottom first. */
@@ -13,10 +15,19 @@ export interface LayerPanelProps {
   collections: StacCollection[];
   catalogUrl: string;
   frameSpan: FrameSpan;
+  onAdd: (kind: LayerKind, collection: StacCollection) => void;
 }
 
-export function LayerPanel({ layers }: LayerPanelProps) {
+export function LayerPanel({
+  layers,
+  collections,
+  catalogUrl,
+  frameSpan,
+  onAdd,
+}: LayerPanelProps) {
   const topFirst = [...layers].reverse();
+  const isAdded = (kind: LayerKind, sourceId: string) =>
+    layers.some((l) => l.kind === kind && l.sourceId === sourceId);
 
   return (
     <aside
@@ -25,16 +36,30 @@ export function LayerPanel({ layers }: LayerPanelProps) {
     >
       <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
         <h1 className="text-sm font-bold tracking-tight">Layers</h1>
+        <AddLayerPopover
+          collections={collections}
+          isAdded={isAdded}
+          onAdd={onAdd}
+        />
       </div>
 
-      <div className="flex-1 p-3">
+      <div className="flex-1 space-y-2 p-3">
         {topFirst.length === 0 ? (
           <EmptyState
             icon={Layers}
             title="No layers yet"
             description="Add a product from the built-in catalog to draw its item footprints on the map."
           />
-        ) : null}
+        ) : (
+          topFirst.map((layer) => (
+            <LayerRow
+              key={layer.id}
+              layer={layer}
+              catalogUrl={catalogUrl}
+              frameSpan={frameSpan}
+            />
+          ))
+        )}
       </div>
     </aside>
   );

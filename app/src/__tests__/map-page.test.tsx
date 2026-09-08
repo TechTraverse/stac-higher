@@ -4,8 +4,8 @@
  * beforeId chain, and the hover/click plumbing.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
-import type { StacCollection } from "@/lib/stac-api/types";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import type { StacCollection, StacItem } from "@/lib/stac-api/types";
 
 const { useCollectionsMock, useItemsMock, mapProps } = vi.hoisted(() => ({
   useCollectionsMock: vi.fn(),
@@ -79,6 +79,42 @@ function collection(id: string, bbox?: number[]): StacCollection {
   } as unknown as StacCollection;
 }
 
+function item(id: string, datetime: string | null): StacItem {
+  return {
+    type: "Feature",
+    stac_version: "1.0.0",
+    id,
+    collection: "alpha",
+    geometry: { type: "Point", coordinates: [0, 0] },
+    properties: { datetime },
+    links: [],
+    assets: {},
+  } as unknown as StacItem;
+}
+
+function sourceIds(): string[] {
+  return screen
+    .queryAllByTestId("source")
+    .map((el) => JSON.parse(el.dataset.props as string).id as string);
+}
+
+function layerProps(): Record<string, unknown>[] {
+  return screen
+    .queryAllByTestId("layer")
+    .map((el) => JSON.parse(el.dataset.props as string));
+}
+
+function rowIds(): string[] {
+  return screen
+    .queryAllByTestId("map-layer-row")
+    .map((el) => el.dataset.layerId as string);
+}
+
+function addFootprints(collectionId: string) {
+  fireEvent.click(screen.getByTestId("map-add-layer"));
+  fireEvent.click(screen.getByTestId(`map-add-footprints-${collectionId}`));
+}
+
 beforeAll(() => {
   window.matchMedia =
     window.matchMedia ||
@@ -109,5 +145,67 @@ describe("MapPage", () => {
     expect(screen.queryAllByTestId("map-layer-row")).toHaveLength(0);
     // Nothing is drawn on the map, and nothing errored (spec §4.7).
     expect(screen.queryAllByTestId("source")).toHaveLength(0);
+  });
+
+  it("adds a footprints layer from the picker, as a row and a namespaced source", () => {
+    useItemsMock.mockReturnValue({
+      data: { features: [item("i1", "2026-09-07T00:00:00Z")] },
+      isLoading: false,
+    });
+    render(<MapPage />);
+
+    addFootprints("alpha");
+
+    expect(rowIds()).toEqual(["layer-0"]);
+    expect(screen.getByText("Product alpha")).toBeTruthy();
+    // The source id IS the layer id, so several products can share the map.
+    expect(sourceIds()).toEqual(["layer-0"]);
+    expect(layerProps().map((l) => l.id)).toEqual(["layer-0-fill", "layer-0-line"]);
+  });
+
+  it("asks the catalog for the span's newest items, per layer", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+
+    expect(useItemsMock).toHaveBeenCalledWith(
+      "http://localhost:8081",
+      "alpha",
+      { limit: 50, sortby: "-datetime" },
+    );
+  });
+
+  it("disables a product that is already on the map", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+
+    fireEvent.click(screen.getByTestId("map-add-layer"));
+    expect(screen.getByTestId("map-add-footprints-alpha")).toBeDisabled();
+    expect(screen.getByTestId("map-add-footprints-beta")).not.toBeDisabled();
+  });
+
+  it("says so quietly when a product has no timestamped items", () => {
+    // Never an error (spec §4.7): the layer is on the map, it just draws
+    // nothing the time axis can use.
+    useItemsMock.mockReturnValue({ data: { features: [item("i1", null)] }, isLoading: false });
+    render(<MapPage />);
+
+    addFootprints("alpha");
+
+    const row = screen.getByTestId("map-layer-row");
+    expect(within(row).getByText(/no items with a timestamp/i)).toBeTruthy();
+  });
+
+  it("chains each layer beneath the one above it, topmost rendered first", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+    addFootprints("beta");
+
+    // Panel: topmost first. Draw order: bottom first.
+    expect(rowIds()).toEqual(["layer-1", "layer-0"]);
+    // Rendered topmost first so "layer-1-fill" exists by the time the layer
+    // below it asks maplibre to insert beneath that id.
+    expect(sourceIds()).toEqual(["layer-1", "layer-0"]);
+    const beforeIds = layerProps().map((l) => l.beforeId);
+    expect(beforeIds).toEqual([undefined, undefined, "layer-1-fill", "layer-1-fill"]);
   });
 });
