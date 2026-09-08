@@ -32,6 +32,7 @@ from pipeline.jobs import (
 )
 from pipeline.log import configure_logging
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
+from pipeline.stac.pgstac_writer import close_writer_pools
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ async def run(settings: Settings) -> None:
             dispatch.build_notify_listener(queue, settings),
         )
     finally:
+        close_writer_pools()
         await queue.aclose()
 
 
