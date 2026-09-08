@@ -82,8 +82,13 @@ TABLE_QUERIES: dict[str, str] = {
     ),
     "pgstac_partitions": (
         # The drain's cost (two REFRESH MATERIALIZED VIEWs) scales with this,
-        # not with write rate — spec §4.5.
-        "SELECT count(*) FROM pgstac.partitions"
+        # not with write rate — spec §4.5. `partitions` itself is a
+        # materialized view only `update_partition_stats` refreshes — the
+        # very statement the drain defers — so counting it would report a
+        # stale, last-drain snapshot and could queue behind the drain's
+        # ACCESS EXCLUSIVE refresh. `partitions_view`, the live view over
+        # `pg_partition_tree`, has neither problem.
+        "SELECT count(*) FROM pgstac.partitions_view"
     ),
     "ingest_files_seen": (
         # `seen` is where the two-poll settle check parks a file, so a growing
