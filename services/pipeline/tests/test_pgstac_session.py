@@ -25,6 +25,7 @@ class _SyncConn:
 
     def commit(self):
         self.commits += 1
+        self.executed.append("COMMIT")
 
 
 class _AsyncConn:
@@ -37,6 +38,7 @@ class _AsyncConn:
 
     async def commit(self):
         self.commits += 1
+        self.executed.append("COMMIT")
 
 
 def test_session_sql_names_both_settings():
@@ -49,13 +51,14 @@ def test_session_sql_names_both_settings():
 def test_sync_hook_sets_both_and_commits():
     conn = _SyncConn()
     configure_pgstac_session(conn)
-    assert conn.executed == list(PGSTAC_SESSION_SQL)
-    # SET is transactional: without the commit the pool's reset would undo it.
+    # SET is transactional: without the commit the pool's reset would undo
+    # it, so the commit must be observed strictly after both SETs.
+    assert conn.executed == [*PGSTAC_SESSION_SQL, "COMMIT"]
     assert conn.commits == 1
 
 
 async def test_async_hook_sets_both_and_commits():
     conn = _AsyncConn()
     await configure_pgstac_session_async(conn)
-    assert conn.executed == list(PGSTAC_SESSION_SQL)
+    assert conn.executed == [*PGSTAC_SESSION_SQL, "COMMIT"]
     assert conn.commits == 1

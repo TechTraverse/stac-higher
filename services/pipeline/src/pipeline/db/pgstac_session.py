@@ -17,10 +17,18 @@ from __future__ import annotations
 from typing import Protocol
 
 #: `use_queue` routes `update_partition_stats` (the O(partition) scan +
-#: ANALYZE on every item write) into `pgstac.query_queue`;
-#: `update_collection_extent` makes the queued statement also refresh the
-#: collection's advertised extent (spec §4.4) — cheap only once stats are
-#: queued, which is why the two travel together.
+#: ANALYZE on every item write) into `pgstac.query_queue` — read in the
+#: WRITER's session, at the point the item trigger fires.
+#: `update_collection_extent` gates a second, nested `run_or_queue` call
+#: *inside* `update_partition_stats` that refreshes the collection's
+#: advertised extent — but that call runs later, in whichever session
+#: DRAINS the queue (`run_queued_queries()`), so setting it here on the
+#: writer has no effect: `pgstac_settings` defaults it to `false`, and the
+#: drainer is the session that must carry it (Task 4). The two travel
+#: together in this module only because the writer needs `use_queue`; the
+#: drainer needs the opposite pairing (`update_collection_extent` on,
+#: `use_queue` off, or it would re-queue the extent refresh instead of
+#: running it).
 PGSTAC_SESSION_SQL: tuple[str, ...] = (
     "SET pgstac.use_queue TO TRUE",
     "SET pgstac.update_collection_extent TO TRUE",
