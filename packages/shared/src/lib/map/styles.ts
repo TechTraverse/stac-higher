@@ -67,6 +67,23 @@ export function footprintLayers(
   };
 }
 
+/**
+ * The ONE opacity clamp. Every layer spec here and every map layer component
+ * takes the caller's opacity unchanged — deliberately, so a caller can see
+ * exactly what it asked for — and maplibre rejects a value outside 0..1 as a
+ * style error rather than saturating it. The /map page's opacity control
+ * clamps here before the value reaches any layer.
+ *
+ * A non-finite value (a slider that produced NaN) reads as fully transparent:
+ * "invisible" is recoverable, "invalid paint property" is not.
+ */
+export function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
 export const footprintFillLayer = footprintLayers(FOOTPRINT_SOURCE).fill as Extract<
   LayerSpecification,
   { type: "fill" }

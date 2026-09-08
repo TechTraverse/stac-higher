@@ -41,6 +41,7 @@ export { FIXTURE_GRAPH } from "@shared/lib/graph/fixtures";
 export {
   FOOTPRINT_SOURCE,
   EXTENT_SOURCE,
+  clamp01,
   footprintFillLayer,
   footprintLineLayer,
   footprintLayerIds,
