@@ -13,15 +13,30 @@ makes happen (see the module docstring on `pipeline.stac.query_queue`).
 
 Shares the database with whatever the stack is doing (the standing GOES demo
 enqueues too), so the assertions are "at least" and "no longer present", never
-exact counts. The collection/item ids are namespaced (`m3a-*`) so this test
-never reads or deletes rows it did not create; the collection fixture removes
-everything it made, on success and on failure alike.
+exact counts.
+
+pgstac names the queued/history statements after the PARTITION
+(`_items_<key>`, where `<key>` is `pgstac.collections.key` — a serial, not the
+collection id string), never after the collection id. A live run against the
+compose stack confirmed `query ILIKE '%<collection id>%'` matches nothing —
+the queued statement reads `SELECT update_partition_stats('_items_34', 't')`
+with no trace of the id anywhere in it. So every predicate here is built from
+the partition name, resolved once from `pgstac.collections.key` right after
+this test's collection is created (`collection` fixture) — never hardcoded,
+since the key is a serial that differs on every run and every database. The
+fixture's `finally` block cleans up both the queue and history rows scoped to
+that same partition, ALONGSIDE `delete_collection`, so a test that fails
+partway can never leave a statement in the shared queue that references a
+now-dropped partition (which would error on every subsequent drain against
+the shared demo's queue — confirmed live: an earlier version of this file did
+exactly that when its cleanup predicate silently matched nothing).
 """
 
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 
 import psycopg
 import pytest
@@ -39,6 +54,21 @@ COLLECTION = "m3a-itest"
 #: queue drains, and must no longer show once it has.
 WORLD_BBOX = [-180.0, -90.0, 180.0, 90.0]
 ITEM_BBOX = [0.0, 0.0, 1.0, 1.0]
+
+
+@dataclass(frozen=True)
+class Collection:
+    id: str
+    #: pgstac's partition name for this collection's items — `_items_<key>`,
+    #: `key` being the serial `pgstac.collections.key` assigns on create.
+    #: This, not `id`, is what appears in `query_queue`/`query_queue_history`.
+    partition: str
+
+    def queue_pattern(self) -> str:
+        """An ILIKE pattern that matches ONLY statements naming this
+        partition — quoted, so `_items_3` cannot accidentally match a
+        longer key like `_items_34`."""
+        return f"%'{self.partition}'%"
 
 
 def _item(item_id: str, dtstr: str) -> dict:
@@ -72,14 +102,31 @@ async def collection():
     }
     async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
         await conn.execute("SELECT pgstac.create_collection(%s::jsonb)", (json.dumps(coll),))
+        # Resolve the partition name WHILE the collection still exists — it's
+        # needed after `delete_collection` below, by which point pgstac.key
+        # is gone with the row.
+        cur = await conn.execute("SELECT key FROM pgstac.collections WHERE id = %s", (COLLECTION,))
+        key = (await cur.fetchone())[0]
+    coll_ = Collection(id=COLLECTION, partition=f"_items_{key}")
     try:
-        yield COLLECTION
+        yield coll_
     finally:
         # Runs on success AND on a failed assertion (pytest fixture teardown
-        # still executes) — this is the only STAC collection/items this test
-        # creates, addressed by its own namespaced id, so deleting it can
-        # never touch the standing demo's or anyone else's rows.
+        # still executes). Cleans up, in order: any queue/history statement
+        # this test's writes queued (scoped to THIS partition — see
+        # `Collection.queue_pattern`, never a broader predicate), then the
+        # collection/items themselves. Scoping by partition rather than
+        # collection id is what makes this safe on a shared database: a
+        # collection-id predicate silently matches nothing (pgstac queues by
+        # partition, not id), so a naive cleanup here would be a no-op and
+        # leave orphaned statements referencing a partition this fixture is
+        # about to drop — exactly what happened on the first live run.
+        pattern = coll_.queue_pattern()
         async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
+            await conn.execute("DELETE FROM pgstac.query_queue WHERE query ILIKE %s", (pattern,))
+            await conn.execute(
+                "DELETE FROM pgstac.query_queue_history WHERE query ILIKE %s", (pattern,)
+            )
             await conn.execute("SELECT pgstac.delete_collection(%s)", (COLLECTION,))
         close_writer_pools()
 
@@ -107,6 +154,7 @@ def test_pooled_connection_carries_both_gucs():
 async def test_upsert_queues_partition_stats_and_the_drain_runs_them(collection):
     writer = PgPgstacWriter(DATABASE_URL)
     repo = PgPgstacQueueRepo(DATABASE_URL)
+    pattern = collection.queue_pattern()
 
     # Start from a drained queue so the assertion below is about OUR write.
     await repo.drain()
@@ -116,7 +164,7 @@ async def test_upsert_queues_partition_stats_and_the_drain_runs_them(collection)
     async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
         cur = await conn.execute(
             "SELECT query FROM pgstac.query_queue WHERE query ILIKE %s",
-            (f"%{COLLECTION}%",),
+            (pattern,),
         )
         queued = [r[0] for r in await cur.fetchall()]
     assert queued, "the upsert should have QUEUED update_partition_stats, not run it inline"
@@ -147,13 +195,13 @@ async def test_upsert_queues_partition_stats_and_the_drain_runs_them(collection)
     async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
         cur = await conn.execute(
             "SELECT count(*) FROM pgstac.query_queue WHERE query ILIKE %s",
-            (f"%{COLLECTION}%",),
+            (pattern,),
         )
         assert (await cur.fetchone())[0] == 0
         cur = await conn.execute(
             "SELECT count(*) FROM pgstac.query_queue_history"
             " WHERE query ILIKE %s AND error IS NULL",
-            (f"%{COLLECTION}%",),
+            (pattern,),
         )
         assert (await cur.fetchone())[0] >= 1
         # The queued statement also refreshed the collection's extent (§4.4):
@@ -164,18 +212,6 @@ async def test_upsert_queues_partition_stats_and_the_drain_runs_them(collection)
     assert bbox_after_drain == ITEM_BBOX
     assert after.depth <= before.depth
 
-    # NOTE: deliberately NOT `repo.prune_history(...)` — its predicate is
-    # `finished < now() - N days` with no query-text filter, so on this
-    # shared database (the standing GOES demo drains into the same
-    # query_queue_history table) any N would prune rows this test did not
-    # create. `PgPgstacQueueRepo.prune_history`'s SQL is already covered at
-    # unit level (tests/test_pgstac_queue_drain.py), so nothing is left
-    # unproven by scoping cleanup here to exactly this test's own rows via a
-    # `query ILIKE` match on the namespaced collection id instead.
-    async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
-        cur = await conn.execute(
-            "DELETE FROM pgstac.query_queue_history WHERE query ILIKE %s",
-            (f"%{COLLECTION}%",),
-        )
-        deleted = cur.rowcount
-    assert deleted >= 1
+    # Queue/history cleanup lives in the `collection` fixture's `finally`
+    # (scoped to this same partition pattern) so it also runs if an
+    # assertion above raises, not just on this happy path.
