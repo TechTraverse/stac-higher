@@ -28,6 +28,10 @@ Thumbs.db
 # AI worktrees (see AGENTS.md — Workflow)
 .claude/worktrees/
 
+# Agent scratch output (noise in grep/glob results, not shared)
+.playwright-mcp/
+.superpowers/
+
 # Test artifacts
 app/test-results/
 app/playwright-report/

@@ -26,6 +26,10 @@ CLAUDE.md                  ← shim: "@AGENTS.md" import + Claude-only content
 .claude/settings.json      ← Claude Code permissions + hooks (astro check, shadcn guard)
 .claude/prompts/ai-loop.md ← Claude Code multi-agent orchestrator prompt
 .claude/worktrees/         ← AI worktrees (gitignored)
+opencode.json              ← opencode permissions (bash deny-list)
+.opencode/plugin/          ← opencode hook equivalents (astro check, shadcn guard)
+.opencode/agent/           ← opencode subagent definitions (teammate)
+.opencode/command/         ← opencode slash commands (/solo-task, /team-task)
 docs/superpowers/specs/    ← approved design specs (milestone/slice scope sources —
 docs/superpowers/plans/       TODO.md cites the active one); plans are their
                               step-by-step implementation breakdowns
@@ -52,7 +56,10 @@ before starting it.
    skills are `/`-invocable in Claude Code and readable by every other harness.
 5. **After changing agent config** (AGENTS.md, skills, symlink), smoke-test
    discovery headlessly: `claude -p "list your project skills"` should show the
-   six skills and the AGENTS.md content.
+   six skills and the AGENTS.md content. For opencode:
+   `opencode run "list your project skills"` — and note that opencode does NOT
+   hot-reload config, so restart it after touching `opencode.json`,
+   `.opencode/**`, or a skill.
 
 ## Branch model (summary — full rules in AGENTS.md)
 
@@ -71,3 +78,26 @@ unit tests only.
 - **`.claude/prompts/ai-loop.md`** + `CLAUDE.md` "Team tasks" — orchestration
   uses Claude-only tools. The invariants (worktrees off `ai/main`, lead merges,
   singletons rule) are in `AGENTS.md` and apply to every harness.
+- **`opencode.json` + `.opencode/**`** — opencode's equivalents, because
+  opencode reads none of `.claude/`:
+  - `opencode.json` — a bash **deny-list** (`rm -rf`, `git reset --hard`,
+    force-push; `ask` on pushes matching `main` and on `docker compose down -v`).
+    Deliberately not a port of Claude's allowlist: an allowlist would prompt on
+    everything unlisted (`uv run pytest`, `docker buildx bake`, …) and stall the
+    autonomous loops. Note opencode evaluates the **last** matching rule, so
+    broad patterns come first.
+  - `.opencode/plugin/guards.js` — the two hooks: refuse `edit`/`write` to
+    `components/ui/`, and run the app-scoped `astro check` after `.ts`/`.tsx`/
+    `.astro` edits under `app/` or `packages/shared/`. Plain JS to avoid adding
+    `@opencode-ai/plugin` as a dependency. It resolves the checkout root from
+    the edited file, so edits inside `.claude/worktrees/<slug>/` get checked in
+    the right `app/`.
+  - `.opencode/agent/teammate.md` — the parallel-worker subagent. Stronger than
+    the Claude equivalent: Docker, the dev server, e2e, `git merge` and
+    `git push` are denied at the permission layer, so the singleton rule is
+    enforced rather than merely requested.
+  - `.opencode/command/{solo,team}-task.md` — `/solo-task <queue>` and
+    `/team-task <queue>`. Kept thin on purpose: they defer to `AGENTS.md` and
+    carry only what it doesn't (the PARALLEL/SEQUENTIAL heuristic, subagent
+    dispatch, stop conditions). Taking the queue as an argument removes the
+    "which queue?" failure mode structurally.

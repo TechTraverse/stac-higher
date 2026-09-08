@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "bash": {
+      "*": "allow",
+      "rm -rf *": "deny",
+      "rm -fr *": "deny",
+      "git reset --hard*": "deny",
+      "git push --force*": "deny",
+      "git push -f *": "deny",
+      "git push*main*": "ask",
+      "docker compose*down -v*": "ask"
+    }
+  }
+}
