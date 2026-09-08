@@ -1,0 +1,8 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { MapPage } from "../components/map/MapPage";
+---
+
+<Layout title="Map">
+  <MapPage client:only="react" />
+</Layout>
