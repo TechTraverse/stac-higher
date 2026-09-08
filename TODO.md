@@ -1,6 +1,6 @@
 # TODO — implementation queues
 
-**This file holds SEVEN INDEPENDENT QUEUES. It is not one list.** Work only the
+**This file holds EIGHT INDEPENDENT QUEUES. It is not one list.** Work only the
 queue you were asked for, top-down within it. The first unchecked item in the
 FILE belongs to M3 and is rarely the right default.
 
@@ -17,6 +17,7 @@ just a wasted read.
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 | **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04; **V-2 next**; V-4 depends on V-2 only. No migrations |
+| **D** | Item lineage: `derived_from` links stamped on process outputs at finalize | Written 2026-09-06 (lead question, no separate spec — the slice text is the design). One slice; no migrations; pipeline-only |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
 off `ai/main`, and `npm run verify` — plus the pipeline's `pytest` and `ruff`
@@ -699,6 +700,79 @@ remaining slices must honour; they lived only in the review ledger until now:
   `vectorTileLayers` for `interactiveLayerIds` / anchors; assert the
   default-opacity paint values (fill 0.2, line 1) in
   `vector-tile-layer.test.tsx`. (The `FootprintLayer` `useMemo` landed in V-1's fix wave `a575c91`.)
+
+## D queue — item lineage: `derived_from` links on process outputs (lead question 2026-09-06)
+
+**Read first:** `services/pipeline/src/pipeline/finalize/process_run.py`
+(the process-run producer hooks), `finalize/steps.py` (`_rewrite_document`
+is the only in-memory edit the neutral steps make today), `process/repo.py`
+(`process_runs.input_items` — the run's triggering refs), and
+`docs/processes.md` "Publishing outputs". No design spec: the question was
+"should the processor write `derived_from`, or can the platform apply it?"
+and the answer below IS the design. **Decision: both — the platform stamps a
+batch-level default at finalize, and a processor that knows the real fan-in
+writes its own links and the platform leaves them alone.**
+
+Why the platform can do it: every run row already carries its triggering
+items (`input_items`), and the process-run finalize hook sees both that list
+and every output document before the pgstac upsert. So the lineage exists at
+exactly one seam and costs the author nothing. Why it stays a *default*: runs
+coalesce per `(process_id, source_id)`, so a batch may hold several inputs
+and the outputs come back as a flat set of documents — the platform knows
+the SET of inputs and the SET of outputs, not which came from which. One-in /
+one-out and many-in / one-out (the common cases) are exactly right under
+"every output ← every input in the batch"; many-in / many-out is not, and
+that is the case the processor must handle itself (the manifest already
+tells it every input's `collection` + `item.id`, so it can).
+
+- [ ] **D-1 · Stamp `derived_from` at finalize, processor override, docs.**
+      In `ProcessRunResolver.resolve` (or a step-side hook — keep the neutral
+      `steps.py` producer-free per ADR 0014; the resolver is the producer's
+      place), after a document resolves: if it has **no** link with
+      `rel: "derived_from"`, append one per triggering ref in the run's
+      `input_items`, `type: "application/geo+json"`, href
+      `{base}/collections/{collection_id}/items/{item_id}`. The resolver
+      only has `provenance.run_id` today — carry the refs in via the
+      request (`build_process_request` gains the run's `input_items`, the
+      call site already holds the run row) rather than re-reading the row
+      in the resolver. Skip refs the input planner recorded as `not_found`
+      (`manifest.skipped`) — an item that vanished before the run must not
+      be linked. If the document ALREADY carries any `derived_from` link,
+      leave the whole link set untouched: that is the override, and it is
+      the contract for many-in / many-out. Href base: a new pipeline
+      setting `CATALOG_HREF_BASE` (default `/` → root-relative
+      `/collections/…/items/…`, mirroring `ASSET_HREF_BASE`'s
+      root-relative default; an absolute value produces absolute hrefs).
+      Do NOT invent a run link (`rel: "via"` or similar) — the run id is
+      already on the ledger (`output_items`), which is the run-level
+      provenance. Scope guards: **extractor runs get nothing** (an
+      extractor builds an item from a file, not from another item;
+      `finalize/extract_run.py` unchanged); **cron-triggered runs get
+      nothing** (`input_items` is empty by construction); an output item
+      that is also one of the inputs (an in-place update) must not link to
+      itself. Tests in `tests/test_process_finalize.py`: stamped once per
+      input, override respected verbatim, skipped ref excluded, self-link
+      excluded, extract branch untouched, and the ADR 0014 check
+      (`test_the_real_process_hooks_route_through_the_unchanged_steps`)
+      still green. Docs: `docs/processes.md` "Publishing outputs" gains a
+      "Lineage" paragraph — the default, when to write your own, and the
+      manifest fields to compute it from; `docs/FEATURES.md` one line;
+      `docker-compose.yml` pipeline env for the new setting (beside `ASSET_HREF_BASE`). **Live check
+      (lead, Docker):** confirm the upsert path keeps the link — stac-
+      fastapi-pgstac regenerates `self`/`root`/`parent`/`collection`/`item`
+      and is expected to pass every other rel through, but that is a
+      belief until an item on the standing GOES demo shows it in
+      `GET /collections/goes-geocolor/items/{id}`. If pgstac strips it, the
+      slice is not done — log it and stop. Delivery is unaffected by design
+      (destinations receive the document as published, link included).
+
+**Not in this queue:** rendering `derived_from` as navigable links on the
+item page (`ItemDetailView` renders no links today) — a UI follow-up once
+D-1 has produced a real one to look at; and per-output lineage for
+many-in / many-out batches, which is the processor's job by the decision
+above and stays so.
+
+---
 
 ## Parked (do not start without the lead)
 
