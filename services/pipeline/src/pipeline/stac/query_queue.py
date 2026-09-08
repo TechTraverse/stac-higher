@@ -22,14 +22,19 @@ statement to `query_queue_history` and never prunes it; the tick does.
 
 The drain connection's GUCs are deliberately the OPPOSITE pairing from the
 writer's (pipeline/db/pgstac_session.py): `update_collection_extent` ON,
-`use_queue` OFF. `update_partition_stats` (queued by the item trigger) itself
-calls `run_or_queue` again, in whichever session runs it, to refresh the
-collection's extent — gated on `update_collection_extent`, which
-`pgstac_settings` defaults to false. That nested call must see the setting ON
-here, or the extent refresh never runs (spec §4.4's entire point). And
-`use_queue` must stay OFF here, or that same nested call re-queues the extent
-UPDATE instead of executing it — deferring it one hop further on every drain,
-forever.
+`use_queue` explicitly FALSE — not merely left unset. `update_partition_stats`
+(queued by the item trigger) itself calls `run_or_queue` again, in whichever
+session runs it, to refresh the collection's extent — gated on
+`update_collection_extent`, which `pgstac_settings` defaults to false. That
+nested call must see the setting ON here, or the extent refresh never runs
+(spec §4.4's entire point). And `use_queue` must be explicitly FALSE here:
+`get_setting` COALESCEs an unset GUC through the `pgstac_settings` table (or
+an `ALTER DATABASE`/`ALTER ROLE SET pgstac.use_queue`), so merely never
+setting it on this connection would silently inherit whatever an operator
+configures there — an explicit FALSE makes the drainer's pairing
+self-enforcing instead of dependent on that default. If it were ever TRUE,
+that same nested call would re-queue the extent UPDATE instead of executing
+it — deferring it one hop further on every drain, forever.
 """
 
 from __future__ import annotations
@@ -82,6 +87,20 @@ class PgstacQueueRepo(abc.ABC):
     async def prune_history(self, older_than_days: int) -> int: ...
 
 
+#: The drainer's GUC pairing — the mirror image of the writer's
+#: PGSTAC_SESSION_SQL (pipeline.db.pgstac_session): update_collection_extent
+#: explicitly ON so update_partition_stats's nested run_or_queue call (run in
+#: THIS session, by the CALL in `PgPgstacQueueRepo.drain()`) executes the
+#: extent refresh instead of skipping it; use_queue explicitly FALSE — not
+#: merely unset — so that same nested call can never re-queue the extent
+#: UPDATE into itself, forever, regardless of what an operator has set at the
+#: pgstac_settings / ALTER DATABASE / ALTER ROLE level.
+DRAIN_CONNECTION_SQL: tuple[str, ...] = (
+    "SET pgstac.update_collection_extent TO TRUE",
+    "SET pgstac.use_queue TO FALSE",
+)
+
+
 @dataclass
 class PgPgstacQueueRepo(PgstacQueueRepo):
     """psycopg-backed repo. One short-lived AUTOCOMMIT connection per call —
@@ -95,11 +114,16 @@ class PgPgstacQueueRepo(PgstacQueueRepo):
 
         conn = await psycopg.AsyncConnection.connect(self.database_url, autocommit=True)
         # Deliberately NOT pipeline.db.pgstac_session.configure_pgstac_session_async:
-        # that hook sets BOTH GUCs and is the WRITER's pairing (use_queue ON,
-        # update_collection_extent ON). The drainer needs the opposite pairing
-        # — see the module docstring. use_queue is left at its default (off)
-        # by simply never setting it on this connection.
-        await conn.execute("SET pgstac.update_collection_extent TO TRUE")
+        # that hook sets use_queue TRUE — the WRITER's pairing. The drainer
+        # needs the opposite pairing — see the module docstring and
+        # DRAIN_CONNECTION_SQL above. A failing SET must not leak the
+        # connection (a one-minute tick cadence would accumulate backends).
+        try:
+            for statement in DRAIN_CONNECTION_SQL:
+                await conn.execute(statement)
+        except BaseException:
+            await conn.close()
+            raise
         return conn
 
     async def sample(self) -> QueueSample:  # pragma: no cover - DB integration suite
@@ -149,16 +173,41 @@ async def drain_tick(
     flag reads the last sample too: in `pipeline` mode it means a CALL hit
     `queue_timeout` with work left (or is failing outright); in `database`
     mode it means pg_cron has stopped. Both are WARNINGs with the numbers.
+
+    A raising `drain()` (connection refused, a permissions error, autocommit
+    broken so the CALL hits "invalid transaction termination") does NOT abort
+    the tick: this module exists to make a stopped drainer visible via the
+    gauges and the stale WARNING, and those are exactly what a propagating
+    exception here would suppress. The failure is instead attributed via the
+    `error` outcome counter and logged, `after` stays `None` so the gauges
+    publish the `before` sample (the existing after-or-before fallback below),
+    and the tick still prunes and evaluates staleness. The tick does not
+    re-raise: the counter + log ARE this module's alerting channel, and
+    letting the exception propagate would only add job-retry noise without
+    adding information (and — absent a `finally` — would skip the gauges and
+    prune entirely, the opposite of the point of this fix).
     """
     before = await repo.sample()
     after: QueueSample | None = None
     drained: DrainOutcome | None = None
 
     if mode == "pipeline":
-        drained = await repo.drain()
-        metrics.PGSTAC_QUEUE_QUERIES.labels(outcome="ok").inc(drained.executed - drained.errors)
-        metrics.PGSTAC_QUEUE_QUERIES.labels(outcome="error").inc(drained.errors)
-        after = await repo.sample()
+        try:
+            drained = await repo.drain()
+        except Exception:
+            metrics.PGSTAC_QUEUE_QUERIES.labels(outcome="error").inc()
+            logger.exception(
+                "pgstac query queue drain failed — the CALL did not complete",
+                extra={
+                    "mode": mode,
+                    "depth": before.depth,
+                    "oldest_age_seconds": before.oldest_age_seconds,
+                },
+            )
+        else:
+            metrics.PGSTAC_QUEUE_QUERIES.labels(outcome="ok").inc(drained.executed - drained.errors)
+            metrics.PGSTAC_QUEUE_QUERIES.labels(outcome="error").inc(drained.errors)
+            after = await repo.sample()
 
     pruned = await repo.prune_history(history_days)
 
