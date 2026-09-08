@@ -2,14 +2,28 @@
  * One row of the /map layer list (spec §4.5): identity, the quiet "nothing
  * to draw" line, and the visibility/opacity/order/remove controls.
  */
-import { ChevronDown, ChevronUp, Eye, EyeOff, Layers, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  Layers,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { Button, Slider } from "@stac-higher/shared";
 import { useItems } from "@/lib/query/items";
 import { buildPreviewFrames } from "@/lib/serving/frames";
-import { opacityFromSlider, type MapLayer } from "@/lib/map/state";
+import {
+  opacityFromSlider,
+  type LayerKind,
+  type MapLayer,
+} from "@/lib/map/state";
 
 /** Kind icons: `Image` (imagery, V-3) and `Hexagon` (vector, V-4) follow. */
-const KIND_ICON = { footprints: Layers } as const;
+const KIND_ICON: Partial<Record<LayerKind, LucideIcon>> = {
+  footprints: Layers,
+};
 
 /**
  * A layer whose items carry no parseable time draws nothing — say so under
@@ -61,7 +75,7 @@ export function LayerRow({
   onMove,
   onRemove,
 }: LayerRowProps) {
-  const Icon = KIND_ICON[layer.kind as keyof typeof KIND_ICON] ?? Layers;
+  const Icon = KIND_ICON[layer.kind] ?? Layers;
 
   return (
     <div
