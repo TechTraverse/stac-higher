@@ -27,6 +27,14 @@ S3 in cloud; distinct from per-connection endpoints):
 - ``ASSET_HREF_BASE`` — root-relative base path for asset hrefs the pipeline
   writes into ``item.assets[*].href`` (ingest EXTRACT/ITEMIZE). Must match the
   app's asset route prefix (default ``/api/assets``).
+- ``PGSTAC_QUEUE_DRAINER`` — who runs ``pgstac.query_queue`` (M3-A): ``pipeline``
+  (default; the ``pipeline.pgstac_queue_drain`` tick CALLs
+  ``pgstac.run_queued_queries()`` every minute) or ``database`` (pg_cron owns
+  the drain; the tick only samples depth/age so the two never fight).
+- ``PGSTAC_QUEUE_STALE_SECONDS`` — the queue's oldest entry older than this
+  logs a WARNING (the staleness bound on partition statistics, spec §4.6).
+- ``PGSTAC_QUEUE_HISTORY_DAYS`` — ``pgstac.query_queue_history`` rows older
+  than this are pruned by the same tick (pgstac never prunes it).
 """
 
 from __future__ import annotations
@@ -83,6 +91,17 @@ DEFAULT_HISTORY_RETENTION_DAYS = 365
 # Retention & GC (M2-F, ADR 0011). Batch size bounds one sweep tick's work;
 # large backlogs drain across the five-minute ticks.
 DEFAULT_GC_BATCH_ITEMS = 500
+
+# pgstac query queue (M3-A, spec §4.3/§4.6). `use_queue` is a SESSION GUC on
+# the writer's connections (pipeline/db/pgstac_session.py); the queue itself
+# is global and something must drain it. pg_cron is not in the pgstac image,
+# so locally the pipeline drains; a cloud deployment with pg_cron sets
+# `database` and the tick becomes a sampler.
+PGSTAC_QUEUE_DRAINERS = ("pipeline", "database")
+DEFAULT_PGSTAC_QUEUE_DRAINER = "pipeline"
+#: Drain cadence is one minute; twice that plus slack is "the drainer stopped".
+DEFAULT_PGSTAC_QUEUE_STALE_SECONDS = 300
+DEFAULT_PGSTAC_QUEUE_HISTORY_DAYS = 7
 
 # Push-ingest finalize (Phase 7, §6.4). A staged_uploads row stranded
 # `finalizing` this long is presumed crashed (idempotent to re-run) — the
@@ -168,6 +187,15 @@ def _parse_allow_hosts(raw: str | None) -> frozenset[str]:
     return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
 
 
+def _parse_pgstac_queue_drainer(raw: str | None) -> str:
+    value = (raw or DEFAULT_PGSTAC_QUEUE_DRAINER).strip().lower()
+    if value not in PGSTAC_QUEUE_DRAINERS:
+        raise ValueError(
+            f"PGSTAC_QUEUE_DRAINER must be one of {PGSTAC_QUEUE_DRAINERS}, got {raw!r}"
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = DEFAULT_DATABASE_URL
@@ -203,6 +231,10 @@ class Settings:
     push_alert_lookback_seconds: int = DEFAULT_PUSH_ALERT_LOOKBACK_SECONDS
     #: Retention & GC sweep batch size (M2-F).
     gc_batch_items: int = DEFAULT_GC_BATCH_ITEMS
+    #: pgstac query-queue drain (M3-A) — see the DEFAULT_PGSTAC_QUEUE_* constants.
+    pgstac_queue_drainer: str = DEFAULT_PGSTAC_QUEUE_DRAINER
+    pgstac_queue_stale_seconds: int = DEFAULT_PGSTAC_QUEUE_STALE_SECONDS
+    pgstac_queue_history_days: int = DEFAULT_PGSTAC_QUEUE_HISTORY_DAYS
     #: History-table retention windows (M2-G).
     connection_checks_retention_days: int = DEFAULT_CONNECTION_CHECKS_RETENTION_DAYS
     history_retention_days: int = DEFAULT_HISTORY_RETENTION_DAYS
@@ -300,6 +332,13 @@ class Settings:
                 )
             ),
             gc_batch_items=int(env.get("GC_BATCH_ITEMS", str(DEFAULT_GC_BATCH_ITEMS))),
+            pgstac_queue_drainer=_parse_pgstac_queue_drainer(env.get("PGSTAC_QUEUE_DRAINER")),
+            pgstac_queue_stale_seconds=int(
+                env.get("PGSTAC_QUEUE_STALE_SECONDS", str(DEFAULT_PGSTAC_QUEUE_STALE_SECONDS))
+            ),
+            pgstac_queue_history_days=int(
+                env.get("PGSTAC_QUEUE_HISTORY_DAYS", str(DEFAULT_PGSTAC_QUEUE_HISTORY_DAYS))
+            ),
             connection_checks_retention_days=int(
                 env.get(
                     "CONNECTION_CHECKS_RETENTION_DAYS",
