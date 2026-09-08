@@ -66,6 +66,10 @@ function MapPageInner() {
         catalogUrl={catalogUrl}
         frameSpan={state.frameSpan}
         onAdd={addLayer}
+        onVisibleChange={(id, visible) => dispatch({ type: "setVisible", id, visible })}
+        onOpacityChange={(id, opacity) => dispatch({ type: "setOpacity", id, opacity })}
+        onMove={(id, direction) => dispatch({ type: "move", id, direction })}
+        onRemove={(id) => dispatch({ type: "remove", id })}
       />
       <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="relative min-h-0 flex-1">

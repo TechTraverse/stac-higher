@@ -208,4 +208,79 @@ describe("MapPage", () => {
     const beforeIds = layerProps().map((l) => l.beforeId);
     expect(beforeIds).toEqual([undefined, undefined, "layer-1-fill", "layer-1-fill"]);
   });
+
+  it("hides a layer without dropping its source", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+
+    fireEvent.click(screen.getByTestId("map-layer-visible"));
+
+    expect(sourceIds()).toEqual(["layer-0"]);
+    expect(layerProps().map((l) => l.layout)).toEqual([
+      { visibility: "none" },
+      { visibility: "none" },
+    ]);
+  });
+
+  it("removes a layer from the list and the map", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+    addFootprints("beta");
+
+    const first = screen.getAllByTestId("map-layer-row")[0];
+    fireEvent.click(within(first).getByTestId("map-layer-remove"));
+
+    expect(rowIds()).toEqual(["layer-0"]);
+    expect(sourceIds()).toEqual(["layer-0"]);
+    // The survivor is now topmost and chains to nothing.
+    expect(layerProps().map((l) => l.beforeId)).toEqual([undefined, undefined]);
+  });
+
+  it("reorders layers and re-chains the beforeIds", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+    addFootprints("beta");
+    expect(rowIds()).toEqual(["layer-1", "layer-0"]);
+
+    // Move the bottom row (layer-0) up: it becomes topmost.
+    const bottom = screen.getAllByTestId("map-layer-row")[1];
+    fireEvent.click(within(bottom).getByTestId("map-layer-up"));
+
+    expect(rowIds()).toEqual(["layer-0", "layer-1"]);
+    expect(sourceIds()).toEqual(["layer-0", "layer-1"]);
+    expect(layerProps().map((l) => l.beforeId)).toEqual([
+      undefined,
+      undefined,
+      "layer-0-fill",
+      "layer-0-fill",
+    ]);
+  });
+
+  it("disables the move buttons at the ends of the list", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+    addFootprints("beta");
+
+    const [top, bottom] = screen.getAllByTestId("map-layer-row");
+    expect(within(top).getByTestId("map-layer-up")).toBeDisabled();
+    expect(within(top).getByTestId("map-layer-down")).not.toBeDisabled();
+    expect(within(bottom).getByTestId("map-layer-down")).toBeDisabled();
+  });
+
+  it("puts an opacity control on every row", () => {
+    // The clamp itself is unit-tested on opacityFromSlider (map-state.test.ts);
+    // what matters here is that the row's control feeds the layer opacity.
+    render(<MapPage />);
+    addFootprints("alpha");
+
+    expect(screen.getByTestId("map-layer-opacity")).toBeTruthy();
+    const [fill, line] = layerProps();
+    expect((fill.paint as Record<string, unknown>)["fill-opacity"]).toEqual([
+      "case",
+      ["boolean", ["feature-state", "hover"], false],
+      0.25,
+      0.1,
+    ]);
+    expect(line.paint).not.toHaveProperty("line-opacity");
+  });
 });

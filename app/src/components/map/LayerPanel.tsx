@@ -16,6 +16,10 @@ export interface LayerPanelProps {
   catalogUrl: string;
   frameSpan: FrameSpan;
   onAdd: (kind: LayerKind, collection: StacCollection) => void;
+  onVisibleChange: (id: string, visible: boolean) => void;
+  onOpacityChange: (id: string, opacity: number) => void;
+  onMove: (id: string, direction: "up" | "down") => void;
+  onRemove: (id: string) => void;
 }
 
 export function LayerPanel({
@@ -24,6 +28,10 @@ export function LayerPanel({
   catalogUrl,
   frameSpan,
   onAdd,
+  onVisibleChange,
+  onOpacityChange,
+  onMove,
+  onRemove,
 }: LayerPanelProps) {
   const topFirst = [...layers].reverse();
   const isAdded = (kind: LayerKind, sourceId: string) =>
@@ -51,12 +59,20 @@ export function LayerPanel({
             description="Add a product from the built-in catalog to draw its item footprints on the map."
           />
         ) : (
-          topFirst.map((layer) => (
+          topFirst.map((layer, index) => (
             <LayerRow
               key={layer.id}
               layer={layer}
               catalogUrl={catalogUrl}
               frameSpan={frameSpan}
+              // The list runs topmost first, so index 0 cannot go up and the
+              // last row cannot go down.
+              canMoveUp={index > 0}
+              canMoveDown={index < topFirst.length - 1}
+              onVisibleChange={(visible) => onVisibleChange(layer.id, visible)}
+              onOpacityChange={(opacity) => onOpacityChange(layer.id, opacity)}
+              onMove={(direction) => onMove(layer.id, direction)}
+              onRemove={() => onRemove(layer.id)}
             />
           ))
         )}
