@@ -13,6 +13,7 @@ Delivery is planned in phases — see [`../ROADMAP.md`](../ROADMAP.md) for the f
 
 ## Reference docs (detailed, per area)
 
+- [`backend.md`](backend.md) — the local stack (services, ports, credentials, auth-enforced overlay), app environment variables, and the full Astro API route table with access rules.
 - [`auth.md`](auth.md) — OIDC login, claims mapping, dev-bypass, RBAC & audit (Phase 1).
 - [`connections.md`](connections.md) — connections data model, credential encryption, and the `/api/connections` surface (Phase 2).
 - [`monitoring.md`](monitoring.md) — flow telemetry, alerts, notification channels, the `/monitoring` UI, retention & GC, metrics (Phase 6 / M2).

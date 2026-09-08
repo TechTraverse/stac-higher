@@ -85,7 +85,7 @@ navigation — islands make client-side routing pointless here).
 ## Server-Side Rules (API routes — most platform code lives here)
 
 - **Routes** are Astro endpoints under `app/src/pages/api/`; the full route
-  table is in `AGENTS.md`. Every route consumes `locals.auth` (set by
+  table is in `docs/backend.md`. Every route consumes `locals.auth` (set by
   `src/middleware.ts`) — never tokens or cookies directly.
 - **Gating**: a new mutation route MUST be registered in the gated-route
   table (`app/src/lib/authz/permissions.ts` — `matchGatedRoute` /
