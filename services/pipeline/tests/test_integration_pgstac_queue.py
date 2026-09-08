@@ -164,5 +164,18 @@ async def test_upsert_queues_partition_stats_and_the_drain_runs_them(collection)
     assert bbox_after_drain == ITEM_BBOX
     assert after.depth <= before.depth
 
-    pruned = await repo.prune_history(0)
-    assert pruned >= 1
+    # NOTE: deliberately NOT `repo.prune_history(...)` — its predicate is
+    # `finished < now() - N days` with no query-text filter, so on this
+    # shared database (the standing GOES demo drains into the same
+    # query_queue_history table) any N would prune rows this test did not
+    # create. `PgPgstacQueueRepo.prune_history`'s SQL is already covered at
+    # unit level (tests/test_pgstac_queue_drain.py), so nothing is left
+    # unproven by scoping cleanup here to exactly this test's own rows via a
+    # `query ILIKE` match on the namespaced collection id instead.
+    async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
+        cur = await conn.execute(
+            "DELETE FROM pgstac.query_queue_history WHERE query ILIKE %s",
+            (f"%{COLLECTION}%",),
+        )
+        deleted = cur.rowcount
+    assert deleted >= 1
