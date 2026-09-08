@@ -1,3 +1,5 @@
+import { useStore } from "@nanostores/react";
+import { $catalogs } from "@/stores/catalogStore";
 import { useItem } from "@/lib/query/items";
 import { AppShell } from "@/components/layout/AppShell";
 import { ItemDetailView } from "@/components/items/ItemDetailView";
@@ -9,6 +11,7 @@ import {
   browseCollectionsPath,
   browseItemsPath,
   browseTarget,
+  resolveItemLink,
 } from "@/lib/browse/paths";
 import { BrowseFrame } from "./BrowseFrame";
 import type { BrowseRouteProps } from "./types";
@@ -21,6 +24,7 @@ function BrowseItemInner({
   src,
 }: BrowseRouteProps & { collectionId: string; itemId: string }) {
   const catalog = useBrowseCatalog(catalogId, src);
+  const catalogs = useStore($catalogs);
   // Links are props: they are built before BrowseFrame can early-return.
   const target = browseTarget(catalog, catalogId, src);
   const endpointUrl = catalog?.url ?? "";
@@ -85,7 +89,10 @@ function BrowseItemInner({
               <Badge variant="secondary">STAC {item.stac_version}</Badge>
             </div>
           </div>
-          <ItemDetailView item={item} />
+          <ItemDetailView
+            item={item}
+            resolveLink={(link) => resolveItemLink(link, catalog, catalogs)}
+          />
         </>
       )}
     </BrowseFrame>
