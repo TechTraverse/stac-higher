@@ -169,4 +169,18 @@ describe("RasterFrameStack", () => {
     rerender(<RasterFrameStack id="s" frames={FRAMES} index={Number.NaN} />);
     expect(layers().some((l) => l.opacity === 1)).toBe(true);
   });
+
+  it("hides every mounted frame when not visible, and leaves the anchor alone", () => {
+    render(<RasterFrameStack id="s" frames={FRAMES} index={1} visible={false} />);
+
+    const [anchor, ...frames] = allLayers();
+    expect(frames.map((l) => l.layout)).toEqual([
+      { visibility: "none" },
+      { visibility: "none" },
+    ]);
+    // The anchor paints nothing in either state; hiding it would only risk
+    // maplibre dropping it as a chaining target.
+    expect(anchor).not.toHaveProperty("layout");
+    expect(screen.queryAllByTestId("source")).toHaveLength(2);
+  });
 });

@@ -22,6 +22,8 @@ export interface RasterFrameStackProps {
   maxzoom?: number;
   /** The layer's own opacity (0..1), applied to the visible frames. */
   opacity?: number;
+  /** Hides every mounted frame (the anchor is unaffected — it paints nothing). */
+  visible?: boolean;
   /** Draw beneath this layer id. */
   beforeId?: string;
 }
@@ -66,6 +68,7 @@ export function RasterFrameStack({
   minzoom,
   maxzoom,
   opacity = 1,
+  visible = true,
   beforeId,
 }: RasterFrameStackProps) {
   // The frame shown before this one. Tracked in refs rather than state so a
@@ -132,6 +135,7 @@ export function RasterFrameStack({
           maxzoom={maxzoom}
           opacity={frameIndex === current || frameIndex === previous ? opacity : 0}
           opacityTransitionMs={0}
+          visible={visible}
           beforeId={beforeId}
         />
       ))}

@@ -23,6 +23,8 @@ export interface RasterTileLayerProps {
    * frames are swapped by opacity and a fade reads as a smear.
    */
   opacityTransitionMs?: number;
+  /** Hidden frames stay mounted so their tiles are not re-fetched on a toggle. */
+  visible?: boolean;
   minzoom?: number;
   maxzoom?: number;
   /** Draw beneath this layer id — pass a vector layer to keep it on top. */
@@ -45,6 +47,7 @@ export function RasterTileLayer({
   tileSize = 256,
   opacity = 1,
   opacityTransitionMs,
+  visible = true,
   minzoom,
   maxzoom,
   beforeId,
@@ -67,6 +70,7 @@ export function RasterTileLayer({
         type="raster"
         source={sourceId}
         beforeId={beforeId}
+        layout={{ visibility: visible ? "visible" : "none" }}
         paint={{
           "raster-opacity": opacity,
           ...(opacityTransitionMs !== undefined && {

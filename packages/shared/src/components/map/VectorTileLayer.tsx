@@ -14,6 +14,8 @@ export interface VectorTileLayerProps {
   sourceLayer?: string;
   /** 0..1, default 1. */
   opacity?: number;
+  /** Hidden layers stay mounted; the MVT source keeps its tiles. */
+  visible?: boolean;
   /** Draw beneath this layer id. */
   beforeId?: string;
 }
@@ -29,14 +31,18 @@ export function VectorTileLayer({
   url,
   sourceLayer = "default",
   opacity = 1,
+  visible = true,
   beforeId,
 }: VectorTileLayerProps) {
   const { fill, line, circle } = vectorTileLayers(id, sourceLayer, opacity);
+  const layout: { visibility: "visible" | "none" } = {
+    visibility: visible ? "visible" : "none",
+  };
   return (
     <Source id={id} type="vector" url={url}>
-      <Layer {...fill} beforeId={beforeId} />
-      <Layer {...line} beforeId={beforeId} />
-      <Layer {...circle} beforeId={beforeId} />
+      <Layer {...fill} layout={layout} beforeId={beforeId} />
+      <Layer {...line} layout={layout} beforeId={beforeId} />
+      <Layer {...circle} layout={layout} beforeId={beforeId} />
     </Source>
   );
 }
