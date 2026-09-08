@@ -4,7 +4,7 @@
  * beforeId chain, and the hover/click plumbing.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { StacCollection, StacItem } from "@/lib/stac-api/types";
 
 const { useCollectionsMock, useItemsMock, mapProps } = vi.hoisted(() => ({
@@ -117,7 +117,7 @@ function addFootprints(collectionId: string) {
 
 function hoverFeature(feature: Record<string, unknown>, x = 12, y = 34) {
   const onMouseMove = mapProps.current?.onMouseMove as (e: unknown) => void;
-  onMouseMove({ features: [feature], point: { x, y } });
+  act(() => onMouseMove({ features: [feature], point: { x, y } }));
 }
 
 beforeAll(() => {
@@ -332,10 +332,12 @@ describe("MapPage", () => {
     expect(mapProps.current?.cursor).toBe("pointer");
 
     // Moving off every feature clears it.
-    (mapProps.current?.onMouseMove as (e: unknown) => void)({
-      features: [],
-      point: { x: 1, y: 1 },
-    });
+    act(() =>
+      (mapProps.current?.onMouseMove as (e: unknown) => void)({
+        features: [],
+        point: { x: 1, y: 1 },
+      }),
+    );
     expect(screen.queryByTestId("map-tooltip")).toBeNull();
     expect(mapProps.current?.cursor).toBeUndefined();
   });
@@ -345,10 +347,12 @@ describe("MapPage", () => {
     render(<MapPage />);
     addFootprints("alpha");
 
-    (mapProps.current?.onClick as (e: unknown) => void)({
-      features: [{ source: "layer-0", id: "i1", properties: { id: "i1" } }],
-      point: { x: 1, y: 1 },
-    });
+    act(() =>
+      (mapProps.current?.onClick as (e: unknown) => void)({
+        features: [{ source: "layer-0", id: "i1", properties: { id: "i1" } }],
+        point: { x: 1, y: 1 },
+      }),
+    );
 
     expect(open).toHaveBeenCalledWith(
       "/collections/alpha/items/i1",
@@ -363,9 +367,38 @@ describe("MapPage", () => {
     render(<MapPage />);
     addFootprints("alpha");
 
-    (mapProps.current?.onClick as (e: unknown) => void)({ features: [], point: { x: 1, y: 1 } });
+    act(() =>
+      (mapProps.current?.onClick as (e: unknown) => void)({ features: [], point: { x: 1, y: 1 } }),
+    );
 
     expect(open).not.toHaveBeenCalled();
     open.mockRestore();
+  });
+
+  it("drops a stale tooltip when its layer is removed or hidden mid-hover", () => {
+    // Neither control lives on the map, so no mouseleave/mousemove happens
+    // in between — the tooltip cannot rely on a future mouse event to
+    // notice its layer is gone or no longer interactive.
+    render(<MapPage />);
+    addFootprints("alpha");
+    hoverFeature({
+      source: "layer-0",
+      id: "i1",
+      properties: { id: "i1", datetime: "2026-09-07T00:00:00Z" },
+    });
+    expect(screen.getByTestId("map-tooltip")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("map-layer-visible"));
+    expect(screen.queryByTestId("map-tooltip")).toBeNull();
+
+    hoverFeature({
+      source: "layer-0",
+      id: "i1",
+      properties: { id: "i1", datetime: "2026-09-07T00:00:00Z" },
+    });
+    expect(screen.getByTestId("map-tooltip")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("map-layer-remove"));
+    expect(screen.queryByTestId("map-tooltip")).toBeNull();
   });
 });

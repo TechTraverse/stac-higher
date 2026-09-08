@@ -9,7 +9,6 @@
  * mean "that layer draws nothing" or "that option is absent".
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import { useStore } from "@nanostores/react";
 import type { MapMouseEvent, MapRef } from "react-map-gl/maplibre";
 import { StacMap, bboxToLngLatBounds, footprintLayerIds } from "@stac-higher/shared";
@@ -51,15 +50,11 @@ function MapPageInner() {
   } | null>(null);
   const hoveredFeature = useRef<{ source: string; id: string } | null>(null);
 
-  // maplibre's mouse events are not React synthetic events — they arrive
-  // through the underlying GL canvas's own listeners, outside any React
-  // batch. flushSync keeps the tooltip's DOM in lockstep with each event
-  // instead of trailing behind by a tick.
   const clearHover = useCallback(() => {
     const current = hoveredFeature.current;
     if (current) mapRef.current?.setFeatureState(current, { hover: false });
     hoveredFeature.current = null;
-    flushSync(() => setHovered(null));
+    setHovered(null);
   }, []);
 
   const onMouseMove = useCallback(
@@ -81,27 +76,26 @@ function MapPageInner() {
       }
 
       const properties = (feature.properties ?? {}) as Record<string, unknown>;
-      flushSync(() =>
-        setHovered({
-          id: String(properties.id ?? next.id),
-          datetime: properties.datetime ? String(properties.datetime) : "",
-          x: e.point.x,
-          y: e.point.y,
-        }),
-      );
+      setHovered({
+        id: String(properties.id ?? next.id),
+        datetime: properties.datetime ? String(properties.datetime) : "",
+        x: e.point.x,
+        y: e.point.y,
+      });
     },
     [clearHover],
   );
 
-  // A row can be removed from the panel with no mouse movement over the
-  // canvas in between (the remove button is in the sidebar, not on the
-  // map), so the tooltip cannot rely on a future mouseleave/mousemove to
-  // notice its layer is gone. Its own source is already gone from the map
-  // by the time this runs, so there is nothing left to clear feature-state
-  // on — only the React-side readout needs dropping.
+  // A row can be removed, or hidden, from the panel with no mouse movement
+  // over the canvas in between (those controls are in the sidebar, not on
+  // the map), so the tooltip cannot rely on a future mouseleave/mousemove
+  // to notice its layer is gone or no longer interactive. Either way the
+  // layer's own source/feature-state is already out of play (removed
+  // entirely, or excluded from `interactiveLayerIds` once hidden) by the
+  // time this runs, so only the React-side readout needs dropping.
   useEffect(() => {
     const current = hoveredFeature.current;
-    if (current && !state.layers.some((l) => l.id === current.source)) {
+    if (current && !state.layers.some((l) => l.id === current.source && l.visible)) {
       hoveredFeature.current = null;
       setHovered(null);
     }
