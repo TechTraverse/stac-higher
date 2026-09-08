@@ -10,13 +10,13 @@ just a wasted read.
 
 | Queue | What it is | State |
 |---|---|---|
-| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A goes first** — the ordering below is a dependency spine, not a preference |
+| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B next.** The ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
-| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04; **V-2 next**; V-4 depends on V-2 only. No migrations |
+| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04, **V-2 merged 2026-09-08**; **V-3 next**; V-4 depends on V-2 only. No migrations |
 | **D** | Item lineage: `derived_from` links stamped on process outputs at finalize | Written 2026-09-06 (lead question, no separate spec — the slice text is the design). Two slices: D-1 pipeline stamp, D-2 item-page rendering (decisions settled 2026-09-07). No migrations |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
@@ -89,7 +89,7 @@ load report recorded M-gate style in ROADMAP §9.
 
 ### Slices (dependency spine encoded in this order — work top-down)
 
-- [ ] **M3-A · pgstac write path.** Spec §4. The single highest-leverage
+- [x] **M3-A · pgstac write path.** (merged 2026-09-08) Spec §4. The single highest-leverage
       change measured: 2–3.5 → 22 items/s on the real pipeline. Set
       `pgstac.use_queue` and `pgstac.update_collection_extent` as session GUCs
       on the pgstac writer's connection (`PgPgstacWriter._upsert_sync` — use
@@ -111,7 +111,18 @@ load report recorded M-gate style in ROADMAP §9.
       wall-clock second at budget, plus a backend fork each. Invisible at
       concurrency 1 behind the pgstac call; **first-order the moment M3-D
       lands**, which is why this is a precondition rather than an optimisation.
-      The pool's `on_connect` is also where M3-A's two GUCs belong.
+      **Corrected by M3-A (do not follow the earlier note here):** the two
+      pgstac GUCs are NOT a matched pair that travels together, and this
+      pool is not where they go. The writer already has its own
+      `psycopg_pool.ConnectionPool` carrying `use_queue` ON +
+      `update_collection_extent` ON via `configure_pgstac_session`
+      (`pipeline/db/pgstac_session.py`), and the queue drainer needs the
+      OPPOSITE pairing on a short-lived autocommit connection
+      (`DRAIN_CONNECTION_SQL` in `pipeline/stac/query_queue.py`) because
+      `CALL pgstac.run_queued_queries()` COMMITs inside itself and cannot
+      run in a transaction block. `query_queue.py` says so at the class:
+      "M3-B: keep this off the transactional repo pool." M3-B's async pool
+      is a THIRD object; `configure_pgstac_session_async` exists for it.
 - [ ] **M3-C · bounded-memory byte path.** Spec §3, S-E; closes I-19/I-26.
       Three parts. (1) **EXTRACT reads through a URI, not a buffer**: swap the
       `MemberByteSource` seam from `-> bytes` to something GDAL can open
@@ -653,7 +664,7 @@ none yet (the loop writes it after V-2 merges). V-1's plan:
       `serving/urls.ts` replacing the two inline `PUBLIC_TIPG_URL` reads;
       `CollectionPreviewTab` mounts `RasterFrameStack`; stories for both
       new components. Goes first.
-- [ ] **V-2 · Page shell, state, footprint layers.** Spec §4.1, §4.2, §4.3
+- [x] **V-2 · Page shell, state, footprint layers.** (merged 2026-09-08) Spec §4.1, §4.2, §4.3
       (footprints), §4.5 (list + Products/Footprints), §4.6, §4.7.
       `map.astro` + `MapPage` island, sidebar entry + top-bar title, the
       `lib/map/state.ts` reducer + tests, layer list (visibility, opacity,
@@ -851,6 +862,68 @@ processor's job by the decision above and stays so.
   ≈16 statements per item more than a local box does.
 
 ## Discovered follow-ups
+
+- **M3-A landed 2026-09-08 (`ai/m3-a-pgstac-queue`).** Session GUCs via the
+  writer's pool `configure` hook (pypgstac's `PgstacDB(pool=…, use_queue=True)`
+  seam — a handed-in `connection` would have skipped pypgstac's own SET, so the
+  pool is what it gets; and `SET` is transactional, so the hook commits).
+  **Spec correction made during the slice:** the two GUCs are NOT a matched
+  pair. `update_collection_extent` is read inside `update_partition_stats`,
+  which under the queue runs in the session that DRAINS, so setting it only on
+  the writer (as §4.2/§4.4 direct) was a silent no-op. The drain connection
+  therefore carries the opposite pairing — `update_collection_extent` TRUE,
+  `use_queue` explicitly FALSE (not merely unset: `get_setting` COALESCEs
+  through `pgstac_settings`, so an operator enabling the queue globally would
+  otherwise re-arm the bug). Explicitly FALSE matters because the extent branch
+  re-enters `run_or_queue`; a drain session with `use_queue` on would re-queue
+  the extent UPDATE one hop further every tick, forever. Proven live by
+  `tests/test_integration_pgstac_queue.py` (2 passed against the compose
+  Postgres): the collection extent is the world bbox before the drain and the
+  item bbox after.
+- **M3-A measured 2026-09-08 on the shared stack** (labelled `m3a` probe, torn
+  down). `--rate 0 --count 6000 --asset-bytes 65536`, watch 240 s / 20 s
+  intervals: **itemized ~20–23 items/s while the pipeline was actively
+  itemizing** (per-interval 19.97, 23.33, 19.87) against the S-A baseline of
+  2–3.5/s and decaying — consistent with S-A's ~22/s with the setting.
+  `pipeline.ingest_itemize` mean **33 ms** (1,260 calls; 35 ms over 2,001 calls
+  in an earlier 2,000-item run). `BACKLOG pgstac queue` stayed flat at ~0
+  (peak 0.10/interval) and returned to 0 within one tick.
+  **§4.5 number: `pipeline.pgstac_queue_drain` mean 0.223 s at
+  `pgstac_partitions` = 5** (0.253 s in the second run) — re-measure when
+  partition count grows, since the drain's two `REFRESH MATERIALIZED VIEW`
+  calls scale with partitions, not write rate.
+  *Caveat on the window:* the plan's Step 4 puts a 60 s settle before the
+  watch, but the pipeline drains a 2,000-item backlog faster than that, so the
+  first run's 300 s average (6.67/s) was ~280 s of idle diluting ~40 s of work.
+  The numbers above come from a re-run with the watch overlapping the load. A
+  future measurement should start the watch with the feed, or feed enough to
+  keep the pipeline saturated for the whole window.
+  `ingest_files_failed: 88` is the harness's synthetic opaque granules failing
+  GDAL open ("not recognized as being in a supported file format"), not a
+  pipeline defect.
+- **Collection extents are now maintained live.** `pgstac.update_collection_extents()`
+  was run (plan Step 5) but was effectively a no-op: the demo's collections
+  already carried real extents (goes-geocolor / goes-abi-mcmipc CONUS
+  `[-142.69, 14.56, -52.92, 55.31]`, demo-scenes `[-104, 37, -94, 43]`) because
+  the drain had been maintaining them for ~20 minutes by then. This is §4.4's
+  stated purpose — "nothing maintains collection extents today" — working.
+- **Loadgen teardown is not queue-aware, and M3-A just made that matter.**
+  `loadgen teardown` drops the probe's collection (and its partition) without
+  first draining `pgstac.query_queue`, so any `update_partition_stats('_items_N')`
+  still queued for that partition is orphaned and errors on the next tick. Seen
+  live: a tick logged `executed: 2, errors: 2` after the 2026-09-08 teardown,
+  and `pipeline_pgstac_query_queue_queries_total{outcome="error"}` sits at 2 as
+  a result. Harmless (the drain records the error and continues — that is
+  exactly the error path M3-A added) but it dirties the counter and leaves rows
+  a human has to reason about. **Fix in the harness: drain, or delete the
+  partition's queued rows, before dropping the collection.** The same shape bit
+  the DB-gated test before it was scoped to its own partition.
+- **The drain's error path was exercised in production, unintentionally, and
+  behaved correctly.** The orphaned statements above made a real tick take the
+  `except` branch: it incremented the error counter, logged with `exc_info`, and
+  still published both gauges, pruned history and evaluated staleness — which is
+  the behaviour the M3-A review round added, and the failure mode the metrics
+  exist to expose.
 
 The M5 queue's follow-ups are archived with it at `59e8087`; the M3 **scoping**
 queue's are at `b7fb503`, and its measured findings live in the scoping notes.
