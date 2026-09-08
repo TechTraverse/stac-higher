@@ -738,7 +738,16 @@ one-out and many-in / one-out (the common cases) are exactly right under
 that is the case the processor must handle itself (the manifest already
 tells it every input's `collection` + `item.id`, so it can).
 
-- [x] **D-1 · Stamp `derived_from` at finalize, processor override, docs.** (merged 2026-09-07; live check on the standing GOES demo still owed — lead)
+- [x] **D-1 · Stamp `derived_from` at finalize, processor override, docs.** (merged 2026-09-07; **live check PASSED 2026-09-08** — lead)
+      Live check: the running pipeline image predated the D-1 merge, so it was
+      rebuilt and redeployed (`docker compose build pipeline && up -d pipeline`)
+      before checking — the standing demo had been producing unstamped outputs
+      until then. On the first post-deploy scene
+      (`…s20262510416177…-geocolor`, 04:16:17Z),
+      `GET :8081/collections/goes-geocolor/items?limit=1` returned a
+      `rel: "derived_from"` link to
+      `/collections/goes-abi-mcmipc/items/OR_ABI-L2-MCMIPC-M6_G19_s20262510416177_e20262510418550_c20262510419051`.
+      **pgstac passes the link through the upsert unchanged** — no stripping.
       In `ProcessRunResolver.resolve` (or a step-side hook — keep the neutral
       `steps.py` producer-free per ADR 0014; the resolver is the producer's
       place), after a document resolves: if it has **no** link with
@@ -779,7 +788,12 @@ tells it every input's `collection` + `item.id`, so it can).
       slice is not done — log it and stop. Delivery is unaffected by design
       (destinations receive the document as published, link included).
 
-- [x] **D-2 · Render `derived_from` on the item page.** (merged 2026-09-07; live click-through on the standing GOES demo owed — lead, with D-1's) Decisions settled
+- [x] **D-2 · Render `derived_from` on the item page.** (merged 2026-09-07; **live click-through PASSED 2026-09-08** — lead, with D-1's)
+      Live check: on the item page for the 04:16:17Z geocolor scene the
+      Properties tab showed the "Derived from" block with the
+      `goes-abi-mcmipc / OR_ABI-…c20262510419051` chip; clicking it navigated to
+      `/collections/goes-abi-mcmipc/items/OR_ABI-…c20262510419051` and rendered
+      the source item. Decisions settled
       with the lead 2026-09-07: a **"Derived from" block on the Properties
       tab** (above the properties table, beside the extension badges;
       nothing rendered when the item has no such link — no empty state);
