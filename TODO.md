@@ -37,6 +37,13 @@ specifies it. The measured evidence behind each one is in
 the harness that produced it — and re-runs any of it — is
 `services/pipeline/src/pipeline/loadgen/` (its README has the preconditions).
 
+**Task plans (written 2026-09-07, read the plan before the slice text):**
+M3-A → `docs/superpowers/plans/2026-09-07-m3-a-pgstac-write-path.md`;
+M3-B → `docs/superpowers/plans/2026-09-07-m3-b-connection-pool.md`.
+M3-C onward have no plan yet — the loop writes one (`writing-plans`) from
+the spec section + slice text + the measurements M3-A/B record before
+starting the slice.
+
 The M3 **scoping** queue is closed; it lives in git history at `b7fb503`
 (spec + adversarial review) and its findings are appended to the scoping notes.
 Spec approved by the lead 2026-09-01.
@@ -630,6 +637,12 @@ extracts the preview tab's frame machinery into shared pieces and makes the
 tab consume them — the preview's four test files must stay green unchanged.
 No migrations. The tilers are still called straight from the browser
 (I-1/I-69 unchanged).
+
+**Task plans (written 2026-09-07):** V-2 →
+`docs/superpowers/plans/2026-09-07-v2-map-page-shell.md`; V-3 →
+`docs/superpowers/plans/2026-09-07-v3-map-imagery-time-axis.md`; V-4 has
+none yet (the loop writes it after V-2 merges). V-1's plan:
+`2026-09-04-v1-shared-map-pieces.md`.
 
 - [x] **V-1 · Shared pieces + preview refactor.** Spec §3. `RasterFrameStack`
       (previous + current + one lookahead, opacity swap, no transition) in
