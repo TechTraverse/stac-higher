@@ -2,7 +2,7 @@
 
 Known gaps, residual risk, and deferrals — tracked honestly so they aren't mistaken for "done." Status: 🔴 open · 🟡 accepted/mitigated · 🟢 resolved · ⚪ deferred-by-design.
 
-Each entry: what it is, why it exists, and where it's tracked. Close an entry by moving it to 🟢 with the resolving commit/PR; fully-closed entries move to [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md), leaving a one-line stub in the list at the bottom so inbound references still land. Entries that keep an open or amber half stay here.
+Each entry: what it is, why it exists, and where it's tracked. Close an entry by moving it to 🟢 with the resolving commit/PR; fully-closed entries move to [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md), leaving a one-line stub in the list at the bottom so inbound references still land. Entries that keep an open or amber half stay here. **This file is not sorted by number** — sections are chronological, not numeric — so a new entry must take the next number above the file's actual MAXIMUM `I-N` (`grep -n '^### I-' docs/ISSUES.md`, sort numerically, take the top), never just the highest number visible near wherever you're inserting.
 
 ---
 
@@ -1133,7 +1133,7 @@ surface.
 Opened by `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` as M3-A
 (pgstac write path) landed.
 
-### I-112 · Per-upsert `PgstacDB` leaks an `atexit` handler and re-checks pgstac's version 🟡
+### I-113 · Per-upsert `PgstacDB` leaks an `atexit` handler and re-checks pgstac's version 🟡
 Every `_upsert_sync` in the pgstac writer (`stac/pgstac_writer.py`) builds a
 fresh `PgstacDB`, and pypgstac's `PgstacDB.connect()` registers an `atexit`
 disconnect hook on every call — a long-lived worker retains one `atexit`
