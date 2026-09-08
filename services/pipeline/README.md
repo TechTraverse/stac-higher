@@ -56,6 +56,9 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `CONNECTION_CHECKS_RETENTION_DAYS` | `30` | Age after which connection_checks rows are deleted by the hourly history sweep (M2-G). |
 | `HISTORY_RETENTION_DAYS` | `365` | Window for pruning delivery_log/ingest_files rows of soft-deleted associations (and itemless terminal deliveries). |
 | `GC_BATCH_ITEMS` | `500` | Max items one retention/collect sweep tick processes per collection (M2-F; backlogs drain across ticks). |
+| `PGSTAC_QUEUE_DRAINER` | `pipeline` | Who runs `pgstac.query_queue` (M3-A). `pipeline`: the `pipeline.pgstac_queue_drain` tick `CALL`s `pgstac.run_queued_queries()` every minute. `database`: pg_cron owns the drain (RDS/Aurora — not in the local pgstac image) and the tick only samples depth/age, so the two never fight. `use_queue` and `update_collection_extent` are SESSION GUCs set automatically — the OPPOSITE pairing on each connection type: the writer's pool carries `use_queue` ON (queues the write); the drainer's connection carries `update_collection_extent` ON and `use_queue` explicitly FALSE (the nested extent refresh runs in whichever session drains the queue, not the one that writes). Neither pairing needs configuration anywhere. |
+| `PGSTAC_QUEUE_STALE_SECONDS` | `300` | The queue's oldest entry older than this logs a WARNING — the staleness bound on partition statistics; a rising `pipeline_pgstac_query_queue_oldest_seconds` means whichever drainer is configured has stopped. |
+| `PGSTAC_QUEUE_HISTORY_DAYS` | `7` | `pgstac.query_queue_history` rows older than this are deleted by the same tick (pgstac never prunes that table). |
 | `FINALIZE_STALE_SECONDS` | `1800` | A `staged_uploads` row stranded `finalizing` this long is presumed crashed — the finalize sweep flips it back to `pending` and re-enqueues the job (Phase 7 §6.4). |
 | `WEBHOOK_MAX_ATTEMPTS` | `5` | Webhook notification attempts (including the first) before a `notification_deliveries` row dead-letters and raises a `webhook_failed` alert (M2-C, ADR 0010). |
 | `WEBHOOK_RETRY_SECONDS` | `60` | Cool-off before the notify sweep re-enqueues a `failed` webhook delivery. |
@@ -93,10 +96,11 @@ All of this lives under `src/pipeline/connections/`:
 |---|---|---|
 | `pipeline.connection_check_drain` | `* * * * *` | Drains **all** pending `connection_checks` rows (`FOR UPDATE SKIP LOCKED`), runs `adapter.test()`, writes the check `result` + updates the parent connection's health and TOFU pin. |
 | `pipeline.connection_health_sweep` | `*/5 * * * *` | Tests every enabled connection and updates its health columns (no `connection_checks` rows). |
+| `pipeline.pgstac_queue_drain` | `* * * * *` | M3-A. Samples `pgstac.query_queue` (depth + oldest age → `/metrics`), `CALL`s `pgstac.run_queued_queries()` when `PGSTAC_QUEUE_DRAINER=pipeline`, prunes `query_queue_history`. The queue holds the partition-statistics refreshes the writer defers through its `use_queue` session GUC; its depth is bounded by partitions written, not items. |
 
-Both jobs only UPDATE `status`/`last_checked_at`/`last_error`/`host_key`/
-`host_key_pinned_at` — **never `connections.updated_at`** (that means "user last
-edited") — and never create the tables (ADR 0001).
+The two connection jobs above only UPDATE `status`/`last_checked_at`/
+`last_error`/`host_key`/`host_key_pinned_at` — **never `connections.updated_at`**
+(that means "user last edited") — and never create the tables (ADR 0001).
 
 **Drain cadence (accepted deviation):** Procrastinate's periodic scheduler is
 1-minute-granular, so ADR 0004's "~10 s" drain target is approximated by a
@@ -384,6 +388,10 @@ docker-compose — curl-verifiable; ROADMAP §8). Instrument map
   worker's terminal transitions.
 - `pipeline_webhook_deliveries_total{outcome}` and
   `pipeline_alerts_total{event}` (`raised`/`auto_resolved`).
+- `pipeline_pgstac_query_queue_depth`, `pipeline_pgstac_query_queue_oldest_seconds`
+  (gauges, set by the drain tick) and `pipeline_pgstac_queue_queries_total{outcome}`
+  — the only outside-the-process evidence the writer's session-scoped
+  `use_queue` is in effect, and the alarm for a drainer that stopped (M3-A).
 
 Logging is structured JSON via `log.py` (`configure_logging`); log data
 belongs in `extra={...}` fields, not the message string.

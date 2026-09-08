@@ -1128,6 +1128,24 @@ surface.
 - Fix candidate: a "behind by N files / oldest admitted at T" read-out on the
   association card, computed from the ledger.
 
+## NOAA-scale readiness (M3 queue, 2026-09-01)
+
+Opened by `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` as M3-A
+(pgstac write path) landed.
+
+### I-112 · Per-upsert `PgstacDB` leaks an `atexit` handler and re-checks pgstac's version 🟡
+Every `_upsert_sync` in the pgstac writer (`stac/pgstac_writer.py`) builds a
+fresh `PgstacDB`, and pypgstac's `PgstacDB.connect()` registers an `atexit`
+disconnect hook on every call — a long-lived worker retains one `atexit`
+entry per upsert, growing without bound (significant at M3's ~30 items/s
+target). `Loader.load_items` also re-runs `check_version()` per upsert, an
+extra round-trip. Neither is new to M3-A — the pre-existing
+`PgstacDB(dsn=...)` per call had both — and hoisting the `PgstacDB` out of
+the per-call path would wrongly pin one pooled connection for the writer's
+lifetime, so the fix belongs to a later M3 slice.
+- Tracked in: `services/pipeline/src/pipeline/stac/pgstac_writer.py`
+  (`_open_pgstac`); found in the M3-A docs review (Task 8).
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

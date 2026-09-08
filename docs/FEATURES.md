@@ -624,6 +624,15 @@ were offered and declined).
 | P-3 · Pipelines view | ✅ | `PipelineDag` (shared): SVG `<path>` per edge under absolutely-positioned `NodeChip`-style HTML nodes — text in SVG would mean hand-rolled truncation and no links or keyboard focus. `/graph` gains the **Pipelines \| Graph** switch (`?view=`, default Pipelines per spec §9.1) and a searchable one-row-per-product list, each row the product's WHOLE chain with the extractor badged and drawn into its product; rows cap downstream at 8 with "+k more" (`capLineage`, spec §8). `LineagePanel` swaps its two one-hop lists for the same row, keeping the 30-day strips beneath — one component, two surfaces. Storybook: `PipelineDag.stories.tsx`. e2e in `processes.spec.ts` |
 | P-4 · Graph view | ✅ | The Graph tab is the same `PipelineDag` over the whole group-scoped graph, replacing M5-F's five columns. Clicking a node fades everything outside `lineage(node)` and offers an Open link; clicking the background clears. Degree-0 nodes stay out of the SVG and keep their "Not wired" row (spec §9.4) — a chip attached to nothing reads as a layout bug. Rendering the real platform exposed a layout defect fixed here: the barycenter passes batched their position update to the end of a sweep, so the backward pass ordered a rank against the forward pass's stale positions and crossed two independent chains' first hop for no reason (regression test in `graph-layout.test.ts`) |
 
+## NOAA-scale readiness (M3 queue, 2026-09-01) 🔄
+
+Spec: `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md`; evidence
+`2026-08-31-m3-scoping-notes.md`; slices M3-A…M3-I in `TODO.md`.
+
+| Feature | Status | Notes |
+|---|---|---|
+| M3-A · pgstac write path | ✅ | The writer's own pooled connections carry `pgstac.use_queue` as a SESSION GUC (`pipeline/db/pgstac_session.py`, `stac/pgstac_writer.py` — pypgstac's `PgstacDB(pool=…, use_queue=True)` seam; nothing in deployment config), so every item write queues its partition's statistics refresh instead of scanning the partition inline (measured 2–3.5 → ~22 items/s, S-A §1). `pgstac.update_collection_extent` is the OPPOSITE pairing, carried instead on the DRAINER's connection (`stac/query_queue.py`'s `DRAIN_CONNECTION_SQL`: `update_collection_extent` ON, `use_queue` explicitly FALSE) — `update_partition_stats`'s nested extent refresh runs in whichever session drains the queue, not the one that writes, so collection extents are maintained for the first time since Phase 4. `pipeline.pgstac_queue_drain` (`stac/query_queue.py`, `jobs/pgstac_drain.py`) drains the queue every minute locally (`PGSTAC_QUEUE_DRAINER=pipeline`) or only samples it where pg_cron does (`database`); depth + oldest age are gauges on `/metrics`, a stale queue is a WARNING, `query_queue_history` is pruned. Loadgen samples the queue and the partition count. Live numbers: `TODO.md` follow-ups. |
+
 ## Phase 8 — Not started ⬜
 
 Cloud deployment, scale gate & visualization. See

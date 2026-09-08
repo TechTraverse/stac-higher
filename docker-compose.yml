@@ -280,6 +280,13 @@ services:
       # outputs. Root-relative by default (like ASSET_HREF_BASE); set an
       # absolute catalog URL to publish absolute lineage hrefs.
       - CATALOG_HREF_BASE=${CATALOG_HREF_BASE:-/}
+      # M3-A: pgstac partition statistics are queued by the writer (a session
+      # GUC — nothing to configure) and drained by the pipeline's one-minute
+      # tick. A database with pg_cron draining sets `database` so the tick
+      # only samples. See services/pipeline/README.md.
+      - PGSTAC_QUEUE_DRAINER=${PGSTAC_QUEUE_DRAINER:-pipeline}
+      - PGSTAC_QUEUE_STALE_SECONDS=${PGSTAC_QUEUE_STALE_SECONDS:-300}
+      - PGSTAC_QUEUE_HISTORY_DAYS=${PGSTAC_QUEUE_HISTORY_DAYS:-7}
       # Process executor (M5-B, ADR 0013). DOCKER_HOST must be the socket
       # proxy: the executor's startup self-check REFUSES a unix:// host, so a
       # deployment that mounts the raw socket "just for now" fails loudly
