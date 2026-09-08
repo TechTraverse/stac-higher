@@ -48,6 +48,9 @@ DEFAULT_STAGING_BUCKET = "stac-higher"
 DEFAULT_STAGING_TTL_SECONDS = 86400  # 24h
 
 DEFAULT_ASSET_HREF_BASE = "/api/assets"
+#: Base for the catalog-item hrefs finalize writes into `derived_from` links
+#: (D-1). Root-relative by default, like ASSET_HREF_BASE.
+DEFAULT_CATALOG_HREF_BASE = "/"
 
 # Ingest crash recovery (ISSUES I-52). A FETCH stalled longer than the stall
 # threshold is presumed crashed (idempotent to re-run); failed rows retry after
@@ -183,6 +186,7 @@ class Settings:
     staging_s3_force_path_style: bool = True
     staging_ttl_seconds: int = DEFAULT_STAGING_TTL_SECONDS
     asset_href_base: str = DEFAULT_ASSET_HREF_BASE
+    catalog_href_base: str = DEFAULT_CATALOG_HREF_BASE
     #: Ingest crash recovery (I-52) — see the DEFAULT_INGEST_* constants.
     ingest_fetch_stall_seconds: int = DEFAULT_INGEST_FETCH_STALL_SECONDS
     ingest_failed_retry_seconds: int = DEFAULT_INGEST_FAILED_RETRY_SECONDS
@@ -251,6 +255,7 @@ class Settings:
                 env.get("STAGING_TTL_SECONDS", str(DEFAULT_STAGING_TTL_SECONDS))
             ),
             asset_href_base=env.get("ASSET_HREF_BASE", DEFAULT_ASSET_HREF_BASE),
+            catalog_href_base=env.get("CATALOG_HREF_BASE", DEFAULT_CATALOG_HREF_BASE),
             ingest_fetch_stall_seconds=int(
                 env.get(
                     "INGEST_FETCH_STALL_SECONDS",

@@ -50,7 +50,7 @@ class ItemRef:
 class FinalizeRequest:
     """The ADR 0014 request. ``provenance`` is producer-specific by design
     (§6.1 residual R5): ``{upload_id, event_op}`` for push ingest,
-    ``{run_id}`` for process runs — the steps never read it; only the
+    ``{run_id, input_items}`` for process runs — the steps never read it; only the
     producer's resolver/recorder do."""
 
     producer: str

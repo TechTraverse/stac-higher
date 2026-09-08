@@ -56,6 +56,17 @@ def asset_href(
     return f"{base.rstrip('/')}/{segs}"
 
 
+def item_href(collection: str, item_id: str, *, base: str = "/") -> str:
+    """The catalog's own href for an item — `{base}/collections/{c}/items/{i}`,
+    each segment URL-encoded. Root-relative by default (`CATALOG_HREF_BASE`),
+    the same posture as `asset_href`; an absolute base yields absolute hrefs.
+    Used for the `derived_from` links finalize stamps on process outputs (D-1)."""
+    return (
+        f"{base.rstrip('/')}/collections/{quote(collection, safe='')}"
+        f"/items/{quote(item_id, safe='')}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Staged-asset hrefs (Phase 7 push ingest, spec §4.2).
 #

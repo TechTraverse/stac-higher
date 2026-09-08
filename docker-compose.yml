@@ -276,6 +276,10 @@ services:
       - STAGING_S3_SECRET_ACCESS_KEY=${STAGING_S3_SECRET_ACCESS_KEY:-minioadmin}
       - STAGING_BUCKET=${STAGING_BUCKET:-stac-higher}
       - STAGING_TTL_SECONDS=${STAGING_TTL_SECONDS:-86400}
+      # D-1: base for the `derived_from` hrefs finalize stamps on process
+      # outputs. Root-relative by default (like ASSET_HREF_BASE); set an
+      # absolute catalog URL to publish absolute lineage hrefs.
+      - CATALOG_HREF_BASE=${CATALOG_HREF_BASE:-/}
       # Process executor (M5-B, ADR 0013). DOCKER_HOST must be the socket
       # proxy: the executor's startup self-check REFUSES a unix:// host, so a
       # deployment that mounts the raw socket "just for now" fails loudly

@@ -725,7 +725,7 @@ one-out and many-in / one-out (the common cases) are exactly right under
 that is the case the processor must handle itself (the manifest already
 tells it every input's `collection` + `item.id`, so it can).
 
-- [ ] **D-1 · Stamp `derived_from` at finalize, processor override, docs.**
+- [x] **D-1 · Stamp `derived_from` at finalize, processor override, docs.** (merged 2026-09-07; live check on the standing GOES demo still owed — lead)
       In `ProcessRunResolver.resolve` (or a step-side hook — keep the neutral
       `steps.py` producer-free per ADR 0014; the resolver is the producer's
       place), after a document resolves: if it has **no** link with

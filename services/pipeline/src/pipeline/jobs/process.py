@@ -320,9 +320,17 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         store = PlatformObjectStore(
             client=build_platform_client(settings), bucket=settings.staging_bucket
         )
+        # D-1: the run row's triggering batch is what the outputs derive from.
+        run = await process_repo.get_run(run_id)
         await run_finalize(
-            build_process_request(run_id, outputs),
-            hooks=build_hooks(finalize_repo, writer, store, process_repo),
+            build_process_request(run_id, outputs, run.input_items if run else ()),
+            hooks=build_hooks(
+                finalize_repo,
+                writer,
+                store,
+                process_repo,
+                catalog_href_base=settings.catalog_href_base,
+            ),
             preflight=finalize_repo,
             store=store,
             writer=writer,

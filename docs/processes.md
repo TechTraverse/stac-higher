@@ -180,6 +180,31 @@ not used to re-verify the copy.
 An **absolute** href (`https://…`, `s3://…`) is left exactly as written: that
 is how you publish a reference-style item whose bytes live elsewhere.
 
+### Lineage
+
+Every published output gets one **`derived_from`** link per item in the
+run's input batch, unless you wrote your own. The platform stamps them at
+finalize, from the same batch your manifest describes:
+
+```json
+{"rel": "derived_from", "href": "/collections/goes-abi-mcmipc/items/OR_ABI-…", "type": "application/geo+json"}
+```
+
+Hrefs are root-relative to the catalog by default (`CATALOG_HREF_BASE` on
+the pipeline makes them absolute). Inputs listed under the manifest's
+`skipped` are never cited, and an output that republishes one of its own
+inputs is not linked to itself. A cron run has no input batch and gets no
+links.
+
+That default is **batch-level**: runs coalesce, so a batch may hold several
+inputs, and the platform knows the set of inputs and the set of outputs —
+not which produced which. One-in/one-out and many-in/one-out are therefore
+exact. If your process is **many-in/many-out** (three scenes in, three masks
+out), write the links yourself: put a `derived_from` link on each output
+naming only its real sources, using `manifest["items"][n]["item"]["collection"]`
+and `["id"]`. Any document that already carries a `derived_from` link is
+published with its link set exactly as written — the platform adds nothing.
+
 ## Extractors
 
 A process created with **kind: extractor** is not wired to source and output
