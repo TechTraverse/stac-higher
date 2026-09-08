@@ -17,6 +17,15 @@ interface StacMapProps {
   initialBounds?: LngLatBoundsLike;
   onMapRef?: (ref: MapRef) => void;
   onClick?: (e: MapMouseEvent) => void;
+  /**
+   * Layer ids that answer mouse queries. Without this, `e.features` is empty
+   * on every event — it is what turns a plain map into one you can hover.
+   */
+  interactiveLayerIds?: string[];
+  onMouseMove?: (e: MapMouseEvent) => void;
+  onMouseLeave?: (e: MapMouseEvent) => void;
+  /** CSS cursor over the canvas, e.g. "pointer" while a feature is hovered. */
+  cursor?: string;
 }
 
 export function StacMap({
@@ -25,6 +34,10 @@ export function StacMap({
   initialBounds,
   onMapRef,
   onClick,
+  interactiveLayerIds,
+  onMouseMove,
+  onMouseLeave,
+  cursor,
 }: StacMapProps) {
   const theme = useStore($theme);
   const mapRef = useRef<MapRef>(null);
@@ -50,6 +63,10 @@ export function StacMap({
       mapStyle={theme === "dark" ? BASEMAP_DARK : BASEMAP_LIGHT}
       onLoad={onLoad}
       onClick={onClick}
+      interactiveLayerIds={interactiveLayerIds}
+      onMouseMove={onMouseMove}
+      onMouseLeave={onMouseLeave}
+      cursor={cursor}
       attributionControl={false}
     >
       <NavigationControl position="top-right" />
