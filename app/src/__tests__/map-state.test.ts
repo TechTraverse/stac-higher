@@ -95,6 +95,24 @@ describe("mapReducer", () => {
     expect(assigned.layers.map((l) => l.asset)).toEqual([undefined, "visual"]);
   });
 
+  it("clamps setOpacity so an out-of-range value can never reach a layer", () => {
+    // The reducer is the real boundary for "clamped exactly once" (V-1): a
+    // future dispatcher other than opacityFromSlider (URL restore, preset,
+    // keyboard step) must not be able to write garbage into MapLayer.opacity.
+    const state = stateWith(layer("a"));
+
+    expect(
+      mapReducer(state, { type: "setOpacity", id: "a", opacity: 1.5 }).layers.map(
+        (l) => l.opacity,
+      ),
+    ).toEqual([1]);
+    expect(
+      mapReducer(state, { type: "setOpacity", id: "a", opacity: -0.2 }).layers.map(
+        (l) => l.opacity,
+      ),
+    ).toEqual([0]);
+  });
+
   it("returns to the newest tick when the span changes", () => {
     // Every layer's items query refetches on a span change, so an index into
     // the old axis means nothing (spec §4.4).

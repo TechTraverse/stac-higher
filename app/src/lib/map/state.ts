@@ -28,7 +28,7 @@ export interface MapLayer {
   /** imagery only; a `previewAssetCandidates` key (V-3). */
   asset?: string;
   visible: boolean;
-  /** 0..1, default 1. Clamped by the control that sets it, not here. */
+  /** 0..1, default 1. The reducer clamps every write (setOpacity); callers may pass anything. */
   opacity: number;
 }
 
@@ -106,7 +106,12 @@ export function mapReducer(state: MapState, action: MapAction): MapState {
       return patch(state, action.id, (l) => ({ ...l, visible: action.visible }));
 
     case "setOpacity":
-      return patch(state, action.id, (l) => ({ ...l, opacity: action.opacity }));
+      // The reducer is the actual boundary for the "clamped exactly once"
+      // invariant (V-1): opacityFromSlider guards one path in, but any other
+      // dispatcher (a URL restore, a saved preset, a keyboard step) must not
+      // be able to write an out-of-range value the non-clamping layer
+      // components would hand straight to maplibre.
+      return patch(state, action.id, (l) => ({ ...l, opacity: clamp01(action.opacity) }));
 
     case "setAsset":
       return patch(state, action.id, (l) => ({ ...l, asset: action.asset }));
