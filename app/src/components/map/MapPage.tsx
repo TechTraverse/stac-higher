@@ -89,13 +89,26 @@ function MapPageInner() {
   // A row can be removed, or hidden, from the panel with no mouse movement
   // over the canvas in between (those controls are in the sidebar, not on
   // the map), so the tooltip cannot rely on a future mouseleave/mousemove
-  // to notice its layer is gone or no longer interactive. Either way the
-  // layer's own source/feature-state is already out of play (removed
-  // entirely, or excluded from `interactiveLayerIds` once hidden) by the
-  // time this runs, so only the React-side readout needs dropping.
+  // to notice its layer is gone or no longer interactive. The two cases
+  // differ on the map side, though: exclusion from `interactiveLayerIds`
+  // only stops event delivery — FootprintLayer keeps a hidden layer's
+  // source mounted and merely sets `layout.visibility: "none"`, so its
+  // paint (and the feature-state the paint reads) is still live and must
+  // be cleared explicitly, or the hover highlight is stuck the next time
+  // the layer is shown. A removed layer's source is gone from the map
+  // already, and calling setFeatureState on a removed source raises a
+  // maplibre error, so that case must NOT make the call.
   useEffect(() => {
     const current = hoveredFeature.current;
-    if (current && !state.layers.some((l) => l.id === current.source && l.visible)) {
+    if (!current) return;
+    const layer = state.layers.find((l) => l.id === current.source);
+    if (!layer) {
+      // Removed: nothing left on the map to clear.
+      hoveredFeature.current = null;
+      setHovered(null);
+    } else if (!layer.visible) {
+      // Hidden: still mounted, so drop the feature-state explicitly.
+      mapRef.current?.setFeatureState(current, { hover: false });
       hoveredFeature.current = null;
       setHovered(null);
     }
