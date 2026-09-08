@@ -17,7 +17,7 @@ just a wasted read.
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 | **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04; **V-2 next**; V-4 depends on V-2 only. No migrations |
-| **D** | Item lineage: `derived_from` links stamped on process outputs at finalize | Written 2026-09-06 (lead question, no separate spec — the slice text is the design). One slice; no migrations; pipeline-only |
+| **D** | Item lineage: `derived_from` links stamped on process outputs at finalize | Written 2026-09-06 (lead question, no separate spec — the slice text is the design). Two slices: D-1 pipeline stamp, D-2 item-page rendering (decisions settled 2026-09-07). No migrations |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
 off `ai/main`, and `npm run verify` — plus the pipeline's `pytest` and `ruff`
@@ -766,11 +766,49 @@ tells it every input's `collection` + `item.id`, so it can).
       slice is not done — log it and stop. Delivery is unaffected by design
       (destinations receive the document as published, link included).
 
-**Not in this queue:** rendering `derived_from` as navigable links on the
-item page (`ItemDetailView` renders no links today) — a UI follow-up once
-D-1 has produced a real one to look at; and per-output lineage for
-many-in / many-out batches, which is the processor's job by the decision
-above and stays so.
+- [ ] **D-2 · Render `derived_from` on the item page.** Decisions settled
+      with the lead 2026-09-07: a **"Derived from" block on the Properties
+      tab** (above the properties table, beside the extension badges;
+      nothing rendered when the item has no such link — no empty state);
+      **upstream only**; **both surfaces** (product item page AND the
+      catalog browser); **id + collection parsed from the href, no fetch**
+      of the linked item. `ItemDetailView` is catalog-agnostic by design
+      (product page and `BrowseItemPage` render the same view and must
+      not drift) — keep it so: the view gains an optional
+      `resolveLink?: (link: StacLink) => LinkTarget` prop and renders one
+      chip per `derived_from` link; `ItemDetail` and `BrowseItemPage` pass
+      a resolver built from their own catalog context. The resolver is a
+      pure helper in `app/src/lib/browse/paths.ts` beside `itemHref`:
+      parse `{collection, item}` out of an href that is either
+      root-relative `/collections/{c}/items/{i}` (D-1's default output —
+      on the product page this is the page's own catalog) or absolute
+      `{catalogUrl}/collections/{c}/items/{i}` for a catalog in
+      `$catalogs` (match by `normalizeCatalogUrl` prefix; the page's own
+      catalog first, then the others), then hand `itemHref(catalog, c, i)`
+      the match so the built-in catalog lands on the product page and any
+      other on its browse page with `?src=` (UI-15). An href that matches
+      no catalog renders as a plain external anchor (`target=_blank`,
+      `rel=noopener noreferrer`) showing the link's `title` or the href's
+      last two path segments; never a dead in-app route. Chip text is
+      `{collection} / {item}`; the link `title` wins when present. Tests:
+      `src/__tests__/browse-paths.test.ts` for the parser (root-relative,
+      absolute matching the page catalog, absolute matching ANOTHER
+      configured catalog, absolute matching nothing, encoded ids, trailing
+      slash on the catalog URL) and a component test beside
+      `item-detail-preview.test.tsx` (no links → no block; two links →
+      two chips with the expected hrefs; external href → anchor).
+      Independent of D-1 at build time — a hand-written `derived_from`
+      link on any item exercises it — but the **live check** is the
+      D-1 output on the standing GOES demo: open a `goes-geocolor` item,
+      click the chip, land on the `goes-abi-mcmipc` source item. Docs:
+      `docs/FEATURES.md` one line beside D-1's. Depends on nothing;
+      D-1 and D-2 may run in parallel.
+
+**Not in this queue:** downstream lineage (items derived from THIS one —
+a STAC API cannot search by link, so it needs an app route over the
+`process_runs` ledger and is built-in-only); a general Links tab; and
+per-output lineage for many-in / many-out batches, which is the
+processor's job by the decision above and stays so.
 
 ---
 
