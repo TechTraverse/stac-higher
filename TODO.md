@@ -863,6 +863,41 @@ processor's job by the decision above and stays so.
 
 ## Discovered follow-ups
 
+- **V-2 landed 2026-09-08 (`ai/v2-map-page`), e2e + live-checked.**
+  `npm run test:e2e:ci -- map` → **3 passed** (run with `E2E_PORT=4399`: the
+  editor holds :4321, which is the documented `run-e2e` gotcha). Lead visual
+  checks on a real map, all of which cover paths NO automated test reaches
+  (jsdom leaves `mapRef.current` null, and the smoke spec deliberately avoids
+  the canvas):
+  - `/map` fills the viewport; basemap renders; nav + route title wired.
+  - Adding a product draws its footprints, and **the first-add `fitBounds`
+    fired** (scale 2000 km → 500 km, centred on the CONUS extent) — the one
+    path with no coverage at any level.
+  - Hover shows the tooltip with item id + datetime, and the feature-state
+    highlight paints.
+  - **Hide → show does NOT leave the hover highlight stuck on** — the fix from
+    Task 9 fix round 2, which is unreachable from jsdom and was the one
+    self-inflicted regression of the slice.
+  - **Click-through opens a NEW TAB** at `/collections/goes-geocolor/items/<id>`
+    (spec §4.6). Nothing in unit or e2e asserts this end to end.
+  - **Theme toggle with two layers stacked: both survive and redraw.** This was
+    the final review's Important #1 — `StacMap` swaps `mapStyle` on `$theme`,
+    which makes maplibre rebuild the whole style and drop every layer, and
+    `addLayer` with a missing `beforeId` fails silently. The chain
+    re-establishes itself correctly.
+  - **The `${id}-anchor` background layer does NOT black out the collection
+    preview tab** (the Task 2 risk: a maplibre `background` layer defaults to
+    `#000` and only `background-opacity: 0` keeps it invisible). goes-geocolor's
+    Preview renders the basemap plus the GeoColor imagery frame normally.
+    *Note for whoever checks this next:* the preview map is genuinely black for
+    ~10 s while the dark basemap and tiles load — do not mistake that for the
+    anchor bug, as I nearly did.
+- **Basemap style swap on theme change is slow (~10 s+).** Toggling the theme
+  leaves the map on the previous basemap for several seconds after the app
+  chrome has already switched. Pre-existing (`StacMap` swaps `mapStyle` on
+  `$theme`), not introduced by V-2, and harmless — but it reads as a bug and is
+  worth a look when V-3 touches the map surface.
+
 - **M3-A landed 2026-09-08 (`ai/m3-a-pgstac-queue`).** Session GUCs via the
   writer's pool `configure` hook (pypgstac's `PgstacDB(pool=…, use_queue=True)`
   seam — a handed-in `connection` would have skipped pypgstac's own SET, so the
