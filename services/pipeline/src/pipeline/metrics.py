@@ -31,6 +31,7 @@ from prometheus_client import CONTENT_TYPE_LATEST as METRICS_CONTENT_TYPE
 from prometheus_client import (
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -47,6 +48,9 @@ __all__ = [
     "JOB_RUNS",
     "JOB_SECONDS",
     "METRICS_CONTENT_TYPE",
+    "PGSTAC_QUEUE_DEPTH",
+    "PGSTAC_QUEUE_OLDEST_SECONDS",
+    "PGSTAC_QUEUE_QUERIES",
     "REGISTRY",
     "WEBHOOK_DELIVERIES",
     "instrument_handler",
@@ -157,6 +161,31 @@ ALERTS = Counter(
     "pipeline_alerts_total",
     "Alert lifecycle events written by the flow monitor",
     ["event"],  # raised | auto_resolved
+    registry=REGISTRY,
+)
+
+# --- M3-A pgstac query queue --------------------------------------------------
+# `use_queue` is a SESSION GUC on the writer's connections, so nothing outside
+# the process can see it is in effect — except the queue it feeds. Depth and
+# age together are that evidence, and a drainer that silently stops shows up
+# here as a rising age — which matters more than a performance number: a
+# partition queued but not yet drained is not merely slower to search, it is
+# ABSENT from datetime-ordered STAC search results until it drains (I-114).
+# A stopped drainer turns that one-tick blind window unbounded.
+PGSTAC_QUEUE_DEPTH = Gauge(
+    "pipeline_pgstac_query_queue_depth",
+    "Statements waiting in pgstac.query_queue after the last drain tick",
+    registry=REGISTRY,
+)
+PGSTAC_QUEUE_OLDEST_SECONDS = Gauge(
+    "pipeline_pgstac_query_queue_oldest_seconds",
+    "Age of the oldest statement in pgstac.query_queue after the last drain tick (0 when empty)",
+    registry=REGISTRY,
+)
+PGSTAC_QUEUE_QUERIES = Counter(
+    "pipeline_pgstac_query_queue_queries_total",
+    "Queued pgstac statements executed by the pipeline's drain tick",
+    ["outcome"],  # ok | error (pgstac records the error in query_queue_history)
     registry=REGISTRY,
 )
 

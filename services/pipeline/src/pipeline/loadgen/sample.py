@@ -74,6 +74,22 @@ def scrape(metrics_url: str, timeout: float = 5.0) -> dict[str, float]:
 #: queries: the sampler must not become part of the load it is measuring.
 TABLE_QUERIES: dict[str, str] = {
     "pgstac_items": "SELECT count(*) FROM pgstac.items",
+    "pgstac_query_queue": (
+        # M3-A: partition-stats statements deferred by the writer's use_queue
+        # GUC and waiting for the drain tick. Bounded by partitions written,
+        # not by items; a steadily rising count means the drainer stopped.
+        "SELECT count(*) FROM pgstac.query_queue"
+    ),
+    "pgstac_partitions": (
+        # The drain's cost (two REFRESH MATERIALIZED VIEWs) scales with this,
+        # not with write rate — spec §4.5. `partitions` itself is a
+        # materialized view only `update_partition_stats` refreshes — the
+        # very statement the drain defers — so counting it would report a
+        # stale, last-drain snapshot and could queue behind the drain's
+        # ACCESS EXCLUSIVE refresh. `partitions_view`, the live view over
+        # `pg_partition_tree`, has neither problem.
+        "SELECT count(*) FROM pgstac.partitions_view"
+    ),
     "ingest_files_seen": (
         # `seen` is where the two-poll settle check parks a file, so a growing
         # count here means DISCOVER is behind, not that nothing arrived.

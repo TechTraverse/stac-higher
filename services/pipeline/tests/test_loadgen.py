@@ -15,7 +15,7 @@ import pytest
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.loadgen.feed import emission_offsets, granule, raster_granule
 from pipeline.loadgen.fixtures import deliver_config, ingest_config, metadata_config
-from pipeline.loadgen.report import job_means
+from pipeline.loadgen.report import HEADLINE, job_means
 from pipeline.loadgen.sample import TABLE_QUERIES, Sample, parse_prometheus, rate_table
 
 # ---------------------------------------------------------------------------
@@ -284,6 +284,20 @@ def test_the_queue_backlog_query_names_the_schema_procrastinate_actually_uses():
     """Unqualified, it resolves against the search_path and silently returns
     nothing — which reads as an empty queue."""
     assert "procrastinate.procrastinate_jobs" in TABLE_QUERIES["procrastinate_todo"]
+
+
+def test_sampler_watches_the_pgstac_query_queue():
+    # M3-A: with use_queue on, the queue's depth is the only outside-the-process
+    # evidence the session GUC is in effect, and its drain cost scales with
+    # partition count — so both are sampled alongside the ledger counts.
+    assert TABLE_QUERIES["pgstac_query_queue"] == "SELECT count(*) FROM pgstac.query_queue"
+    # `pgstac.partitions` is a materialized view only `update_partition_stats`
+    # refreshes — the very statement `use_queue` defers into the queue above —
+    # so counting it would report a stale, last-drain snapshot and could queue
+    # behind the drain's ACCESS EXCLUSIVE refresh. `partitions_view`, the live
+    # view over `pg_partition_tree`, has neither problem.
+    assert "pgstac.partitions_view" in TABLE_QUERIES["pgstac_partitions"]
+    assert ("BACKLOG pgstac queue", "pgstac_query_queue") in HEADLINE
 
 
 # ---------------------------------------------------------------------------

@@ -18,13 +18,18 @@ from itertools import pairwise
 from pipeline.loadgen.sample import Sample, rate_table
 
 #: Series worth putting in front of a human, in reading order: what arrived,
-#: what got through each stage, and what is piling up.
+#: what got through each stage, and what is piling up. A `BACKLOG *` row is
+#: not always grouped with the others at the bottom — one that is the
+#: backlog of a specific stage above it (e.g. the pgstac queue behind
+#: catalog items) sits next to that stage instead, because reading them
+#: together is the point.
 HEADLINE = (
     ("offered → settled", 'pipeline_ingest_events_total{stage="settled_file"}'),
     ("itemized", 'pipeline_ingest_events_total{stage="itemized_item"}'),
     ("ingest failed", 'pipeline_ingest_events_total{stage="failed"}'),
     ("ingest bytes", "pipeline_ingest_bytes_total"),
     ("catalog items", "pgstac_items"),
+    ("BACKLOG pgstac queue", "pgstac_query_queue"),
     ("delivered", 'pipeline_deliveries_total{outcome="delivered"}'),
     ("delivery dead", 'pipeline_deliveries_total{outcome="dead"}'),
     ("BACKLOG seen", "ingest_files_seen"),

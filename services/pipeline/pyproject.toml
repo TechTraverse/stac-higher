@@ -18,6 +18,8 @@ dependencies = [
     "rasterio>=1.5,<2",
     "stac-pydantic==3.6.0",
     "pypgstac[psycopg]==0.9.11",
+    "psycopg[binary]>=3.2,<4",
+    "psycopg-pool>=3.2,<4",
     "defusedxml>=0.7.1",
     "cql2>=0.3",
     "prometheus-client>=0.20",

@@ -4,19 +4,28 @@
 `PgPgstacWriter` implements both operations ITEMIZE needs from pgstac: the item
 upsert, and the collection-extent read backing the ISSUE I-27 geometry
 fallback. Upsert wraps pypgstac's synchronous `Loader.load_items(...,
-Methods.upsert)` in `asyncio.to_thread`. ADR 0001: upsert writes item DATA only
-(temp `ON COMMIT DROP` staging tables + pgstac's own `upsert_item` functions —
-no DDL, no migrations). A missing collection is a permanent error surfaced as
-`CollectionMissing` (→ group failed); anything else propagates so the job retries.
+Methods.upsert)` in `asyncio.to_thread`, over a small process-wide pool whose
+connections carry `pgstac.use_queue` + `pgstac.update_collection_extent` as
+SESSION GUCs (M3-A, spec §4.2) — partition statistics are queued rather than
+recomputed inline on every write; `pipeline.pgstac_queue_drain` runs the queue.
+ADR 0001: upsert writes item DATA only (temp `ON COMMIT DROP` staging tables +
+pgstac's own `upsert_item` functions — no DDL, no migrations). A missing
+collection is a permanent error surfaced as `CollectionMissing` (→ group
+failed); anything else propagates so the job retries.
 """
 
 from __future__ import annotations
 
 import abc
 import asyncio
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from psycopg_pool import ConnectionPool
+
+from pipeline.db.pgstac_session import configure_pgstac_session
 
 
 class CollectionMissing(Exception):
@@ -38,6 +47,52 @@ class PgstacWriter(abc.ABC):
         opt-in collection-extent geometry fallback (Slice B4a)."""
 
 
+#: How many upserts may run at once against pgstac. Upserts run in
+#: `asyncio.to_thread`, so this — not the worker's concurrency — is the cap.
+#: Measured cost is ~4 ms per single-item upsert with `use_queue` on (S-A §1),
+#: so four is ample headroom for M3-D's concurrency of 12; raise it with
+#: evidence, not by default.
+WRITER_POOL_MAX = 4
+
+_POOLS: dict[str, ConnectionPool] = {}
+_POOLS_LOCK = threading.Lock()
+
+
+def writer_pool(dsn: str) -> ConnectionPool:
+    """The process-wide pool the pgstac writer draws on, one per DSN.
+
+    Every connection it opens carries the two pgstac session GUCs (M3-A, spec
+    §4.2) through the `configure` hook. Opened on first use — construction of a
+    `PgPgstacWriter` stays connection-free, as it always has been.
+
+    Writer-only: pypgstac sets `autocommit = True` on every connection it
+    checks out and the pool does not reset that, so nothing else may borrow
+    from this pool.
+    """
+    with _POOLS_LOCK:
+        pool = _POOLS.get(dsn)
+        if pool is None or pool.closed:
+            pool = ConnectionPool(
+                dsn,
+                min_size=1,
+                max_size=WRITER_POOL_MAX,
+                configure=configure_pgstac_session,
+                open=True,
+                name="pgstac-writer",
+            )
+            _POOLS[dsn] = pool
+        return pool
+
+
+def close_writer_pools() -> None:
+    """Close every writer pool (service shutdown; test isolation)."""
+    with _POOLS_LOCK:
+        pools = list(_POOLS.values())
+        _POOLS.clear()
+    for pool in pools:
+        pool.close()
+
+
 @dataclass
 class PgPgstacWriter(PgstacWriter):
     dsn: str
@@ -52,12 +107,22 @@ class PgPgstacWriter(PgstacWriter):
                 raise CollectionMissing(str(exc)) from exc
             raise
 
-    def _upsert_sync(self, items: list[Mapping[str, Any]]) -> None:  # pragma: no cover
-        from pypgstac.db import PgstacDB
+    def _upsert_sync(self, items: list[Mapping[str, Any]]) -> None:
         from pypgstac.load import Loader, Methods
 
-        with PgstacDB(dsn=self.dsn) as db:
+        with self._open_pgstac() as db:
             Loader(db=db).load_items(items, insert_mode=Methods.upsert)
+
+    def _open_pgstac(self):
+        """A `PgstacDB` over the writer pool.
+
+        `use_queue=True` is belt and braces: the pool's `configure` hook has
+        already set both GUCs on the connection pypgstac is about to check out.
+        pypgstac returns the connection to the pool on `__exit__`.
+        """
+        from pypgstac.db import PgstacDB
+
+        return PgstacDB(pool=writer_pool(self.dsn), use_queue=True)
 
     async def get_collection_bbox(  # pragma: no cover - thin psycopg wrapper
         self, collection_id: str

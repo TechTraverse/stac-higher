@@ -27,11 +27,13 @@ from pipeline.jobs import (
     ingest,
     monitor,
     notify,
+    pgstac_drain,
     process,
     staging_cleanup,
 )
 from pipeline.log import configure_logging
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
+from pipeline.stac.pgstac_writer import close_writer_pools
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,9 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # item_event leg and the cron tick queue runs through the §7 rate
     # ceiling; the run tick executes them behind the ADR 0013 executor.
     process.register(queue, settings)
+    # M3-A: drain pgstac.query_queue (partition stats deferred by the writer's
+    # `use_queue` session GUC) — or only sample it where pg_cron drains.
+    pgstac_drain.register(queue, settings)
     return queue
 
 
@@ -100,6 +105,7 @@ async def run(settings: Settings) -> None:
             dispatch.build_notify_listener(queue, settings),
         )
     finally:
+        close_writer_pools()
         await queue.aclose()
 
 

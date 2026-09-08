@@ -1,8 +1,12 @@
 """Settings env contract."""
 
+import pytest
+
 from pipeline.config import (
     DEFAULT_DATABASE_URL,
     DEFAULT_HEALTH_PORT,
+    DEFAULT_PGSTAC_QUEUE_HISTORY_DAYS,
+    DEFAULT_PGSTAC_QUEUE_STALE_SECONDS,
     DEFAULT_QUEUE_SCHEMA,
     Settings,
 )
@@ -68,3 +72,30 @@ def test_catalog_href_base_defaults_and_env():
         Settings.from_env({"CATALOG_HREF_BASE": "https://c.example/stac"}).catalog_href_base
         == "https://c.example/stac"
     )
+
+
+def test_pgstac_queue_defaults():
+    settings = Settings.from_env(env={})
+    # Local/self-hosted default: the pipeline drains (pg_cron is not in the
+    # pgstac image — spec §4.3). Cloud sets "database" once pg_cron owns it.
+    assert settings.pgstac_queue_drainer == "pipeline"
+    assert settings.pgstac_queue_stale_seconds == DEFAULT_PGSTAC_QUEUE_STALE_SECONDS == 300
+    assert settings.pgstac_queue_history_days == DEFAULT_PGSTAC_QUEUE_HISTORY_DAYS == 7
+
+
+def test_pgstac_queue_env_overrides():
+    settings = Settings.from_env(
+        env={
+            "PGSTAC_QUEUE_DRAINER": " Database ",
+            "PGSTAC_QUEUE_STALE_SECONDS": "120",
+            "PGSTAC_QUEUE_HISTORY_DAYS": "30",
+        }
+    )
+    assert settings.pgstac_queue_drainer == "database"
+    assert settings.pgstac_queue_stale_seconds == 120
+    assert settings.pgstac_queue_history_days == 30
+
+
+def test_pgstac_queue_drainer_rejects_unknown_value():
+    with pytest.raises(ValueError, match="PGSTAC_QUEUE_DRAINER"):
+        Settings.from_env(env={"PGSTAC_QUEUE_DRAINER": "cron"})

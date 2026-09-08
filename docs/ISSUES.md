@@ -2,7 +2,7 @@
 
 Known gaps, residual risk, and deferrals — tracked honestly so they aren't mistaken for "done." Status: 🔴 open · 🟡 accepted/mitigated · 🟢 resolved · ⚪ deferred-by-design.
 
-Each entry: what it is, why it exists, and where it's tracked. Close an entry by moving it to 🟢 with the resolving commit/PR; fully-closed entries move to [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md), leaving a one-line stub in the list at the bottom so inbound references still land. Entries that keep an open or amber half stay here.
+Each entry: what it is, why it exists, and where it's tracked. Close an entry by moving it to 🟢 with the resolving commit/PR; fully-closed entries move to [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md), leaving a one-line stub in the list at the bottom so inbound references still land. Entries that keep an open or amber half stay here. **This file is not sorted by number** — sections are chronological, not numeric — so a new entry must take the next number above the file's actual MAXIMUM `I-N` (`grep -n '^### I-' docs/ISSUES.md`, sort numerically, take the top), never just the highest number visible near wherever you're inserting.
 
 ---
 
@@ -1127,6 +1127,44 @@ backlog's *visibility* (how far behind the window the association is) has no
 surface.
 - Fix candidate: a "behind by N files / oldest admitted at T" read-out on the
   association card, computed from the ledger.
+
+## NOAA-scale readiness (M3 queue, 2026-09-01)
+
+Opened by `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` as M3-A
+(pgstac write path) landed.
+
+### I-113 · Per-upsert `PgstacDB` leaks an `atexit` handler and re-checks pgstac's version 🟡
+Every `_upsert_sync` in the pgstac writer (`stac/pgstac_writer.py`) builds a
+fresh `PgstacDB`, and pypgstac's `PgstacDB.connect()` registers an `atexit`
+disconnect hook on every call — a long-lived worker retains one `atexit`
+entry per upsert, growing without bound (significant at M3's ~30 items/s
+target). `Loader.load_items` also re-runs `check_version()` per upsert, an
+extra round-trip. Neither is new to M3-A — the pre-existing
+`PgstacDB(dsn=...)` per call had both — and hoisting the `PgstacDB` out of
+the per-call path would wrongly pin one pooled connection for the writer's
+lifetime, so the fix belongs to a later M3 slice.
+- Tracked in: `services/pipeline/src/pipeline/stac/pgstac_writer.py`
+  (`_open_pgstac`); found in the M3-A docs review (Task 8).
+
+### I-114 · A newly created partition is invisible to datetime-ordered search until the queue drains 🟡
+Under `use_queue` (M3-A), a brand-new partition — a new collection, or a new
+month on a `partition_trunc` collection — has no row in `pgstac.partition_steps`
+(a materialized view refreshed only inside `update_partition_stats`, pinned
+`pgstac.0.9.11.sql` ~L2621) until the queue drains it. `chunker` joins the
+search planner's chosen relation names against `partition_steps`, so a
+partition absent from that matview contributes no chunk range and is silently
+dropped from datetime-ordered STAC search — not a planning slowdown, an
+absence. Only NEW partitions are affected: a running deployment's existing
+data already has its range in the matview. The window is bounded by one drain
+tick (the job runs every minute, `pipeline.pgstac_queue_drain`) but is
+UNBOUNDED if the drainer stops, which is why the stale-queue WARNING
+(`pipeline_pgstac_query_queue_oldest_seconds`) matters beyond a performance
+signal. A fresh `docker compose down -v` → `demo seed` → look-at-the-UI path
+now has a roughly one-minute blind window on newly seeded data that did not
+exist before this branch.
+- Tracked in: `services/pipeline/src/pipeline/metrics.py` (queue-depth gauge
+  comment), `services/pipeline/README.md` (`PGSTAC_QUEUE_DRAINER`); found in
+  the M3-A final whole-branch review.
 
 ## Resolved — archived
 
