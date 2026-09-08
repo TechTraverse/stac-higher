@@ -267,20 +267,30 @@ describe("MapPage", () => {
     expect(within(bottom).getByTestId("map-layer-down")).toBeDisabled();
   });
 
-  it("puts an opacity control on every row", () => {
+  it("feeds the opacity slider's value to the layer paint, clamped through opacityFromSlider", () => {
     // The clamp itself is unit-tested on opacityFromSlider (map-state.test.ts);
-    // what matters here is that the row's control feeds the layer opacity.
+    // what matters here is that moving the row's control actually changes
+    // what gets drawn. At the default opacity (1) the shared style omits
+    // line-opacity and uses the plain hover expression for fill-opacity, so
+    // driving the slider down one step is what proves the wiring — asserting
+    // only the default would pass even with onValueChange stubbed out.
     render(<MapPage />);
     addFootprints("alpha");
 
-    expect(screen.getByTestId("map-layer-opacity")).toBeTruthy();
+    const thumb = within(screen.getByTestId("map-layer-opacity")).getByRole(
+      "slider",
+    );
+    // Radix's Thumb takes keyboard focus and steps by the Slider's `step`
+    // (1, i.e. 1%) per arrow press. From the default 100% this lands the
+    // slider control's committed value at 99, i.e. opacity 0.99.
+    fireEvent.keyDown(thumb, { key: "ArrowLeft" });
+
     const [fill, line] = layerProps();
     expect((fill.paint as Record<string, unknown>)["fill-opacity"]).toEqual([
-      "case",
-      ["boolean", ["feature-state", "hover"], false],
-      0.25,
-      0.1,
+      "*",
+      0.99,
+      ["case", ["boolean", ["feature-state", "hover"], false], 0.25, 0.1],
     ]);
-    expect(line.paint).not.toHaveProperty("line-opacity");
+    expect((line.paint as Record<string, unknown>)["line-opacity"]).toBe(0.99);
   });
 });
