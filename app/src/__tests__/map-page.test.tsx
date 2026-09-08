@@ -115,6 +115,11 @@ function addFootprints(collectionId: string) {
   fireEvent.click(screen.getByTestId(`map-add-footprints-${collectionId}`));
 }
 
+function hoverFeature(feature: Record<string, unknown>, x = 12, y = 34) {
+  const onMouseMove = mapProps.current?.onMouseMove as (e: unknown) => void;
+  onMouseMove({ features: [feature], point: { x, y } });
+}
+
 beforeAll(() => {
   window.matchMedia =
     window.matchMedia ||
@@ -292,5 +297,75 @@ describe("MapPage", () => {
       ["case", ["boolean", ["feature-state", "hover"], false], 0.25, 0.1],
     ]);
     expect((line.paint as Record<string, unknown>)["line-opacity"]).toBe(0.99);
+  });
+
+  it("makes the visible footprint fills the interactive layers", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+    addFootprints("beta");
+
+    expect(mapProps.current?.interactiveLayerIds).toEqual([
+      "layer-0-fill",
+      "layer-1-fill",
+    ]);
+
+    // A hidden layer stops answering the mouse.
+    fireEvent.click(screen.getAllByTestId("map-layer-visible")[0]);
+    expect(mapProps.current?.interactiveLayerIds).toEqual(["layer-0-fill"]);
+  });
+
+  it("shows a tooltip with the item id and time while a footprint is hovered", () => {
+    render(<MapPage />);
+    addFootprints("alpha");
+
+    expect(screen.queryByTestId("map-tooltip")).toBeNull();
+
+    hoverFeature({
+      source: "layer-0",
+      id: "i1",
+      properties: { id: "i1", datetime: "2026-09-07T00:00:00Z" },
+    });
+
+    const tooltip = screen.getByTestId("map-tooltip");
+    expect(within(tooltip).getByText("i1")).toBeTruthy();
+    expect(within(tooltip).getByText(/2026-09-07/)).toBeTruthy();
+    expect(mapProps.current?.cursor).toBe("pointer");
+
+    // Moving off every feature clears it.
+    (mapProps.current?.onMouseMove as (e: unknown) => void)({
+      features: [],
+      point: { x: 1, y: 1 },
+    });
+    expect(screen.queryByTestId("map-tooltip")).toBeNull();
+    expect(mapProps.current?.cursor).toBeUndefined();
+  });
+
+  it("opens the item page in a new tab on click", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(<MapPage />);
+    addFootprints("alpha");
+
+    (mapProps.current?.onClick as (e: unknown) => void)({
+      features: [{ source: "layer-0", id: "i1", properties: { id: "i1" } }],
+      point: { x: 1, y: 1 },
+    });
+
+    expect(open).toHaveBeenCalledWith(
+      "/collections/alpha/items/i1",
+      "_blank",
+      "noopener",
+    );
+    open.mockRestore();
+  });
+
+  it("ignores a click that hit no footprint", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(<MapPage />);
+    addFootprints("alpha");
+
+    (mapProps.current?.onClick as (e: unknown) => void)({ features: [], point: { x: 1, y: 1 } });
+
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
   });
 });
