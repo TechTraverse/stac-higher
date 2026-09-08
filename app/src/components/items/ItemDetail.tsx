@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
-import { $builtInCatalog } from "@/stores/catalogStore";
+import { $builtInCatalog, $catalogs } from "@/stores/catalogStore";
+import { resolveItemLink } from "@/lib/browse/paths";
 import { useItem, useDeleteItem } from "@/lib/query/items";
 import { AppShell } from "@/components/layout/AppShell";
 import { ErrorState } from "@stac-higher/shared";
@@ -30,6 +31,7 @@ interface ItemDetailInnerProps {
 
 function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
   const catalog = useStore($builtInCatalog);
+  const catalogs = useStore($catalogs);
   const endpointUrl = catalog?.url ?? "";
   const { data: item, isLoading, error, refetch } = useItem(endpointUrl, collectionId, itemId);
   const deleteMutation = useDeleteItem(endpointUrl, collectionId);
@@ -162,7 +164,11 @@ function ItemDetailInner({ collectionId, itemId }: ItemDetailInnerProps) {
           </div>
         </div>
 
-        <ItemDetailView item={item} rasterPreview={rasterPreview} />
+        <ItemDetailView
+          item={item}
+          rasterPreview={rasterPreview}
+          resolveLink={(link) => resolveItemLink(link, catalog, catalogs)}
+        />
 
         <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
           <DialogContent>

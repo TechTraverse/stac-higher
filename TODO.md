@@ -766,7 +766,7 @@ tells it every input's `collection` + `item.id`, so it can).
       slice is not done — log it and stop. Delivery is unaffected by design
       (destinations receive the document as published, link included).
 
-- [ ] **D-2 · Render `derived_from` on the item page.** Decisions settled
+- [x] **D-2 · Render `derived_from` on the item page.** (merged 2026-09-07; live click-through on the standing GOES demo owed — lead, with D-1's) Decisions settled
       with the lead 2026-09-07: a **"Derived from" block on the Properties
       tab** (above the properties table, beside the extension badges;
       nothing rendered when the item has no such link — no empty state);

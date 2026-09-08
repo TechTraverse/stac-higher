@@ -1,4 +1,5 @@
 import type { StacCatalog } from "@/stores/catalogStore";
+import type { StacLink } from "@/lib/stac-api/types";
 
 /**
  * Route helpers for the two worlds UI-10 split apart.
@@ -150,4 +151,93 @@ export function resolveBrowseCatalog(
     );
   }
   return catalogs.find((c) => c.id === catalogId) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Item links → in-app targets (D-2).
+//
+// A `derived_from` link's href is whatever the writer put there: D-1 stamps
+// root-relative `/collections/{c}/items/{i}` (the catalog's own href), an
+// external catalog may carry absolute hrefs into itself or another catalog.
+// Resolution maps the href onto a catalog THIS browser knows — the page's own
+// first, then every configured one — and hands `itemHref` the match, so the
+// built-in catalog lands on the product page and any other on its browse page
+// with `?src=` (UI-15). Anything unmatched is an external anchor: never a
+// dead in-app route.
+// ---------------------------------------------------------------------------
+
+export interface LinkTarget {
+  href: string;
+  label: string;
+  /** True when the href matched no configured catalog and opens as written. */
+  external: boolean;
+}
+
+const ITEM_PATH = /^\/collections\/([^/?#]+)\/items\/([^/?#]+)\/?$/;
+
+function parseItemPath(path: string): { collection: string; item: string } | null {
+  const m = ITEM_PATH.exec(path.split(/[?#]/)[0]);
+  if (!m) return null;
+  try {
+    return { collection: decodeURIComponent(m[1]), item: decodeURIComponent(m[2]) };
+  } catch {
+    return null;
+  }
+}
+
+const ITEM_PATH_TAIL = /\/collections\/([^/?#]+)\/items\/([^/?#]+)\/?$/;
+
+/** The link's title, else `collection / item` when the href ends in an item
+ *  path (wherever the catalog lives), else the href's last two segments. */
+function externalLabel(link: StacLink): string {
+  if (link.title) return link.title;
+  const path = link.href.split(/[?#]/)[0];
+  const tail = ITEM_PATH_TAIL.exec(path);
+  if (tail) {
+    try {
+      return `${decodeURIComponent(tail[1])} / ${decodeURIComponent(tail[2])}`;
+    } catch {
+      // fall through to the segment label
+    }
+  }
+  const segments = path.split("/").filter(Boolean);
+  return segments.slice(-2).join(" / ") || link.href;
+}
+
+export function resolveItemLink(
+  link: StacLink,
+  pageCatalog: StacCatalog | null | undefined,
+  catalogs: readonly StacCatalog[],
+): LinkTarget {
+  const href = link.href.trim();
+  let catalog: StacCatalog | null | undefined = undefined;
+  let path: string | null = null;
+
+  if (href.startsWith("/")) {
+    // Root-relative: the catalog this page is showing.
+    catalog = pageCatalog;
+    path = href;
+  } else {
+    const candidates = [pageCatalog, ...catalogs].filter(
+      (c, i, all): c is StacCatalog => !!c && all.findIndex((o) => o?.id === c.id) === i,
+    );
+    for (const c of candidates) {
+      const base = normalizeCatalogUrl(c.url);
+      if (base && href.startsWith(`${base}/`)) {
+        catalog = c;
+        path = href.slice(base.length);
+        break;
+      }
+    }
+  }
+
+  const parsed = path === null ? null : parseItemPath(path);
+  if (!parsed) {
+    return { href: link.href, label: externalLabel(link), external: true };
+  }
+  return {
+    href: itemHref(catalog, parsed.collection, parsed.item),
+    label: link.title ?? `${parsed.collection} / ${parsed.item}`,
+    external: false,
+  };
 }

@@ -20,6 +20,7 @@ import {
   normalizeCatalogUrl,
   parseSrc,
   resolveBrowseCatalog,
+  resolveItemLink,
 } from "@/lib/browse/paths";
 import type { StacCatalog } from "@/stores/catalogStore";
 
@@ -186,5 +187,146 @@ describe("normalizeCatalogUrl", () => {
     expect(normalizeCatalogUrl("https://a.example.com/stac")).toBe(
       "https://a.example.com/stac",
     );
+  });
+});
+
+describe("resolveItemLink (D-2)", () => {
+  const catalogs = [BUILT_IN, EXTERNAL];
+  const OTHER: StacCatalog = {
+    id: "ext-2",
+    name: "Planetary",
+    url: "https://planetarycomputer.example/api/stac/v1/",
+    isDefault: false,
+  };
+
+  it("sends a root-relative href to the page's own catalog", () => {
+    // D-1's default output on the product page.
+    const t = resolveItemLink(
+      { rel: "derived_from", href: "/collections/goes-abi-mcmipc/items/scene-1" },
+      BUILT_IN,
+      catalogs,
+    );
+    expect(t).toEqual({
+      href: "/collections/goes-abi-mcmipc/items/scene-1",
+      label: "goes-abi-mcmipc / scene-1",
+      external: false,
+    });
+  });
+
+  it("sends a root-relative href on a browse page to that catalog's browser", () => {
+    const t = resolveItemLink(
+      { rel: "derived_from", href: "/collections/c1/items/i1" },
+      EXTERNAL,
+      catalogs,
+    );
+    expect(t.external).toBe(false);
+    expect(t.href).toBe(
+      "/catalogs/ext-1/collections/c1/items/i1?src=https%3A%2F%2Fstac.example.com",
+    );
+  });
+
+  it("matches an absolute href under the page catalog's URL", () => {
+    const t = resolveItemLink(
+      { rel: "derived_from", href: "https://stac.example.com/collections/c1/items/i1" },
+      EXTERNAL,
+      catalogs,
+    );
+    expect(t.external).toBe(false);
+    expect(t.href).toMatch(/^\/catalogs\/ext-1\/collections\/c1\/items\/i1\?src=/);
+  });
+
+  it("matches an absolute href under ANOTHER configured catalog, trailing slash and all", () => {
+    const t = resolveItemLink(
+      {
+        rel: "derived_from",
+        href: "https://planetarycomputer.example/api/stac/v1/collections/s2/items/tile-9",
+      },
+      BUILT_IN,
+      [...catalogs, OTHER],
+    );
+    expect(t).toEqual({
+      // `?src=` carries the stored URL verbatim, trailing slash included — the
+      // recipient's resolver normalises it (parseSrc), as for every browse link.
+      href: "/catalogs/ext-2/collections/s2/items/tile-9?src=https%3A%2F%2Fplanetarycomputer.example%2Fapi%2Fstac%2Fv1%2F",
+      label: "s2 / tile-9",
+      external: false,
+    });
+  });
+
+  it("maps an absolute href into the built-in catalog onto the product page", () => {
+    const t = resolveItemLink(
+      { rel: "derived_from", href: "http://localhost:8081/collections/prod/items/i1" },
+      EXTERNAL,
+      catalogs,
+    );
+    expect(t).toEqual({
+      href: "/collections/prod/items/i1",
+      label: "prod / i1",
+      external: false,
+    });
+  });
+
+  it("decodes the href's segments and re-encodes them for the route", () => {
+    const t = resolveItemLink(
+      { rel: "derived_from", href: "/collections/goes/items/a%20b%2Fc" },
+      BUILT_IN,
+      catalogs,
+    );
+    expect(t.label).toBe("goes / a b/c");
+    expect(t.href).toBe("/collections/goes/items/a%20b%2Fc");
+  });
+
+  it("prefers the link's title as the label", () => {
+    const t = resolveItemLink(
+      { rel: "derived_from", href: "/collections/c/items/i", title: "Source scene" },
+      BUILT_IN,
+      catalogs,
+    );
+    expect(t.label).toBe("Source scene");
+  });
+
+  it("falls through to an external anchor when nothing matches", () => {
+    const t = resolveItemLink(
+      { rel: "derived_from", href: "https://elsewhere.example/stac/collections/c/items/i?x=1" },
+      BUILT_IN,
+      catalogs,
+    );
+    expect(t).toEqual({
+      href: "https://elsewhere.example/stac/collections/c/items/i?x=1",
+      label: "c / i",
+      external: true,
+    });
+  });
+
+  it("never fabricates an in-app route for a href that is not an item path", () => {
+    expect(
+      resolveItemLink({ rel: "derived_from", href: "/collections/c" }, BUILT_IN, catalogs).external,
+    ).toBe(true);
+    expect(
+      resolveItemLink(
+        { rel: "derived_from", href: "https://stac.example.com/collections/c/items/i/assets/a" },
+        EXTERNAL,
+        catalogs,
+      ).external,
+    ).toBe(true);
+    expect(
+      resolveItemLink({ rel: "derived_from", href: "/collections/c/items/%E0%A4%A" }, BUILT_IN, catalogs)
+        .external,
+    ).toBe(true);
+  });
+
+  it("does not match a catalog whose URL is merely a string prefix", () => {
+    const decoy: StacCatalog = {
+      id: "ext-3",
+      name: "prefix",
+      url: "https://stac.example",
+      isDefault: false,
+    };
+    const t = resolveItemLink(
+      { rel: "derived_from", href: "https://stac.example.com/collections/c/items/i" },
+      null,
+      [decoy],
+    );
+    expect(t.external).toBe(true);
   });
 });
