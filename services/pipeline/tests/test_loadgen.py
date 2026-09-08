@@ -286,6 +286,17 @@ def test_the_queue_backlog_query_names_the_schema_procrastinate_actually_uses():
     assert "procrastinate.procrastinate_jobs" in TABLE_QUERIES["procrastinate_todo"]
 
 
+def test_sampler_watches_the_pgstac_query_queue():
+    # M3-A: with use_queue on, the queue's depth is the only outside-the-process
+    # evidence the session GUC is in effect, and its drain cost scales with
+    # partition count — so both are sampled alongside the ledger counts.
+    assert TABLE_QUERIES["pgstac_query_queue"] == "SELECT count(*) FROM pgstac.query_queue"
+    assert TABLE_QUERIES["pgstac_partitions"] == "SELECT count(*) FROM pgstac.partitions"
+    from pipeline.loadgen.report import HEADLINE
+
+    assert ("BACKLOG pgstac queue", "pgstac_query_queue") in HEADLINE
+
+
 # ---------------------------------------------------------------------------
 # per-job mean duration
 # ---------------------------------------------------------------------------

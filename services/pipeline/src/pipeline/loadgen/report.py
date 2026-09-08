@@ -25,6 +25,7 @@ HEADLINE = (
     ("ingest failed", 'pipeline_ingest_events_total{stage="failed"}'),
     ("ingest bytes", "pipeline_ingest_bytes_total"),
     ("catalog items", "pgstac_items"),
+    ("BACKLOG pgstac queue", "pgstac_query_queue"),
     ("delivered", 'pipeline_deliveries_total{outcome="delivered"}'),
     ("delivery dead", 'pipeline_deliveries_total{outcome="dead"}'),
     ("BACKLOG seen", "ingest_files_seen"),

@@ -76,6 +76,18 @@ runs are queueing faster than the executor drains them, not that ingest itself
 is slow. `teardown` removes the installed process (runs → revisions → the
 process row) alongside the usual association and connection cleanup.
 
+## Reading the pgstac queue (M3-A)
+
+With `use_queue` on, `catalog items` climbs at the write rate while `BACKLOG
+pgstac queue` stays flat and small — it is bounded by the number of partitions
+written since the last drain, not by items. Two things to record per run: the
+drain tick's mean seconds (`pipeline.pgstac_queue_drain` in the per-job table)
+against `pgstac_partitions` in the end-of-window counts, because that cost
+scales with partition count and is what sets the drain cadence; and that the
+queue returns to 0 within a tick of the feed ending. A queue that only grows
+means the drainer is not running — check `PGSTAC_QUEUE_DRAINER` and the
+`pipeline_pgstac_query_queue_oldest_seconds` gauge on `/metrics`.
+
 ## Isolating stages
 
 `seed-outbox` inserts `item_events` rows directly, so the dispatcher can be
