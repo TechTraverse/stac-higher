@@ -58,3 +58,13 @@ def test_asset_href_base_defaults_and_env(monkeypatch):
 
     assert Settings.from_env({}).asset_href_base == "/api/assets"
     assert Settings.from_env({"ASSET_HREF_BASE": "/assets"}).asset_href_base == "/assets"
+
+
+def test_catalog_href_base_defaults_and_env():
+    """D-1: `derived_from` hrefs are root-relative by default (mirroring
+    ASSET_HREF_BASE); an absolute base makes them absolute."""
+    assert Settings.from_env({}).catalog_href_base == "/"
+    assert (
+        Settings.from_env({"CATALOG_HREF_BASE": "https://c.example/stac"}).catalog_href_base
+        == "https://c.example/stac"
+    )

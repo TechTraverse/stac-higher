@@ -20,7 +20,11 @@ import logging
 from typing import Any
 
 from pipeline.config import Settings
-from pipeline.finalize.process_run import ProcessRunRecorder, ProcessRunResolver
+from pipeline.finalize.process_run import (
+    DEFAULT_CATALOG_HREF_BASE,
+    ProcessRunRecorder,
+    ProcessRunResolver,
+)
 from pipeline.finalize.push import PushRecorder, PushResolver, build_push_request
 from pipeline.finalize.repo import PgFinalizeRepo
 from pipeline.finalize.seam import (
@@ -55,6 +59,8 @@ def build_hooks(
     writer: PgPgstacWriter,
     store: PlatformObjectStore,
     process_repo: PgProcessRepo,
+    *,
+    catalog_href_base: str = DEFAULT_CATALOG_HREF_BASE,
 ) -> dict[str, ProducerHooks]:
     """Both producers' hook pairs in ONE registry.
 
@@ -68,7 +74,7 @@ def build_hooks(
             resolver=PushResolver(repo), recorder=PushRecorder(repo, writer)
         ),
         PRODUCER_PROCESS_RUN: ProducerHooks(
-            resolver=ProcessRunResolver(store=store),
+            resolver=ProcessRunResolver(store=store, catalog_href_base=catalog_href_base),
             recorder=ProcessRunRecorder(repo=process_repo),
         ),
     }
@@ -79,7 +85,13 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         store = PlatformObjectStore(
             client=build_platform_client(settings), bucket=settings.staging_bucket
         )
-        return build_hooks(repo, writer, store, PgProcessRepo(settings.database_url))
+        return build_hooks(
+            repo,
+            writer,
+            store,
+            PgProcessRepo(settings.database_url),
+            catalog_href_base=settings.catalog_href_base,
+        )
 
     async def finalize_job(
         upload_id: str,
