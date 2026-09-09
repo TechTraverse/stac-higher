@@ -1199,4 +1199,28 @@ object stores only).
   stactools packages ship without a live gate), I-106 (no static
   reference-asset input for processes — what city lights would need).
 
+- **Post-review fix wave 2026-09-08 (`ai/review-fixes`).** Four findings from
+  the review of M3-A + V-2, all fixed and merged; full e2e now **46 passed, 1
+  skipped** (was 45 passed, 1 failed).
+  1. **The full e2e suite had been RED since G-1 (2026-09-01)** and no slice
+     noticed, because a slice runs only its own filtered spec
+     (`test:e2e:ci -- map`). `connections.spec.ts`'s `getByLabel("Bucket")`
+     matches by SUBSTRING, so G-1's "Anonymous (public bucket)" switch made it
+     resolve to two elements. **Run the whole suite at least at queue
+     boundaries**, not just the slice's spec — a filtered run cannot tell you
+     the suite is green.
+  2. **Any test that creates and drops a pgstac collection must now clear its
+     partition's queue rows before dropping it.** Since M3-A the writer runs
+     with `use_queue` ON, so an upsert QUEUES
+     `update_partition_stats('_items_<key>')`; `delete_collection` then strands
+     it and the next drain tick errors it into `query_queue_history` forever
+     (measured: 4 orphans per `test_integration_itemize.py` run, errors 4 -> 8).
+     `test_integration_pgstac_queue.py` had the right shape; the older itemize
+     test did not, and now does. Applies to any future DB-gated test.
+  3. A failed drain CALL now increments
+     `pipeline_pgstac_query_queue_drain_failures_total`, not
+     `..._queries_total{outcome="error"}` — "the drainer is broken" and "one
+     queued statement failed" want different responses.
+  4. ISSUES.md heading spacing.
+
 (append here during iterations)
