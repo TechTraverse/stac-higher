@@ -164,6 +164,13 @@ here rather than assumed.
 
 ### 4.2 Where the settings are set: session-scoped, by the writer
 
+> **Corrected 2026-09-08, after M3-A shipped and was measured.** The decision
+> below is right for `use_queue` and **wrong for `update_collection_extent`**.
+> The second setting is read in the session that *drains* the queue, never in
+> the one that writes, so setting it on the writer is a silent no-op — it
+> costs nothing and does nothing. Everything below is left as written; the
+> mechanism and the correction are in §4.4.
+
 **Decision (lead delegated 2026-09-01): the pipeline's pgstac writer sets both
 settings as session GUCs on its own connection. Deployment configuration sets
 nothing.**
@@ -186,6 +193,21 @@ can be applied together on one connection — which is what the lead asked for
 ("whatever sets `use_queue` should also set `update_collection_extent`") and
 what M3-B's pool makes natural: the two `SET`s belong in the pool's
 `on_connect` hook.
+
+> **Corrected 2026-09-08.** The last sentence is the one that misleads, and it
+> is the sentence the next slice would have acted on. The two `SET`s do **not**
+> belong together in one `on_connect` hook. What shipped:
+>
+> | connection | `use_queue` | `update_collection_extent` |
+> |---|---|---|
+> | the writer's pool (`db/pgstac_session.py`) | **ON** | on, but inert here |
+> | the drainer (`stac/query_queue.py`, `DRAIN_CONNECTION_SQL`) | **explicitly FALSE** | **ON** |
+> | M3-B's async repo pool | neither | neither |
+>
+> The lead's instruction — "whatever sets `use_queue` should also set
+> `update_collection_extent`" — was a reasonable reading of the pgstac docs and
+> is preserved above as the record. It happens not to be implementable: the two
+> settings are consumed in different sessions. See §4.4.
 
 Chosen over writing the `pgstac_settings` table because:
 
@@ -236,17 +258,67 @@ database-side drainer is already configured, so the two cannot fight.
 `SELECT`** (a `SELECT` errors outright, so a wrong drainer fails loudly rather
 than silently no-opping).
 
-### 4.4 `update_collection_extent` — on, alongside `use_queue`
+### 4.4 `update_collection_extent` — on, but on the DRAINER's connection
 
 **Decision (lead 2026-09-01): `true`, set on the same connection as
 `use_queue`.**
 
+> **Corrected 2026-09-08, during M3-A. The decision holds — `true` — but the
+> connection named above is the wrong one, and setting it there delivers
+> nothing.**
+>
+> **The mechanism.** The item trigger calls `update_partition_stats_q`, whose
+> whole body is `PERFORM run_or_queue(format('SELECT update_partition_stats(…)'))`.
+> `run_or_queue` reads `use_queue` **in the calling session** — so with the
+> queue on, the writer's session queues the statement and returns. The
+> `IF get_setting_bool('update_collection_extent')` test lives *inside*
+> `update_partition_stats` (pgstac 0.9.11 SQL ~L2623), which by then no longer
+> runs in the writer's session at all. It runs later, in whichever session
+> executes `run_queued_queries()`. That session falls back to the
+> `pgstac_settings` table, where the value is `'false'`.
+>
+> So the writer sets a flag the writer never reads, and the session that does
+> read it never had it set. Nothing errors; the queue drains, statistics
+> update, throughput improves. The extents simply never move — which means the
+> gap this section exists to close (below) stayed open while looking closed.
+> Turning the feature on is what made it unreachable.
+>
+> **What shipped instead.** `update_collection_extent` is set **on the drain
+> connection** (`stac/query_queue.py`, `DRAIN_CONNECTION_SQL`). Two details
+> that are not obvious and are load-bearing:
+>
+> 1. **`use_queue` is set explicitly `FALSE` on that same connection**, not
+>    merely left unset. `get_setting` resolves conf → session GUC →
+>    `pgstac_settings`, so "unset" inherits whatever the table (or an
+>    `ALTER DATABASE` / `ALTER ROLE`) says. An operator enabling the queue
+>    globally would otherwise silently re-arm the bug in 2.
+> 2. **The drainer must not have `use_queue` on**, because the extent branch
+>    calls `run_or_queue` *again*. A drain session with the queue on would
+>    re-queue the extent `UPDATE` instead of executing it — deferring it one
+>    hop further on every tick, forever, with no error and a queue that never
+>    empties.
+>
+> The two connections therefore carry **opposite** pairings. That looks like a
+> mistake to anyone reading it fresh, which is exactly why it is written down
+> here and commented at both call sites.
+>
+> **Proven, not argued.** `services/pipeline/tests/test_integration_pgstac_queue.py`
+> (DB-gated, run against the compose Postgres 2026-09-08) writes an item whose
+> geometry lies outside its collection's initial extent, asserts the extent is
+> **still** the world bbox before the drain, drains, and asserts it is then the
+> item's bbox. The pre-drain assertion is what stops the test passing
+> vacuously. Confirmed live the same day: the standing demo's collections now
+> advertise real CONUS extents (`[-142.69, 14.56, -52.92, 55.31]`) rather than
+> `[-180,-90,180,90]`.
+
 It gates a queued `UPDATE collections SET content = jsonb_set(…,
 collection_extent(…))` fired from inside `update_partition_stats`.
 
-It closes a gap that predates M3: **nothing maintains collection extents
-today.** Every collection sits at the extent it was created with — locally, all
-of them are still `[-180,-90,180,90]`. The platform's only `collection_extent`
+It closes a gap that predates M3: **before M3-A, nothing maintained collection
+extents at all.** Every collection sat at the extent it was created with —
+locally, all of them were still `[-180,-90,180,90]`. (Present tense as
+originally written; as of 2026-09-08 the drain maintains them — see the
+correction above.) The platform's only `collection_extent`
 code is the ingest *geometry fallback* (reading a collection's declared extent
 to stamp an item's geometry), never a writer. So the advertised extent of every
 collection is operator-declared and permanently stale.
@@ -257,9 +329,12 @@ stats, **not the items**. It is O(partitions), not O(items). Cheap *given*
 stats are being maintained, and `use_queue` is precisely what makes maintaining
 them affordable. On the write path it never would have been.
 
-Because it is session-scoped alongside `use_queue`, extents are refreshed by
-the bulk writer's activity and by nothing else — which is the same trade as
-§4.2 and for the same reason.
+Because it is session-scoped on the drainer, extents are refreshed by the
+drain tick and by nothing else — the same shape of trade as §4.2 (only the
+bulk path pays, and only the bulk path benefits), but bounded by the drain
+cadence rather than by an individual write. A collection's extent is therefore
+at most one tick stale, and indefinitely stale if the drainer stops — which is
+a second reason the stale-queue WARNING in §4.5 matters.
 
 ### 4.5 Where the database cost actually lands
 
@@ -366,7 +441,11 @@ deleted, because the *reasoning* is what a later reader needs.
    concurrency`) is the documented formula for sizing it per deployment.
 
 3. **`update_collection_extent` — SETTLED: `true`**, on the same connection as
-   `use_queue` (§4.4).
+   `use_queue` (§4.4). **Corrected 2026-09-08: still `true`, but on the
+   DRAINER's connection, not the writer's — the setting is read in the session
+   that drains the queue. The writer additionally carries `use_queue` ON and
+   the drainer carries it explicitly FALSE, so the two connections hold
+   opposite pairings. §4.4 has the mechanism and the proof.**
 
 4. **Is M3-E (batching) in M3 — SETTLED: it is the cut line**, per the lead's
    read that it is an optimisation rather than a defect fix and that speed can
@@ -419,6 +498,21 @@ rather than write volume, and the residual risk is search-planner quality
 between drains — which is a *performance* degradation on reads, not a
 correctness one. What the spec should not do is ship the setting without a
 depth metric, which is now §5's explicit requirement.
+
+> **Corrected 2026-09-08, after M3-A shipped: the concession above is too
+> generous to itself.** "A performance degradation on reads, not a correctness
+> one" is false for one case, found during M3-A's own review and logged as
+> **I-114**. A *newly created* partition — a new collection, or a new month on
+> a `partition_trunc` collection — has no row in `pgstac.partition_steps` until
+> the queue drains, and `chunker` joins the search planner's relations against
+> that matview. A partition missing from it contributes no chunk range and is
+> **silently dropped from datetime-ordered STAC search**: an absence, not a
+> slowdown. Existing partitions are unaffected (their ranges are already in the
+> matview), so this is bounded to newly-written partitions and to one drain
+> tick — and is UNBOUNDED if the drainer stops. That is a second, and stronger,
+> reason the stale-queue WARNING and the depth/age gauges are load-bearing
+> rather than garnish: they are the only signal standing between a stopped
+> drainer and data that is in the catalog but cannot be searched for.
 
 **"`concurrency = 1` is the default for a reason — maybe Procrastinate expects
 one job at a time."** It does not; `WORKER_CONCURRENCY = 1` is a conservative
