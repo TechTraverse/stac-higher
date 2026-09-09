@@ -1165,6 +1165,7 @@ exist before this branch.
 - Tracked in: `services/pipeline/src/pipeline/metrics.py` (queue-depth gauge
   comment), `services/pipeline/README.md` (`PGSTAC_QUEUE_DRAINER`); found in
   the M3-A final whole-branch review.
+
 ## Map page (V queue, 2026-09-07)
 
 ### I-115 · Layer opacity slider has no accessible name 🟡

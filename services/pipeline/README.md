@@ -392,6 +392,13 @@ docker-compose — curl-verifiable; ROADMAP §8). Instrument map
   (gauges, set by the drain tick) and `pipeline_pgstac_query_queue_queries_total{outcome}`
   — the only outside-the-process evidence the writer's session-scoped
   `use_queue` is in effect, and the alarm for a drainer that stopped (M3-A).
+  `pipeline_pgstac_query_queue_drain_failures_total` counts ticks whose `CALL`
+  did not complete at all, and is deliberately NOT folded into
+  `..._queries_total{outcome="error"}`: that label counts individual queued
+  STATEMENTS pgstac ran and recorded an error for (a dropped partition, say),
+  which is routine, while a drain failure means nothing ran and the queue is
+  growing. Alert on the failure counter and on the age gauge; the statement
+  errors are a lower-priority signal.
 
 Logging is structured JSON via `log.py` (`configure_logging`); log data
 belongs in `extra={...}` fields, not the message string.

@@ -49,6 +49,7 @@ __all__ = [
     "JOB_SECONDS",
     "METRICS_CONTENT_TYPE",
     "PGSTAC_QUEUE_DEPTH",
+    "PGSTAC_QUEUE_DRAIN_FAILURES",
     "PGSTAC_QUEUE_OLDEST_SECONDS",
     "PGSTAC_QUEUE_QUERIES",
     "REGISTRY",
@@ -186,6 +187,16 @@ PGSTAC_QUEUE_QUERIES = Counter(
     "pipeline_pgstac_query_queue_queries_total",
     "Queued pgstac statements executed by the pipeline's drain tick",
     ["outcome"],  # ok | error (pgstac records the error in query_queue_history)
+    registry=REGISTRY,
+)
+PGSTAC_QUEUE_DRAIN_FAILURES = Counter(
+    "pipeline_pgstac_query_queue_drain_failures_total",
+    "Drain ticks whose CALL pgstac.run_queued_queries() did not complete "
+    "(connection refused, permissions, a transaction-block error). Distinct "
+    "from PGSTAC_QUEUE_QUERIES{outcome=\"error\"}, which counts individual "
+    "QUEUED STATEMENTS pgstac executed and recorded an error for: one is "
+    "'the drainer is broken', the other is 'a statement failed', and an "
+    "operator needs to tell them apart.",
     registry=REGISTRY,
 )
 

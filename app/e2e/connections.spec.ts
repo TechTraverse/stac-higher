@@ -22,8 +22,11 @@ test.describe("Connections page", () => {
   test("opens the wizard and renders per-protocol fields", async ({ page }) => {
     await page.getByRole("button", { name: "Add Connection" }).first().click();
 
-    // Default protocol is s3.
-    await expect(page.getByLabel("Bucket")).toBeVisible();
+    // Default protocol is s3. Matched by ROLE, not by label alone: G-1 added
+    // an "Anonymous (public bucket)" switch to this form, and getByLabel does
+    // substring matching, so getByLabel("Bucket") resolves to both the input
+    // and that switch — a strict-mode violation, not a missing field.
+    await expect(page.getByRole("textbox", { name: "Bucket" })).toBeVisible();
     await expect(page.getByLabel("Access key ID")).toBeVisible();
 
     // Switch to sftp → SSH-family config + credential fields appear.
@@ -32,7 +35,7 @@ test.describe("Connections page", () => {
     await page.getByRole("radio", { name: "sftp", exact: true }).click();
     await expect(page.getByLabel("Host")).toBeVisible();
     await expect(page.getByLabel("Private key")).toBeVisible();
-    await expect(page.getByLabel("Bucket")).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "Bucket" })).toHaveCount(0);
   });
 
   test("blocks submit with validation errors on an empty form", async ({
