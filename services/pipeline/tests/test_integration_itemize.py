@@ -55,9 +55,34 @@ async def collection():
     }
     async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
         await conn.execute("SELECT pgstac.create_collection(%s::jsonb)", (json.dumps(coll),))
-    yield COLLECTION
-    async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
-        await conn.execute("SELECT pgstac.delete_collection(%s)", (COLLECTION,))
+        # Resolve the partition name WHILE the collection exists — teardown
+        # needs it after `delete_collection` has taken the row (and the key)
+        # with it. pgstac names queued statements after the PARTITION
+        # (`_items_<key>`, a serial), never after the collection id.
+        cur = await conn.execute("SELECT key FROM pgstac.collections WHERE id = %s", (COLLECTION,))
+        partition = f"_items_{(await cur.fetchone())[0]}"
+    try:
+        yield COLLECTION
+    finally:
+        # M3-A made this cleanup load-bearing: the writer now runs with
+        # `pgstac.use_queue` ON, so each upsert above QUEUES a
+        # `update_partition_stats('<partition>')` instead of running it
+        # inline. Dropping the collection without clearing them leaves
+        # statements naming a partition that no longer exists; the next
+        # drain tick (`pipeline.pgstac_queue_drain`, every minute) executes
+        # each one, gets `relation "<partition>" does not exist`, and writes
+        # an error row to `query_queue_history` — permanent noise on a shared
+        # database, and an error-rate signal an operator would chase. The
+        # queue self-heals (pgstac removes the row either way), so this is
+        # hygiene, not correctness. Quoted pattern so `_items_3` cannot match
+        # `_items_34`. Same shape as tests/test_integration_pgstac_queue.py.
+        pattern = f"%'{partition}'%"
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
+            await conn.execute("DELETE FROM pgstac.query_queue WHERE query ILIKE %s", (pattern,))
+            await conn.execute(
+                "DELETE FROM pgstac.query_queue_history WHERE query ILIKE %s", (pattern,)
+            )
+            await conn.execute("SELECT pgstac.delete_collection(%s)", (COLLECTION,))
 
 
 async def test_pgstac_schema_version_matches_pinned_pypgstac():

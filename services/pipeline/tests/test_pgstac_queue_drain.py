@@ -144,6 +144,7 @@ async def test_drain_failure_still_publishes_before_sample_prunes_and_is_attribu
     # is exactly what must stay visible.
     repo = _RaisingDrainRepo(samples=[QueueSample(depth=7, oldest_age_seconds=12.0)])
     err_before = _counter(metrics.PGSTAC_QUEUE_QUERIES, outcome="error")
+    fail_before = metrics.PGSTAC_QUEUE_DRAIN_FAILURES._value.get()
 
     with caplog.at_level(logging.ERROR, logger="pipeline.stac.query_queue"):
         result = await drain_tick(repo, mode="pipeline", stale_after_seconds=300, history_days=7)
@@ -156,7 +157,10 @@ async def test_drain_failure_still_publishes_before_sample_prunes_and_is_attribu
     assert result.pruned == 3 and repo.prune_calls == [7]
     assert _gauge(metrics.PGSTAC_QUEUE_DEPTH) == 7
     assert _gauge(metrics.PGSTAC_QUEUE_OLDEST_SECONDS) == 12.0
-    assert _counter(metrics.PGSTAC_QUEUE_QUERIES, outcome="error") == err_before + 1
+    # A failed CALL ran NO statements, so the per-statement counter must not
+    # move; the drain-failure counter is what carries it.
+    assert _counter(metrics.PGSTAC_QUEUE_QUERIES, outcome="error") == err_before
+    assert metrics.PGSTAC_QUEUE_DRAIN_FAILURES._value.get() == fail_before + 1
     record = next(r for r in caplog.records if r.levelno == logging.ERROR)
     assert record.mode == "pipeline"
     assert record.depth == 7

@@ -179,7 +179,7 @@ async def drain_tick(
     the tick: this module exists to make a stopped drainer visible via the
     gauges and the stale WARNING, and those are exactly what a propagating
     exception here would suppress. The failure is instead attributed via the
-    `error` outcome counter and logged, `after` stays `None` so the gauges
+    dedicated `PGSTAC_QUEUE_DRAIN_FAILURES` counter and logged, `after` stays `None` so the gauges
     publish the `before` sample (the existing after-or-before fallback below),
     and the tick still prunes and evaluates staleness. The tick does not
     re-raise: the counter + log ARE this module's alerting channel, and
@@ -195,7 +195,13 @@ async def drain_tick(
         try:
             drained = await repo.drain()
         except Exception:
-            metrics.PGSTAC_QUEUE_QUERIES.labels(outcome="error").inc()
+            # The whole CALL failed, so NO queued statement ran — attributing
+            # this to PGSTAC_QUEUE_QUERIES{outcome="error"} (which counts
+            # statements pgstac executed and recorded an error for) would make
+            # "the drainer is broken" indistinguishable from "one statement
+            # failed". They want different responses, so they get different
+            # counters.
+            metrics.PGSTAC_QUEUE_DRAIN_FAILURES.inc()
             logger.exception(
                 "pgstac query queue drain failed — the CALL did not complete",
                 extra={
