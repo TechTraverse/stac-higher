@@ -14,6 +14,7 @@ import logging
 import uvicorn
 
 from pipeline.config import Settings
+from pipeline.db.pool import close_pools
 from pipeline.health import create_health_app
 from pipeline.jobs import (
     backfill,
@@ -81,22 +82,22 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
 async def run(settings: Settings) -> None:
     queue = build_queue(settings)
 
-    logger.info("applying queue schema", extra={"schema": settings.queue_schema})
-    await queue.setup()
-
-    server = uvicorn.Server(
-        uvicorn.Config(
-            create_health_app(queue),
-            host="0.0.0.0",  # container-internal bind
-            port=settings.health_port,
-            log_config=None,  # propagate uvicorn logs to our JSON handler
-        )
-    )
-    logger.info(
-        "pipeline service starting",
-        extra={"health_port": settings.health_port, "queue_backend": queue.name},
-    )
     try:
+        logger.info("applying queue schema", extra={"schema": settings.queue_schema})
+        await queue.setup()
+
+        server = uvicorn.Server(
+            uvicorn.Config(
+                create_health_app(queue),
+                host="0.0.0.0",  # container-internal bind
+                port=settings.health_port,
+                log_config=None,  # propagate uvicorn logs to our JSON handler
+            )
+        )
+        logger.info(
+            "pipeline service starting",
+            extra={"health_port": settings.health_port, "queue_backend": queue.name},
+        )
         # Slice C: the NOTIFY-woken dispatch loop runs alongside the worker as
         # the primary wake path; the worker's minute dispatch_poll is fallback.
         await asyncio.gather(
@@ -105,6 +106,12 @@ async def run(settings: Settings) -> None:
             dispatch.build_notify_listener(queue, settings),
         )
     finally:
+        # Both pools before the queue: `queue.aclose()` releases
+        # Procrastinate's own pool, and nothing after that point may still
+        # want a connection. The async pool serves the repos (M3-B); the sync
+        # one serves the pgstac writer (M3-A) — separate objects, separate
+        # runtimes, both ours to release.
+        await close_pools()
         close_writer_pools()
         await queue.aclose()
 

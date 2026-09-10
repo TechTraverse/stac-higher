@@ -56,3 +56,51 @@ async def test_heartbeat_updates_state_and_health():
     assert body["heartbeat"]["count"] == 1
     assert body["heartbeat"]["last_timestamp"] == 1_700_000_000
     assert body["heartbeat"]["last_run_at"] is not None
+
+
+def test_health_reports_no_pools_before_any_are_opened(monkeypatch):
+    """M3-B: the block is always present, and empty is a truthful answer —
+    a process that has not touched Postgres has opened no pool."""
+    from pipeline.db import pool as dbpool
+
+    monkeypatch.setattr(dbpool, "_pools", {})
+    body = make_client(InMemoryQueue(), HeartbeatState()).get("/health").json()
+    assert body["db_pool"] == {}
+
+
+def test_health_reports_db_pool_stats(monkeypatch):
+    """The pool is session-scoped and otherwise invisible from outside the
+    process; this block is the operator-visible evidence it is in use
+    (spec §5: observability is the mitigation, not garnish)."""
+    from pipeline.db import pool as dbpool
+
+    class StubPool:
+        name = "database:5432/postgis"
+
+        def get_stats(self):
+            return {
+                "pool_min": 2,
+                "pool_max": 16,
+                "pool_size": 4,
+                "pool_available": 3,
+                "requests_waiting": 0,
+                "connections_num": 4,
+            }
+
+    monkeypatch.setattr(
+        dbpool, "_pools", {"postgresql://username:password@database:5432/postgis": StubPool()}
+    )
+
+    body = make_client(InMemoryQueue(), HeartbeatState()).get("/health").json()
+    assert body["db_pool"] == {
+        "database:5432/postgis": {
+            "pool_min": 2,
+            "pool_max": 16,
+            "pool_size": 4,
+            "pool_available": 3,
+            "requests_waiting": 0,
+            "connections_num": 4,
+        }
+    }
+    # The DSN's password must never reach an unauthenticated endpoint.
+    assert "password" not in str(body["db_pool"])
