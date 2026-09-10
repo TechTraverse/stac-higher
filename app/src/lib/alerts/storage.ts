@@ -40,6 +40,8 @@ interface AlertRow {
   group_id: string | null;
   connection_name: string | null;
   collection_id: string | null;
+  process_id: string | null;
+  source_id: string | null;
 }
 
 export interface ApiAlert {
@@ -65,6 +67,13 @@ export interface ApiAlert {
   /** The alert's own collection anchor (P7-H `push_rejected`), falling back
    * to the association's collection for display. */
   collection_id: string | null;
+  /** The EFFECTIVE process for a process-anchored alert: the alert's own
+   * `process_id`, else the parent of its `source_id` (`process_stalled`
+   * anchors on a SOURCE — I-63). Same read-time COALESCE shape as
+   * `collection_id`. Null for every non-process kind. (I-84) */
+  process_id: string | null;
+  /** The raw `process_sources.id` anchor, when the alert has one. */
+  source_id: string | null;
 }
 
 /** ApiAlert plus nothing extra — the group is already on the shape; alias for
@@ -83,7 +92,9 @@ const ALERT_SELECT = `
          a.acknowledged_at, a.acknowledged_by, a.resolved_at,
          COALESCE(c.group_id, nch.group_id, cs.group_id, pr.group_id) AS group_id,
          c.name AS connection_name,
-         COALESCE(a.collection_id, cc.collection_id) AS collection_id
+         COALESCE(a.collection_id, cc.collection_id) AS collection_id,
+         COALESCE(a.process_id, ps.process_id) AS process_id,
+         a.source_id
     FROM stac_higher.alerts a
     LEFT JOIN stac_higher.collection_connections cc ON cc.id = a.association_id
     LEFT JOIN stac_higher.connections c
@@ -116,6 +127,8 @@ function toApiAlert(row: AlertRow): ApiAlert {
     group_id: row.group_id,
     connection_name: row.connection_name,
     collection_id: row.collection_id,
+    process_id: row.process_id,
+    source_id: row.source_id,
   };
 }
 

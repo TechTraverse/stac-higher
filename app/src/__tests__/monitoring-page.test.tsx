@@ -86,6 +86,8 @@ function alert(overrides: Partial<Alert> = {}): Alert {
     group_id: "g1",
     connection_name: "src",
     collection_id: "sentinel-2",
+    process_id: null,
+    source_id: null,
     ...overrides,
   };
 }

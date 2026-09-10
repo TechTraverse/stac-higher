@@ -37,6 +37,8 @@ function alert(over: Partial<Alert> = {}): Alert {
     group_id: null,
     connection_name: null,
     collection_id: null,
+    process_id: null,
+    source_id: null,
     ...over,
   } as Alert;
 }
