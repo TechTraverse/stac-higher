@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import type { MapLayer } from "@/lib/map/state";
 
 const { useLayerDataMock } = vi.hoisted(() => ({ useLayerDataMock: vi.fn() }));
@@ -41,6 +41,12 @@ function renderSelect(candidates: string[], asset: string | undefined = candidat
   return onAssetChange;
 }
 
+beforeAll(() => {
+  // Radix Select needs these in jsdom (same as delivery-section.test.tsx).
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  window.HTMLElement.prototype.hasPointerCapture = vi.fn() as never;
+});
+
 beforeEach(() => vi.clearAllMocks());
 
 describe("LayerAssetSelect", () => {
@@ -48,6 +54,15 @@ describe("LayerAssetSelect", () => {
     renderSelect(["visual", "cmi"]);
 
     expect(screen.getByRole("combobox", { name: "Layer asset" })).toBeTruthy();
+  });
+
+  it("reports the chosen key to onAssetChange", () => {
+    const onAssetChange = renderSelect(["visual", "cmi"]);
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Layer asset" }));
+    fireEvent.click(screen.getByRole("option", { name: "cmi" }));
+
+    expect(onAssetChange).toHaveBeenCalledWith("cmi");
   });
 
   it("renders nothing when the collection publishes one tileable key", () => {

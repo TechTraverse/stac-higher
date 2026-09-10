@@ -1,10 +1,12 @@
 /**
  * The /map "Add layer" picker (spec §4.5).
  *
- * V-2 offers the Products section with Footprints only. The Imagery option
- * (gated on serving + a tileable-asset probe) is V-3 and the Vector tiles
- * section is V-4; both are marked below rather than stubbed, because a
- * disabled control with nothing behind it reads as a broken feature.
+ * The Products section always offers Footprints; it offers Imagery too, but
+ * only once `AddLayerCollectionRow` confirms the product advertises serving
+ * AND a probe of its newest items yields a tileable asset — an imagery layer
+ * with nothing to draw would violate spec §4.7. The Vector tiles section
+ * (V-4) is marked below rather than stubbed, because a disabled control with
+ * nothing behind it reads as a broken feature.
  */
 import { useState } from "react";
 import { Plus } from "lucide-react";

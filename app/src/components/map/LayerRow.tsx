@@ -1,6 +1,7 @@
 /**
  * One row of the /map layer list (spec §4.5): identity, the quiet "nothing
- * to draw" line, and the visibility/opacity/order/remove controls.
+ * to draw" line, the imagery row's asset select, and the
+ * visibility/opacity/order/remove controls.
  */
 import {
   ChevronDown,
@@ -81,7 +82,10 @@ export function LayerRow({
       className="rounded-md border border-border bg-background p-2.5"
     >
       <div className="flex items-center gap-2">
-        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <Icon
+          className="h-4 w-4 shrink-0 text-muted-foreground"
+          data-testid={`map-layer-icon-${layer.kind}`}
+        />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           {layer.title}
         </span>
