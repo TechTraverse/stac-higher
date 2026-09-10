@@ -43,6 +43,11 @@ uv run python -m pipeline.loadgen --label run1 teardown
 `--label` namespaces one run's rows and objects, so runs can be compared
 without a `docker compose down -v` between them. Every subcommand is
 re-runnable: `setup` reuses what exists, `teardown` tolerates what is gone.
+Since M3-B0 teardown is queue-aware: it resolves the probe collection's
+partition name, deletes that partition's rows from `pgstac.query_queue` and
+`query_queue_history`, and only then calls `pgstac.delete_collection`, so a
+drain tick after a teardown never errors on a dropped partition (the JSON
+output reports `queue_rows_cleared`).
 
 ## The two feed profiles
 
