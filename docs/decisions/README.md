@@ -25,7 +25,7 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0017](0017-product-centric-ui-shell.md) | Product-centric UI shell, NOAA theme, terminology adoption | accepted (2026-08-31) | UI remodel |
 | [0018](0018-process-inputs-and-network-profiles.md) | Process inputs (staged manifest + source-collection read grants) and network profiles | accepted (2026-09-01) | GOES loop (G-2) |
 | [0019](0019-process-compute-kubernetes-kueue.md) | Process compute: Kubernetes Jobs + Kueue, hardware profiles as the portable vocabulary | accepted (2026-09-04; proposed 2026-09-02; supersedes 0013's cloud-backend half) | K queue / Phase 8 |
-| [0020](0020-pgstac-session-guc-pairings.md) | pgstac session GUC pairings: the writer and the drainer carry opposite settings | accepted (2026-09-09; records M3-A as shipped 2026-09-08) | M3 (M3-A) |
+| [0020](0020-pgstac-session-guc-pairings.md) | pgstac session GUC pairings: the writer and the drainer carry OPPOSITE settings | accepted (2026-09-09; records M3-A as shipped 2026-09-08) | M3 (M3-A) |
 
 Proposed ADRs establish no invariants until accepted (via the Phase 9 design
 spec); their draft invariants live inside the documents.

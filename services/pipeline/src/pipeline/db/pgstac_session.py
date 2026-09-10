@@ -28,7 +28,7 @@ from typing import Protocol
 #: advertised extent — but that call runs later, in whichever session
 #: DRAINS the queue (`run_queued_queries()`), so setting it here on the
 #: writer has no effect on that nested call: `pgstac_settings` defaults it
-#: to `false`, and the drainer is the session that must carry it (Task 4).
+#: to `false`, and the drainer is the session that must carry it (ADR 0020).
 #: It is still set here, on the writer, because spec §4.2 directs both
 #: statements together and doing so is harmless — the writer's own copy of
 #: the GUC is simply never read by anything. The two travel together in

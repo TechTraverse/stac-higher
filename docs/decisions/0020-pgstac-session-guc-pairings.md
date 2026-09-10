@@ -49,7 +49,7 @@ Two connection kinds, two **opposite** pairings, each self-enforcing:
 |---|---|---|---|
 | the pgstac **writer's** pool (`psycopg_pool.ConnectionPool`, sync, `pypgstac`'s `PgstacDB(pool=…, use_queue=True)` seam) | **ON** | ON (inert here — never read in this session; kept because it is harmless and the spec's record) | `pipeline/db/pgstac_session.py`, `PGSTAC_SESSION_SQL`, applied by the pool's `configure` hook, which COMMITs (a `SET` is transactional; the pool's reset would undo an uncommitted one) |
 | the queue **drainer's** short-lived AUTOCOMMIT connection (`CALL pgstac.run_queued_queries()` is a PROCEDURE that COMMITs inside itself and cannot run in a transaction block) | **explicitly FALSE** | **ON** | `pipeline/stac/query_queue.py`, `DRAIN_CONNECTION_SQL`, applied per connection before the CALL |
-| M3-B's async repo pool (`pipeline/db/pool.py`, transactional, serves the `stac_higher.*` repos) | carries the writer pairing through the same `configure_pgstac_session_async` hook — harmless, because no repo statement fires the pgstac item trigger | — | the drainer's repo stays OFF this pool |
+| M3-B's async repo pool (`pipeline/db/pool.py`, landed by M3-B in the same session — the lead verifies the hook wiring at merge) | carries the writer pairing through the same `configure_pgstac_session_async` hook — harmless, because no repo statement fires the pgstac item trigger | — | the drainer's repo stays OFF this pool |
 
 Two details are load-bearing and look like mistakes to a fresh reader:
 
@@ -78,7 +78,7 @@ pgstac's inline statistics.
   sites comment this and point here.
 - Collection extents are refreshed by the drain tick and by nothing else —
   at most one tick stale, indefinitely stale if the drainer stops, which is
-  why the stale-queue WARNING (`pipeline_pgstac_query_queue_oldest_age_seconds`)
+  why the stale-queue WARNING (`pipeline_pgstac_query_queue_oldest_seconds`)
   matters twice.
 - Any test or tool that creates and drops a pgstac collection must clear
   that partition's `query_queue` / `query_queue_history` rows before
