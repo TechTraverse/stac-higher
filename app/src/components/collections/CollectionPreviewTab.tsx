@@ -18,16 +18,13 @@ import type { StacCollection } from "@/lib/stac-api/types";
 import { useItems } from "@/lib/query/items";
 import { useCollectionSettings } from "@/lib/collections/settings-client";
 import { useItemTileJson } from "@/lib/serving/queries";
-import { buildPreviewFrames } from "@/lib/serving/frames";
+import { buildPreviewFrames, FRAME_MAX_WAIT_TICKS } from "@/lib/serving/frames";
 import { previewAssetCandidates } from "@/lib/serving/preview";
 import { collectionTileUrlTemplate, collectionViewerUrl } from "@/lib/serving/urls";
 
 /** How many recent items the slider spans. 50 is ~4 hours of GOES cadence. */
 const FRAME_COUNTS = [25, 50, 100, 200];
 const DEFAULT_FRAME_COUNT = 50;
-
-/** Ticks to wait for tiles before advancing regardless — 10s at the default rate. */
-const MAX_WAIT_TICKS = 40;
 
 interface CollectionPreviewTabProps {
   collection: StacCollection;
@@ -181,7 +178,7 @@ export function CollectionPreviewTab({
         index={index}
         onIndexChange={setChosenIndex}
         canAdvance={canAdvance}
-        maxWaitTicks={MAX_WAIT_TICKS}
+        maxWaitTicks={FRAME_MAX_WAIT_TICKS}
       >
         {candidates.length > 1 && (
           <Select value={asset} onValueChange={setChosenAsset}>

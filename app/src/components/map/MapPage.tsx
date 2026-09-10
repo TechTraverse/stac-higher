@@ -16,9 +16,12 @@ import { AppShell } from "@/components/layout/AppShell";
 import { MapLayerView } from "@/components/map/MapLayerView";
 import { LayerPanel } from "@/components/map/LayerPanel";
 import { MapTooltip } from "@/components/map/MapTooltip";
+import { TimeBar } from "@/components/map/TimeBar";
 import { useCollections } from "@/lib/query/collections";
+import { buildAxis } from "@/lib/map/axis";
 import { INITIAL_MAP_STATE, beforeIdFor, mapReducer } from "@/lib/map/state";
 import type { LayerKind } from "@/lib/map/state";
+import type { PreviewFrame } from "@/lib/serving/frames";
 import type { StacCollection } from "@/lib/stac-api/types";
 import { $builtInCatalog } from "@/stores/catalogStore";
 
@@ -179,11 +182,42 @@ function MapPageInner() {
     [state.layers],
   );
 
-  // Task 6 replaces these with the shared axis: the layers' reported frames,
-  // the tick the time bar is parked on, and the two collectors.
-  const tickInstant: number | null = null;
-  const handleFrames = useCallback(() => {}, []);
-  const dropFrames = useCallback(() => {}, []);
+  // Each layer reports its own frames; the axis is their union (spec §4.4).
+  // Identity-checked so a layer re-reporting the same array is a no-op — the
+  // frames arrive from an effect, and a fresh Map every render would loop.
+  const [layerFrames, setLayerFrames] = useState<Map<string, PreviewFrame[]>>(
+    () => new Map(),
+  );
+  const handleFrames = useCallback((layerId: string, frames: PreviewFrame[]) => {
+    setLayerFrames((prev) =>
+      prev.get(layerId) === frames ? prev : new Map(prev).set(layerId, frames),
+    );
+  }, []);
+  const dropFrames = useCallback((layerId: string) => {
+    setLayerFrames((prev) => {
+      if (!prev.has(layerId)) return prev;
+      const next = new Map(prev);
+      next.delete(layerId);
+      return next;
+    });
+  }, []);
+
+  const axis = useMemo(() => buildAxis(layerFrames), [layerFrames]);
+  // `axisIndex: null` means "newest", as the collection preview does — held as
+  // no-choice-yet rather than an index set by an effect, so the first render is
+  // already the newest tick and never steps through a stale one. Clamped
+  // because the axis reshapes under a span change or a removed layer.
+  const index =
+    axis.length === 0
+      ? -1
+      : Math.min(state.axisIndex ?? axis.length - 1, axis.length - 1);
+  const tickInstant = index >= 0 ? axis[index].instant : null;
+
+  // Playback waits for tiles rather than dropping frames: `areTilesLoaded`
+  // covers every mounted source, so advancing means the incoming frame of
+  // EVERY layer is complete. It is asked a full tick after the change, by
+  // which point maplibre has requested the new tiles.
+  const canAdvance = useCallback(() => mapRef.current?.areTilesLoaded() ?? true, []);
 
   // Task 8 review: hover state (above) re-renders MapPageInner on every
   // mouse-move tick. These four are handed straight to LayerPanel, which has
@@ -251,9 +285,14 @@ function MapPageInner() {
           </StacMap>
           {hovered && <MapTooltip {...hovered} />}
         </div>
-        {/* V-3 docks the shared time bar here, below the map and above the
-            page edge. Nothing is rendered in V-2: an empty bar would take
-            height from the map for no reason. */}
+        <TimeBar
+          axis={axis}
+          index={index}
+          onIndexChange={(axisIndex) => dispatch({ type: "setAxisIndex", axisIndex })}
+          frameSpan={state.frameSpan}
+          onFrameSpanChange={(frameSpan) => dispatch({ type: "setFrameSpan", frameSpan })}
+          canAdvance={canAdvance}
+        />
       </div>
     </main>
   );

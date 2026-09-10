@@ -77,3 +77,11 @@ export function buildPreviewFrames(items: StacItem[]): PreviewFrame[] {
 
   return [...byDatetime.values()].sort((a, b) => a.start - b.start).map((e) => e.frame);
 }
+
+/**
+ * Ticks a player waits on `canAdvance` before advancing regardless — 10s at
+ * the shared 4 fps default. One frame the tile server never finishes would
+ * otherwise stop playback for good. Shared by the collection Preview tab and
+ * the /map page's time bar so the two play at the same pace.
+ */
+export const FRAME_MAX_WAIT_TICKS = 40;
