@@ -10,7 +10,7 @@ just a wasted read.
 
 | Queue | What it is | State |
 |---|---|---|
-| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B next.** The ordering below is a dependency spine, not a preference |
+| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B in progress.** The ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
@@ -862,6 +862,36 @@ processor's job by the decision above and stays so.
   ≈16 statements per item more than a local box does.
 
 ## Discovered follow-ups
+
+- **M3-B0 landed 2026-09-09 (`ai/m3-b0-harness-hygiene`, merge 08bea6a).** Lead-defined
+  pre-slice (not in the M3 slice list): (1) `pipeline.loadgen teardown` is
+  queue-aware — `loadgen/pgstac_hygiene.py` resolves the probe collection's
+  `_items_<key>` partition WHILE the row exists, deletes that partition's
+  `pgstac.query_queue` + `query_queue_history` rows (quoted `ILIKE`), then
+  `delete_collection`; the JSON reports `queue_rows_cleared`. Six unit tests on
+  a recording cursor pin the order. Proven on the first `m3b` baseline teardown
+  (`queue_rows_cleared: 0` — the drain had already emptied the queue, and no
+  orphan error followed). (2) **ADR 0020** records the opposite GUC pairings
+  (writer: `use_queue` ON; drainer: `update_collection_extent` ON +
+  `use_queue` explicitly FALSE) as an invariant; README index + key-invariants
+  bullet, code comments at both sites and the FEATURES M3-A row point at it.
+  Review found two defects in the lead's own ADR text (a non-existent gauge
+  name `…oldest_age_seconds` → `…oldest_seconds`; a present-tense claim about
+  M3-B's `pool.py`, which lands on a sibling branch) — both fixed before
+  acceptance. Deferred minors (logged, not fixed): the `fnmatch` stand-in in
+  `test_loadgen.py` models ILIKE without `_` as a wildcard; the pattern helper
+  duplicates `Collection.queue_pattern` in `test_integration_pgstac_queue.py`;
+  `drop_probe_collection`'s pattern would miss a `partition_trunc`
+  sub-partition (loadgen never creates one).
+- **M3-B baseline measured 2026-09-09 (lead, pre-pool `ai/main` build with M3-A, label `m3b`, torn down).**
+  `feed --rate 30 --count 900` copy/`defaults_only`, `watch --seconds 240`
+  overlapping the feed: `pg_stat_database.sessions` **429,066 → 446,636 =
+  17,570 new backend sessions for 900 catalogued items ≈ 19.5 sessions per
+  item** (S-D predicted ~14 from the repo count alone; the rest is the
+  periodic ticks and the standing demo's own ingest sharing the window).
+  Itemized 21.1 / 23.9 per interval while active (~40 s of work for 900
+  items); `ingest_fetch` mean 24 ms, `ingest_itemize` 32 ms (901 calls each);
+  pgstac queue flat at 0. The pooled number goes in the M3-B landed note.
 
 - **V-2 landed 2026-09-08 (`ai/v2-map-page`), e2e + live-checked.**
   `npm run test:e2e:ci -- map` → **3 passed** (run with `E2E_PORT=4399`: the
