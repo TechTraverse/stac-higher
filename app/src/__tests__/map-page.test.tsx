@@ -12,6 +12,10 @@ const { useCollectionsMock, useItemsMock, mapProps } = vi.hoisted(() => ({
   useItemsMock: vi.fn(),
   mapProps: { current: null as Record<string, unknown> | null },
 }));
+const { useCollectionSettingsMock, useItemTileJsonMock } = vi.hoisted(() => ({
+  useCollectionSettingsMock: vi.fn(),
+  useItemTileJsonMock: vi.fn(),
+}));
 
 // The shell is replaced by the bare QueryProvider it wraps: this test
 // exercises page content, not the sidebar/top-bar chrome.
@@ -40,6 +44,12 @@ vi.mock("@/lib/query/collections", () => ({
 }));
 vi.mock("@/lib/query/items", () => ({
   useItems: (...a: unknown[]) => useItemsMock(...a),
+}));
+vi.mock("@/lib/collections/settings-client", () => ({
+  useCollectionSettings: (...a: unknown[]) => useCollectionSettingsMock(...a),
+}));
+vi.mock("@/lib/serving/queries", () => ({
+  useItemTileJson: (...a: unknown[]) => useItemTileJsonMock(...a),
 }));
 // maplibre needs WebGL; inert stand-ins keep the tree — and the source/layer
 // specs — intact. The DEFAULT export is the Map that StacMap renders, and it
@@ -139,6 +149,10 @@ beforeEach(() => {
     isLoading: false,
   });
   useItemsMock.mockReturnValue({ data: { features: [] }, isLoading: false });
+  // No serving in V-2's fixtures: the picker offers Footprints only, exactly
+  // as it did before V-3, so every assertion in this file still holds.
+  useCollectionSettingsMock.mockReturnValue({ data: { servingEnabled: false } });
+  useItemTileJsonMock.mockReturnValue({ data: undefined, isFetched: true });
 });
 
 describe("MapPage", () => {

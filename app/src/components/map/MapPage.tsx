@@ -193,6 +193,10 @@ function MapPageInner() {
     (id: string, opacity: number) => dispatch({ type: "setOpacity", id, opacity }),
     [],
   );
+  const onAssetChange = useCallback(
+    (id: string, asset: string) => dispatch({ type: "setAsset", id, asset }),
+    [],
+  );
   const onMove = useCallback(
     (id: string, direction: "up" | "down") => dispatch({ type: "move", id, direction }),
     [],
@@ -209,6 +213,7 @@ function MapPageInner() {
         onAdd={addLayer}
         onVisibleChange={onVisibleChange}
         onOpacityChange={onOpacityChange}
+        onAssetChange={onAssetChange}
         onMove={onMove}
         onRemove={onRemove}
       />

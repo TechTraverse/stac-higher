@@ -18,6 +18,7 @@ export interface LayerPanelProps {
   onAdd: (kind: LayerKind, collection: StacCollection) => void;
   onVisibleChange: (id: string, visible: boolean) => void;
   onOpacityChange: (id: string, opacity: number) => void;
+  onAssetChange: (id: string, asset: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
   onRemove: (id: string) => void;
 }
@@ -30,6 +31,7 @@ export function LayerPanel({
   onAdd,
   onVisibleChange,
   onOpacityChange,
+  onAssetChange,
   onMove,
   onRemove,
 }: LayerPanelProps) {
@@ -46,6 +48,7 @@ export function LayerPanel({
         <h1 className="text-sm font-bold tracking-tight">Layers</h1>
         <AddLayerPopover
           collections={collections}
+          catalogUrl={catalogUrl}
           isAdded={isAdded}
           onAdd={onAdd}
         />
@@ -71,6 +74,7 @@ export function LayerPanel({
               canMoveDown={index < topFirst.length - 1}
               onVisibleChange={(visible) => onVisibleChange(layer.id, visible)}
               onOpacityChange={(opacity) => onOpacityChange(layer.id, opacity)}
+              onAssetChange={(asset) => onAssetChange(layer.id, asset)}
               onMove={(direction) => onMove(layer.id, direction)}
               onRemove={() => onRemove(layer.id)}
             />
