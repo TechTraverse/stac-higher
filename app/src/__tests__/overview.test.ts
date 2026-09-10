@@ -220,6 +220,25 @@ describe("buildProductRows attribution", () => {
     expect(unattributed).toEqual([]);
   });
 
+  it("claims a process alert through a process_output edge alone (I-84)", () => {
+    const graph: PipelineGraph = {
+      nodes: [
+        { id: "coll:prod-a", type: "collection", label: "Product A", group_id: "g", meta: {} },
+        { id: "proc:p1", type: "process", label: "masker", group_id: "g", meta: { deployed: true } },
+      ],
+      edges: [{ from: "proc:p1", to: "coll:prod-a", kind: "process_output", id: "o1" }],
+    };
+    const { rows, unattributed } = buildProductRows({
+      collections: [{ id: "prod-a" }],
+      graph,
+      flows: [],
+      alertsAreComplete: true,
+      openAlerts: [alert({ id: "proc-alert", kind: "process_failed", process_id: "p1" })],
+    });
+    expect(rows[0].health).toBe("error");
+    expect(unattributed).toEqual([]);
+  });
+
   it("still surfaces an alert no product can claim — a channel alert, or a process wired to nothing", () => {
     const { rows, unattributed } = buildProductRows({
       collections: [{ id: "prod-a" }],
@@ -265,6 +284,7 @@ describe("buildProductRows lineage and counts", () => {
       "reads this product",
       "writes this product",
     ]);
+    expect(processes.nodes[0].href).toBe("/processes/p1");
   });
 
   it("rolls a group's health up from its worst node", () => {
@@ -321,6 +341,14 @@ describe("buildProductRows lineage and counts", () => {
     }).rows[0].lineage.find((g) => g.kind === "process")!;
     expect(group.nodes.every((n) => n.health === "ok")).toBe(true);
     expect(group.health).toBe("ok");
+  });
+
+  it("refuses to claim a deployed process is ok when the alert list is incomplete", () => {
+    const group = buildProductRows({
+      collections: [{ id: "prod-a" }], graph: GRAPH, flows: [flow()], alertsAreComplete: false, openAlerts: [],
+    }).rows[0].lineage.find((g) => g.kind === "process")!;
+    expect(group.nodes.every((n) => n.health === "unknown")).toBe(true);
+    expect(group.health).toBe("unknown");
   });
 
   it("counts ingested items across ingest flows only, and null with none", () => {

@@ -263,7 +263,9 @@ export function buildProductRows({
             ? alertHealth(alert)
             : undeployed
               ? "warn"
-              : "ok";
+              : alertsAreComplete
+                ? "ok"
+                : "unknown";
           return {
             id: `${e.kind}:${e.id}`,
             label: node?.label ?? id,
@@ -291,9 +293,13 @@ export function buildProductRows({
       },
     ];
     for (const group of lineage) {
+      // Seed at "unknown" (the rank floor): `worse` then lets any node with
+      // real evidence — ok included — win, so a group of all-unknown nodes
+      // reports unknown rather than the seed's own value leaking through as
+      // a false "ok".
       group.health = group.nodes.reduce<LineageHealth>(
         (acc, n) => worse(acc, n.health ?? "unknown"),
-        group.nodes.length ? "ok" : "unknown",
+        "unknown",
       );
     }
 
