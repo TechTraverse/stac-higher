@@ -98,7 +98,10 @@ describe("listAlerts", () => {
     // parent — the mapper must not re-derive it.
     const sql = mockQuery.mock.calls[0][0] as string;
     expect(sql).toMatch(/COALESCE\(a\.process_id, ps\.process_id\) AS process_id/);
-    expect(sql).toMatch(/a\.source_id/);
+    // Anchored on the projection (not the pre-existing `ps` join predicate,
+    // which also contains the literal text "a.source_id") so this fails if
+    // the SELECT list's copy of source_id is ever removed.
+    expect(sql).toMatch(/AS process_id,\s+a\.source_id\s+FROM/);
   });
 });
 
