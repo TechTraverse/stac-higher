@@ -83,7 +83,18 @@ async def get_async_pool(database_url: str) -> AsyncConnectionPool:
             configure=configure_pgstac_session_async,
             name=pool_name(database_url),
         )
-        await pool.open()
+        # wait=True: block until min_size connections exist and have each run
+        # `configure` — psycopg_pool's default (wait=False) only *schedules*
+        # the min-size fill and returns immediately, so the very first
+        # checkout can race that background fill and open an extra, unplanned
+        # backend (M3-B review finding, live-reproduced: 3 backends for 5
+        # sequential checkouts against a min_size=2 pool). S-D's "one backend
+        # per repo call" proof depends on the pool being genuinely warm before
+        # anyone can check a connection out of it. As a side benefit, a
+        # `configure` hook that raises (e.g. a bad GUC) now fails loudly here
+        # as a `PoolTimeout`, at pool-open time, instead of surfacing later on
+        # whichever caller's checkout happens to race it.
+        await pool.open(wait=True)
         _pools[database_url] = pool
         logger.info(
             "db pool opened",

@@ -32,10 +32,12 @@ class FakePool:
         self.max_size = kwargs.get("max_size")
         self.opens = 0
         self.closes = 0
+        self.open_wait: bool | None = None
         FakePool.instances.append(self)
 
-    async def open(self) -> None:
+    async def open(self, wait: bool = False) -> None:
         self.opens += 1
+        self.open_wait = wait
 
     async def close(self) -> None:
         self.closes += 1
@@ -92,6 +94,10 @@ async def test_pool_configures_the_pgstac_session_guc_hook():
     assert created.kwargs["configure"] is configure_pgstac_session_async
     # Lazy open, never psycopg_pool's implicit one.
     assert created.kwargs["open"] is False
+    # ...but the lazy open still blocks until min_size connections exist
+    # (each having run the configure hook) — otherwise the first checkout
+    # races the min-size fill (M3-B review finding).
+    assert created.open_wait is True
 
 
 async def test_pool_sizes_come_from_settings(monkeypatch):
