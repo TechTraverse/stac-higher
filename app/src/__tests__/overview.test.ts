@@ -13,8 +13,8 @@ import {
   buildProductRows,
   buildStats,
   successRate,
-  unanchoredAlerts,
 } from "@/components/layout/overview";
+import { alertKindLabel } from "@/components/monitoring/shared";
 import type { Alert } from "@/lib/monitoring/api";
 import type { DailyStats, PipelineGraph } from "@/lib/monitoring/graph-api";
 import type { Association } from "@/lib/associations/types";
@@ -37,6 +37,8 @@ function alert(over: Partial<Alert> = {}): Alert {
     group_id: null,
     connection_name: null,
     collection_id: null,
+    process_id: null,
+    source_id: null,
     ...over,
   } as Alert;
 }
@@ -70,6 +72,7 @@ const GRAPH: PipelineGraph = {
     { from: "conn:c1", to: "coll:prod-a", kind: "ingest", id: "f1" },
     { from: "coll:prod-a", to: "conn:c2", kind: "deliver", id: "f2" },
     { from: "coll:prod-a", to: "proc:p1", kind: "process_source", id: "s1" },
+    { from: "proc:p1", to: "coll:prod-a", kind: "process_output", id: "o1" },
   ],
 };
 
@@ -204,17 +207,51 @@ describe("buildProductRows attribution", () => {
     expect(unattributed).toEqual([]);
   });
 
-  it("surfaces an alert no product can claim rather than dropping it", () => {
+  it("claims a process alert through a wired process (I-84)", () => {
     const { rows, unattributed } = buildProductRows({
       collections: [{ id: "prod-a" }],
       graph: GRAPH,
       flows: [flow()],
       alertsAreComplete: true,
-      // Process-anchored: /api/alerts returns no process_id (I-84).
-      openAlerts: [alert({ id: "orphan", kind: "process_failed" })],
+      openAlerts: [alert({ id: "proc-alert", kind: "process_failed", process_id: "p1" })],
+    });
+    expect(rows[0].health).toBe("error");
+    expect(rows[0].reason).toBe(alertKindLabel("process_failed"));
+    expect(unattributed).toEqual([]);
+  });
+
+  it("claims a process alert through a process_output edge alone (I-84)", () => {
+    const graph: PipelineGraph = {
+      nodes: [
+        { id: "coll:prod-a", type: "collection", label: "Product A", group_id: "g", meta: {} },
+        { id: "proc:p1", type: "process", label: "masker", group_id: "g", meta: { deployed: true } },
+      ],
+      edges: [{ from: "proc:p1", to: "coll:prod-a", kind: "process_output", id: "o1" }],
+    };
+    const { rows, unattributed } = buildProductRows({
+      collections: [{ id: "prod-a" }],
+      graph,
+      flows: [],
+      alertsAreComplete: true,
+      openAlerts: [alert({ id: "proc-alert", kind: "process_failed", process_id: "p1" })],
+    });
+    expect(rows[0].health).toBe("error");
+    expect(unattributed).toEqual([]);
+  });
+
+  it("still surfaces an alert no product can claim — a channel alert, or a process wired to nothing", () => {
+    const { rows, unattributed } = buildProductRows({
+      collections: [{ id: "prod-a" }],
+      graph: GRAPH,
+      flows: [flow()],
+      alertsAreComplete: true,
+      openAlerts: [
+        alert({ id: "webhook", kind: "webhook_failed", channel_id: "ch1" }),
+        alert({ id: "elsewhere", kind: "process_stalled", process_id: "p-not-wired" }),
+      ],
     });
     expect(rows[0].health).toBe("ok");
-    expect(unattributed.map((a) => a.id)).toEqual(["orphan"]);
+    expect(unattributed.map((a) => a.id)).toEqual(["webhook", "elsewhere"]);
   });
 
   it("does not attribute an alert through a connection the product is not wired to", () => {
@@ -242,11 +279,12 @@ describe("buildProductRows lineage and counts", () => {
     const [sources, processes, destinations] = rows[0].lineage;
     expect(sources.nodes.map((n) => n.label)).toEqual(["src"]);
     expect(destinations.nodes.map((n) => n.label)).toEqual(["dest"]);
-    expect(processes.nodes[0]).toMatchObject({
-      label: "masker",
-      detail: "reads this product",
-      href: "/processes/p1",
-    });
+    expect(processes.nodes.map((n) => n.label)).toEqual(["masker", "masker"]);
+    expect(processes.nodes.map((n) => n.detail)).toEqual([
+      "reads this product",
+      "writes this product",
+    ]);
+    expect(processes.nodes[0].href).toBe("/processes/p1");
   });
 
   it("rolls a group's health up from its worst node", () => {
@@ -280,6 +318,37 @@ describe("buildProductRows lineage and counts", () => {
       detail: "not deployed",
       health: "warn",
     });
+  });
+
+  it("colours a process lineage node from its open alert — firing is an error, acknowledged a warning", () => {
+    const firing = buildProductRows({
+      collections: [{ id: "prod-a" }], graph: GRAPH, flows: [flow()], alertsAreComplete: true,
+      openAlerts: [alert({ id: "a", kind: "process_failed", process_id: "p1" })],
+    }).rows[0].lineage.find((g) => g.kind === "process")!;
+    expect(firing.nodes.every((n) => n.health === "error")).toBe(true);
+    expect(firing.health).toBe("error");
+
+    const acked = buildProductRows({
+      collections: [{ id: "prod-a" }], graph: GRAPH, flows: [flow()], alertsAreComplete: true,
+      openAlerts: [alert({ id: "a", kind: "process_failed", process_id: "p1", state: "acknowledged" })],
+    }).rows[0].lineage.find((g) => g.kind === "process")!;
+    expect(acked.nodes.every((n) => n.health === "warn")).toBe(true);
+  });
+
+  it("a deployed process with no alert is ok, not unknown", () => {
+    const group = buildProductRows({
+      collections: [{ id: "prod-a" }], graph: GRAPH, flows: [flow()], alertsAreComplete: true, openAlerts: [],
+    }).rows[0].lineage.find((g) => g.kind === "process")!;
+    expect(group.nodes.every((n) => n.health === "ok")).toBe(true);
+    expect(group.health).toBe("ok");
+  });
+
+  it("refuses to claim a deployed process is ok when the alert list is incomplete", () => {
+    const group = buildProductRows({
+      collections: [{ id: "prod-a" }], graph: GRAPH, flows: [flow()], alertsAreComplete: false, openAlerts: [],
+    }).rows[0].lineage.find((g) => g.kind === "process")!;
+    expect(group.nodes.every((n) => n.health === "unknown")).toBe(true);
+    expect(group.health).toBe("unknown");
   });
 
   it("counts ingested items across ingest flows only, and null with none", () => {
@@ -377,22 +446,5 @@ describe("successRate", () => {
     expect(successRate("ingest", undefined)).toBeNull();
     expect(successRate("ingest", [])).toBeNull();
     expect(successRate("ingest", [day({})])).toBeNull();
-  });
-});
-
-describe("unanchoredAlerts", () => {
-  it("keeps only alerts with no anchor the client can read", () => {
-    const alerts = [
-      alert({ id: "conn", connection_id: "c1" }),
-      alert({ id: "assoc", association_id: "f1" }),
-      alert({ id: "chan", channel_id: "ch1" }),
-      alert({ id: "coll", collection_id: "prod-a" }),
-      alert({ id: "orphan", kind: "process_stalled" }),
-    ];
-    expect(unanchoredAlerts(alerts).map((a) => a.id)).toEqual(["orphan"]);
-  });
-
-  it("handles a missing list", () => {
-    expect(unanchoredAlerts(undefined)).toEqual([]);
   });
 });

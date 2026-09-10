@@ -9,9 +9,9 @@
  * side, from the open-alert list, exactly like the M2-D flow hints.
  *
  * Health colouring joins the alert list client-side; the graph endpoint does
- * not embed alert state, so one alert read serves the whole page. Process-
- * anchored alerts carry no id the client can read (`/api/alerts` omits
- * `process_id`), so a process node's health is "unknown" rather than a guess.
+ * not embed alert state, so one alert read serves the whole page.
+ * Process-anchored alerts carry their effective `process_id` (I-84), so a
+ * process node is indicted the same way a connection or collection is.
  */
 import type { DagNodeDecoration, LineageHealth } from "@stac-higher/shared";
 import type { GraphNode } from "@/lib/monitoring/graph-api";
@@ -22,12 +22,14 @@ export function unhealthyNodeIds(
     kind: string;
     connection_id?: string | null;
     collection_id?: string | null;
+    process_id?: string | null;
   }[],
 ): Set<string> {
   const ids = new Set<string>();
   for (const alert of alerts) {
     if (alert.connection_id) ids.add(`conn:${alert.connection_id}`);
     if (alert.collection_id) ids.add(`coll:${alert.collection_id}`);
+    if (alert.process_id) ids.add(`proc:${alert.process_id}`);
   }
   return ids;
 }
@@ -55,9 +57,18 @@ export function nodeDetail(node: GraphNode, degree: number): string {
   return bits.join(" · ");
 }
 
+/**
+ * `alertsAreComplete` gates PROCESS nodes only (I-84 fix-round-1): "ok" is
+ * only claimed on a loaded, untruncated alert list — the same evidence rule
+ * `overview.ts` uses. An indicting alert or a deploy-state warning still wins
+ * first; only the "nothing to report" case degrades to "unknown" when the
+ * list can't be trusted. Connection/collection nodes keep the pre-A-1
+ * behaviour (tracked as part of I-117's follow-up).
+ */
 export function nodeHealth(
   node: GraphNode,
   unhealthy: ReadonlySet<string>,
+  alertsAreComplete = true,
 ): LineageHealth {
   if (unhealthy.has(node.id)) return "error";
   if (
@@ -67,8 +78,8 @@ export function nodeHealth(
   ) {
     return "warn";
   }
-  // No client-readable process anchor on alerts — see the file note.
-  return node.type === "process" ? "unknown" : "ok";
+  if (node.type === "process" && !alertsAreComplete) return "unknown";
+  return "ok";
 }
 
 /** Every node's edge count, over the whole graph (not the lineage subgraph). */
@@ -91,9 +102,10 @@ export function degreeMap(
 export function makeDecorator(
   unhealthy: ReadonlySet<string>,
   degree: ReadonlyMap<string, number>,
+  alertsAreComplete = true,
 ): (node: GraphNode) => DagNodeDecoration {
   return (node) => ({
-    health: nodeHealth(node, unhealthy),
+    health: nodeHealth(node, unhealthy, alertsAreComplete),
     href: nodeHref(node),
     detail: nodeDetail(node, degree.get(node.id) ?? 0),
   });

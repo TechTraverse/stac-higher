@@ -759,19 +759,18 @@ the posture says it should not.
 
 Carried out of the remodel. Full per-slice follow-up list: `app/UI-TODO.md`.
 
-### I-84 · `/api/alerts` omits `process_id` / `source_id` 🔴
-Migration 024 anchors process alerts (`process_stalled`, `process_failed`,
-`process_rate_limited`) to a process and a source, but the API response shape
-stops at connection / association / channel / collection. The client therefore
-**cannot attribute a process alert to a product**, which forces three separate
-honest-but-lossy workarounds: home counts them as "not shown against a
-product", the product Overview says "may relate to this product", and the
-graph gives process nodes `unknown` health rather than green.
-Adding the two fields to the `ApiAlert` shape is a small, additive `/api/*`
-change — deliberately OUT of the remodel's presentation-only scope. Once it
-lands, `processVerdict` should fold alerts in and both caveats can go.
-- Tracked in: `app/src/components/layout/overview.ts` (`unanchoredAlerts`),
-  `ProductOverview.tsx`, `PipelineGraph.tsx`.
+### I-84 · `/api/alerts` omits `process_id` / `source_id` — 🟢 resolved (A-1, 2026-09-09)
+`ApiAlert` gained `process_id` (the EFFECTIVE process — the alert's own, else
+its source's parent, the same read-time COALESCE `collection_id` uses) and
+`source_id` (raw). `buildProductRows` claims process alerts through the
+product's wired processes and colours process lineage nodes from them;
+`processVerdict` takes the open alert list and lets an open alert outrank the
+run ledger; the pipeline graph indicts `proc:<id>` nodes and no longer paints
+deployed processes `unknown`. The product Overview's "may relate to this
+product" caveat is gone; the home page keeps its residual "not shown against
+a product" line, which now covers only channel-anchored alerts and processes
+wired to no product. No migration (024 already stored both columns); no
+fixture (the row shape is app-only). Commit: see `git log --grep I-84`.
 
 ### I-85 · Storybook missed the fonts (and, it turned out, not the scan) — 🟢 resolved (UI-12)
 The FONT half was real: only the app imported `@fontsource`, so every story
@@ -808,7 +807,7 @@ current number.
 ### I-88 · `overview.ts` derivations are untested — 🟢 resolved (UI-11)
 Covered by `app/src/__tests__/overview.test.ts` (27 cases over health ranking,
 the three alert-attribution paths, unattributed alerts, lineage roll-up,
-ingest-only counts, `successRate` and `unanchoredAlerts`). Residual noted in
+ingest-only counts and `successRate`). Residual noted in
 `app/UI-TODO.md`: `buildProductRows`' `lateFlow` branch is unreachable, because
 `isLate`'s match set is already claimed by the firing/acknowledged branches.
 The verdict is identical either way, so it is dead, not wrong.
@@ -1188,6 +1187,24 @@ limitation, but `/map`'s first-add camera fit (V-2, spec §4.6) is the first
 caller that feeds it arbitrary user-chosen collection extents, making it
 reachable.
 - Found in: V-2 whole-branch review.
+
+### I-117 · Pipeline graph health is state-blind: an acknowledged alert paints its node `error` 🟠
+`unhealthyNodeIds` (`app/src/lib/monitoring/graph-decorate.ts`) returns a
+`Set<string>` of anchors and ignores `alert.state` entirely, so a merely
+`acknowledged` alert indicts its node exactly like a `firing` one. Pre-existing
+for connection/collection anchors; A-1 (I-84) extends the same anchor set to
+process nodes, so it now also colours process nodes wrong. Net effect:
+`/monitoring` and `/graph` show a node red where `/processes` and the product
+Overview (which both read `state` via `processVerdict` / `buildProductRows`)
+show it amber. Fix: change `unhealthyNodeIds` to return a
+`Map<nodeId, LineageHealth>` (firing → `error`, acknowledged → `warn`) and
+thread it through `makeDecorator` instead of a bare `Set`, touching both
+`PipelineGraph.tsx` and `LineagePanel.tsx`. Note for that follow-up: A-1's
+`alertsAreComplete` completeness gate (fix-round-1) applies to PROCESS nodes
+only — connection/collection nodes still report `ok` on an incomplete alert
+list — the same fix should unify that gate across all three anchor kinds.
+- Tracked in: `app/src/lib/monitoring/graph-decorate.ts`.
+- Found in: A-1 Task 3 review, fix round 1.
 
 ## Resolved — archived
 

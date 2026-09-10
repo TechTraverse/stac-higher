@@ -20,6 +20,7 @@ import { EnvEditor } from "@/components/processes/EnvEditor";
 import { CodeEditor } from "@/components/processes/CodeEditor";
 import { FlowStrip } from "@/components/monitoring/FlowStrip";
 import { useFlowHistory } from "@/lib/monitoring/graph-queries";
+import { useAlerts } from "@/lib/monitoring/queries";
 import { processVerdict } from "@/components/processes/health";
 import { healthDotClass, type LineageHealth } from "@stac-higher/shared";
 import { useConnections } from "@/lib/connections/queries";
@@ -879,11 +880,16 @@ const HEALTH_BADGE: Record<LineageHealth, string> = {
   unknown: "border-border bg-muted text-muted-foreground",
 };
 
-/** The header verdict, from the same run-ledger derivation the dashboard uses. */
+/**
+ * The header verdict, from the same run-ledger derivation the dashboard uses
+ * — an open alert for this process outranks the ledger (I-84): firing is an
+ * error, acknowledged a warning, whatever the run history says.
+ */
 function DeployState({ process }: { process: Process }) {
   const { data: sources } = useSources(process.id);
   const { data: runs } = useRuns(process.id);
-  const verdict = processVerdict(process, runs, sources?.length);
+  const { data: openAlerts } = useAlerts("open");
+  const verdict = processVerdict(process, runs, sources?.length, openAlerts);
   return (
     <span
       className={`inline-flex items-center gap-2 rounded-sm border px-3 py-1 text-[12.5px] font-bold ${HEALTH_BADGE[verdict.health]}`}

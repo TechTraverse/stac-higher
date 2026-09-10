@@ -38,6 +38,8 @@ const dbRow = {
   group_id: "g1",
   connection_name: "src",
   collection_id: null,
+  process_id: "3a9f1c2e-0000-4000-8000-0000000000p1",
+  source_id: "3a9f1c2e-0000-4000-8000-0000000000s1",
 };
 
 beforeEach(() => {
@@ -85,6 +87,21 @@ describe("listAlerts", () => {
     const [sql, params] = mockQuery.mock.calls[1];
     expect(sql).toMatch(/a\.state = \$1/);
     expect(params).toEqual(["resolved", 10]);
+  });
+
+  it("returns the effective process and the raw source anchor (I-84)", async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [dbRow], rowCount: 1 } as never);
+    const [row] = await listAlerts(["g1"]);
+    expect(row.process_id).toBe("3a9f1c2e-0000-4000-8000-0000000000p1");
+    expect(row.source_id).toBe("3a9f1c2e-0000-4000-8000-0000000000s1");
+    // The projection COALESCEs the alert's own process with its source's
+    // parent — the mapper must not re-derive it.
+    const sql = mockQuery.mock.calls[0][0] as string;
+    expect(sql).toMatch(/COALESCE\(a\.process_id, ps\.process_id\) AS process_id/);
+    // Anchored on the projection (not the pre-existing `ps` join predicate,
+    // which also contains the literal text "a.source_id") so this fails if
+    // the SELECT list's copy of source_id is ever removed.
+    expect(sql).toMatch(/AS process_id,\s+a\.source_id\s+FROM/);
   });
 });
 

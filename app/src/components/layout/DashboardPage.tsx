@@ -397,7 +397,7 @@ function DashboardContent() {
               {unattributed.length === 1
                 ? "1 open alert isn't shown against a product"
                 : `${unattributed.length} open alerts aren't shown against a product`}
-              {" — process alerts carry no product anchor in the alerts API."}
+              {" — a channel alert, or a process wired to no product."}
             </p>
             <a
               href="/monitoring"

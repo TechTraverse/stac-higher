@@ -23,18 +23,14 @@ import {
   healthDotClass,
   type LineageHealth,
 } from "@stac-higher/shared";
-import { AlertTriangle, ArrowRight, ExternalLink, Waves } from "lucide-react";
+import { ArrowRight, ExternalLink, Waves } from "lucide-react";
 import type { StacCollection, StacItem } from "@/lib/stac-api/types";
 import { useAssociations } from "@/lib/associations/queries";
 import { useCollectionSettings } from "@/lib/collections/settings-client";
 import { useAlerts } from "@/lib/monitoring/queries";
 import { usePipelineGraph, useFlowHistory } from "@/lib/monitoring/graph-queries";
 import { ALERTS_PAGE_LIMIT } from "@/lib/monitoring/api";
-import {
-  buildProductRows,
-  successRate,
-  unanchoredAlerts,
-} from "@/components/layout/overview";
+import { buildProductRows, successRate } from "@/components/layout/overview";
 import { collectionInfoUrl, tipgLandingUrl } from "@/lib/serving/urls";
 
 const HEALTH_LABEL: Record<LineageHealth, string> = {
@@ -128,11 +124,6 @@ export function ProductOverview({
   });
 
   const health = product?.health ?? "unknown";
-  const processCount =
-    product?.lineage.find((g) => g.kind === "process")?.nodes.length ?? 0;
-  // A process alert cannot be tied to a product through the alerts API, so a
-  // product WITH processes can only say "one of these might be mine".
-  const maybeMine = processCount > 0 ? unanchoredAlerts(openAlerts) : [];
   const sources = flows.filter((f) => f.direction === "ingest");
   const destinations = flows.filter((f) => f.direction === "deliver");
   const stacHref = `${endpointUrl.replace(/\/$/, "")}/collections/${encodeURIComponent(collectionId)}`;
@@ -175,26 +166,6 @@ export function ProductOverview({
           </Badge>
         )}
       </div>
-
-      {maybeMine.length > 0 && (
-        <Card className="border-warning-border bg-warning-subtle">
-          <CardContent className="flex flex-wrap items-center gap-3 px-5 py-3">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
-            <p className="text-[13px]">
-              {maybeMine.length === 1
-                ? "1 open process alert may relate to this product"
-                : `${maybeMine.length} open process alerts may relate to this product`}
-              {" — the alerts API doesn't say which process an alert belongs to."}
-            </p>
-            <a
-              href="/monitoring"
-              className="ml-auto inline-flex items-center gap-1 text-[13px] font-semibold text-primary hover:underline"
-            >
-              Check Monitoring <ArrowRight className="h-3 w-3" />
-            </a>
-          </CardContent>
-        </Card>
-      )}
 
       {/* -- lineage & distribution ---------------------------------------- */}
       <Card>

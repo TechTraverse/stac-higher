@@ -54,6 +54,8 @@ function alert(overrides: Partial<ApiAlert> = {}): ApiAlert {
     group_id: EO,
     connection_name: "src",
     collection_id: null,
+    process_id: null,
+    source_id: null,
     ...overrides,
   };
 }
