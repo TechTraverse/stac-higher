@@ -123,12 +123,11 @@ interface ProductInput {
 export interface ProductRollup {
   rows: ProductRow[];
   /**
-   * Open alerts no product could claim. Today that is every process-anchored
-   * alert: `/api/alerts` returns connection / association / channel /
-   * collection anchors but NOT `process_id` or `source_id`, even though
-   * migration 024 stores them. Surfacing the count is the honest answer —
-   * showing every product healthy while /monitoring shows a firing alert is
-   * exactly the disagreement this page must not create.
+   * Open alerts no product could claim: channel-anchored `webhook_failed`
+   * rows, or a process alert whose process is wired to no collection.
+   * Since I-84 process alerts carry `process_id`, so this is a residual,
+   * not a class — surfacing the count keeps this page and /monitoring
+   * from disagreeing.
    */
   unattributed: Alert[];
 }
@@ -163,6 +162,13 @@ export function buildProductRows({
         (e.kind === "process_source" && e.from === nodeId) ||
         (e.kind === "process_output" && e.to === nodeId),
     );
+    // Process ids wired to this product, either direction (I-84: a process
+    // alert names its effective process, so it can be claimed here).
+    const wiredProcesses = new Set(
+      processes.map((e) =>
+        (e.kind === "process_source" ? e.to : e.from).replace(/^proc:/, ""),
+      ),
+    );
 
     const collectionFlows = (flows ?? []).filter(
       (f) => f.collection_id === collection.id,
@@ -176,7 +182,8 @@ export function buildProductRows({
         a.collection_id === collection.id ||
         (!!a.association_id &&
           flowById.get(a.association_id)?.collection_id === collection.id) ||
-        (!!a.connection_id && wiredConnections.has(a.connection_id));
+        (!!a.connection_id && wiredConnections.has(a.connection_id)) ||
+        (!!a.process_id && wiredProcesses.has(a.process_id));
       if (mine) claimed.add(a.id);
       return mine;
     });
@@ -245,10 +252,18 @@ export function buildProductRows({
         nodes: processes.map((e) => {
           const id = e.kind === "process_source" ? e.to : e.from;
           const node = nodesById.get(id);
-          // Health stays "unknown": process alerts carry no anchor the client
-          // can read (see ProductRollup.unattributed). Deployment state is the
-          // one real signal the graph does return.
+          const processId = id.replace(/^proc:/, "");
           const undeployed = node?.meta.deployed === false;
+          // The monitor's open alert IS the verdict (ADR 0010); deployment
+          // state is the graph's own signal beneath it.
+          const alert =
+            alerts.find((a) => a.process_id === processId && a.state === "firing") ??
+            alerts.find((a) => a.process_id === processId);
+          const health: LineageHealth = alert
+            ? alertHealth(alert)
+            : undeployed
+              ? "warn"
+              : "ok";
           return {
             id: `${e.kind}:${e.id}`,
             label: node?.label ?? id,
@@ -257,8 +272,8 @@ export function buildProductRows({
               : e.kind === "process_source"
                 ? "reads this product"
                 : "writes this product",
-            href: `/processes/${id.replace(/^proc:/, "")}`,
-            health: undeployed ? ("warn" as const) : undefined,
+            href: `/processes/${processId}`,
+            health,
           };
         }),
       },
@@ -344,19 +359,4 @@ export function successRate(
   }
   const total = ok + bad;
   return total === 0 ? null : (ok / total) * 100;
-}
-
-/**
- * Open alerts carrying NO anchor the client can read — connection,
- * association, channel and collection all null. Today that is exactly the
- * process-anchored kinds (`process_stalled` / `process_failed` /
- * `process_rate_limited`): migration 024 stores `process_id`/`source_id`, but
- * `/api/alerts` does not return them, so a product page cannot tell whether
- * one of these belongs to it. Surfacing the count is the honest fallback.
- */
-export function unanchoredAlerts(openAlerts: Alert[] | undefined): Alert[] {
-  return (openAlerts ?? []).filter(
-    (a) =>
-      !a.connection_id && !a.association_id && !a.channel_id && !a.collection_id,
-  );
 }
