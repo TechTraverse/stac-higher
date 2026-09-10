@@ -13,7 +13,7 @@ import { useStore } from "@nanostores/react";
 import type { MapMouseEvent, MapRef } from "react-map-gl/maplibre";
 import { StacMap, bboxToLngLatBounds, footprintLayerIds } from "@stac-higher/shared";
 import { AppShell } from "@/components/layout/AppShell";
-import { FootprintsMapLayer } from "@/components/map/FootprintsMapLayer";
+import { MapLayerView } from "@/components/map/MapLayerView";
 import { LayerPanel } from "@/components/map/LayerPanel";
 import { MapTooltip } from "@/components/map/MapTooltip";
 import { useCollections } from "@/lib/query/collections";
@@ -179,6 +179,12 @@ function MapPageInner() {
     [state.layers],
   );
 
+  // Task 6 replaces these with the shared axis: the layers' reported frames,
+  // the tick the time bar is parked on, and the two collectors.
+  const tickInstant: number | null = null;
+  const handleFrames = useCallback(() => {}, []);
+  const dropFrames = useCallback(() => {}, []);
+
   // Task 8 review: hover state (above) re-renders MapPageInner on every
   // mouse-move tick. These four are handed straight to LayerPanel, which has
   // no memoization of its own, so wrapping them in useCallback does not stop
@@ -228,20 +234,20 @@ function MapPageInner() {
             onClick={onClick}
             cursor={hovered ? "pointer" : undefined}
           >
-            {drawn.map(({ layer, beforeId }) =>
-              layer.kind === "footprints" ? (
-                <FootprintsMapLayer
-                  key={layer.id}
-                  layer={layer}
-                  catalogUrl={catalogUrl}
-                  frameSpan={state.frameSpan}
-                  beforeId={beforeId}
-                />
-              ) : null,
-            )}
-            {/* V-3 renders imagery layers (RasterFrameStack) and V-4 vector
-                layers (VectorTileLayer) from the same list; both chain their
-                beforeId through the same helper. */}
+            {drawn.map(({ layer, beforeId }) => (
+              <MapLayerView
+                key={layer.id}
+                layer={layer}
+                catalogUrl={catalogUrl}
+                frameSpan={state.frameSpan}
+                tickInstant={tickInstant}
+                beforeId={beforeId}
+                onFramesChange={handleFrames}
+                onFramesRemove={dropFrames}
+              />
+            ))}
+            {/* V-4 adds the vector branch inside MapLayerView; it chains its
+                beforeId through the same beforeIdFor helper. */}
           </StacMap>
           {hovered && <MapTooltip {...hovered} />}
         </div>
