@@ -77,14 +77,25 @@ interface RenderedLayer {
   opacity: number;
 }
 
+/**
+ * The stack's raster layers, BOTTOM first. Tree order is now top-first — the
+ * frames chain `beforeId` on each other and react-map-gl creates layers during
+ * render, so each target must exist before its dependant mounts — and the
+ * always-mounted anchor is a background layer, not a frame.
+ */
+function frameProps(): Record<string, unknown>[] {
+  return screen
+    .queryAllByTestId("layer")
+    .map((el) => JSON.parse(el.dataset.props as string) as Record<string, unknown>)
+    .filter((p) => p.type === "raster")
+    .reverse();
+}
+
 function layers(): RenderedLayer[] {
-  return screen.queryAllByTestId("layer").map((el) => {
-    const props = JSON.parse(el.dataset.props as string);
-    return {
-      source: props.source as string,
-      opacity: (props.paint as Record<string, number>)["raster-opacity"],
-    };
-  });
+  return frameProps().map((props) => ({
+    source: props.source as string,
+    opacity: (props.paint as Record<string, number>)["raster-opacity"],
+  }));
 }
 
 /**
@@ -169,6 +180,15 @@ describe("CollectionPreviewTab", () => {
     expect(opaque).toHaveLength(2);
     expect(opaque[0].source).toBe("preview-frame-2");
     expect(opaque[1].source).toBe("preview-frame-1");
+
+    // "Beneath" is now stated by the chain rather than implied by child order
+    // (I-112): the previous frame draws below the current frame's layer.
+    expect(
+      frameProps().map((p) => [p.id, p.beforeId]),
+    ).toEqual([
+      ["preview-frame-2-layer", "preview-frame-1-layer"],
+      ["preview-frame-1-layer", undefined],
+    ]);
   });
 
   it("asks the catalog for as many items as the frame count, newest first", () => {
