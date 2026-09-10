@@ -25,4 +25,16 @@ describe("nodeHealth", () => {
   it("an undeployed process is still a warning", () => {
     expect(nodeHealth({ ...proc, meta: { deployed: false } }, new Set())).toBe("warn");
   });
+
+  it("a process node is unknown on an incomplete alert list (I-84 fix-round-1)", () => {
+    expect(nodeHealth(proc, new Set(), false)).toBe("unknown");
+  });
+  it("an alert still wins over an incomplete list", () => {
+    expect(nodeHealth(proc, new Set(["proc:p1"]), false)).toBe("error");
+  });
+  it("an undeployed process still wins over an incomplete list", () => {
+    expect(
+      nodeHealth({ ...proc, meta: { deployed: false } }, new Set(), false),
+    ).toBe("warn");
+  });
 });

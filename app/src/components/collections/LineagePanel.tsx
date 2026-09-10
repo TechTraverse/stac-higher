@@ -12,6 +12,7 @@ import {
 } from "@stac-higher/shared";
 import { FlowStrip } from "@/components/monitoring/FlowStrip";
 import { useAlerts } from "@/lib/monitoring/queries";
+import { ALERTS_PAGE_LIMIT } from "@/lib/monitoring/api";
 import { usePipelineGraph, useFlowHistory } from "@/lib/monitoring/graph-queries";
 import {
   degreeMap,
@@ -74,16 +75,26 @@ function EdgeRow({
 
 export function LineagePanel({ collectionId }: { collectionId: string }) {
   const { data: graph, isLoading } = usePipelineGraph();
-  const { data: alerts } = useAlerts("open");
+  const {
+    data: alerts,
+    isLoading: alertsLoading,
+    isError: alertsError,
+  } = useAlerts("open");
   const node = collectionNode(collectionId);
+
+  // "Healthy" is only claimed on a loaded, untruncated alert list — the same
+  // evidence rule `overview.ts` / the dashboard use (I-84 fix-round-1).
+  const alertsAreComplete =
+    !alertsLoading && !alertsError && (alerts?.length ?? 0) < ALERTS_PAGE_LIMIT;
 
   const decorate = useMemo(
     () =>
       makeDecorator(
         unhealthyNodeIds(alerts ?? []),
         degreeMap(graph?.edges ?? []),
+        alertsAreComplete,
       ),
-    [alerts, graph?.edges],
+    [alerts, graph?.edges, alertsAreComplete],
   );
 
   const row = useMemo(

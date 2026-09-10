@@ -47,6 +47,14 @@ describe("processVerdict with alerts (I-84)", () => {
     expect(v.reason).toMatch(/acknowledged/);
   });
 
+  it("a firing alert wins over an acknowledged one for the same process", () => {
+    const v = processVerdict(process, [run()], 1, [
+      alert({ id: "ack", state: "acknowledged" }),
+      alert({ id: "firing", state: "firing" }),
+    ]);
+    expect(v.health).toBe("error");
+  });
+
   it("ignores alerts for other processes", () => {
     expect(processVerdict(process, [run()], 1, [alert({ process_id: "p2" })]).health).toBe("ok");
   });

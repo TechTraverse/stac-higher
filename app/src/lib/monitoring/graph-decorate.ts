@@ -57,9 +57,18 @@ export function nodeDetail(node: GraphNode, degree: number): string {
   return bits.join(" · ");
 }
 
+/**
+ * `alertsAreComplete` gates PROCESS nodes only (I-84 fix-round-1): "ok" is
+ * only claimed on a loaded, untruncated alert list — the same evidence rule
+ * `overview.ts` uses. An indicting alert or a deploy-state warning still wins
+ * first; only the "nothing to report" case degrades to "unknown" when the
+ * list can't be trusted. Connection/collection nodes keep the pre-A-1
+ * behaviour (tracked as part of I-117's follow-up).
+ */
 export function nodeHealth(
   node: GraphNode,
   unhealthy: ReadonlySet<string>,
+  alertsAreComplete = true,
 ): LineageHealth {
   if (unhealthy.has(node.id)) return "error";
   if (
@@ -69,6 +78,7 @@ export function nodeHealth(
   ) {
     return "warn";
   }
+  if (node.type === "process" && !alertsAreComplete) return "unknown";
   return "ok";
 }
 
@@ -92,9 +102,10 @@ export function degreeMap(
 export function makeDecorator(
   unhealthy: ReadonlySet<string>,
   degree: ReadonlyMap<string, number>,
+  alertsAreComplete = true,
 ): (node: GraphNode) => DagNodeDecoration {
   return (node) => ({
-    health: nodeHealth(node, unhealthy),
+    health: nodeHealth(node, unhealthy, alertsAreComplete),
     href: nodeHref(node),
     detail: nodeDetail(node, degree.get(node.id) ?? 0),
   });

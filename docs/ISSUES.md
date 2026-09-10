@@ -807,7 +807,7 @@ current number.
 ### I-88 · `overview.ts` derivations are untested — 🟢 resolved (UI-11)
 Covered by `app/src/__tests__/overview.test.ts` (27 cases over health ranking,
 the three alert-attribution paths, unattributed alerts, lineage roll-up,
-ingest-only counts, `successRate` and `unanchoredAlerts`). Residual noted in
+ingest-only counts and `successRate`). Residual noted in
 `app/UI-TODO.md`: `buildProductRows`' `lateFlow` branch is unreachable, because
 `isLate`'s match set is already claimed by the firing/acknowledged branches.
 The verdict is identical either way, so it is dead, not wrong.
@@ -1187,6 +1187,24 @@ limitation, but `/map`'s first-add camera fit (V-2, spec §4.6) is the first
 caller that feeds it arbitrary user-chosen collection extents, making it
 reachable.
 - Found in: V-2 whole-branch review.
+
+### I-117 · Pipeline graph health is state-blind: an acknowledged alert paints its node `error` 🟠
+`unhealthyNodeIds` (`app/src/lib/monitoring/graph-decorate.ts`) returns a
+`Set<string>` of anchors and ignores `alert.state` entirely, so a merely
+`acknowledged` alert indicts its node exactly like a `firing` one. Pre-existing
+for connection/collection anchors; A-1 (I-84) extends the same anchor set to
+process nodes, so it now also colours process nodes wrong. Net effect:
+`/monitoring` and `/graph` show a node red where `/processes` and the product
+Overview (which both read `state` via `processVerdict` / `buildProductRows`)
+show it amber. Fix: change `unhealthyNodeIds` to return a
+`Map<nodeId, LineageHealth>` (firing → `error`, acknowledged → `warn`) and
+thread it through `makeDecorator` instead of a bare `Set`, touching both
+`PipelineGraph.tsx` and `LineagePanel.tsx`. Note for that follow-up: A-1's
+`alertsAreComplete` completeness gate (fix-round-1) applies to PROCESS nodes
+only — connection/collection nodes still report `ok` on an incomplete alert
+list — the same fix should unify that gate across all three anchor kinds.
+- Tracked in: `app/src/lib/monitoring/graph-decorate.ts`.
+- Found in: A-1 Task 3 review, fix round 1.
 
 ## Resolved — archived
 

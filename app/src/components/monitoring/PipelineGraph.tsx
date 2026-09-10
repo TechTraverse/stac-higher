@@ -18,6 +18,7 @@ import {
 import { ExternalLink, Search, Share2, X } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAlerts } from "@/lib/monitoring/queries";
+import { ALERTS_PAGE_LIMIT } from "@/lib/monitoring/api";
 import { usePipelineGraph } from "@/lib/monitoring/graph-queries";
 import {
   degreeMap,
@@ -344,14 +345,22 @@ function FlowList({ edges, nodes }: { edges: GraphEdge[]; nodes: GraphNode[] }) 
 
 function GraphContent() {
   const { data: graph, isLoading, error, refetch } = usePipelineGraph();
-  const { data: alerts } = useAlerts("open");
+  const {
+    data: alerts,
+    isLoading: alertsLoading,
+    isError: alertsError,
+  } = useAlerts("open");
   const [view, setView] = useViewParam();
 
+  // "Healthy" is only claimed on a loaded, untruncated alert list — the same
+  // evidence rule `overview.ts` / the dashboard use (I-84 fix-round-1).
+  const alertsAreComplete =
+    !alertsLoading && !alertsError && (alerts?.length ?? 0) < ALERTS_PAGE_LIMIT;
   const unhealthy = useMemo(() => unhealthyNodeIds(alerts ?? []), [alerts]);
   const degree = useMemo(() => degreeMap(graph?.edges ?? []), [graph?.edges]);
   const decorate = useMemo(
-    () => makeDecorator(unhealthy, degree),
-    [unhealthy, degree],
+    () => makeDecorator(unhealthy, degree, alertsAreComplete),
+    [unhealthy, degree, alertsAreComplete],
   );
 
   const orphans = useMemo(

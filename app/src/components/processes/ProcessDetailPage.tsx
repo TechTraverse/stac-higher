@@ -880,7 +880,11 @@ const HEALTH_BADGE: Record<LineageHealth, string> = {
   unknown: "border-border bg-muted text-muted-foreground",
 };
 
-/** The header verdict, from the same run-ledger derivation the dashboard uses. */
+/**
+ * The header verdict, from the same run-ledger derivation the dashboard uses
+ * — an open alert for this process outranks the ledger (I-84): firing is an
+ * error, acknowledged a warning, whatever the run history says.
+ */
 function DeployState({ process }: { process: Process }) {
   const { data: sources } = useSources(process.id);
   const { data: runs } = useRuns(process.id);
