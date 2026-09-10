@@ -336,7 +336,10 @@ milestone in ROADMAP §9 — and the phase promoted to `main`.**
   `GET /api/alerts` (member+, group-scoped via the alert's connection) and
   audited operator+ `POST /api/alerts/[id]/ack` / `.../resolve`
   (state-guarded; a manual resolve with the condition still true re-fires as
-  a NEW row, which is what re-notifies). Notification fan-out is M2-C.
+  a NEW row, which is what re-notifies). Notification fan-out is M2-C. Since
+  A-1 (2026-09-09) the shape carries `process_id` (effective) + `source_id`,
+  so process alerts attribute to products, process pages and graph nodes
+  (I-84).
 - **M2-C · notification channels** ([ADR 0010](decisions/0010-alerting-notifications.md)) —
   migration **015**: `notification_deliveries` (the per-(alert, channel)
   webhook ledger), `alert_reads` (per-user read watermark),
@@ -541,9 +544,11 @@ pages, so the product copy no longer branches at all. Read ADR 0017 before
 
 **Health is derived once.** `overview.ts` turns the graph, flow and open-alert
 reads into the shapes home, the product page and the graph render, so those
-surfaces cannot disagree about whether something is healthy. Where the API
-cannot answer — `/api/alerts` returns no `process_id`, so process-anchored
-alerts cannot be tied to a product — the UI says so instead of guessing.
+surfaces cannot disagree about whether something is healthy. Since A-1
+(I-84), `/api/alerts` carries the effective `process_id`, so process-anchored
+alerts tie to a product like any other anchor; the home page's residual "not
+shown against a product" line now covers only channel-anchored alerts and
+processes wired to no product.
 
 **Two Tailwind v4 traps worth knowing** (both found by the in-browser pass):
 `@theme` tree-shakes variables no generated utility references (which had

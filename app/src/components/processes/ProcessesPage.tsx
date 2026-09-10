@@ -28,6 +28,8 @@ import { Cpu, Loader2, Plus, Trash2 } from "lucide-react";
 import { healthDotClass, type LineageHealth } from "@stac-higher/shared";
 import { toast } from "sonner";
 import { useAuthMe } from "@/lib/query/auth";
+import { useAlerts } from "@/lib/monitoring/queries";
+import type { Alert } from "@/lib/monitoring/api";
 import { timeAgo } from "@/components/monitoring/shared";
 import { RunSparkline } from "@/components/processes/RunSparkline";
 import {
@@ -114,17 +116,19 @@ function ProcessCard({
   process,
   canMutate,
   onDelete,
+  openAlerts,
 }: {
   process: Process;
   canMutate: boolean;
   onDelete: () => void;
+  openAlerts?: Alert[];
 }) {
   const { data: sources } = useSources(process.id);
   const { data: outputs } = useOutputs(process.id);
   const { data: runs } = useRuns(process.id, { poll: false });
 
   const ledger = realRuns(runs);
-  const verdict = processVerdict(process, runs, sources?.length);
+  const verdict = processVerdict(process, runs, sources?.length, openAlerts);
   const { rate, counted } = successRateOverRuns(ledger);
   const last = ledger.find((r) => r.started_at !== null) ?? ledger[0] ?? null;
   // An extractor has no `process_sources` by design — it is selected on an
@@ -365,6 +369,7 @@ function CreateProcessDialog({
 function ProcessesContent() {
   const { data: processes, isLoading, error, refetch } = useProcesses();
   const { data: me } = useAuthMe();
+  const { data: openAlerts } = useAlerts("open");
   const [creating, setCreating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Process | null>(null);
   const deleteMutation = useDeleteProcess();
@@ -428,6 +433,7 @@ function ProcessesContent() {
               process={process}
               canMutate={canMutate}
               onDelete={() => setPendingDelete(process)}
+              openAlerts={openAlerts}
             />
           ))}
         </div>

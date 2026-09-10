@@ -9,9 +9,9 @@
  * side, from the open-alert list, exactly like the M2-D flow hints.
  *
  * Health colouring joins the alert list client-side; the graph endpoint does
- * not embed alert state, so one alert read serves the whole page. Process-
- * anchored alerts carry no id the client can read (`/api/alerts` omits
- * `process_id`), so a process node's health is "unknown" rather than a guess.
+ * not embed alert state, so one alert read serves the whole page.
+ * Process-anchored alerts carry their effective `process_id` (I-84), so a
+ * process node is indicted the same way a connection or collection is.
  */
 import type { DagNodeDecoration, LineageHealth } from "@stac-higher/shared";
 import type { GraphNode } from "@/lib/monitoring/graph-api";
@@ -22,12 +22,14 @@ export function unhealthyNodeIds(
     kind: string;
     connection_id?: string | null;
     collection_id?: string | null;
+    process_id?: string | null;
   }[],
 ): Set<string> {
   const ids = new Set<string>();
   for (const alert of alerts) {
     if (alert.connection_id) ids.add(`conn:${alert.connection_id}`);
     if (alert.collection_id) ids.add(`coll:${alert.collection_id}`);
+    if (alert.process_id) ids.add(`proc:${alert.process_id}`);
   }
   return ids;
 }
@@ -67,8 +69,7 @@ export function nodeHealth(
   ) {
     return "warn";
   }
-  // No client-readable process anchor on alerts — see the file note.
-  return node.type === "process" ? "unknown" : "ok";
+  return "ok";
 }
 
 /** Every node's edge count, over the whole graph (not the lineage subgraph). */

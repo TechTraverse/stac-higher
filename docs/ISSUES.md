@@ -759,19 +759,18 @@ the posture says it should not.
 
 Carried out of the remodel. Full per-slice follow-up list: `app/UI-TODO.md`.
 
-### I-84 · `/api/alerts` omits `process_id` / `source_id` 🔴
-Migration 024 anchors process alerts (`process_stalled`, `process_failed`,
-`process_rate_limited`) to a process and a source, but the API response shape
-stops at connection / association / channel / collection. The client therefore
-**cannot attribute a process alert to a product**, which forces three separate
-honest-but-lossy workarounds: home counts them as "not shown against a
-product", the product Overview says "may relate to this product", and the
-graph gives process nodes `unknown` health rather than green.
-Adding the two fields to the `ApiAlert` shape is a small, additive `/api/*`
-change — deliberately OUT of the remodel's presentation-only scope. Once it
-lands, `processVerdict` should fold alerts in and both caveats can go.
-- Tracked in: `app/src/components/layout/overview.ts` (`unanchoredAlerts`),
-  `ProductOverview.tsx`, `PipelineGraph.tsx`.
+### I-84 · `/api/alerts` omits `process_id` / `source_id` — 🟢 resolved (A-1, 2026-09-09)
+`ApiAlert` gained `process_id` (the EFFECTIVE process — the alert's own, else
+its source's parent, the same read-time COALESCE `collection_id` uses) and
+`source_id` (raw). `buildProductRows` claims process alerts through the
+product's wired processes and colours process lineage nodes from them;
+`processVerdict` takes the open alert list and lets an open alert outrank the
+run ledger; the pipeline graph indicts `proc:<id>` nodes and no longer paints
+deployed processes `unknown`. The product Overview's "may relate to this
+product" caveat is gone; the home page keeps its residual "not shown against
+a product" line, which now covers only channel-anchored alerts and processes
+wired to no product. No migration (024 already stored both columns); no
+fixture (the row shape is app-only). Commit: see `git log --grep I-84`.
 
 ### I-85 · Storybook missed the fonts (and, it turned out, not the scan) — 🟢 resolved (UI-12)
 The FONT half was real: only the app imported `@fontsource`, so every story

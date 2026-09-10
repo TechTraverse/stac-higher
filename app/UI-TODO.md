@@ -209,8 +209,8 @@ Overlap risk is `docs/` and shared UI files — merge often, keep slices small.
       branches, the three attribution paths, unattributed alerts, lineage
       grouping and roll-up, ingest-only item counts), `buildStats`,
       `successRate` (per-direction numerator/denominator, null when
-      unmeasured) and `unanchoredAlerts`. Mutation-checked: breaking `worse()`
-      fails three of them.
+      unmeasured) and `unanchoredAlerts` (removed by A-1, I-84). Mutation-checked:
+      breaking `worse()` fails three of them.
 
 - [x] **UI-12 · Storybook CSS + font entry (closes I-85).**
       `packages/shared/.storybook/preview.css` (imports the shared
@@ -392,8 +392,8 @@ eight slices of reasoned-only selector edits actually broke.
 - `PUBLIC_TITILER_URL` / `PUBLIC_TIPG_URL` are read with compose defaults
   baked in. They are not declared in an `env.d.ts` — if one is added later,
   declare both there.
-- `successRate` and `unanchoredAlerts` live in
-  `app/src/components/layout/overview.ts` alongside the home derivations. If
+- `successRate` lives in `app/src/components/layout/overview.ts` alongside the
+  home derivations (`unanchoredAlerts` was removed by A-1, I-84). If
   that file keeps growing, `app/src/lib/overview/` is the better home — but
   keep ONE module: the whole point is that home and the product page cannot
   disagree.

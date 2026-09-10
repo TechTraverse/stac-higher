@@ -10,11 +10,15 @@
  * behind. The 30-day daily strip still exists; it lives on the detail page,
  * where its per-source meaning is visible.
  *
- * Process-anchored ALERTS are deliberately not consulted: `/api/alerts` does
- * not return `process_id`, so they cannot be attributed here either (same gap
- * the home overview names). The ledger is the signal the client actually has.
+ * Process-anchored ALERTS are consulted when the caller passes the open list
+ * (I-84: `/api/alerts` returns the effective `process_id`). An open alert is
+ * the monitor's verdict (ADR 0010) and outranks the ledger: firing ⇒ error,
+ * acknowledged ⇒ warning. Deployment state still comes first — a disabled
+ * process is "unknown" whatever the monitor says about its past.
  */
 import type { LineageHealth } from "@stac-higher/shared";
+import type { Alert } from "@/lib/monitoring/api";
+import { alertKindLabel } from "@/components/monitoring/shared";
 import type { Process, ProcessRun, ProcessSource } from "@/lib/processes/types";
 
 export interface ProcessVerdict {
@@ -66,6 +70,7 @@ export function processVerdict(
   process: Process,
   runs: ProcessRun[] | undefined,
   sourceCount: number | undefined,
+  openAlerts?: Alert[] | undefined,
 ): ProcessVerdict {
   if (!process.current_revision) {
     return { health: "unknown", label: "No revision", reason: "nothing deployed" };
@@ -75,6 +80,20 @@ export function processVerdict(
   }
   if (sourceCount === 0) {
     return { health: "unknown", label: "No trigger", reason: "no source attached" };
+  }
+
+  const own = (openAlerts ?? []).filter((a) => a.process_id === process.id);
+  const firingAlert = own.find((a) => a.state === "firing");
+  const acknowledgedAlert = own.find((a) => a.state === "acknowledged");
+  if (firingAlert) {
+    return { health: "error", label: "Failing", reason: alertKindLabel(firingAlert.kind) };
+  }
+  if (acknowledgedAlert) {
+    return {
+      health: "warn",
+      label: "Degraded",
+      reason: `${alertKindLabel(acknowledgedAlert.kind)} (acknowledged)`,
+    };
   }
 
   const ledger = realRuns(runs);
