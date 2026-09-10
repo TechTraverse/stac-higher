@@ -39,13 +39,16 @@ async def _backend_pid(pool) -> int:
 
 
 async def test_sequential_checkouts_reuse_one_backend():
+    from pipeline.config import Settings
     from pipeline.db.pool import get_async_pool
 
     pool = await get_async_pool(DATABASE_URL)
     pids = {await _backend_pid(pool) for _ in range(5)}
-    # min_size is 2, so a checkout may land on either warm connection — but
-    # five sequential checkouts must never fork five backends.
-    assert len(pids) <= 2, pids
+    # min_size (from Settings, so an exported DB_POOL_MIN stays
+    # self-consistent) is how many warm connections a checkout may land on —
+    # but five sequential checkouts must never fork five backends.
+    min_size = Settings.from_env().db_pool_min
+    assert len(pids) <= min_size, pids
 
 
 async def test_pooled_connection_carries_the_pgstac_session_gucs():
@@ -66,11 +69,15 @@ async def test_pooled_connection_carries_the_pgstac_session_gucs():
 
 
 async def test_a_repo_call_does_not_open_a_new_session():
-    """The end-to-end shape: two real repo calls, zero new backends.
+    """The end-to-end shape: real repo calls, no new backends worth the name.
 
     `pg_stat_database.sessions` is cumulative per database, so its delta over
-    two repo calls is exactly the number of connections those calls forked.
-    Before M3-B the delta was 2; it must now be 0.
+    N repo calls is at least the number of connections those calls forked —
+    but the database is shared with whatever else the stack is doing (like
+    `test_integration_pgstac_queue.py`'s convention, this is a tolerance, not
+    an exact count). Un-pooled, 20 repo calls would each fork their own
+    backend and add >= 20 sessions; pooled, they add ~0 plus whatever other
+    stack clients opened during the window — well under 10.
     """
     from pipeline.db.pool import get_async_pool
     from pipeline.ingest.repo import PgIngestRepo
@@ -86,11 +93,11 @@ async def test_a_repo_call_does_not_open_a_new_session():
 
     repo = PgIngestRepo(DATABASE_URL)
     before = await sessions()
-    await repo.list_enabled_ingest_associations()
-    await repo.list_enabled_ingest_associations()
+    for _ in range(20):
+        await repo.list_enabled_ingest_associations()
     after = await sessions()
 
-    assert after - before == 0, f"{after - before} new backend sessions for two repo calls"
+    assert after - before < 10, f"{after - before} new backend sessions for 20 repo calls"
 
 
 async def test_closing_the_pools_lets_a_later_call_reopen():

@@ -46,6 +46,14 @@ logger = logging.getLogger(__name__)
 _pools: dict[str, AsyncConnectionPool] = {}
 _lock = asyncio.Lock()
 
+#: Bounds the warm-up wait a caller can be held for under `_lock` (below) —
+#: `_lock` is module-global, so under M3-D's concurrency, N callers racing a
+#: cold pool would otherwise each queue behind psycopg_pool's 30 s default
+#: timeout, stalling N x 30 s instead of N x 10 s. A pool that cannot warm up
+#: within this bound is discarded (see `get_async_pool`); the next caller
+#: retries against a fresh pool rather than inheriting a wedged one.
+POOL_OPEN_TIMEOUT_SECONDS = 10.0
+
 
 def pool_name(database_url: str) -> str:
     """A DSN identity safe to log and to serve on ``/health``.
@@ -90,11 +98,26 @@ async def get_async_pool(database_url: str) -> AsyncConnectionPool:
         # backend (M3-B review finding, live-reproduced: 3 backends for 5
         # sequential checkouts against a min_size=2 pool). S-D's "one backend
         # per repo call" proof depends on the pool being genuinely warm before
-        # anyone can check a connection out of it. As a side benefit, a
-        # `configure` hook that raises (e.g. a bad GUC) now fails loudly here
-        # as a `PoolTimeout`, at pool-open time, instead of surfacing later on
-        # whichever caller's checkout happens to race it.
-        await pool.open(wait=True)
+        # anyone can check a connection out of it. Bounded by
+        # POOL_OPEN_TIMEOUT_SECONDS rather than psycopg_pool's 30 s default,
+        # since `_lock` is module-global and every other caller queues behind
+        # this one. As a side benefit, a `configure` hook that raises (e.g. a
+        # bad GUC) now fails earlier and in one place: `wait()` raises
+        # `PoolTimeout("pool initialization incomplete after N sec")` here,
+        # at pool-open time, with the underlying cause logged by psycopg_pool
+        # itself (WARNING level) — instead of surfacing later, on whichever
+        # caller's checkout happens to race it.
+        try:
+            await pool.open(wait=True, timeout=POOL_OPEN_TIMEOUT_SECONDS)
+        except BaseException:
+            # `wait()` already closes the pool on timeout, but close() is
+            # idempotent and cancellation can land before that runs — either
+            # way, a pool that never made it into `_pools` must not leak its
+            # worker tasks. Registration only happens after this succeeds, so
+            # the next caller retries against a fresh pool instead of finding
+            # a half-open one in the registry.
+            await pool.close()
+            raise
         _pools[database_url] = pool
         logger.info(
             "db pool opened",

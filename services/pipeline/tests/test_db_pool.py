@@ -33,11 +33,13 @@ class FakePool:
         self.opens = 0
         self.closes = 0
         self.open_wait: bool | None = None
+        self.open_timeout: float | None = None
         FakePool.instances.append(self)
 
-    async def open(self, wait: bool = False) -> None:
+    async def open(self, wait: bool = False, timeout: float | None = None) -> None:
         self.opens += 1
         self.open_wait = wait
+        self.open_timeout = timeout
 
     async def close(self) -> None:
         self.closes += 1
@@ -94,10 +96,17 @@ async def test_pool_configures_the_pgstac_session_guc_hook():
     assert created.kwargs["configure"] is configure_pgstac_session_async
     # Lazy open, never psycopg_pool's implicit one.
     assert created.kwargs["open"] is False
-    # ...but the lazy open still blocks until min_size connections exist
-    # (each having run the configure hook) — otherwise the first checkout
-    # races the min-size fill (M3-B review finding).
+
+
+async def test_pool_open_waits_for_the_min_size_fill():
+    """The lazy open still blocks until min_size connections exist (each
+    having run the configure hook) — otherwise the first checkout races the
+    min-size fill (M3-B review finding) — but bounded, so a cold/unreachable
+    DB cannot serialize a convoy of callers behind psycopg_pool's 30 s
+    default under the module-global lock (M3-B review finding, round 2)."""
+    created = await dbpool.get_async_pool(DSN)
     assert created.open_wait is True
+    assert created.open_timeout == dbpool.POOL_OPEN_TIMEOUT_SECONDS
 
 
 async def test_pool_sizes_come_from_settings(monkeypatch):
