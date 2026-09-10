@@ -110,10 +110,29 @@ async def run(settings: Settings) -> None:
         # Procrastinate's own pool, and nothing after that point may still
         # want a connection. The async pool serves the repos (M3-B); the sync
         # one serves the pgstac writer (M3-A) — separate objects, separate
-        # runtimes, both ours to release.
-        await close_pools()
-        close_writer_pools()
-        await queue.aclose()
+        # runtimes, both ours to release. Each close is isolated: a raise
+        # here (or a second Ctrl-C's CancelledError) must not skip the
+        # remaining closes, and must not shadow the original exception from
+        # the `try` above — only `Exception` is caught, so a `CancelledError`
+        # still propagates and cancellation isn't swallowed.
+        try:
+            await close_pools()
+        except Exception:
+            logger.warning(
+                "pool cleanup step failed", extra={"step": "close_pools"}, exc_info=True
+            )
+        try:
+            close_writer_pools()
+        except Exception:
+            logger.warning(
+                "pool cleanup step failed", extra={"step": "close_writer_pools"}, exc_info=True
+            )
+        try:
+            await queue.aclose()
+        except Exception:
+            logger.warning(
+                "pool cleanup step failed", extra={"step": "queue.aclose"}, exc_info=True
+            )
 
 
 def main() -> None:

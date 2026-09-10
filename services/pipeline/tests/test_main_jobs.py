@@ -78,3 +78,38 @@ async def test_run_closes_both_pools_before_the_queue(monkeypatch):
         await main_module.run(Settings.from_env(env={}))
 
     assert order == ["async-pools", "writer-pools", "queue"]
+
+
+async def test_run_isolates_a_failing_close_so_the_rest_still_run(monkeypatch):
+    """A raising cleanup step must not skip the remaining closes, and must
+    not shadow the original exception from the `try` above (fix round 1:
+    the bare `finally` had no exception isolation)."""
+    import pipeline.main as main_module
+
+    order: list[str] = []
+
+    class ExplodingQueue:
+        name = "stub"
+
+        async def setup(self) -> None:
+            raise RuntimeError("stop here")
+
+        async def aclose(self) -> None:
+            order.append("queue")
+
+    async def fake_close_pools() -> None:
+        order.append("async-pools")
+        raise ValueError("boom")
+
+    def fake_close_writer_pools() -> None:
+        order.append("writer-pools")
+
+    monkeypatch.setattr(main_module, "build_queue", lambda settings: ExplodingQueue())
+    monkeypatch.setattr(main_module, "close_pools", fake_close_pools)
+    monkeypatch.setattr(main_module, "close_writer_pools", fake_close_writer_pools)
+
+    with pytest.raises(RuntimeError, match="stop here"):
+        await main_module.run(Settings.from_env(env={}))
+
+    assert "writer-pools" in order
+    assert "queue" in order
