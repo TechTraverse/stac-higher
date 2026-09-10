@@ -10,6 +10,10 @@ with the release rather than as a deployment step that can be forgotten.
 
 Both hooks COMMIT: `SET` is transactional, and a pool's reset would roll back
 an uncommitted one on the connection's first return.
+
+The drainer carries the OPPOSITE pairing (`pipeline/stac/query_queue.py`);
+ADR 0020 (`docs/decisions/0020-pgstac-session-guc-pairings.md`) records why
+the two must never be unified.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from typing import Protocol
 #: advertised extent — but that call runs later, in whichever session
 #: DRAINS the queue (`run_queued_queries()`), so setting it here on the
 #: writer has no effect on that nested call: `pgstac_settings` defaults it
-#: to `false`, and the drainer is the session that must carry it (Task 4).
+#: to `false`, and the drainer is the session that must carry it (ADR 0020).
 #: It is still set here, on the writer, because spec §4.2 directs both
 #: statements together and doing so is harmless — the writer's own copy of
 #: the GUC is simply never read by anything. The two travel together in
@@ -32,7 +36,7 @@ from typing import Protocol
 #: the opposite pairing (`update_collection_extent` on, `use_queue`
 #: explicitly FALSE — not merely left unset, so it cannot silently inherit
 #: whatever `pgstac_settings` or an `ALTER DATABASE`/`ALTER ROLE` says — or
-#: it would re-queue the extent refresh instead of running it).
+#: it would re-queue the extent refresh instead of running it). ADR 0020.
 PGSTAC_SESSION_SQL: tuple[str, ...] = (
     "SET pgstac.use_queue TO TRUE",
     "SET pgstac.update_collection_extent TO TRUE",

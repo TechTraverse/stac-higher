@@ -35,6 +35,7 @@ configures there — an explicit FALSE makes the drainer's pairing
 self-enforcing instead of dependent on that default. If it were ever TRUE,
 that same nested call would re-queue the extent UPDATE instead of executing
 it — deferring it one hop further on every drain, forever.
+ADR 0020 (docs/decisions/0020-pgstac-session-guc-pairings.md) is the record.
 """
 
 from __future__ import annotations

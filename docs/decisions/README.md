@@ -25,6 +25,7 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 | [0017](0017-product-centric-ui-shell.md) | Product-centric UI shell, NOAA theme, terminology adoption | accepted (2026-08-31) | UI remodel |
 | [0018](0018-process-inputs-and-network-profiles.md) | Process inputs (staged manifest + source-collection read grants) and network profiles | accepted (2026-09-01) | GOES loop (G-2) |
 | [0019](0019-process-compute-kubernetes-kueue.md) | Process compute: Kubernetes Jobs + Kueue, hardware profiles as the portable vocabulary | accepted (2026-09-04; proposed 2026-09-02; supersedes 0013's cloud-backend half) | K queue / Phase 8 |
+| [0020](0020-pgstac-session-guc-pairings.md) | pgstac session GUC pairings: the writer and the drainer carry OPPOSITE settings | accepted (2026-09-09; records M3-A as shipped 2026-09-08) | M3 (M3-A) |
 
 Proposed ADRs establish no invariants until accepted (via the Phase 9 design
 spec); their draft invariants live inside the documents.
@@ -45,10 +46,11 @@ spec); their draft invariants live inside the documents.
 - **0012** — `item_events`/`audit_log` are monthly-partitioned (attach-don't-copy; reconcile provisions two months ahead on every runMigrations). `delivery_log`/`ingest_files` are NEVER time-partitioned (their UNIQUE keys are the upsert model) — they age out via the conservative `history_retention` sweep, which only prunes soft-deleted-association rows and itemless terminal deliveries. Audit rows die ONLY by partition drop (DETACH+DROP — the sanctioned escape hatch past the append-only triggers).
 - **0018** — A run's read access outside its own prefix is limited to the canonical prefixes of its **source collections** (`assets/{collection}/*`), granted read-only in the STS session policy — never by platform keys; remote inputs are staged INTO the run prefix by the platform (through the owning reference-mode association's adapter, else an egress-checked public GET) before any container exists, and finalize never treats `inputs/` as output. A revision's `network.level` never exceeds `PROCESS_NETWORK_MAX`; the pipeline enforces the cap at launch independently of the app's write gate (slice 1: `isolated` only).
 - **0019** — Hardware is expressed ONLY as a named **profile** plus CPU/memory/GPU counts within its bounds; nothing operator-facing names a cloud, instance type or Kubernetes selector. Bounds and profile existence are enforced at the app's write gate AND at launch. A run never holds a pipeline worker slot for its duration (submit-then-reconcile). Kueue nominal quota never exceeds the node pool's provisioning ceiling for the same flavor. Run credentials cover the promised queue wait plus the timeout, else the run requeues without spending an attempt — no credential endpoint is reachable from inside a run.
+- **0020** — The pgstac bulk-write settings are SESSION GUCs the pipeline sets on its own connections, never a `pgstac_settings` row or a deploy step. The **writer's** pool carries `pgstac.use_queue` ON; the **drainer's** autocommit connection carries `pgstac.update_collection_extent` ON **and** `pgstac.use_queue` explicitly FALSE (not unset — `get_setting` falls through to the table). The pairings are opposite by design: the extent refresh runs in the draining session and re-enters `run_or_queue`. Anything that creates and drops a pgstac collection clears that partition's `query_queue` rows first.
 
 ## Adding an ADR
 
 1. Copy the format of an existing record: a `# ADR NNNN — Title` heading, then **Status**, **Context**, **Decision**, **Consequences** (and **Revisit** if the choice is expected to be reconsidered).
-2. Number sequentially (next: `0020`).
+2. Number sequentially (next: `0021`).
 3. Add a row to the index above and, if it changes an invariant, note it in "Key invariants."
 4. ADRs are immutable once accepted — supersede with a new ADR rather than editing history; mark the old one `superseded by NNNN`.

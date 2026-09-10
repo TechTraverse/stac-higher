@@ -371,3 +371,94 @@ def test_extractor_code_is_a_pass_through():
     compile(EXTRACTOR_CODE, "<extractor>", "exec")
     assert "STAC_HIGHER_INPUT_MANIFEST" in EXTRACTOR_CODE
     assert '["id"]' in EXTRACTOR_CODE and "datetime" in EXTRACTOR_CODE
+
+
+# --------------------------------------------------------------------------- #
+# teardown is queue-aware (M3-B0)
+# --------------------------------------------------------------------------- #
+
+from pipeline.loadgen.pgstac_hygiene import (  # noqa: E402
+    clear_partition_queue,
+    drop_probe_collection,
+    partition_queue_pattern,
+    resolve_partition,
+)
+
+
+class _FakeCursor:
+    """Records every statement; answers `fetchone` from a scripted queue."""
+
+    def __init__(self, key: int | None, queue_rows: int = 0):
+        self.key = key
+        self.queue_rows = queue_rows
+        self.calls: list[tuple[str, tuple]] = []
+        self.rowcount = 0
+
+    def execute(self, sql: str, params: tuple = ()):
+        normalized = " ".join(sql.split())
+        self.calls.append((normalized, params))
+        self.rowcount = (
+            self.queue_rows
+            if normalized.startswith("DELETE FROM pgstac.query_queue WHERE")
+            else 0
+        )
+        return self
+
+    def fetchone(self):
+        return (self.key,) if self.key is not None else None
+
+
+def test_the_queue_pattern_is_quoted_so_a_short_key_cannot_match_a_longer_one():
+    pattern = partition_queue_pattern("_items_3")
+    assert pattern == "%'_items_3'%"
+    # An ILIKE against the queued text: the quotes are what keep `_items_3`
+    # from matching `update_partition_stats('_items_34', 't')`.
+    import fnmatch
+    like = pattern.replace("%", "*")
+    assert fnmatch.fnmatch("SELECT update_partition_stats('_items_3', 't')", like)
+    assert not fnmatch.fnmatch("SELECT update_partition_stats('_items_34', 't')", like)
+
+
+def test_resolve_partition_reads_the_key_while_the_collection_exists():
+    cur = _FakeCursor(key=34)
+    assert resolve_partition(cur, "m3-load-x") == "_items_34"
+    sql, params = cur.calls[0]
+    assert sql == "SELECT key FROM pgstac.collections WHERE id = %s"
+    assert params == ("m3-load-x",)
+
+
+def test_resolve_partition_is_none_for_a_collection_that_is_already_gone():
+    assert resolve_partition(_FakeCursor(key=None), "m3-load-x") is None
+
+
+def test_clear_partition_queue_deletes_queue_then_history_with_the_quoted_pattern():
+    cur = _FakeCursor(key=34, queue_rows=2)
+    assert clear_partition_queue(cur, "_items_34") == 2
+    assert [c[0] for c in cur.calls] == [
+        "DELETE FROM pgstac.query_queue WHERE query ILIKE %s",
+        "DELETE FROM pgstac.query_queue_history WHERE query ILIKE %s",
+    ]
+    assert all(c[1] == ("%'_items_34'%",) for c in cur.calls)
+
+
+def test_drop_probe_collection_clears_the_partition_queue_BEFORE_dropping():
+    cur = _FakeCursor(key=34, queue_rows=1)
+    assert drop_probe_collection(cur, "m3-load-x") == 1
+    statements = [c[0] for c in cur.calls]
+    assert statements == [
+        "SELECT key FROM pgstac.collections WHERE id = %s",
+        "DELETE FROM pgstac.query_queue WHERE query ILIKE %s",
+        "DELETE FROM pgstac.query_queue_history WHERE query ILIKE %s",
+        "SELECT pgstac.delete_collection(%s)",
+    ]
+    assert cur.calls[-1][1] == ("m3-load-x",)
+
+
+def test_drop_probe_collection_skips_the_queue_when_the_collection_is_already_gone():
+    cur = _FakeCursor(key=None)
+    assert drop_probe_collection(cur, "m3-load-x") == 0
+    statements = [c[0] for c in cur.calls]
+    assert statements == [
+        "SELECT key FROM pgstac.collections WHERE id = %s",
+        "SELECT pgstac.delete_collection(%s)",
+    ]

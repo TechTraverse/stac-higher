@@ -49,6 +49,7 @@ from pipeline.loadgen.fixtures import (
     metadata_config,
     s3_connection_config,
 )
+from pipeline.loadgen.pgstac_hygiene import drop_probe_collection
 from pipeline.loadgen.report import render
 from pipeline.loadgen.sample import take
 
@@ -433,10 +434,25 @@ def cmd_teardown(args: argparse.Namespace) -> int:
                 "DELETE FROM stac_higher.item_events WHERE collection_id = %s",
                 (n["collection"],),
             )
-            if not args.keep_items:
-                cur.execute("SELECT pgstac.delete_collection(%s)", (n["collection"],))
+            # M3-A made the writer queue `update_partition_stats` per
+            # partition; dropping the collection without clearing those rows
+            # leaves statements the next drain tick can only error on.
+            # `drop_probe_collection` resolves the partition name first, then
+            # clears queue + history, then drops (pgstac_hygiene.py).
+            queue_rows_cleared = (
+                0 if args.keep_items else drop_probe_collection(cur, n["collection"])
+            )
         conn.commit()
-    print(json.dumps({"objects_removed": removed, "label": args.label}, indent=2))
+    print(
+        json.dumps(
+            {
+                "objects_removed": removed,
+                "queue_rows_cleared": queue_rows_cleared,
+                "label": args.label,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
