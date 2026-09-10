@@ -124,12 +124,16 @@ class PgPgstacWriter(PgstacWriter):
 
         return PgstacDB(pool=writer_pool(self.dsn), use_queue=True)
 
-    async def get_collection_bbox(  # pragma: no cover - thin psycopg wrapper
+    async def get_collection_bbox(  # pragma: no cover - thin pool wrapper
         self, collection_id: str
     ) -> list[float] | None:
-        import psycopg
+        # M3-B: the async pool, same as the repos. (The UPSERT path keeps its
+        # own SYNC pool from M3-A — pypgstac is synchronous and runs in
+        # asyncio.to_thread.)
+        from pipeline.db.pool import get_async_pool
 
-        async with await psycopg.AsyncConnection.connect(self.dsn) as conn:
+        pool = await get_async_pool(self.dsn)
+        async with pool.connection() as conn:
             cur = await conn.execute(
                 "SELECT content->'extent'->'spatial'->'bbox'->0"
                 " FROM pgstac.collections WHERE id = %s",

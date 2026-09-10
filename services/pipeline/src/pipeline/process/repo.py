@@ -304,10 +304,14 @@ class ProcessRepo(abc.ABC):
 class PgProcessRepo(ProcessRepo):
     database_url: str
 
-    async def _connect(self):  # pragma: no cover - thin psycopg wrapper
-        import psycopg
+    async def _connect(self):  # pragma: no cover - thin pool wrapper
+        # M3-B: a checkout from the process-wide pool, not a fresh backend.
+        # `pool.connection()` is an async context manager with the same
+        # commit-on-success / rollback-on-error semantics, so every
+        # `async with await self._connect() as conn:` call site is unchanged.
+        from pipeline.db.pool import get_async_pool
 
-        return await psycopg.AsyncConnection.connect(self.database_url)
+        return (await get_async_pool(self.database_url)).connection()
 
     async def list_item_event_sources(  # pragma: no cover
         self, collection_id: str
