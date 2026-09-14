@@ -445,7 +445,7 @@ Per-worker peak RSS, S-E's formula with these settings:
 
 ```
 255 MiB + (GDAL_CACHEMAX + FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY) × WORKER_CONCURRENCY
-= 255 MiB + (64 + 32) MiB × concurrency      → ~1.4 GB at M3-D's default 12
+= 255 MiB + (64 + 40) MiB × concurrency      → ~1.5 GB at M3-D's default 12
 ```
 
 Size a deployment by that line, not by the largest asset. A reference-mode

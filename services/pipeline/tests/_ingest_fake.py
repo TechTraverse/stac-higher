@@ -349,7 +349,13 @@ class FakeS3:
         return {}
 
     def upload_fileobj(self, Fileobj: Any, Bucket: str, Key: str, **kwargs: Any) -> None:
-        self.puts.append({"Bucket": Bucket, "Key": Key, "Body": Fileobj.read(), **kwargs})
+        # s3transfer always passes an explicit amount (HashingStream rejects
+        # an unbounded read — M3-C final review finding 7); read in bounded
+        # chunks like the real client would.
+        chunks = []
+        while chunk := Fileobj.read(65536):
+            chunks.append(chunk)
+        self.puts.append({"Bucket": Bucket, "Key": Key, "Body": b"".join(chunks), **kwargs})
 
     def copy(self, CopySource: dict[str, str], Bucket: str, Key: str, **kwargs: Any) -> None:
         if self.fail_copy:

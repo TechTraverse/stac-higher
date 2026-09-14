@@ -40,6 +40,24 @@ class RasterLocation:
 RasterSource = bytes | RasterLocation
 
 
+def env_kwargs_for(location: RasterLocation) -> dict[str, Any]:
+    """The `rasterio.Env` kwargs `open_raster` enters a `RasterLocation`
+    under: its GDAL options, `GDAL_CACHEMAX` coerced from MB to bytes, and
+    its session (when it has one). Pure — no rasterio.Env is entered here —
+    so it doubles as the fixture a test builds directly without opening
+    anything."""
+    env_kwargs: dict[str, Any] = dict(location.options)
+    if "GDAL_CACHEMAX" in env_kwargs:
+        # rasterio special-cases this key and routes it straight to
+        # GDALSetCacheMax64, which requires a C integer (not a string)
+        # AND takes bytes, while the option here (like GDAL's own config
+        # string form and Settings.gdal_cachemax_mb) is in MB.
+        env_kwargs["GDAL_CACHEMAX"] = int(env_kwargs["GDAL_CACHEMAX"]) * 1024 * 1024
+    if location.session is not None:
+        env_kwargs["session"] = location.session
+    return env_kwargs
+
+
 @contextmanager
 def open_raster(source: RasterSource) -> Iterator[Any]:
     """Open ``source`` as a rasterio dataset: bytes through `/vsimem`, a
@@ -48,16 +66,7 @@ def open_raster(source: RasterSource) -> Iterator[Any]:
     import rasterio
 
     if isinstance(source, RasterLocation):
-        env_kwargs: dict[str, Any] = dict(source.options)
-        if "GDAL_CACHEMAX" in env_kwargs:
-            # rasterio special-cases this key and routes it straight to
-            # GDALSetCacheMax64, which requires a C integer (not a string)
-            # AND takes bytes, while the option here (like GDAL's own config
-            # string form and Settings.gdal_cachemax_mb) is in MB.
-            env_kwargs["GDAL_CACHEMAX"] = int(env_kwargs["GDAL_CACHEMAX"]) * 1024 * 1024
-        if source.session is not None:
-            env_kwargs["session"] = source.session
-        with rasterio.Env(**env_kwargs), rasterio.open(source.uri) as ds:
+        with rasterio.Env(**env_kwargs_for(source)), rasterio.open(source.uri) as ds:
             yield ds
     elif isinstance(source, bytes | bytearray | memoryview):
         with rasterio.io.MemoryFile(bytes(source)) as mem, mem.open() as ds:

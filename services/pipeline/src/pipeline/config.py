@@ -191,11 +191,13 @@ DEFAULT_DB_POOL_MAX = 16
 #: holds even when the process env is not what the compose file set.
 DEFAULT_GDAL_CACHEMAX_MB = 64
 #: Streamed FETCH: multipart part size and parts in flight. Bounded memory per
-#: streamed upload = FETCH_CHUNK_BYTES x FETCH_TRANSFER_CONCURRENCY (32 MiB).
+#: streamed upload = (FETCH_TRANSFER_CONCURRENCY + 1) x FETCH_CHUNK_BYTES ≈
+#: 40 MiB at the defaults (s3transfer buffers max_in_memory_upload_chunks
+#: plus one submission chunk).
 DEFAULT_FETCH_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_FETCH_TRANSFER_CONCURRENCY = 4
-#: Per-worker peak RSS ~= 255 MiB + (GDAL_CACHEMAX + FETCH_CHUNK_BYTES x
-#: FETCH_TRANSFER_CONCURRENCY) x WORKER_CONCURRENCY — independent of asset size.
+# Per-worker peak RSS ~= 255 MiB + (GDAL_CACHEMAX + FETCH_CHUNK_BYTES x
+# FETCH_TRANSFER_CONCURRENCY) x WORKER_CONCURRENCY — independent of asset size.
 
 
 def _parse_bool(raw: str | None, default: bool) -> bool:

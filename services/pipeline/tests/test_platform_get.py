@@ -54,6 +54,21 @@ def test_platform_s3_access_pins_the_endpoint_and_raster_location_is_vsis3():
     assert loc.session.get_credential_options()["AWS_SECRET_ACCESS_KEY"] == "SK"
 
 
+def test_platform_s3_access_repr_never_shows_the_secret_key():
+    from pipeline.ingest.extract import RasterAccess
+    from pipeline.storage.platform import PlatformS3Access
+
+    access = PlatformS3Access(
+        endpoint_url="http://minio:9000",
+        region="us-east-1",
+        access_key="AK",
+        secret_key="SK",
+        force_path_style=True,
+    )
+    assert "SK" not in repr(access)
+    assert "SK" not in repr(RasterAccess(platform=access))
+
+
 def test_gdal_endpoint_strips_the_scheme():
     from pipeline.storage.platform import gdal_endpoint
 
@@ -73,7 +88,9 @@ def test_upload_stream_uses_a_transfer_config_and_returns_the_digest():
             self.calls = []
 
         def upload_fileobj(self, Fileobj, Bucket, Key, Config=None):
-            self.calls.append((Bucket, Key, Fileobj.read(), Config))
+            # s3transfer always passes an explicit amount (HashingStream now
+            # rejects an unbounded read — M3-C final review finding 7).
+            self.calls.append((Bucket, Key, Fileobj.read(300), Config))
 
     client = _Client()
     digest, size = upload_stream(

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import io
 
+import pytest
+
 from pipeline.config import Settings
 from pipeline.ingest.transfer import HashingStream, TransferPolicy, transfer_policy
 
@@ -61,3 +63,11 @@ def test_hashing_stream_hashes_exactly_what_was_read():
     assert out == payload
     assert stream.size == 5000
     assert stream.hexdigest() == hashlib.sha256(payload).hexdigest()
+
+
+def test_hashing_stream_rejects_an_unbounded_read():
+    stream = HashingStream(io.BytesIO(b"x" * 10))
+    with pytest.raises(ValueError):
+        stream.read(-1)
+    with pytest.raises(ValueError):
+        stream.read(None)  # type: ignore[arg-type]

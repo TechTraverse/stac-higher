@@ -11,7 +11,7 @@ the platform's own bucket rather than a user connection.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Protocol
 from urllib.parse import urlparse
 
@@ -95,8 +95,8 @@ class PlatformS3Access:
 
     endpoint_url: str | None
     region: str
-    access_key: str
-    secret_key: str
+    access_key: str = field(repr=False)
+    secret_key: str = field(repr=False)
     force_path_style: bool
 
 

@@ -57,7 +57,12 @@ class HashingStream:
         self.size = 0
 
     def read(self, n: int = -1) -> bytes:
-        chunk = self._raw.read(n) if n is not None and n >= 0 else self._raw.read()
+        # s3transfer always passes an explicit amount; an unbounded read (`n`
+        # missing or negative) would pull the whole object into RAM on a real
+        # `StreamingBody`, defeating the bounded-memory upload path (M3-C).
+        if n is None or n < 0:
+            raise ValueError("HashingStream requires a bounded read")
+        chunk = self._raw.read(n)
         self._sha.update(chunk)
         self.size += len(chunk)
         return chunk

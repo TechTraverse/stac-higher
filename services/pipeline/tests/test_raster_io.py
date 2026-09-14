@@ -44,3 +44,30 @@ def test_open_raster_applies_gdal_options_inside_the_env(tmp_path):
 def test_open_raster_rejects_unknown_sources():
     with pytest.raises(TypeError), open_raster(123):  # type: ignore[arg-type]
         pass
+
+
+def test_env_combination_matches_production_s3_reads():
+    # The exact rasterio.Env(session=..., AWS_HTTPS=..., AWS_VIRTUAL_HOSTING=...,
+    # GDAL_CACHEMAX=...) combination `open_raster` enters for a platform /vsis3
+    # read (M3-C final review finding 3). No network: an Env is entered over
+    # env_kwargs_for()'s output directly, nothing is opened.
+    import rasterio
+
+    from pipeline.ingest.raster_io import env_kwargs_for
+    from pipeline.storage.platform import PlatformS3Access, raster_location
+
+    access = PlatformS3Access(
+        endpoint_url="http://minio:9000",
+        region="us-east-1",
+        access_key="AK",
+        secret_key="SK",
+        force_path_style=True,
+    )
+    loc = raster_location(access, "bucket", "key.tif", gdal_cachemax_mb=64)
+
+    with rasterio.Env(**env_kwargs_for(loc)):
+        env = rasterio.env.getenv()
+        assert env.get("AWS_S3_ENDPOINT") == "minio:9000"
+        assert env.get("AWS_HTTPS") == "NO"
+        assert env.get("AWS_VIRTUAL_HOSTING") == "FALSE"
+        assert env.get("GDAL_CACHEMAX") == 67108864

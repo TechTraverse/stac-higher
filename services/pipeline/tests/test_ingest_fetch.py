@@ -217,20 +217,60 @@ async def test_fetch_copies_server_side_when_the_policy_allows_and_reads_no_byte
     assert latest.status == "stored" and latest.checksum is None
 
 
-async def test_fetch_falls_back_to_streaming_when_the_copy_fails():
+async def test_fetch_falls_back_to_streaming_when_the_copy_fails(caplog):
+    import logging
+
     repo = FakeIngestRepo()
     assoc = _assoc({"source_path": "in/", "storage_mode": "copy"})
     await _settled(repo, "a.bin")
     adapter = FakeAdapter(blobs={"in/a.bin": b"zzz"}, copy_bucket="src")
     s3 = FakeS3(fail_copy=True)
-    stored = await fetch_stage(
-        repo, assoc, parse_ingest_config(assoc.config), adapter, s3, "bucket", "item-1", ["a.bin"],
-        transfer=TransferPolicy(server_side_copy=True),
-    )
+    cfg = parse_ingest_config(assoc.config)
+    with caplog.at_level(logging.INFO, logger="pipeline.ingest.fetch"):
+        stored = await fetch_stage(
+            repo, assoc, cfg, adapter, s3, "bucket", "item-1", ["a.bin"],
+            transfer=TransferPolicy(server_side_copy=True),
+        )
     assert stored == 1
     assert s3.puts[0]["Body"] == b"zzz"
     latest = await repo.get_latest_ledger(assoc.id, "a.bin")
     assert latest.checksum == hashlib.sha256(b"zzz").hexdigest()
+    # M3-C final review finding 4: the group-done record carries the
+    # transfer mode that actually moved the bytes (a fallback here).
+    done = next(r for r in caplog.records if r.msg == "ingest fetch group done")
+    assert done.transfer == {"copy": 0, "stream": 0, "copy_fallback": 1}
+
+
+async def test_transfer_close_error_never_masks_the_real_upload_error():
+    # M3-C final review finding 8: getattr(body, "close", None) + a raising
+    # close() used to replace the real upload exception in the `finally`.
+    import pytest
+
+    from pipeline.ingest.fetch import _transfer
+
+    class _RaisingCloseBody:
+        def read(self, n=-1):
+            return b""
+
+        def close(self):
+            raise RuntimeError("close blew up")
+
+    class _NoCopyAdapter:
+        def copy_source(self, path):
+            return None
+
+        async def open(self, path):
+            return _RaisingCloseBody()
+
+    class _FailingS3:
+        def upload_fileobj(self, Fileobj, Bucket, Key, **kwargs):
+            raise ValueError("upload blew up")
+
+    with pytest.raises(ValueError, match="upload blew up"):
+        await _transfer(
+            _NoCopyAdapter(), _FailingS3(), "bucket", "key", "path",
+            TransferPolicy(server_side_copy=False),
+        )
 
 
 async def test_fetch_never_copies_from_an_adapter_without_a_copy_source():

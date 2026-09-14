@@ -29,6 +29,7 @@ the group still stores, and ITEMIZE handles partial products.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from pipeline import metrics
@@ -73,6 +74,10 @@ async def fetch_stage(
 
     policy = transfer or TransferPolicy()
     stored = 0
+    # M3-C final review finding 4: the transfer mode of every member that
+    # actually stored, so the group-done log line carries how the bytes
+    # moved (copy / stream / a copy that fell back to streaming).
+    transfer_modes = {"copy": 0, "stream": 0, "copy_fallback": 0}
     for source_path in source_paths:
         # Re-read: only fetch a row that is still settled (idempotent guard).
         latest = await repo.get_latest_ledger(association.id, source_path)
@@ -85,6 +90,7 @@ async def fetch_stage(
             key = canonical_asset_key(association.collection_id, item_id, filename)
             checksum, mode = await _transfer(adapter, s3_client, bucket, key, fetch_path, policy)
             metrics.INGEST_FETCH_TRANSFERS.labels(mode=mode).inc()
+            transfer_modes[mode] += 1
             await repo.set_ledger_fields(latest.id, status=STATUS_STORED, checksum=checksum)
             stored += 1
         except Exception:
@@ -104,6 +110,7 @@ async def fetch_stage(
             "item_id": item_id,
             "stored": stored,
             "files": len(source_paths),
+            "transfer": transfer_modes,
         },
     )
     return stored
@@ -144,10 +151,13 @@ async def _transfer(
         )
     finally:
         # Release the connection a real S3 StreamingBody holds open, on both
-        # the success and the failure path (self-review: never leak it).
+        # the success and the failure path (self-review: never leak it). A
+        # raising close() must never mask the real upload exception (M3-C
+        # final review finding 8) — suppress it rather than let it propagate.
         close = getattr(body, "close", None)
         if close is not None:
-            close()
+            with contextlib.suppress(Exception):
+                close()
     return checksum, mode
 
 
