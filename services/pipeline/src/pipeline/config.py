@@ -16,10 +16,13 @@ Env contract (documented in README.md):
 - ``DB_POOL_MIN`` / ``DB_POOL_MAX`` — size bounds for the process-wide async
   connection pool the repos check out of (M3-B). ``DB_POOL_MAX`` must exceed
   the worker's job concurrency plus the overlapping periodic ticks.
-- ``GDAL_CACHEMAX``: GDAL block-cache ceiling in MB for EXTRACT's raster reads (M3-C, default 64).
-  GDAL reads this variable natively; the pipeline also passes it into every ``rasterio.Env``.
-- ``FETCH_CHUNK_BYTES``: multipart part size for streamed FETCH uploads (default 8 MiB).
-- ``FETCH_TRANSFER_CONCURRENCY``: parts in flight per streamed FETCH upload (default 4).
+- ``GDAL_CACHEMAX`` — GDAL block-cache ceiling in MB for EXTRACT's raster reads
+  (M3-C, default 64). GDAL reads this variable natively; the pipeline also
+  passes it into every ``rasterio.Env``.
+- ``FETCH_CHUNK_BYTES`` — multipart part size for streamed FETCH uploads
+  (default 8 MiB).
+- ``FETCH_TRANSFER_CONCURRENCY`` — parts in flight per streamed FETCH upload
+  (default 4).
 
 Platform object storage (Phase 3 — the platform's OWN bucket, MinIO locally /
 S3 in cloud; distinct from per-connection endpoints):

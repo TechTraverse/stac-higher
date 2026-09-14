@@ -68,9 +68,9 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `PROCESS_RUNTIME_IMAGE_STACTOOLS` | `stac-higher-process-runtime-stactools:local` | The image behind `runtime.runtime_image: "stactools"` (X-3, the built-in extractor library). **Empty** declares the deployment ships no such image: a run asking for the alias dies naming this variable rather than launching on the base image. |
 | `DB_POOL_MIN` | `2` | Connections the process-wide async pool keeps warm (M3-B). The pool grows on demand and trims back after `max_idle` (600 s), so a mostly-idle deployment holds two backends, not `DB_POOL_MAX`. |
 | `DB_POOL_MAX` | `16` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 4`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC). Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
-| `GDAL_CACHEMAX` | `64` | GDAL block-cache ceiling in MB for EXTRACT's `/vsis3` raster reads (M3-C). GDAL's own variable; also passed into every `rasterio.Env`. Part of the memory envelope below. |
-| `FETCH_CHUNK_BYTES` | `8388608` | Multipart part size for streamed copy-mode FETCH uploads (M3-C). |
-| `FETCH_TRANSFER_CONCURRENCY` | `4` | Parts in flight per streamed FETCH upload (M3-C). Per-upload buffer = `FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY`. |
+| `GDAL_CACHEMAX` | `64` | GDAL block-cache ceiling in MB for EXTRACT's `/vsis3` raster reads (M3-C) — an integer number of MB only; GDAL's own `25%`/`512MB` forms raise in `Settings.from_env`. GDAL's own variable; also passed into every `rasterio.Env`. Part of the "Memory envelope (M3-C)" section below. |
+| `FETCH_CHUNK_BYTES` | `8388608` | Multipart part size for streamed copy-mode FETCH uploads (M3-C) — a plain integer byte count, no unit suffix. Part of the "Memory envelope (M3-C)" section below. |
+| `FETCH_TRANSFER_CONCURRENCY` | `4` | Parts in flight per streamed FETCH upload (M3-C) — a plain integer count. Per-upload buffer = `FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY`. Part of the "Memory envelope (M3-C)" section below. |
 
 ## Connections (Phase 2)
 
@@ -424,6 +424,60 @@ sessions for the same 900 items; the pool held its two warm connections for
 `ingest_itemize` 32 → 9 ms; the pipeline kept pace with the 30/s feed where the
 baseline lagged at 21–24 items/s. Laptop numbers — they rank the fix, they are
 not platform capacity.
+
+## Memory envelope (M3-C)
+
+Worker memory no longer scales with asset size. Two paths changed:
+
+- **EXTRACT** opens rasters in place through GDAL (`/vsis3/<bucket>/<key>`
+  under the platform's or the source connection's session — `ingest/raster_io.py`,
+  `MemberByteSource.locate`) instead of buffering the object into a
+  `MemoryFile`. GDAL's block cache does the reading and `GDAL_CACHEMAX` caps
+  it. SFTP/FTP sources cannot be located and keep the buffered read (I-83).
+- **FETCH** (copy mode) server-side-copies when the platform's keys can read
+  the source bucket on the same endpoint (`ingest/transfer.py`, the delivery
+  path's `can_server_side_copy` gate), and otherwise streams a multipart upload
+  whose buffers are `FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY`. A failed
+  copy falls back to streaming. `pipeline_ingest_fetch_transfers_total{mode}`
+  counts which path ran.
+
+Per-worker peak RSS, S-E's formula with these settings:
+
+```
+255 MiB + (GDAL_CACHEMAX + FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY) × WORKER_CONCURRENCY
+= 255 MiB + (64 + 32) MiB × concurrency      → ~1.4 GB at M3-D's default 12
+```
+
+Size a deployment by that line, not by the largest asset. A reference-mode
+`/vsis3` read puts the connection's decrypted credentials into a GDAL session
+(built inside `S3Adapter.gdal_location`, never logged) — the same keys the
+worker already decrypts for boto3, in one more place.
+
+- `GDAL_CACHEMAX` accepts an **integer number of MB only**. GDAL's own `25%` /
+  `512MB` forms are NOT accepted: `Settings.from_env` raises on them, and a
+  non-numeric value in a `RasterLocation`'s options makes `open_raster` raise
+  `ValueError` (it converts MB → bytes for rasterio at its single coercion
+  point; builders write `str(settings.gdal_cachemax_mb)`).
+- The streamed FETCH upload's real in-memory bound is
+  `≈ (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES`, not the simple
+  product above — s3transfer buffers `max_in_memory_upload_chunks` chunks plus
+  one submission chunk for a non-seekable body, and `upload_stream` pins
+  `max_in_memory_upload_chunks` to the concurrency. With the defaults that is
+  ≈ 40 MiB, not 32.
+- Two `locate()` call sites differ on purpose: `_best_effort_raster_geometry`
+  swallows a raising `locate()` (the I-27 "never raises" layer falls back to
+  bytes / no geometry), while `build_item`'s `raster_auto` branch lets it raise
+  — there a raise is equivalent to the `read()` it replaces.
+- If `awscrt` is ever installed, boto3 may pick the CRT transfer manager,
+  which ignores `TransferConfig` (the whole chunk/concurrency envelope); it is
+  not a dependency today — pin `preferred_transfer_client="classic"` if that
+  changes.
+- Reference-mode `locate()` does one blocking pinned-endpoint resolve per
+  raster item on the event loop (allow-listed hosts skip DNS).
+- `S3Adapter.copy_source` returns a source for anonymous (public-bucket)
+  connections too, so each such member pays one failed server-side copy and a
+  WARNING before falling back to the stream — expected noise on public NODD
+  ingest; the lead is logging it as an issue.
 
 ## Docker
 
