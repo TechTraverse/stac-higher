@@ -1414,6 +1414,53 @@ which is not populated on `schedule` runs.
 - Tracked in: `.github/workflows/codeql.yml`, `.github/workflows/security.yml`.
 - Found in: CI repair (2026-09-15).
 
+## Container images + scanning (C queue, planned 2026-09-13)
+
+### I-122 · UI test runs are inserted and never drained 🔴
+`POST /api/processes/[id]/test` INSERTs a `process_checks` row (the ADR
+0004 bridge, M5-A) and the UI polls it, but no registered pipeline job has
+ever called `claim_process_checks` / `attach_check_run` / `finish_check`
+(`git log -S claim_process_checks -- services/pipeline/src/pipeline/jobs`
+is empty; the only caller is the test fake). A test run from the UI stays
+`pending` forever. Found while designing `image_scans` on the same
+pattern: copy the drain half deliberately (spec §8.1). Fix is a `process_
+check_drain` leg on the run tick that claims the row, calls
+`process_trigger(is_test=True, revision_id=…)`, attaches the run and
+finishes the check when the run finalizes — independent of the C queue
+and small enough for any loop to pick up.
+- Tracked in: `services/pipeline/src/pipeline/jobs/process.py`,
+  `process/repo.py:787-830`.
+- Found in: the 2026-09-13 planning session.
+
+### I-123 · The scanner's egress network cannot filter by registry host 🟡
+`scanner-egress` (spec §11) is a plain bridge network: Docker cannot
+restrict it to `allowed_registries`. The list is enforced in software
+twice (app on add, pipeline before launch) and the scanner is the only
+container on the network, but a compromised scanner could reach any host.
+On Kubernetes the equivalent is a NetworkPolicy with FQDN egress, which
+is CNI-dependent (K8s spec §12). Accept for compose; revisit with the
+egress proxy that ADR 0018's higher network levels will need anyway.
+- Tracked in: ADR 0021 Consequences; `docker-compose.yml` (C-2).
+
+### I-124 · A scan holds a worker slot until K-4 🟡
+The drain launches the scanner through the executor and blocks in
+`wait` for up to the policy timeout (900 s, spec §8.1). At worker
+concurrency 1 that stalls ingest and delivery for the scan's duration;
+M3-D's concurrency (12) turns it into one occupied slot, and K-4's
+submit-then-reconcile executor removes the block entirely. Not a reason
+to build a second executor shape (ADR 0021 option A).
+- Tracked in: `jobs/image_scans.py` (C-2); closes with K-4.
+
+### I-125 · Anonymous Docker Hub pulls share a 100-per-6-hour budget per IP 🟡
+Scans and launches of `docker.io` references without a group credential
+pull anonymously unless `REGISTRY_DOCKERHUB_USER/_TOKEN` is set (spec
+§5). Docker's enforced limit is 100 pulls / 6 h per IPv4 (200 with a
+Personal account, unlimited for paid orgs); a NAT'd cluster shares one
+budget. HEAD requests (tag→digest, drift) are free. Deployment checklist
+item, not a code change; in GovCloud the ECR pull-through cache (spec
+§12) removes it.
+- Tracked in: `docs/backend.md` env table (C-2).
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
