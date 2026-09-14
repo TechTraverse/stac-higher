@@ -11,7 +11,8 @@ the platform's own bucket rather than a user connection.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import Any, BinaryIO, Protocol
 from urllib.parse import urlparse
 
 import boto3
@@ -19,6 +20,7 @@ from botocore.client import Config
 
 from pipeline.config import Settings
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
+from pipeline.ingest.raster_io import RasterLocation
 
 
 class S3Like(Protocol):
@@ -30,6 +32,8 @@ class S3Like(Protocol):
     def get_object(self, **kwargs: Any) -> Any: ...
     def head_object(self, **kwargs: Any) -> Any: ...
     def copy_object(self, **kwargs: Any) -> Any: ...
+    def upload_fileobj(self, Fileobj: Any, Bucket: str, Key: str, **kwargs: Any) -> None: ...
+    def copy(self, CopySource: dict[str, str], Bucket: str, Key: str, **kwargs: Any) -> None: ...
 
 
 def pinned_endpoint_url(
@@ -83,6 +87,76 @@ def build_platform_client(settings: Settings) -> Any:
     )
 
 
+@dataclass(frozen=True)
+class PlatformS3Access:
+    """What a GDAL session needs to read the platform bucket in place (M3-C):
+    the PINNED endpoint (egress parity with `build_platform_client`) and the
+    platform's own keys. Frozen and never logged."""
+
+    endpoint_url: str | None
+    region: str
+    access_key: str = field(repr=False)
+    secret_key: str = field(repr=False)
+    force_path_style: bool
+
+
+def platform_s3_access(settings: Settings) -> PlatformS3Access:
+    return PlatformS3Access(
+        endpoint_url=pinned_endpoint_url(
+            settings.staging_s3_endpoint, settings.staging_s3_region, settings.egress_allow_hosts
+        ),
+        region=settings.staging_s3_region,
+        access_key=settings.staging_s3_access_key,
+        secret_key=settings.staging_s3_secret_key,
+        force_path_style=settings.staging_s3_force_path_style,
+    )
+
+
+def gdal_endpoint(endpoint_url: str | None) -> str | None:
+    """`AWSSession(endpoint_url=...)` wants ``host[:port]`` with no scheme."""
+    if not endpoint_url:
+        return None
+    parsed = urlparse(endpoint_url)
+    return parsed.netloc or None
+
+
+def gdal_session_options(
+    endpoint_url: str | None, force_path_style: bool, gdal_cachemax_mb: int | None
+) -> dict[str, str]:
+    """The `rasterio.Env` kwargs a custom endpoint needs. rasterio refuses raw
+    `AWS_*` options except these two (S-E caveat): plaintext endpoints need
+    `AWS_HTTPS=NO`, path-style ones `AWS_VIRTUAL_HOSTING=FALSE`."""
+    options: dict[str, str] = {}
+    if endpoint_url and urlparse(endpoint_url).scheme == "http":
+        options["AWS_HTTPS"] = "NO"
+    if endpoint_url and force_path_style:
+        options["AWS_VIRTUAL_HOSTING"] = "FALSE"
+    if gdal_cachemax_mb is not None:
+        options["GDAL_CACHEMAX"] = str(gdal_cachemax_mb)
+    return options
+
+
+def raster_location(
+    access: PlatformS3Access, bucket: str, key: str, *, gdal_cachemax_mb: int
+) -> RasterLocation:
+    """`/vsis3/<bucket>/<key>` under the platform's session (copy-mode EXTRACT)."""
+    from rasterio.session import AWSSession
+
+    session = AWSSession(
+        aws_access_key_id=access.access_key,
+        aws_secret_access_key=access.secret_key,
+        region_name=access.region,
+        endpoint_url=gdal_endpoint(access.endpoint_url),
+    )
+    return RasterLocation(
+        uri=f"/vsis3/{bucket}/{key}",
+        session=session,
+        options=gdal_session_options(
+            access.endpoint_url, access.force_path_style, gdal_cachemax_mb
+        ),
+    )
+
+
 def put_object(
     client: S3Like,
     bucket: str,
@@ -130,6 +204,71 @@ def copy_object(client: S3Like, bucket: str, src_key: str, dest_key: str) -> Non
         Bucket=bucket,
         Key=dest_key,
         CopySource={"Bucket": bucket, "Key": src_key},
+    )
+
+
+def upload_stream(
+    client: S3Like, bucket: str, key: str, body: BinaryIO, *, chunk_bytes: int, concurrency: int
+) -> tuple[str, int]:
+    """Streamed multipart upload of ``body`` (M3-C): boto3's transfer manager
+    reads `chunk_bytes` parts with at most `concurrency` in flight, so worker
+    memory is bounded by roughly ``(concurrency + 1) * chunk_bytes`` (the "+1"
+    is s3transfer's own in-flight submission chunk), not by the object.
+    ``body`` is non-seekable (`HashingStream` deliberately exposes only
+    `read`), so s3transfer buffers read-ahead chunks separately from the
+    in-flight ones, gated by `max_in_memory_upload_chunks` — left at its
+    default (10) that ceiling dominates the bound (~(10 + 1) * chunk_bytes
+    regardless of `concurrency`), so it is pinned to `concurrency` here to
+    keep the product the actual envelope. Returns the sha256 hex digest and
+    byte count of what went through. Synchronous — wrap in
+    ``asyncio.to_thread``."""
+    from boto3.s3.transfer import TransferConfig
+
+    from pipeline.ingest.transfer import HashingStream
+
+    hashing = HashingStream(body)
+    config = TransferConfig(
+        multipart_threshold=chunk_bytes,
+        multipart_chunksize=chunk_bytes,
+        max_concurrency=concurrency,
+        use_threads=True,
+    )
+    # `max_in_memory_upload_chunks` (read-ahead buffering for a non-seekable
+    # fileobj) isn't a constructor kwarg on boto3's TransferConfig wrapper in
+    # this botocore version, but it IS a plain attribute inherited from
+    # s3transfer's own TransferConfig — set it directly rather than leaving
+    # it at the library default of 10, which would dominate the envelope.
+    config.max_in_memory_upload_chunks = concurrency
+    client.upload_fileobj(hashing, bucket, key, Config=config)
+    return hashing.hexdigest(), hashing.size
+
+
+def copy_from_bucket(
+    client: S3Like,
+    src_bucket: str,
+    src_key: str,
+    bucket: str,
+    key: str,
+    *,
+    chunk_bytes: int,
+    concurrency: int,
+) -> None:
+    """Server-side copy from ANOTHER bucket on the platform endpoint into the
+    platform bucket (M3-C FETCH fast path). boto3's managed `copy` switches to
+    multipart copy above the threshold, so objects over 5 GB work. Raises when
+    the platform keys cannot read ``src_bucket`` — the caller streams instead.
+    Synchronous — wrap in ``asyncio.to_thread``."""
+    from boto3.s3.transfer import TransferConfig
+
+    client.copy(
+        {"Bucket": src_bucket, "Key": src_key},
+        bucket,
+        key,
+        Config=TransferConfig(
+            multipart_threshold=chunk_bytes,
+            multipart_chunksize=chunk_bytes,
+            max_concurrency=concurrency,
+        ),
     )
 
 

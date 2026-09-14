@@ -68,6 +68,10 @@ async def test_fetch_handler_enqueues_itemize_when_stored(monkeypatch):
     monkeypatch.setattr(ingest, "_load_association", _fake_load)
     monkeypatch.setattr(ingest, "build_adapter", lambda *_a, **_k: object())
     monkeypatch.setattr(ingest, "build_platform_client", lambda _s: object())
+    # M3-C: fetch() builds the transfer policy from the adapter before
+    # fetch_stage runs; the adapter here is a bare object() stand-in, so
+    # stub the policy builder rather than give it a real protocol/endpoint.
+    monkeypatch.setattr(ingest, "transfer_policy", lambda _a, _s: None)
     monkeypatch.setattr(ingest, "fetch_stage", _fake_fetch_stage)
 
     await queue.tasks["pipeline.ingest_fetch"](
@@ -102,6 +106,7 @@ async def test_fetch_handler_skips_itemize_when_nothing_stored(monkeypatch):
     monkeypatch.setattr(ingest, "_load_association", _fake_load)
     monkeypatch.setattr(ingest, "build_adapter", lambda *_a, **_k: object())
     monkeypatch.setattr(ingest, "build_platform_client", lambda _s: object())
+    monkeypatch.setattr(ingest, "transfer_policy", lambda _a, _s: None)
     monkeypatch.setattr(ingest, "fetch_stage", _fake_fetch_stage)
 
     await queue.tasks["pipeline.ingest_fetch"](
@@ -133,6 +138,10 @@ async def test_itemize_handler_bumps_nothing_when_the_group_goes_to_an_extractor
     monkeypatch.setattr(ingest, "_load_association", _fake_load)
     monkeypatch.setattr(ingest, "build_adapter", lambda *_a, **_k: object())
     monkeypatch.setattr(ingest, "build_platform_client", lambda _s: object())
+    # platform_s3_access resolves the staging endpoint host (like
+    # build_platform_client above) — not exercised by run_itemize, which is
+    # faked below, so stub it out rather than resolving "minio" live (M3-C).
+    monkeypatch.setattr(ingest, "platform_s3_access", lambda _s: None)
     monkeypatch.setattr(ingest, "PgPgstacWriter", lambda _u: object())
     monkeypatch.setattr(ingest, "PgProcessRepo", lambda _u: object())
     monkeypatch.setattr(ingest, "run_itemize", _fake_run_itemize)

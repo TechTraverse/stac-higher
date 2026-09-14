@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -292,6 +293,10 @@ class FakeAdapter:
     protocol: str = "s3"
     list_calls: list[str] = field(default_factory=list)
     get_calls: list[str] = field(default_factory=list)
+    #: (M3-C) the bucket a same-endpoint CopyObject could read from, or None
+    #: to make copy_source() return None (adapter cannot be copied server-side).
+    copy_bucket: str | None = None
+    open_calls: list[str] = field(default_factory=list)
 
     async def list(self, prefix: str = "") -> list[FileEntry]:
         self.list_calls.append(prefix)
@@ -310,13 +315,43 @@ class FakeAdapter:
     async def test(self):  # pragma: no cover - unused
         return {"ok": True}
 
+    def gdal_location(self, path, *, options=None):
+        # Mirrors StorageAdapter's own default (M3-C, I-83): this stand-in
+        # authenticates nothing, so SourceAdapterByteSource.locate() falls
+        # back to the buffered `get()` — same as a real SFTP/FTP adapter.
+        raise NotImplementedError("FakeAdapter: no VSI handler")
+
+    @property
+    def endpoint(self) -> str | None:
+        return None
+
+    def copy_source(self, path: str) -> tuple[str, str] | None:
+        return (self.copy_bucket, path) if self.copy_bucket else None
+
+    async def open(self, path: str):
+        self.open_calls.append(path)
+        return io.BytesIO(self.blobs[path])
+
 
 @dataclass
 class FakeS3:
-    """Captures put_object calls the FETCH stage makes into platform storage."""
+    """Captures the platform-storage calls the FETCH stage makes: buffered
+    put_object (legacy), streamed upload_fileobj (M3-C) — both recorded as
+    `puts` with the body bytes so assertions read the same — and server-side
+    `copy` calls. `fail_copy=True` makes `copy` raise (fallback path)."""
 
     puts: list[dict[str, Any]] = field(default_factory=list)
+    copies: list[dict[str, Any]] = field(default_factory=list)
+    fail_copy: bool = False
 
     def put_object(self, **kwargs: Any) -> dict[str, Any]:
         self.puts.append(kwargs)
         return {}
+
+    def upload_fileobj(self, Fileobj: Any, Bucket: str, Key: str, **kwargs: Any) -> None:
+        self.puts.append({"Bucket": Bucket, "Key": Key, "Body": Fileobj.read(), **kwargs})
+
+    def copy(self, CopySource: dict[str, str], Bucket: str, Key: str, **kwargs: Any) -> None:
+        if self.fail_copy:
+            raise RuntimeError("copy denied")
+        self.copies.append({"CopySource": CopySource, "Bucket": Bucket, "Key": Key, **kwargs})

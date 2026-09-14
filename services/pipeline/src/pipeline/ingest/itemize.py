@@ -30,6 +30,7 @@ from pipeline.ingest.extract import (
     ExtractError,
     ExtractMember,
     MetadataConfig,
+    RasterAccess,
     SourceAdapterByteSource,
     bbox_to_polygon,
     build_item,
@@ -304,6 +305,7 @@ async def run_itemize(
     source_paths: Sequence[str],
     bucket: str,
     asset_href_base: str,
+    raster_access: RasterAccess | None = None,
     process_repo: ProcessRepo | None = None,
     enqueue_now: Callable[[str], Awaitable[None]] | None = None,
     now: dt.datetime | None = None,
@@ -325,9 +327,9 @@ async def run_itemize(
     cfg = parse_metadata(config.metadata)
     collection_fallback = await _build_collection_fallback(writer, association, cfg)
     byte_source = (
-        SourceAdapterByteSource(adapter, config.source_path)
+        SourceAdapterByteSource(adapter, config.source_path, raster_access)
         if config.storage_mode == "reference"
-        else CanonicalByteSource(s3_client, bucket)
+        else CanonicalByteSource(s3_client, bucket, raster_access)
     )
     try:
         item_dict = await build_item(

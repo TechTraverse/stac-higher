@@ -9,8 +9,13 @@ parent connection's health columns.
 from __future__ import annotations
 
 import abc
+import io
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import TYPE_CHECKING, BinaryIO, TypedDict
+
+if TYPE_CHECKING:
+    from pipeline.ingest.raster_io import RasterLocation
 
 
 class TestResult(TypedDict, total=False):
@@ -116,3 +121,28 @@ class StorageAdapter(abc.ABC):
         raise NotImplementedError(
             f"{self.protocol} connections do not support server-side copy"
         )
+
+    @property
+    def endpoint(self) -> str | None:
+        """The custom endpoint URL this adapter dials, when its protocol has
+        one (s3 with a MinIO/custom endpoint). Feeds the server-side-copy gate."""
+        return None
+
+    def copy_source(self, path: str) -> tuple[str, str] | None:
+        """``(bucket, key)`` a same-endpoint ``CopyObject`` could read ``path``
+        from, or None when this protocol cannot be copied server-side (M3-C)."""
+        return None
+
+    def gdal_location(
+        self, path: str, *, options: Mapping[str, str] | None = None
+    ) -> RasterLocation:
+        """A `RasterLocation` GDAL can range-read in place. Object stores only —
+        SFTP/FTP raise (I-83) and EXTRACT falls back to the buffered `get`."""
+        raise NotImplementedError(
+            f"{self.protocol}: no VSI handler authenticates through this adapter"
+        )
+
+    async def open(self, path: str) -> BinaryIO:
+        """A readable binary stream of ``path``. Default: the buffered `get`
+        (I-83 — SFTP/FTP); `S3Adapter` overrides with a true stream."""
+        return io.BytesIO(await self.get(path))

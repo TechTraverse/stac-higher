@@ -97,9 +97,12 @@ The egress IP-pinning for a custom http (MinIO) endpoint exists twice: `S3Adapte
 ROADMAP §7 grants "associate connections ↔ collections" to **member**, but the mutation guard (`matchGatedRoute` → `canMutate`) is binary operator|admin, so association create/edit/delete requires operator+. Reads (list/detail) are open to any authenticated caller who can see the row. A per-route role floor (member for associate, operator for connection CRUD) is the eventual refinement.
 - Tracked in: `app/src/lib/authz/permissions.ts`, `app/src/lib/associations/access.ts`.
 
-### I-19 · Adapter `get` fully buffers large assets (streaming deferred) ⚪
-The list-metadata half is **done (Slice B1)**: `StorageAdapter.list()` now returns `FileEntry` with size/mtime/etag, which the DISCOVER settled-check needs. The remaining gap: `get() -> bytes` buffers the whole object in memory, and copy-mode FETCH (Slice B2+B3) buffers `get → platform.put_object`, so FETCH of multi-GB assets is unsafe at envelope scale. Fine for local/small assets; true streaming (a streaming read + S3 multipart upload) is deferred and logged here.
-- Tracked in: here; `services/pipeline/.../adapters/base.py`, `services/pipeline/.../ingest/fetch.py`.
+### I-19 · Adapter `get` fully buffers large assets — 🟢 resolved for object stores (M3-C, 2026-09-14)
+Copy-mode FETCH now server-side-copies when the platform can read the source
+bucket and otherwise streams a bounded multipart upload
+(`ingest/transfer.py`, `platform.upload_stream`); `StorageAdapter.open()` is
+the streaming seam and `S3Adapter` implements it. SFTP/FTP keep the buffered
+`get()` — that residual is I-83.
 
 ### I-20 · Ingest discovery is non-recursive (one directory level) ⚪
 DISCOVER lists `source_path` once. S3's prefix listing is naturally deep (all keys under the prefix), but SFTP/FTP `list()` returns a single directory level, so nested products under an SFTP/FTP source are not discovered. Adequate for the common flat-drop-directory case; a recursive walk (descend into `is_dir` entries, guarding depth/symlink loops) is the follow-up.
@@ -125,9 +128,12 @@ rasterio's `>=1.5,<2` wheels bundle their own GDAL build with a smaller driver s
 The `sidecar` metadata strategy's `generic_xml` parser looks for a small, namespace-agnostic set of date-ish tags (`datetime`/`acquired`/`date`/`acquisitiondate`/`start_datetime`) and no geometry — richer field mapping is a follow-up, not implemented here. Separately: when a raster and its sidecar share a basename (e.g. `scene.tif` + `scene.xml`), `build_assets`/`build_raster_auto` collapse them to a **single** `data` asset keyed by that stem — the raw sidecar file itself is never exposed as a distinct STAC asset, only the metadata parsed out of it lands in `item.properties`. Flag if a product needs the sidecar file itself downloadable as its own asset.
 - Tracked in: [ADR 0006](decisions/0006-ingest-metadata-and-upsert.md); `services/pipeline/.../ingest/extract.py` (`_find_datetime_in_xml`, `build_assets`, `build_raster_auto`).
 
-### I-26 · Memory-buffered raster reads in EXTRACT ⚪
-EXTRACT reads a group's primary raster fully into memory (`rasterio.MemoryFile(raster_bytes)`) before handing it to rio-stac — consistent with FETCH's existing buffered `get`/`put_object` (I-19), but compounding the same envelope-scale risk one stage later: a multi-GB scene is fully buffered twice (FETCH, then EXTRACT) before an item exists. True streaming raster reads are deferred alongside I-19's streaming FETCH gap.
-- Tracked in: here; I-19 (above); `services/pipeline/.../ingest/extract.py` (`build_item`, `build_raster_auto`).
+### I-26 · Memory-buffered raster reads in EXTRACT — 🟢 resolved for object stores (M3-C, 2026-09-14)
+EXTRACT opens the primary raster in place through a `RasterLocation`
+(`/vsis3`, `ingest/raster_io.py`); `MemberByteSource.locate` supplies it and
+`build_raster_auto` / `geometry_from_raster` accept it. Buffering remains only
+for sources that cannot be located (I-83) and as the best-effort geometry
+fallback for HDF-backed files GDAL refuses to open through VSI.
 
 ### I-28 · Minor robustness notes from the B4 whole-branch review ⚪
 Non-blocking items the final review surfaced; fix opportunistically.
@@ -751,7 +757,10 @@ is consistent with ROADMAP §2's honest-limits posture — those protocols carry
 NRT-subset volumes — and M3-S-B now attaches a number to it (~8 saturated
 10 GbE streams to feed one such destination at envelope volume). It becomes a
 real gap only if a deployment tries to run a high-volume SFTP source, which
-the posture says it should not.
+the posture says it should not. M3-C landed both halves for s3 (2026-09-14);
+this entry is now the only buffered path in the ingest byte path itself — the
+best-effort geometry fallback, a `CanonicalByteSource` built without platform
+access, and the public-URL stage (I-91) still buffer.
 - Tracked in: here; I-19; `services/pipeline/.../connections/adapters/base.py`.
 
 ---

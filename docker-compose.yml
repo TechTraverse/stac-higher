@@ -267,6 +267,10 @@ services:
       # `requests_waiting` in GET :8083/health.
       - DB_POOL_MIN=${DB_POOL_MIN:-2}
       - DB_POOL_MAX=${DB_POOL_MAX:-16}
+      # M3-C: the memory envelope — see services/pipeline/README.md "Memory envelope (M3-C)"
+      - GDAL_CACHEMAX=${GDAL_CACHEMAX:-64}
+      - FETCH_CHUNK_BYTES=${FETCH_CHUNK_BYTES:-8388608}
+      - FETCH_TRANSFER_CONCURRENCY=${FETCH_TRANSFER_CONCURRENCY:-4}
       # Same master key the app uses to seal credentials (docs/connections.md).
       # The pipeline decrypts connection credentials with it; the drain/health
       # jobs fail their tick loudly if it is unset.

@@ -464,3 +464,162 @@ def test_parse_metadata_extractor_needs_a_process_id():
     # lenient reader: an extractor block on another strategy is ignored
     cfg = parse_metadata({"strategy": "defaults_only", "extractor": {"process_id": "p1"}})
     assert cfg.extractor_process_id is None
+
+
+def test_build_raster_auto_from_a_location_is_identical_to_bytes(tmp_path):
+    from pipeline.ingest.raster_io import RasterLocation
+
+    members = [_member("scene.tif")]
+    cfg = parse_metadata({"strategy": "raster_auto"})
+    data = _geotiff_bytes()
+    path = tmp_path / "scene.tif"
+    path.write_bytes(data)
+    from_bytes = build_raster_auto("col", "scene", members, cfg, data, "/api/assets")
+    from_loc = build_raster_auto(
+        "col", "scene", members, cfg, RasterLocation(uri=str(path)), "/api/assets"
+    )
+    # cfg.default_datetime is unset, so rio-stac stamps properties["datetime"]
+    # with the call-time `datetime.now(UTC)` (no embedded raster datetime tag
+    # on this fixture) — that field alone will differ between the two calls.
+    # S-E's claim, pinned: everything else is the same whichever way the
+    # raster is opened (geometry, bbox, `proj:*`, `raster:bands` statistics
+    # included).
+    for item in (from_bytes, from_loc):
+        item["properties"].pop("datetime", None)
+    assert from_loc == from_bytes
+
+
+def test_geometry_from_raster_accepts_a_location(tmp_path):
+    from pipeline.ingest.raster_io import RasterLocation
+
+    path = tmp_path / "scene.tif"
+    path.write_bytes(_geotiff_bytes())
+    assert geometry_from_raster(RasterLocation(uri=str(path))) == geometry_from_raster(
+        _geotiff_bytes()
+    )
+
+
+class _RaisingRead:
+    """A byte source that can LOCATE but refuses to READ — the M3-C memory
+    assertion: a raster_auto item is built without buffering the raster."""
+
+    def __init__(self, path):
+        self.path = path
+        self.reads = 0
+
+    async def read(self, member):
+        self.reads += 1
+        raise AssertionError("EXTRACT buffered the raster")
+
+    def locate(self, member):
+        from pipeline.ingest.raster_io import RasterLocation
+
+        return RasterLocation(uri=str(self.path))
+
+
+async def test_build_item_raster_auto_opens_the_location_and_never_reads_bytes(tmp_path):
+    path = tmp_path / "scene.tif"
+    path.write_bytes(_geotiff_bytes())
+    source = _RaisingRead(path)
+    item = await build_item(
+        collection_id="col", item_id="scene", members=[_member("scene.tif")],
+        metadata={"strategy": "raster_auto"}, byte_source=source, asset_href_base="/api/assets",
+    )
+    assert item["geometry"] is not None
+    assert source.reads == 0
+
+
+async def test_build_item_falls_back_to_bytes_when_the_source_cannot_locate():
+    # SFTP/FTP (I-83): locate() -> None, so the buffered path is used as before.
+    s3 = _FakeS3({("bucket", "assets/col/scene/scene.tif"): _geotiff_bytes()})
+    source = CanonicalByteSource(s3, "bucket")  # no access -> cannot locate
+    assert source.locate(_member("scene.tif")) is None
+    item = await build_item(
+        collection_id="col", item_id="scene", members=[_member("scene.tif")],
+        metadata={"strategy": "raster_auto"}, byte_source=source, asset_href_base="/api/assets",
+    )
+    assert item["geometry"] is not None
+
+
+async def test_best_effort_geometry_falls_back_to_bytes_when_the_location_is_unreadable(tmp_path):
+    from pipeline.ingest.extract import _best_effort_raster_geometry
+    from pipeline.ingest.raster_io import RasterLocation
+
+    class _Both:
+        def __init__(self):
+            self.reads = 0
+
+        def locate(self, member):
+            return RasterLocation(uri=str(tmp_path / "missing.tif"))
+
+        async def read(self, member):
+            self.reads += 1
+            return _geotiff_bytes()
+
+    source = _Both()
+    recovered = await _best_effort_raster_geometry(_member("scene.tif"), source)
+    assert recovered is not None
+    assert source.reads == 1
+
+
+async def test_best_effort_geometry_falls_back_to_bytes_when_locate_raises():
+    # S3Adapter.gdal_location's egress vetting (or any other locate() failure)
+    # must degrade the same way an unreadable object does, not propagate out
+    # of the I-27 best-effort layer and fail the whole itemize job.
+    from pipeline.ingest.extract import _best_effort_raster_geometry
+
+    class _LocateRaises:
+        def __init__(self):
+            self.reads = 0
+
+        def locate(self, member):
+            raise RuntimeError("egress blocked")
+
+        async def read(self, member):
+            self.reads += 1
+            return _geotiff_bytes()
+
+    source = _LocateRaises()
+    recovered = await _best_effort_raster_geometry(_member("scene.tif"), source)
+    assert recovered is not None
+    assert source.reads == 1
+
+
+def test_canonical_byte_source_locates_through_the_platform_access():
+    from pipeline.ingest.extract import RasterAccess
+    from pipeline.storage.platform import PlatformS3Access
+
+    access = RasterAccess(
+        platform=PlatformS3Access("http://10.0.0.5:9000", "us-east-1", "AK", "SK", True),
+        gdal_cachemax_mb=32,
+    )
+    source = CanonicalByteSource(_FakeS3({}), "stac-higher", access)
+    loc = source.locate(_member("scene.tif"))
+    assert loc is not None
+    assert loc.uri == "/vsis3/stac-higher/assets/col/scene/scene.tif"
+    assert loc.options["GDAL_CACHEMAX"] == "32"
+
+
+def test_source_adapter_byte_source_locates_through_the_adapter_or_not_at_all():
+    from pipeline.ingest.extract import RasterAccess, SourceAdapterByteSource
+    from pipeline.ingest.raster_io import RasterLocation
+
+    class _Locating:
+        protocol = "s3"
+
+        def gdal_location(self, path, *, options=None):
+            return RasterLocation(uri=f"/vsis3/src/{path}", options=dict(options or {}))
+
+    class _Buffered:
+        protocol = "sftp"
+
+        def gdal_location(self, path, *, options=None):
+            raise NotImplementedError
+
+    member = _member("scene.tif")
+    source = SourceAdapterByteSource(_Locating(), "in/", RasterAccess(gdal_cachemax_mb=16))
+    located = source.locate(member)
+    assert located is not None
+    assert located.uri.startswith("/vsis3/src/")
+    assert located.options["GDAL_CACHEMAX"] == "16"
+    assert SourceAdapterByteSource(_Buffered(), "in/").locate(member) is None

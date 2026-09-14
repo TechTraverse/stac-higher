@@ -9,6 +9,7 @@ from pipeline.connections.repo import ConnectionRow
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.ingest.fetch import fetch_stage
 from pipeline.ingest.repo import IngestAssociation
+from pipeline.ingest.transfer import TransferPolicy
 
 
 def _assoc(config: dict) -> IngestAssociation:
@@ -34,16 +35,18 @@ async def test_fetch_copies_and_marks_stored():
     )
 
     assert stored == 1
-    # fetched via the reconstructed source path (source_path + relpath)
-    assert adapter.get_calls == ["products/scene.tif"]
-    # written to the canonical key in the platform bucket
-    assert s3.puts == [
-        {
-            "Bucket": "stac-higher",
-            "Key": "assets/sentinel-2/scene/scene.tif",
-            "Body": b"abc",
-        }
-    ]
+    # fetched via the reconstructed source path (source_path + relpath); the
+    # default (non-copy) transfer policy streams through `open()`, not the
+    # buffered `get()` (M3-C) — this assertion moved with that change.
+    assert adapter.open_calls == ["products/scene.tif"]
+    # written to the canonical key in the platform bucket. Streamed uploads
+    # (M3-C) also carry a boto3 `Config` (TransferConfig) kwarg, so this
+    # checks the fields that matter rather than exact dict equality.
+    assert len(s3.puts) == 1
+    put = s3.puts[0]
+    assert put["Bucket"] == "stac-higher"
+    assert put["Key"] == "assets/sentinel-2/scene/scene.tif"
+    assert put["Body"] == b"abc"
     row = await repo.get_latest_ledger("assoc1", "scene.tif")
     assert row.status == "stored"
     assert row.item_id == "scene"
@@ -173,3 +176,111 @@ async def test_set_ledger_fields_accepts_source_href_on_fake():
     assert repo.rows["1"].source_href is None
     await repo.set_ledger_fields("1", source_href="https://src/scene.tif")
     assert repo.rows["1"].source_href == "https://src/scene.tif"
+
+
+async def test_fetch_streams_with_the_policy_chunking_and_records_sha256():
+    repo = FakeIngestRepo()
+    assoc = _assoc({"source_path": "in/", "storage_mode": "copy"})
+    await _settled(repo, "a.bin", size=5000)
+    adapter = FakeAdapter(blobs={"in/a.bin": b"y" * 5000})
+    s3 = FakeS3()
+    policy = TransferPolicy(server_side_copy=False, chunk_bytes=1024, concurrency=2)
+    stored = await fetch_stage(
+        repo, assoc, parse_ingest_config(assoc.config), adapter, s3, "bucket", "item-1", ["a.bin"],
+        transfer=policy,
+    )
+    assert stored == 1
+    put = s3.puts[0]
+    assert put["Body"] == b"y" * 5000
+    assert put["Config"].multipart_chunksize == 1024 and put["Config"].max_concurrency == 2
+    latest = await repo.get_latest_ledger(assoc.id, "a.bin")
+    assert latest.status == "stored" and latest.checksum == hashlib.sha256(b"y" * 5000).hexdigest()
+    assert s3.copies == []
+
+
+async def test_fetch_copies_server_side_when_the_policy_allows_and_reads_no_bytes():
+    repo = FakeIngestRepo()
+    assoc = _assoc({"source_path": "in/", "storage_mode": "copy"})
+    await _settled(repo, "a.bin")
+    adapter = FakeAdapter(blobs={"in/a.bin": b"zzz"}, copy_bucket="src")
+    s3 = FakeS3()
+    stored = await fetch_stage(
+        repo, assoc, parse_ingest_config(assoc.config), adapter, s3, "bucket", "item-1", ["a.bin"],
+        transfer=TransferPolicy(server_side_copy=True),
+    )
+    assert stored == 1
+    assert s3.puts == []
+    assert s3.copies[0]["CopySource"] == {"Bucket": "src", "Key": "in/a.bin"}
+    assert s3.copies[0]["Bucket"] == "bucket"
+    assert adapter.get_calls == [] and adapter.open_calls == []
+    latest = await repo.get_latest_ledger(assoc.id, "a.bin")
+    assert latest.status == "stored" and latest.checksum is None
+
+
+async def test_fetch_falls_back_to_streaming_when_the_copy_fails(caplog):
+    import logging
+
+    repo = FakeIngestRepo()
+    assoc = _assoc({"source_path": "in/", "storage_mode": "copy"})
+    await _settled(repo, "a.bin")
+    adapter = FakeAdapter(blobs={"in/a.bin": b"zzz"}, copy_bucket="src")
+    s3 = FakeS3(fail_copy=True)
+    cfg = parse_ingest_config(assoc.config)
+    with caplog.at_level(logging.INFO, logger="pipeline.ingest.fetch"):
+        stored = await fetch_stage(
+            repo, assoc, cfg, adapter, s3, "bucket", "item-1", ["a.bin"],
+            transfer=TransferPolicy(server_side_copy=True),
+        )
+    assert stored == 1
+    assert s3.puts[0]["Body"] == b"zzz"
+    latest = await repo.get_latest_ledger(assoc.id, "a.bin")
+    assert latest.checksum == hashlib.sha256(b"zzz").hexdigest()
+    # M3-C final review finding 4: the group-done record carries the
+    # transfer mode that actually moved the bytes (a fallback here).
+    done = next(r for r in caplog.records if r.msg == "ingest fetch group done")
+    assert done.transfer == {"copy": 0, "stream": 0, "copy_fallback": 1}
+
+
+async def test_transfer_close_error_never_masks_the_real_upload_error():
+    # M3-C final review finding 8: getattr(body, "close", None) + a raising
+    # close() used to replace the real upload exception in the `finally`.
+    import pytest
+
+    from pipeline.ingest.fetch import _transfer
+
+    class _RaisingCloseBody:
+        def read(self, n=-1):
+            return b""
+
+        def close(self):
+            raise RuntimeError("close blew up")
+
+    class _NoCopyAdapter:
+        def copy_source(self, path):
+            return None
+
+        async def open(self, path):
+            return _RaisingCloseBody()
+
+    class _FailingS3:
+        def upload_fileobj(self, Fileobj, Bucket, Key, **kwargs):
+            raise ValueError("upload blew up")
+
+    with pytest.raises(ValueError, match="upload blew up"):
+        await _transfer(
+            _NoCopyAdapter(), _FailingS3(), "bucket", "key", "path",
+            TransferPolicy(server_side_copy=False),
+        )
+
+
+async def test_fetch_never_copies_from_an_adapter_without_a_copy_source():
+    repo = FakeIngestRepo()
+    assoc = _assoc({"source_path": "in/", "storage_mode": "copy"})
+    await _settled(repo, "a.bin")
+    adapter = FakeAdapter(blobs={"in/a.bin": b"zzz"})  # copy_bucket None -> copy_source() None
+    s3 = FakeS3()
+    await fetch_stage(
+        repo, assoc, parse_ingest_config(assoc.config), adapter, s3, "bucket", "item-1", ["a.bin"],
+        transfer=TransferPolicy(server_side_copy=True),
+    )
+    assert s3.copies == [] and s3.puts[0]["Body"] == b"zzz"
