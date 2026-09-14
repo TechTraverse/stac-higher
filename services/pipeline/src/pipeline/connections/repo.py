@@ -102,7 +102,8 @@ def _to_connection_row(record: Sequence[Any]) -> ConnectionRow:
 
 @dataclass
 class PgConnectionsRepo(ConnectionsRepo):
-    """psycopg-backed repo. Opens a short-lived connection per operation."""
+    """psycopg-backed repo. Checks a connection out of the process-wide async
+    pool per operation (M3-B, `pipeline/db/pool.py`)."""
 
     database_url: str
 

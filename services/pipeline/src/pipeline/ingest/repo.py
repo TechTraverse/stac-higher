@@ -283,7 +283,8 @@ def _to_ledger_entry(record: Sequence[Any]) -> LedgerEntry:
 
 @dataclass
 class PgIngestRepo(IngestRepo):
-    """psycopg-backed repo. Opens a short-lived connection per operation."""
+    """psycopg-backed repo. Checks a connection out of the process-wide async
+    pool per operation (M3-B, `pipeline/db/pool.py`)."""
 
     database_url: str
 
