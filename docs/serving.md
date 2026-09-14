@@ -82,6 +82,15 @@ Version pins follow eoAPI's tested combination for pgstac 0.9.x.
   §7.1, G-4); the cloud deployment chooses between the same mapping (with
   the deployment's bucket) and presign integration.
 
+The `/map` page (V-4) is the third consumer of the tilers: its Add-layer picker
+lists `GET {PUBLIC_TIPG_URL}/collections` (only while the picker is open, no
+credentials) and draws a chosen collection from
+`{PUBLIC_TIPG_URL}/collections/{id}/tiles/WebMercatorQuad/tilejson.json` — a
+TileJSON 3.0 document whose `vector_layers[0].id` is `default`, the MVT
+source-layer name every tipg tile carries (verified against tipg 1.0.1 on
+2026-09-09). The local stack's tipg exposes only PostGIS function collections
+(`public.st_hexagongrid`, …) until a demo table is seeded (I-126).
+
 ## Env
 
 | Var | Default | Meaning |

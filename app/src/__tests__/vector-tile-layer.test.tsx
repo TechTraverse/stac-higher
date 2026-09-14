@@ -12,7 +12,7 @@ vi.mock("react-map-gl/maplibre", () => ({
   ),
 }));
 
-import { VectorTileLayer, vectorTileLayers } from "@stac-higher/shared";
+import { VectorTileLayer, vectorTileLayers, vectorTileLayerIds } from "@stac-higher/shared";
 
 function source(): Record<string, unknown> {
   return JSON.parse(screen.getByTestId("source").dataset.props as string);
@@ -72,5 +72,16 @@ describe("VectorTileLayer", () => {
       { visibility: "none" },
       { visibility: "none" },
     ]);
+  });
+
+  it("draws at the documented default opacities (fill 0.2, line 1, circle 1)", () => {
+    const { fill, line, circle } = vectorTileLayers("v", "default");
+    expect(fill.paint).toMatchObject({ "fill-opacity": 0.2 });
+    expect(line.paint).toMatchObject({ "line-opacity": 1 });
+    expect(circle.paint).toMatchObject({ "circle-opacity": 1 });
+  });
+
+  it("exposes the layer ids without building specs", () => {
+    expect(vectorTileLayerIds("v")).toEqual({ fill: "v-fill", line: "v-line", circle: "v-circle" });
   });
 });

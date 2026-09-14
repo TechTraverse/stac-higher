@@ -34,7 +34,10 @@ export function footprintLayerIds(sourceId: string): { fill: string; line: strin
 export function footprintLayers(
   sourceId: string,
   opacity = 1,
-): { fill: LayerSpecification; line: LayerSpecification } {
+): {
+  fill: Extract<LayerSpecification, { type: "fill" }>;
+  line: Extract<LayerSpecification, { type: "line" }>;
+} {
   const ids = footprintLayerIds(sourceId);
   const full = opacity === 1;
   return {
@@ -84,15 +87,6 @@ export function clamp01(value: number): number {
   return value;
 }
 
-export const footprintFillLayer = footprintLayers(FOOTPRINT_SOURCE).fill as Extract<
-  LayerSpecification,
-  { type: "fill" }
->;
-export const footprintLineLayer = footprintLayers(FOOTPRINT_SOURCE).line as Extract<
-  LayerSpecification,
-  { type: "line" }
->;
-
 export const extentFillLayer: LayerSpecification = {
   id: "stac-extent-fill",
   type: "fill",
@@ -139,6 +133,11 @@ export const selectedLineLayer: LayerSpecification = {
 /** Vector-tile layers (tipg / any MVT): one colour family, three geometry types. */
 const VECTOR_COLOR = "#8b5cf6";
 
+/** The three layer ids `vectorTileLayers` mints for a source, without building specs. */
+export function vectorTileLayerIds(sourceId: string): { fill: string; line: string; circle: string } {
+  return { fill: `${sourceId}-fill`, line: `${sourceId}-line`, circle: `${sourceId}-circle` };
+}
+
 /**
  * Fill + line + circle specs over one MVT source layer, each geometry type
  * drawn once: polygons are filled and outlined, lines drawn, points as
@@ -149,9 +148,10 @@ export function vectorTileLayers(
   sourceLayer: string,
   opacity = 1,
 ): { fill: LayerSpecification; line: LayerSpecification; circle: LayerSpecification } {
+  const ids = vectorTileLayerIds(sourceId);
   return {
     fill: {
-      id: `${sourceId}-fill`,
+      id: ids.fill,
       type: "fill",
       source: sourceId,
       "source-layer": sourceLayer,
@@ -159,14 +159,14 @@ export function vectorTileLayers(
       paint: { "fill-color": VECTOR_COLOR, "fill-opacity": 0.2 * opacity },
     },
     line: {
-      id: `${sourceId}-line`,
+      id: ids.line,
       type: "line",
       source: sourceId,
       "source-layer": sourceLayer,
       paint: { "line-color": VECTOR_COLOR, "line-width": 1.5, "line-opacity": opacity },
     },
     circle: {
-      id: `${sourceId}-circle`,
+      id: ids.circle,
       type: "circle",
       source: sourceId,
       "source-layer": sourceLayer,

@@ -42,8 +42,6 @@ export {
   FOOTPRINT_SOURCE,
   EXTENT_SOURCE,
   clamp01,
-  footprintFillLayer,
-  footprintLineLayer,
   footprintLayerIds,
   footprintLayers,
   extentFillLayer,
@@ -53,6 +51,7 @@ export {
   RASTER_PREVIEW_SOURCE,
   RASTER_PREVIEW_LAYER,
   vectorTileLayers,
+  vectorTileLayerIds,
 } from "@shared/lib/map/styles";
 
 // Stores

@@ -22,6 +22,7 @@ import { buildAxis } from "@/lib/map/axis";
 import { INITIAL_MAP_STATE, beforeIdFor, mapReducer } from "@/lib/map/state";
 import type { LayerKind } from "@/lib/map/state";
 import type { PreviewFrame } from "@/lib/serving/frames";
+import type { TipgCollection } from "@/lib/serving/queries";
 import type { StacCollection } from "@/lib/stac-api/types";
 import { $builtInCatalog } from "@/stores/catalogStore";
 
@@ -170,6 +171,22 @@ function MapPageInner() {
     [state.layers.length],
   );
 
+  // tipg collections carry no STAC extent, so the first-add camera fit (spec
+  // §4.6) is a STAC-layer courtesy only; a vector layer keeps the camera.
+  const addVectorLayer = useCallback((collection: TipgCollection) => {
+    dispatch({
+      type: "add",
+      layer: {
+        id: `layer-${nextLayerId.current++}`,
+        kind: "vector",
+        sourceId: collection.id,
+        title: collection.title ?? collection.id,
+        visible: true,
+        opacity: 1,
+      },
+    });
+  }, []);
+
   // Draw order is bottom-first, but the layer COMPONENTS are rendered
   // topmost-first: react-map-gl creates layers during render, in tree order,
   // via map.addLayer(spec, beforeId), and maplibre fires an error and drops
@@ -253,6 +270,7 @@ function MapPageInner() {
         catalogUrl={catalogUrl}
         frameSpan={state.frameSpan}
         onAdd={addLayer}
+        onAddVector={addVectorLayer}
         onVisibleChange={onVisibleChange}
         onOpacityChange={onOpacityChange}
         onAssetChange={onAssetChange}
@@ -282,8 +300,8 @@ function MapPageInner() {
                 onFramesRemove={dropFrames}
               />
             ))}
-            {/* V-4 adds the vector branch inside MapLayerView; it chains its
-                beforeId through the same beforeIdFor helper. */}
+            {/* MapLayerView's vector branch chains its beforeId through the
+                same beforeIdFor helper. */}
           </StacMap>
           {hovered && <MapTooltip {...hovered} />}
         </div>

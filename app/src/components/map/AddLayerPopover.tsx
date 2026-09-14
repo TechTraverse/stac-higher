@@ -4,12 +4,13 @@
  * The Products section always offers Footprints; it offers Imagery too, but
  * only once `AddLayerCollectionRow` confirms the product advertises serving
  * AND a probe of its newest items yields a tileable asset — an imagery layer
- * with nothing to draw would violate spec §4.7. The Vector tiles section
- * (V-4) is marked below rather than stubbed, because a disabled control with
- * nothing behind it reads as a broken feature.
+ * with nothing to draw would violate spec §4.7. The Vector tiles section is
+ * fed by `useTipgCollections` while the picker is open (`open` gates the
+ * query, so a closed picker never asks tipg); a miss — no tipg, an error, an
+ * empty list — is one muted line, never an error (spec §4.7 again).
  */
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { Hexagon, Plus } from "lucide-react";
 import { Button } from "@stac-higher/shared";
 import {
   Popover,
@@ -17,6 +18,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { AddLayerCollectionRow } from "@/components/map/AddLayerCollectionRow";
+import { useTipgCollections, type TipgCollection } from "@/lib/serving/queries";
 import type { StacCollection } from "@/lib/stac-api/types";
 import type { LayerKind } from "@/lib/map/state";
 
@@ -25,6 +27,7 @@ interface AddLayerPopoverProps {
   catalogUrl: string;
   isAdded: (kind: LayerKind, sourceId: string) => boolean;
   onAdd: (kind: LayerKind, collection: StacCollection) => void;
+  onAddVector: (collection: TipgCollection) => void;
 }
 
 export function AddLayerPopover({
@@ -32,8 +35,11 @@ export function AddLayerPopover({
   catalogUrl,
   isAdded,
   onAdd,
+  onAddVector,
 }: AddLayerPopoverProps) {
   const [open, setOpen] = useState(false);
+  const { data: vectorCollections, isError: vectorError, isLoading: vectorLoading } =
+    useTipgCollections(open);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -67,7 +73,40 @@ export function AddLayerPopover({
             ))}
           </ul>
         )}
-        {/* V-4 adds the Vector tiles section here, from tipg's /collections. */}
+        <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+          Vector tiles
+        </div>
+        {vectorLoading ? null : vectorError || !vectorCollections || vectorCollections.length === 0 ? (
+          <p className="px-3 pb-3 text-sm text-muted-foreground" data-testid="map-vector-empty">
+            no vector tiles published
+          </p>
+        ) : (
+          <ul className="max-h-60 overflow-auto pb-2">
+            {vectorCollections.map((collection) => {
+              const added = isAdded("vector", collection.id);
+              return (
+                <li key={collection.id} className="flex items-center justify-between gap-2 px-3 py-1.5">
+                  <span className="min-w-0 truncate text-sm" title={collection.description}>
+                    {collection.title ?? collection.id}
+                  </span>
+                  <Button
+                    size="xs"
+                    variant={added ? "ghost" : "outline"}
+                    disabled={added}
+                    data-testid={`map-add-vector-${collection.id}`}
+                    onClick={() => {
+                      onAddVector(collection);
+                      setOpen(false);
+                    }}
+                  >
+                    <Hexagon />
+                    {added ? "Added" : "Vector"}
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </PopoverContent>
     </Popover>
   );

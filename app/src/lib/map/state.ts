@@ -14,6 +14,7 @@ import {
   clamp01,
   footprintLayerIds,
   rasterFrameStackAnchorId,
+  vectorTileLayerIds,
 } from "@stac-higher/shared";
 
 export type LayerKind = "footprints" | "imagery" | "vector";
@@ -144,9 +145,7 @@ export function layerAnchorId(layer: MapLayer): string {
     case "footprints":
       return footprintLayerIds(layer.id).fill;
     case "vector":
-      // V-4 replaces this with a `vectorTileLayerIds` helper beside
-      // `vectorTileLayers`; the shape (`${id}-fill`) is already settled.
-      return `${layer.id}-fill`;
+      return vectorTileLayerIds(layer.id).fill;
   }
 }
 
