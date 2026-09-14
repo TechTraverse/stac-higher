@@ -1206,6 +1206,25 @@ list — the same fix should unify that gate across all three anchor kinds.
 - Tracked in: `app/src/lib/monitoring/graph-decorate.ts`.
 - Found in: A-1 Task 3 review, fix round 1.
 
+### I-118 · Extractor processes: alerts never attribute to a product, and `processVerdict` reads "No trigger" over a firing alert 🟠
+Seen on the A-1 live check (2026-09-14, standing GOES demo): the
+`goes-abi-metadata` extractor had a firing `process_failed` alert. Two gaps,
+both by construction rather than by bug: (1) `buildProductRows` wires
+processes through `process_source` / `process_output` edges only, and an
+extractor reaches its collection through the `extractor` edge kind, so the
+alert lands in the home page's residual "not shown against a product" line
+instead of on `goes-abi-mcmipc`. (2) `processVerdict` puts deployment state
+first and an extractor has no `process_sources` by design, so `sourceCount
+=== 0` yields "No trigger · no source attached" and the alert block below it
+is never reached — the card shows a grey verdict while the graph paints the
+node red. Fix shape: attribute through `extractor` edges in
+`buildProductRows`, and let `ProcessesPage` pass `undefined` (not `0`) as
+`sourceCount` for `kind === "extractor"` (it already special-cases the
+trigger summary text) so the alert branch runs.
+- Tracked in: `app/src/components/layout/overview.ts`,
+  `app/src/components/processes/health.ts`, `ProcessesPage.tsx`.
+- Found in: A-1 lead live check.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

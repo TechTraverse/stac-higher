@@ -863,6 +863,32 @@ processor's job by the decision above and stays so.
 
 ## Discovered follow-ups
 
+- **A-1 landed 2026-09-09 (`ai/a1-alert-anchors`, merge 6600ebf), live-checked 2026-09-14.**
+  Lane A (lead-defined, closes **I-84**): `ApiAlert` gained `process_id` (the
+  EFFECTIVE process — `COALESCE(a.process_id, ps.process_id)`, so a
+  source-anchored `process_stalled` attributes without a client-side source
+  lookup) and `source_id` (raw); `buildProductRows` claims process alerts
+  through the product's `process_source`/`process_output` edges and colours
+  process lineage nodes (firing `error`, acknowledged `warn`, undeployed
+  `warn`, else `alertsAreComplete ? ok : unknown` — the group rollup now seeds
+  at `unknown`, so a group of unverified connections reads `unknown`, not a
+  false `ok`); `processVerdict` takes the open alert list (one fetch per page)
+  and an alert outranks the run ledger; the graph's `unhealthyNodeIds`
+  indicts `proc:<id>` and deployed processes are `ok` (gated on completeness
+  for process nodes only). The product Overview's "may relate" card and
+  `unanchoredAlerts()` are gone; the home residual line stays (it also covers
+  channel alerts) with reworded copy. No migration, no fixture. Three review
+  rounds fixed brief defects: a vacuous SQL assertion, node health `ok` on an
+  incomplete list, and the graph's ungated `ok`. Issues opened: **I-117**
+  (state-blind graph indictment), **I-118** (extractor alerts unattributed +
+  "No trigger" masks an extractor's alert — seen live). Live check (lead,
+  Chrome, standing demo): `/` shows `goes-geocolor` "Failing · process runs
+  dead-lettered" with a red process dot and the residual line counting only
+  the extractor's alert; the product Overview paints the process node red;
+  `/graph` colours the process nodes; `/processes` shows the alert verdict.
+  Screenshots: `claude-chrome-screenshots-*/screenshot-1789355186550-0.jpg`
+  … `-1789355219956-5.jpg` (session temp dir).
+
 - **M3-B0 landed 2026-09-09 (`ai/m3-b0-harness-hygiene`, merge 08bea6a).** Lead-defined
   pre-slice (not in the M3 slice list): (1) `pipeline.loadgen teardown` is
   queue-aware — `loadgen/pgstac_hygiene.py` resolves the probe collection's
