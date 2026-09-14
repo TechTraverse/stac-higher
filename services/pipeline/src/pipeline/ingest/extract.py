@@ -36,12 +36,14 @@ import pystac
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _xml_fromstring
 
+from pipeline.config import DEFAULT_GDAL_CACHEMAX_MB
 from pipeline.connections.adapters.base import StorageAdapter
 from pipeline.ingest.config import extractor_process_id as _resolve_extractor_process_id
 from pipeline.ingest.discover import source_fetch_path
-from pipeline.ingest.raster_io import RasterSource, open_raster
+from pipeline.ingest.raster_io import RasterLocation, RasterSource, open_raster
 from pipeline.storage import platform
 from pipeline.storage.keys import asset_href
+from pipeline.storage.platform import PlatformS3Access, raster_location
 
 STAC_VERSION = "1.0.0"
 
@@ -173,34 +175,68 @@ def _rfc3339(value: dt.datetime) -> str:
 
 
 class MemberByteSource(Protocol):
-    """Where EXTRACT reads a member's bytes from — canonical storage (copy mode)
-    or the source adapter (reference mode). Lets build_item stay mode-agnostic."""
+    """Where EXTRACT reads a member from — canonical storage (copy mode) or the
+    source adapter (reference mode). `read` buffers (sidecars, and the I-83
+    fallback); `locate` names a place GDAL can open without buffering, or None
+    when this source cannot (M3-C)."""
 
     async def read(self, member: ExtractMember) -> bytes: ...
+
+    def locate(self, member: ExtractMember) -> RasterLocation | None: ...
+
+
+@dataclass(frozen=True)
+class RasterAccess:
+    """How EXTRACT reaches rasters in place (M3-C): the platform's own access
+    for copy mode (None ⇒ canonical reads stay buffered — tests, CLIs), and
+    the GDAL cache ceiling every location is opened under."""
+
+    platform: PlatformS3Access | None = None
+    gdal_cachemax_mb: int = DEFAULT_GDAL_CACHEMAX_MB
 
 
 @dataclass(frozen=True)
 class CanonicalByteSource:
-    """Copy mode: read the object FETCH wrote to canonical platform storage."""
+    """Copy mode: the object FETCH wrote to canonical platform storage."""
 
     s3_client: platform.S3Like
     bucket: str
+    access: RasterAccess | None = None
 
     async def read(self, member: ExtractMember) -> bytes:
         return await asyncio.to_thread(
             platform.get_object, self.s3_client, self.bucket, member.canonical_key
         )
 
+    def locate(self, member: ExtractMember) -> RasterLocation | None:
+        if self.access is None or self.access.platform is None:
+            return None
+        return raster_location(
+            self.access.platform, self.bucket, member.canonical_key,
+            gdal_cachemax_mb=self.access.gdal_cachemax_mb,
+        )
+
 
 @dataclass(frozen=True)
 class SourceAdapterByteSource:
-    """Reference mode: read the object in place from the source adapter."""
+    """Reference mode: the object in place on the source adapter."""
 
     adapter: StorageAdapter
     source_path: str
+    access: RasterAccess | None = None
 
     async def read(self, member: ExtractMember) -> bytes:
         return await self.adapter.get(source_fetch_path(self.source_path, member.source_path))
+
+    def locate(self, member: ExtractMember) -> RasterLocation | None:
+        cachemax = (self.access or RasterAccess()).gdal_cachemax_mb
+        try:
+            return self.adapter.gdal_location(
+                source_fetch_path(self.source_path, member.source_path),
+                options={"GDAL_CACHEMAX": str(cachemax)},
+            )
+        except NotImplementedError:  # SFTP/FTP — I-83
+            return None
 
 
 def build_assets(
@@ -551,6 +587,13 @@ async def _best_effort_raster_geometry(
     or missing object just means "no geometry recovered")."""
     if not is_gdal_candidate(primary.filename):
         return None
+    location = byte_source.locate(primary)
+    if location is not None:
+        recovered = geometry_from_raster(location)
+        if recovered is not None:
+            return recovered
+        # GDAL could not open it in place (HDF-backed netCDF/GRIB need a real
+        # file — the temp-file retry inside geometry_from_raster needs bytes).
     try:
         data = await byte_source.read(primary)
     except Exception:
@@ -644,8 +687,10 @@ async def build_item(
             # null-geometry base as defaults_only, then the resolution chain.
             item = build_defaults_only(collection_id, item_id, members, cfg, asset_href_base)
         else:
-            data = await byte_source.read(primary)
-            item = build_raster_auto(collection_id, item_id, members, cfg, data, asset_href_base)
+            raster: RasterSource | None = byte_source.locate(primary)
+            if raster is None:
+                raster = await byte_source.read(primary)
+            item = build_raster_auto(collection_id, item_id, members, cfg, raster, asset_href_base)
 
     if item.get("geometry") is None:
         await _resolve_geometry_fallback(

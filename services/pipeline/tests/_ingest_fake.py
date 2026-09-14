@@ -310,6 +310,12 @@ class FakeAdapter:
     async def test(self):  # pragma: no cover - unused
         return {"ok": True}
 
+    def gdal_location(self, path, *, options=None):
+        # Mirrors StorageAdapter's own default (M3-C, I-83): this stand-in
+        # authenticates nothing, so SourceAdapterByteSource.locate() falls
+        # back to the buffered `get()` — same as a real SFTP/FTP adapter.
+        raise NotImplementedError("FakeAdapter: no VSI handler")
+
 
 @dataclass
 class FakeS3:

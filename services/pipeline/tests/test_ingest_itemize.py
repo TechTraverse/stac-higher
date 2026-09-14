@@ -711,3 +711,46 @@ async def test_extractor_strategy_fails_rows_when_the_process_is_disabled():
     assert out.status == "failed" and "is disabled" in out.detail
     row = await repo.get_latest_ledger(assoc.id, "scene.nc")
     assert row.status == STATUS_FAILED and "is disabled" in row.reason
+
+
+async def test_run_itemize_accepts_raster_access_and_still_itemizes():
+    # Copies the simplest happy-path run_itemize test's arrangement, adding
+    # `raster_access` — the point is only that the new parameter threads
+    # through with no behaviour change when `platform` is None.
+    from pipeline.ingest.extract import RasterAccess
+
+    repo = FakeIngestRepo()
+    assoc = _assoc(
+        {
+            "source_path": "/out",
+            "metadata": {
+                "strategy": "defaults_only",
+                "defaults": {"datetime": "2021-01-01T00:00:00Z", "geometry": "collection"},
+            },
+        }
+    )
+    await repo.insert_ledger_version(
+        assoc.id, "scene.bin", version=1, status=STATUS_STORED, size=1, fingerprint="f"
+    )
+    config = parse_ingest_config(assoc.config)
+    writer = FakeWriter()
+
+    out = await run_itemize(
+        repo,
+        writer,
+        FakeAdapter(),
+        FakeS3(),
+        association=assoc,
+        config=config,
+        item_id="scene",
+        source_paths=["scene.bin"],
+        bucket="b",
+        asset_href_base="/api/assets",
+        raster_access=RasterAccess(),
+    )
+
+    assert (out.status, out.item_id) == ("itemized", "scene")
+    assert writer.items and writer.items[0]["id"] == "scene"
+    row = await repo.get_latest_ledger(assoc.id, "scene.bin")
+    assert row.status == STATUS_ITEMIZED
+    assert row.item_id == "scene"

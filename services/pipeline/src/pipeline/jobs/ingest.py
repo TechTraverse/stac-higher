@@ -18,6 +18,7 @@ from pipeline.config import Settings
 from pipeline.connections.build import build_adapter
 from pipeline.ingest.config import IngestConfig, parse_ingest_config
 from pipeline.ingest.discover import discover_stage
+from pipeline.ingest.extract import RasterAccess
 from pipeline.ingest.fetch import fetch_stage
 from pipeline.ingest.group import group_stage
 from pipeline.ingest.itemize import run_itemize
@@ -28,7 +29,7 @@ from pipeline.jobs.process import JOB_RUN_NOW
 from pipeline.process.repo import PgProcessRepo
 from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.stac.pgstac_writer import PgPgstacWriter
-from pipeline.storage.platform import build_platform_client
+from pipeline.storage.platform import build_platform_client, platform_s3_access
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,9 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             source_paths=source_paths,
             bucket=settings.staging_bucket,
             asset_href_base=settings.asset_href_base,
+            raster_access=RasterAccess(
+                platform=platform_s3_access(settings), gdal_cachemax_mb=settings.gdal_cachemax_mb
+            ),
             process_repo=process_repo,
             enqueue_now=_enqueue_run_now,
         )
