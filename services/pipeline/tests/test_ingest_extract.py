@@ -486,8 +486,6 @@ def test_build_raster_auto_from_a_location_is_identical_to_bytes(tmp_path):
     # included).
     for item in (from_bytes, from_loc):
         item["properties"].pop("datetime", None)
-        item["properties"].pop("created", None)
-        item["properties"].pop("updated", None)
     assert from_loc == from_bytes
 
 

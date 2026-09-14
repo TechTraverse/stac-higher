@@ -28,11 +28,17 @@ def test_open_raster_applies_gdal_options_inside_the_env(tmp_path):
 
     path = tmp_path / "scene.tif"
     path.write_bytes(_geotiff_bytes())
-    loc = RasterLocation(uri=str(path), options={"GDAL_CACHEMAX": "7"})
+    loc = RasterLocation(
+        uri=str(path), options={"AWS_HTTPS": "NO", "GDAL_CACHEMAX": "7"}
+    )
     with open_raster(loc):
+        env = rasterio.env.getenv()
         # rasterio routes GDAL_CACHEMAX through GDALSetCacheMax64 (unlike
-        # every other config key) and requires/stores it as an int.
-        assert rasterio.env.getenv().get("GDAL_CACHEMAX") == 7
+        # every other config key), which requires an int and takes bytes,
+        # while the option (like Settings.gdal_cachemax_mb) is in MB.
+        assert env.get("GDAL_CACHEMAX") == 7 * 1024 * 1024
+        # Every other key passes through the coercion untouched.
+        assert env.get("AWS_HTTPS") == "NO"
 
 
 def test_open_raster_rejects_unknown_sources():

@@ -29,6 +29,8 @@ class RasterLocation:
     session: Any | None = None
     #: GDAL config options for `rasterio.Env` — only the ones rasterio allows
     #: as kwargs (`AWS_HTTPS`, `AWS_VIRTUAL_HOSTING`, `GDAL_CACHEMAX`, ...).
+    #: `GDAL_CACHEMAX` is in **MB** here (matching `Settings.gdal_cachemax_mb`,
+    #: M3-C Task 1); `open_raster` converts it to bytes for rasterio.
     options: Mapping[str, str] = field(default_factory=dict)
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
@@ -49,8 +51,10 @@ def open_raster(source: RasterSource) -> Iterator[Any]:
         env_kwargs: dict[str, Any] = dict(source.options)
         if "GDAL_CACHEMAX" in env_kwargs:
             # rasterio special-cases this key and routes it straight to
-            # GDALSetCacheMax64, which requires a C integer, not a string.
-            env_kwargs["GDAL_CACHEMAX"] = int(env_kwargs["GDAL_CACHEMAX"])
+            # GDALSetCacheMax64, which requires a C integer (not a string)
+            # AND takes bytes, while the option here (like GDAL's own config
+            # string form and Settings.gdal_cachemax_mb) is in MB.
+            env_kwargs["GDAL_CACHEMAX"] = int(env_kwargs["GDAL_CACHEMAX"]) * 1024 * 1024
         if source.session is not None:
             env_kwargs["session"] = source.session
         with rasterio.Env(**env_kwargs), rasterio.open(source.uri) as ds:
