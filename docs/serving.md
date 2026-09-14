@@ -32,6 +32,16 @@ Version pins follow eoAPI's tested combination for pgstac 0.9.x.
     (`{PUBLIC_TIPG_URL}/`). tipg serves database tables and functions, not
     STAC collections, so this is a stack-wide surface, linked for the OGC
     Features/Tiles API story rather than per-collection data.
+
+The `/map` page (V-4) is the third consumer of the tilers: its Add-layer picker
+lists `GET {PUBLIC_TIPG_URL}/collections` (only while the picker is open, no
+credentials) and draws a chosen collection from
+`{PUBLIC_TIPG_URL}/collections/{id}/tiles/WebMercatorQuad/tilejson.json` — a
+TileJSON 3.0 document whose `vector_layers[0].id` is `default`, the MVT
+source-layer name every tipg tile carries (verified against tipg 1.0.1 on
+2026-09-09). The local stack's tipg exposes only PostGIS function collections
+(`public.st_hexagongrid`, …) until a demo table is seeded (I-126).
+
 - **Item preview (G-5).** When a collection has serving on and an item carries
   a `visual`-role (or GeoTIFF/COG-typed) asset, the product item page's
   Geometry tab overlays that item's tiles beneath its footprint, taken from

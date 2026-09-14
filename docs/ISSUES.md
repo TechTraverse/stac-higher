@@ -1263,6 +1263,17 @@ the theme through `setStyle(..., { diff: true })` on a cached document.
 - Tracked in: `packages/shared/src/components/map/StacMap.tsx`.
 - Found in: V-2/V-3 lead live checks.
 
+### I-126 · `/map` deferred scope (map-page spec §8) ⚪
+Logged when V-4 closed the V queue; none is a defect.
+- Shareable URL state (layers, span, tick, camera).
+- The STAC `renders` extension (band / rescale / colormap) instead of the tiler's defaults; a legend.
+- A basemap picker.
+- Whole-span footprints toggle; click-through on imagery to the item at that tick.
+- A seeded demo vector table (e.g. GOES hotspot points) — today's tipg lists only PostGIS function collections, so the Vector tiles section has nothing real to show.
+- A pre-warmed mosaic cache for smooth first-pass playback (shared with I-108).
+- Vector layers are not hoverable and contribute no ticks (spec §4.4/§4.6 as written).
+- Tracked in: `app/src/components/map/`, `docs/superpowers/specs/2026-09-04-map-page-design.md` §8.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

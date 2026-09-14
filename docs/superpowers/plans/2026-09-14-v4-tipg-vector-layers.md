@@ -466,9 +466,9 @@ The dispatcher calls no hooks, so the per-kind components each keep a stable hoo
 **Files:**
 - Modify: `docs/FEATURES.md` — the `| Map page (\`/map\`) |` row: replace "tipg vector layers and the full docs are V-4." with the V-4 sentence below
 - Modify: `docs/serving.md` — after the tipg row/paragraph (anchor: the line beginning `  - *Vector features/tiles* → the tipg **landing page**`): a short paragraph naming `/map` as the third consumer, the TileJSON path `/collections/{id}/tiles/WebMercatorQuad/tilejson.json`, and that the MVT source layer is `default` (verified against tipg 1.0.1 on 2026-09-09)
-- Modify: `docs/ISSUES.md` — new entry I-122 after I-121 with the spec §8 deferrals
+- Modify: `docs/ISSUES.md` — new entry I-126 after I-121 with the spec §8 deferrals
 
-- [ ] **Step 1:** FEATURES sentence: "V-4 (2026-09-14) added the Vector tiles section: `useTipgCollections` (`serving/queries.ts`, quiet, fetched only while the picker is open) lists tipg's `/collections`, each adding a `vector` layer that `VectorTileLayer` draws from `tipgTileJsonUrl(id)` (source layer `default`, verified against tipg 1.0.1); vector layers keep the camera and ignore the time axis. An unreachable tipg reads "no vector tiles published". `docs/serving.md` records the TileJSON path; spec §8's deferrals are I-122."
+- [ ] **Step 1:** FEATURES sentence: "V-4 (2026-09-14) added the Vector tiles section: `useTipgCollections` (`serving/queries.ts`, quiet, fetched only while the picker is open) lists tipg's `/collections`, each adding a `vector` layer that `VectorTileLayer` draws from `tipgTileJsonUrl(id)` (source layer `default`, verified against tipg 1.0.1); vector layers keep the camera and ignore the time axis. An unreachable tipg reads "no vector tiles published". `docs/serving.md` records the TileJSON path; spec §8's deferrals are I-126."
 
 - [ ] **Step 2:** serving.md paragraph:
 ```markdown
@@ -479,12 +479,12 @@ credentials) and draws a chosen collection from
 TileJSON 3.0 document whose `vector_layers[0].id` is `default`, the MVT
 source-layer name every tipg tile carries (verified against tipg 1.0.1 on
 2026-09-09). The local stack's tipg exposes only PostGIS function collections
-(`public.st_hexagongrid`, …) until a demo table is seeded (I-122).
+(`public.st_hexagongrid`, …) until a demo table is seeded (I-126).
 ```
 
 - [ ] **Step 3:** ISSUES entry:
 ```markdown
-### I-122 · `/map` deferred scope (map-page spec §8) ⚪
+### I-126 · `/map` deferred scope (map-page spec §8) ⚪
 Logged when V-4 closed the V queue; none is a defect.
 - Shareable URL state (layers, span, tick, camera).
 - The STAC `renders` extension (band / rescale / colormap) instead of the tiler's defaults; a legend.
@@ -496,7 +496,7 @@ Logged when V-4 closed the V queue; none is a defect.
 - Tracked in: `app/src/components/map/`, `docs/superpowers/specs/2026-09-04-map-page-design.md` §8.
 ```
 
-- [ ] **Step 4:** `npm run verify` (docs only, still the gate) → commit: `docs: V-4 — map page vector tiles, serving.md TileJSON path, I-122 deferrals`.
+- [ ] **Step 4:** `npm run verify` (docs only, still the gate) → commit: `docs: V-4 — map page vector tiles, serving.md TileJSON path, I-126 deferrals`.
 
 ---
 
@@ -508,7 +508,7 @@ Logged when V-4 closed the V queue; none is a defect.
 
 ## Self-review
 
-**Spec coverage.** §4.5 Vector tiles section (query, per-collection add, Added/disabled, the empty/unreachable note) → Task 2; the `vector` layer drawn from `tipgTileJsonUrl` with the verified source layer → Task 3; §4.4 vector layers ignore the axis → Task 3's dispatcher (no frames reported) + test; §7 docs → Task 4; §8 deferrals logged → Task 4 (I-122); the V-1 carried-forward V-4 bullet (delete the two exports + the proxy, `vectorTileLayerIds`, default-opacity assertions) → Task 1. ✓
+**Spec coverage.** §4.5 Vector tiles section (query, per-collection add, Added/disabled, the empty/unreachable note) → Task 2; the `vector` layer drawn from `tipgTileJsonUrl` with the verified source layer → Task 3; §4.4 vector layers ignore the axis → Task 3's dispatcher (no frames reported) + test; §7 docs → Task 4; §8 deferrals logged → Task 4 (I-126); the V-1 carried-forward V-4 bullet (delete the two exports + the proxy, `vectorTileLayerIds`, default-opacity assertions) → Task 1. ✓
 
 **Placeholder scan.** Two test snippets tell the implementer to reuse the file's existing recording helpers / fitBounds spy by name-lookup rather than restating them; each says exactly what to assert. No "TBD".
 
