@@ -38,7 +38,8 @@ export function AddLayerPopover({
   onAddVector,
 }: AddLayerPopoverProps) {
   const [open, setOpen] = useState(false);
-  const { data: vectorCollections, isError: vectorError } = useTipgCollections(open);
+  const { data: vectorCollections, isError: vectorError, isLoading: vectorLoading } =
+    useTipgCollections(open);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -75,7 +76,7 @@ export function AddLayerPopover({
         <div className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
           Vector tiles
         </div>
-        {vectorError || !vectorCollections || vectorCollections.length === 0 ? (
+        {vectorLoading ? null : vectorError || !vectorCollections || vectorCollections.length === 0 ? (
           <p className="px-3 pb-3 text-sm text-muted-foreground" data-testid="map-vector-empty">
             no vector tiles published
           </p>

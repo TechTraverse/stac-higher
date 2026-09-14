@@ -1270,6 +1270,7 @@ Logged when V-4 closed the V queue; none is a defect.
 - A basemap picker.
 - Whole-span footprints toggle; click-through on imagery to the item at that tick.
 - A seeded demo vector table (e.g. GOES hotspot points) — today's tipg lists only PostGIS function collections, so the Vector tiles section has nothing real to show.
+- I-122–I-125 are reserved by the C-queue spec branch `ai/c-images-spec`, not yet on ai/main — do not reuse them.
 - A pre-warmed mosaic cache for smooth first-pass playback (shared with I-108).
 - Vector layers are not hoverable and contribute no ticks (spec §4.4/§4.6 as written).
 - Tracked in: `app/src/components/map/`, `docs/superpowers/specs/2026-09-04-map-page-design.md` §8.

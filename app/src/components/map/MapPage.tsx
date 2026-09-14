@@ -300,8 +300,8 @@ function MapPageInner() {
                 onFramesRemove={dropFrames}
               />
             ))}
-            {/* V-4 adds the vector branch inside MapLayerView; it chains its
-                beforeId through the same beforeIdFor helper. */}
+            {/* MapLayerView's vector branch chains its beforeId through the
+                same beforeIdFor helper. */}
           </StacMap>
           {hovered && <MapTooltip {...hovered} />}
         </div>

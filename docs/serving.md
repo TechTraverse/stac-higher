@@ -69,16 +69,6 @@ Version pins follow eoAPI's tested combination for pgstac 0.9.x.
   more than one rendering — the asset are pickable. Code:
   `app/src/lib/serving/frames.ts`, `CollectionPreviewTab`, and the shared
   `TimeSlider`.
-
-The `/map` page (V-4) is the third consumer of the tilers: its Add-layer picker
-lists `GET {PUBLIC_TIPG_URL}/collections` (only while the picker is open, no
-credentials) and draws a chosen collection from
-`{PUBLIC_TIPG_URL}/collections/{id}/tiles/WebMercatorQuad/tilejson.json` — a
-TileJSON 3.0 document whose `vector_layers[0].id` is `default`, the MVT
-source-layer name every tipg tile carries (verified against tipg 1.0.1 on
-2026-09-09). The local stack's tipg exposes only PostGIS function collections
-(`public.st_hexagongrid`, …) until a demo table is seeded (I-126).
-
 - **Canonical hrefs are mapped in the tile server.** Items keep their
   app-relative `/api/assets/{collection}/{item}/{filename}` hrefs (ADR 0005 —
   bytes are only reachable through the app); the derived image rewrites them
@@ -91,6 +81,15 @@ source-layer name every tipg tile carries (verified against tipg 1.0.1 on
   pass through as before. This is the *local* answer to I-68 (GOES spec
   §7.1, G-4); the cloud deployment chooses between the same mapping (with
   the deployment's bucket) and presign integration.
+
+The `/map` page (V-4) is the third consumer of the tilers: its Add-layer picker
+lists `GET {PUBLIC_TIPG_URL}/collections` (only while the picker is open, no
+credentials) and draws a chosen collection from
+`{PUBLIC_TIPG_URL}/collections/{id}/tiles/WebMercatorQuad/tilejson.json` — a
+TileJSON 3.0 document whose `vector_layers[0].id` is `default`, the MVT
+source-layer name every tipg tile carries (verified against tipg 1.0.1 on
+2026-09-09). The local stack's tipg exposes only PostGIS function collections
+(`public.st_hexagongrid`, …) until a demo table is seeded (I-126).
 
 ## Env
 

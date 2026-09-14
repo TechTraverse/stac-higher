@@ -80,4 +80,11 @@ describe("AddLayerPopover — Vector tiles", () => {
     renderPicker();
     expect(screen.getByTestId("map-vector-empty")).toBeInTheDocument();
   });
+
+  it("shows neither the empty note nor any rows while the request is in flight", () => {
+    tipgMock.mockReturnValue({ data: undefined, isError: false, isLoading: true });
+    renderPicker();
+    expect(screen.queryByTestId("map-vector-empty")).toBeNull();
+    expect(screen.queryByTestId(/^map-add-vector-/)).toBeNull();
+  });
 });
