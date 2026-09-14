@@ -1311,6 +1311,21 @@ gate on the connection's credentials in `transfer_policy`.
 - Tracked in: `services/pipeline/src/pipeline/connections/adapters/s3.py`, `services/pipeline/src/pipeline/ingest/transfer.py`.
 - Found in: M3-C Task 5 review (2026-09-14).
 
+### I-129 · Copy-mode `raster_auto` EXTRACT through `/vsis3` is ~4.5× slower than the buffered read it replaced 🟡
+The M3-C measurement (60 × 64 MB GeoTIFFs on local MinIO, `with_raster`
+statistics) put `ingest_itemize` at 0.283 s mean against the 0.063 s baseline
+while fetch went 0.359 → 0.067 s (server-side copy) and the items stayed
+byte-identical. The likeliest cause: the pipeline sets none of the GDAL
+vsicurl tuning titiler's compose block does (`GDAL_DISABLE_READDIR_ON_OPEN=
+EMPTY_DIR`, `GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES`, `VSI_CACHE=TRUE`,
+`CPL_VSIL_CURL_CHUNK_SIZE`), so a statistics pass issues many small range
+requests. Fix candidate: set those in the pipeline's compose environment (or
+in `open_raster`'s `rasterio.Env`) and re-measure; the window also saw peak
+RSS 386 MiB against a 206 MiB baseline, confounded by the re-seeded GOES
+demo's catch-up in the same process — re-measure in a quiet window too.
+- Tracked in: `services/pipeline/src/pipeline/ingest/raster_io.py`, `docker-compose.yml` (pipeline env).
+- Found in: M3-C Task 7 measurement (2026-09-14).
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

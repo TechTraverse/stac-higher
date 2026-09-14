@@ -10,7 +10,7 @@ just a wasted read.
 
 | Queue | What it is | State |
 |---|---|---|
-| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference; **M3-C merged 2026-09-14** (measurement owed, host disk full); M3-D plan written (`2026-09-14-m3-d-concurrency.md`) |
+| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference; **M3-C merged 2026-09-14** (measured; I-129 re-measure owed); M3-D plan written (`2026-09-14-m3-d-concurrency.md`) |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
@@ -123,7 +123,7 @@ load report recorded M-gate style in ROADMAP §9.
       run in a transaction block. `query_queue.py` says so at the class:
       "M3-B: keep this off the transactional repo pool." M3-B's async pool
       is a THIRD object; `configure_pgstac_session_async` exists for it.
-- [x] **M3-C · bounded-memory byte path.** (merged 2026-09-14, `ai/m3-c-byte-path` ec31710; the M3-C build's RSS measurement is OWED — host disk full, see the landed note) Spec §3, S-E; closes I-19/I-26.
+- [x] **M3-C · bounded-memory byte path.** (merged 2026-09-14, `ai/m3-c-byte-path` ec31710; measured — fetch 5.4× faster, itemize 4.5× slower (I-129), RSS not lower in a confounded window; re-measure owed) Spec §3, S-E; closes I-19/I-26.
       Three parts. (1) **EXTRACT reads through a URI, not a buffer**: swap the
       `MemberByteSource` seam from `-> bytes` to something GDAL can open
       (`/vsis3`). Measured: byte-identical STAC item including
@@ -890,59 +890,23 @@ processor's job by the decision above and stays so.
   70.5 → **205.5 MiB peak** (+135 MiB), `ingest_fetch` mean **0.359 s**,
   `ingest_itemize` mean **0.063 s**, 60 items catalogued, torn down. (A first
   baseline against the 12-hour-old process read 584 → 649 MiB — the
-  high-water mark hid the transient; restart before measuring.) **OWED (lead,
-  Docker):** the same run on the M3-C build (`scratchpad m3c-measure.sh m3c`,
-  restart the pipeline first): peak RSS lower and FLAT, `mode="copy"` ≈ 60
-  and `copy_fallback` = 0, itemize mean ≤ 0.063 s, one item's `raster:bands`
-  statistics identical to the baseline item (`m3c-base2.item.json` in the
-  session scratchpad; otherwise re-derive from a baseline run). The image
-  build failed on the full disk; the deployed pipeline is still the
-  pre-M3-C image (built 03:25Z). **Deferred minors (final review, logged not
-  fixed):** `gdal_session_options` lives in `storage/platform` (raster_io is
-  the neutral home); no test asserts the counter's label strings; the
-  counter increments before the ledger write; `S3Adapter.open` is typed
-  `BinaryIO` for a non-seekable body; anonymous connections pay one failed
-  copy + WARNING per member before falling back (I-128); reference-mode
-  `locate()` resolves the pin on the event loop; the itemize job's
-  `RasterAccess` wiring is untested; s3transfer raises `multipart_chunksize`
-  below S3's 5 MiB floor (README note owed); the WARNING close path is
-  unasserted. `config.py`'s RSS comment corrected in this commit.
-- **2026-09-14 HALT (lead):** the host disk filled (143 MiB free of 926 GiB;
-  Docker Desktop's 1 TB sparse `Docker.raw` holds 142 GB and could not grow),
-  Docker's VM remounted read-only, the database container stopped and the
-  STAC API returned no features. Nothing in the stack was touched. Resume:
-  free host space, restart Docker Desktop, `docker compose up -d --wait`,
-  canary, then the owed M3-C measurement, the K-1 Task 3 review, M3-D Task 1.
-- **V-4 landed 2026-09-14 (`ai/v4-vector`, merge 2e1896a), live-checked.**
-  `useTipgCollections` (quiet, `enabled` only while the picker is open) lists
-  tipg's `/collections`; the Add-layer popover's "Vector tiles" section adds a
-  `vector` layer (no camera fit, no frames, not hoverable) that `MapLayerView`
-  — now a hook-free dispatcher (`StacLayerView` / `VectorLayerView`) — draws
-  through the shared `VectorTileLayer` from `tipgTileJsonUrl(id)` (source
-  layer `default`); `layerAnchorId` chains a STAC layer's `beforeId` to
-  `vectorTileLayerIds(id).fill`; the V-1 carry-forwards landed (the
-  consumerless `footprintFillLayer`/`footprintLineLayer` exports and the stale
-  `app/src/lib/map/styles.ts` proxy are gone). Gates: verify 1505 tests; whole
-  e2e 46 passed / 1 skipped (baseline). **Deviations, all review-driven:**
-  Added-state variant is `ghost` (matches `AddLayerCollectionRow`, brief said
-  `secondary`); the `map-page.test.tsx` react-map-gl mock became a
-  `forwardRef` + `onLoad` spy so the no-camera-fit assertion is live (with a
-  positive control on a footprints first-add); the section body renders
-  nothing while the listing is loading (the final review caught a
-  "no vector tiles published" flash during the pending fetch); the §8
-  deferrals are **I-126** (the plan's I-122 collides with the peer branch
-  `ai/c-images-spec`, which holds I-122–I-125); the serving.md paragraph
-  moved below the consumer list it names. **Live check (Chrome, standing
-  stack):** the section lists tipg's six `public.*` function collections;
-  adding `public.st_hexagongrid` shows the hexagon layer row, fetches the
-  TileJSON (200) and draws nothing — every tile answers 422 `Missing Required
-  parameters … size`, maplibre marks the source errored and stops requesting
-  (no error UI, spec §4.7); of the six, only `public.postgis_srs_all` serves a
-  200 tile (5 MB, no geometry) and `public.st_subdivide` 500s — so nothing in
-  today's tipg can draw (I-126's seeded-table bullet stands). With tipg
-  stopped the picker shows "no vector tiles published" — but only with a
-  cold HTTP cache: tipg answers `Cache-Control: public, max-age=3600`, so a
-  browser that listed within the hour keeps showing the stale list (I-127).
+  high-water mark hid the transient; restart before measuring.) **Measured on the M3-C build (2026-09-14 21:10Z, label `m3c`, same
+  recipe, the pipeline container at 145 MiB when the run started because the
+  re-seeded GOES demo was catching up its trailing hour in the same
+  process):** `pipeline_ingest_fetch_transfers_total{mode="copy"}` = **60 of
+  60**, no `copy_fallback`; `ingest_fetch` mean **0.067 s** (baseline 0.359 —
+  the server-side copy, 5.4× faster); `ingest_itemize` mean **0.283 s**
+  (baseline 0.063 — **4.5× SLOWER**, see I-129); RSS **145 → 386 MiB peak**
+  (baseline 70 → 206) — NOT lower: the plateau rose 165 → ~305 MiB (the 64 MB
+  GDAL block cache filling plus the demo's concurrent staging) with a
+  per-item sawtooth of ~60–80 MiB (the baseline's whole-object transient was
+  ~135 MiB), so the per-item transient is bounded but the steady state is
+  higher and the comparison is confounded by the demo. One catalogued item's
+  `raster:bands` statistics/histogram are **identical** to the baseline
+  item's. **OWED:** re-measure in a quiet window (demo caught up, pipeline
+  restarted) after the I-129 GDAL tuning, and record whether RSS is flat
+  across the run; artifacts in
+  `.superpowers/sdd/2026-09-09-m3-c-bounded-memory-byte-path/measurement/`.
   **Deferred minors (final review, logged not fixed):** a shared Source/Layer
   test-mock helper (verbatim in four test files); read `vector_layers[0].id`
   from the TileJSON instead of hardcoding `default`; a page test for a STAC
