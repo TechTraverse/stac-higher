@@ -40,8 +40,8 @@ export const RASTER_FRAME_LOOKAHEAD = 1;
  * The stack's stable `beforeId` target (spec §11.2). Frame layer ids
  * (`${id}-frame-${n}-layer`) are mounted and unmounted on every step, and
  * maplibre no-ops an `addLayer` whose `beforeId` names a layer that is not
- * in the style — so a layer drawn above a stack chains to THIS id, never to
- * a frame.
+ * in the style — so a layer drawn below the stack names THIS id as its
+ * `beforeId`, never a frame.
  */
 export function rasterFrameStackAnchorId(id: string): string {
   return `${id}-anchor`;

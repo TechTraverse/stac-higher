@@ -129,6 +129,14 @@ describe("mapReducer", () => {
     expect(mapReducer(state, { type: "setAxisIndex", axisIndex: 3 }).axisIndex).toBe(3);
     expect(mapReducer(state, { type: "setAxisIndex", axisIndex: null }).axisIndex).toBeNull();
   });
+
+  it("clamps a negative axis index to 0", () => {
+    // The upper bound stays at render time in MapPage, where the axis length
+    // is known; only the lower bound belongs in the reducer.
+    const state = stateWith(layer("a"));
+
+    expect(mapReducer(state, { type: "setAxisIndex", axisIndex: -5 }).axisIndex).toBe(0);
+  });
 });
 
 describe("layerAnchorId / beforeIdFor", () => {

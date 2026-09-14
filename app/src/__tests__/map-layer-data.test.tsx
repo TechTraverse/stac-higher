@@ -101,6 +101,13 @@ describe("useLayerData", () => {
     expect(useItemTileJsonMock).toHaveBeenCalledWith("goes-geocolor", "c", "cmi", true);
   });
 
+  it("passes the tiler's hint and settled flag straight through", () => {
+    const { result } = renderHook(() => useLayerData(layer(), "http://localhost:8081", 50));
+
+    expect(result.current.hint?.minzoom).toBe(2);
+    expect(result.current.hintSettled).toBe(true);
+  });
+
   it("never asks the tiler for a footprints layer", () => {
     // Footprints need no tiles; a hint request per footprints layer would be
     // one wasted round trip per layer on a page built to hold several.

@@ -187,6 +187,24 @@ describe("MapLayerView — footprints", () => {
 
     expect(screen.getByTestId("footprints").dataset.before).toBe("above-fill");
   });
+
+  it("still draws when the (unrequested) zoom hint hasn't settled", () => {
+    // Footprints never ask the tiler (I-… useLayerData never issues the hint
+    // query for them), so hintSettled stays false forever — drawing must not
+    // wait on it.
+    useLayerDataMock.mockReturnValue({
+      items: ITEMS,
+      frames: FRAMES,
+      candidates: [],
+      asset: undefined,
+      hint: undefined,
+      hintSettled: false,
+      servingEnabled: true,
+    });
+    renderView({ tickInstant: T("2026-09-04T06:05:00Z") }, layer({ kind: "footprints" }));
+
+    expect(screen.getByTestId("footprints").dataset.ids).toBe(JSON.stringify(["b"]));
+  });
 });
 
 describe("MapLayerView — the axis", () => {

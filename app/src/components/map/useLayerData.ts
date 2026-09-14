@@ -32,7 +32,12 @@ export interface LayerData {
   asset: string | undefined;
   /** The newest item's TileJSON — bounds and zoom range only. */
   hint: TileJson | undefined;
-  /** The hint query has SETTLED (succeeded or failed). Frames wait on this. */
+  /**
+   * The hint query has SETTLED (succeeded or failed). Frames wait on this.
+   * False forever when the tiler was never asked (footprints, serving off,
+   * no tileable asset) — check `servingEnabled`/`asset` first; never gate
+   * footprints on it.
+   */
   hintSettled: boolean;
   servingEnabled: boolean;
 }

@@ -183,8 +183,10 @@ function MapPageInner() {
   );
 
   // Each layer reports its own frames; the axis is their union (spec §4.4).
-  // Identity-checked so a layer re-reporting the same array is a no-op — the
-  // frames arrive from an effect, and a fresh Map every render would loop.
+  // The `prev.get(layerId) === frames` check only avoids churn on a re-report
+  // of the same array — it is not what stops this from looping. The frames
+  // arrive from an effect, and what keeps that effect from firing every
+  // render is `useLayerData`'s own `useMemo` on `frames`.
   const [layerFrames, setLayerFrames] = useState<Map<string, PreviewFrame[]>>(
     () => new Map(),
   );

@@ -122,7 +122,12 @@ export function mapReducer(state: MapState, action: MapAction): MapState {
       return { ...state, frameSpan: action.frameSpan, axisIndex: null };
 
     case "setAxisIndex":
-      return { ...state, axisIndex: action.axisIndex };
+      // Lower-clamped here; the upper bound stays at render time in MapPage,
+      // where the axis length is known.
+      return {
+        ...state,
+        axisIndex: action.axisIndex === null ? null : Math.max(0, action.axisIndex),
+      };
   }
 }
 
