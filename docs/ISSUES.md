@@ -418,29 +418,30 @@ gates either: it decides whether the page ASKS the tile server, not whether
 the tile server would answer.
 - Tracked in: `docs/serving.md`, migration 019; depends on I-1.
 
-### I-112 · Stepping a raster frame series backward can show the wrong frame 🟡
+### I-112 · Stepping a raster frame series backward showed the wrong frame — 🟢 resolved (V-3, 2026-09-14)
 
-**Observed (2026-09-04, V-1 final review).** `RasterFrameStack` (and the
-collection Preview tab before it) keeps the previous frame painted beneath
-the current one and relies on React child order for draw order. maplibre
-fixes draw order at `addLayer` time and only `moveLayer`s when `beforeId`
-changes, so a frame that is ALREADY mounted stays where it was. Walk
-1 → 2 → 1: frame 1 was added below frame 2; stepping back to 1 leaves both at
-full opacity with 2 on top — the viewer sees frame 2 while the slider says 1.
-Forward playback is unaffected (the incoming frame is always newly mounted,
-hence on top), which is why the live GOES check never saw it.
+**Was.** `RasterFrameStack` (and the collection Preview tab before it) kept the
+previous frame painted beneath the current one and relied on React child order
+for draw order. maplibre fixes draw order at `addLayer` time and only
+`moveLayer`s when `beforeId` changes, so a frame that was ALREADY mounted
+stayed where it was. Walking 1 → 2 → 1 left both frames at full opacity with 2
+on top — the viewer saw frame 2 while the slider said 1. Forward playback was
+unaffected (the incoming frame is always newly mounted, hence on top), which is
+why the live GOES check never saw it.
 
-**Impact.** Single-step backward scrubbing on the Preview tab, and on every
-imagery layer of the `/map` page (V queue), where the shared axis makes it
-routine.
-
-**Fix (V-3).** Chain `beforeId` INSIDE the stack: render top-down, give the
-lookahead the caller's `beforeId`, the current frame the lookahead's layer
-id, the previous frame the current's — a changed chain triggers `moveLayer`
-and order is always explicit. Guard `moveLayer` against a just-unmounted
-target. Not done in V-1 because the plan mandated the preview's behaviour
-(and its tests' order assertions) stay untouched. Spec amendment:
-`docs/superpowers/specs/2026-09-04-map-page-design.md` §11.
+**Fixed by V-3.** The stack states its draw order instead of inheriting it:
+each mounted frame chains `beforeId` to the frame above it, the top frame to
+the caller's target, and the always-mounted anchor to the lowest frame — so any
+reorder changes a `beforeId` and react-map-gl issues the `moveLayer`. The
+frames are rendered top-first because react-map-gl creates layers during
+render, in tree order, and maplibre drops a layer whose `beforeId` target does
+not exist yet; the anchor is rendered last for the same reason. An empty series
+now keeps the anchor mounted, so the `/map` page's chain never points at a
+target that comes and goes. Regression tests:
+`app/src/__tests__/raster-frame-stack.test.tsx` (the chain after 1 → 2 → 1) and
+`app/src/__tests__/collection-preview-tab.test.tsx` (the previous frame's layer
+draws beneath the current frame's). Spec:
+`docs/superpowers/specs/2026-09-04-map-page-design.md` §11.3.
 
 ---
 
@@ -1224,6 +1225,43 @@ trigger summary text) so the alert branch runs.
 - Tracked in: `app/src/components/layout/overview.ts`,
   `app/src/components/processes/health.ts`, `ProcessesPage.tsx`.
 - Found in: A-1 lead live check.
+
+### I-119 · `/map`'s parked tick is positional, so a reshaping axis moves it 🟡
+`MapPage` resolves the current tick as `axisIndex ?? last` into an axis that
+is the union of every time-aware layer's frames (spec §4.4, V-3). Adding a
+layer whose frames are older prepends ticks, so a user parked at index 12 is
+suddenly looking at an older instant; removing the layer that contributed
+the oldest ticks shifts it the other way. The reducer clamps a negative
+index and the page clamps to the axis length, so nothing throws — the
+position just drifts. Fix: hold the parked INSTANT in state and re-derive
+the index whenever `axis` changes (`lib/map/state.ts` + `MapPage.tsx`).
+- Tracked in: `app/src/components/map/MapPage.tsx`, `app/src/lib/map/state.ts`.
+- Found in: V-3 Task 6 review (plan-mandated form).
+
+### I-120 · The Add-layer popover fires two queries per listed product on every open 🟡
+`AddLayerCollectionRow` (V-3) calls `useCollectionSettings` and a five-item
+`useItems` probe unconditionally for each collection the popover lists, so a
+catalog of N products costs 2N requests on the first open (cached after).
+The probe cannot be skipped when serving is off because `useItems` exposes
+no `enabled` flag. Cheap fix: give `useItems` an `enabled` option and gate
+the probe on `settings?.servingEnabled === true`. The probe's `limit: 5`
+also keys a separate cache entry from the layer's own `limit: frameSpan`
+query, so adding the layer issues a fresh items request.
+- Tracked in: `app/src/components/map/AddLayerCollectionRow.tsx`,
+  `app/src/lib/query/items.ts`.
+- Found in: V-3 Task 4 review.
+
+### I-121 · The basemap lags the theme toggle by ~8–10 s on map pages 🟡
+`StacMap` swaps `mapStyle` between the light and dark Carto styles on
+`$theme`, which makes maplibre fetch the other style from
+`basemaps.cartocdn.com` and rebuild the whole style; the app chrome switches
+instantly, the map stays on the old basemap until the fetch completes
+(measured ~8–10 s on the V-3 live check; every overlay layer survives the
+rebuild). Not a V-3 regression — V-2 recorded it. Fix candidates: prefetch
+both style JSONs at map mount so the swap is a local `setStyle`, or apply
+the theme through `setStyle(..., { diff: true })` on a cached document.
+- Tracked in: `packages/shared/src/components/map/StacMap.tsx`.
+- Found in: V-2/V-3 lead live checks.
 
 ## Resolved — archived
 

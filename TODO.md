@@ -10,13 +10,13 @@ just a wasted read.
 
 | Queue | What it is | State |
 |---|---|---|
-| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B in progress.** The ordering below is a dependency spine, not a preference |
+| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
-| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04, **V-2 merged 2026-09-08**; **V-3 next**; V-4 depends on V-2 only. No migrations |
+| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04, V-2 merged 2026-09-08, **V-3 merged 2026-09-14** (closes I-112); **V-4 next**, depends on V-2 only. No migrations |
 | **D** | Item lineage: `derived_from` links stamped on process outputs at finalize | Written 2026-09-06 (lead question, no separate spec — the slice text is the design). Two slices: D-1 pipeline stamp, D-2 item-page rendering (decisions settled 2026-09-07). No migrations |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
@@ -105,7 +105,7 @@ load report recorded M-gate style in ROADMAP §9.
       MATERIALIZED VIEW` calls inside `update_partition_stats` scale with
       partition count, not write rate, so drain cadence should be tuned against
       partition count (§4.5). Verify against the harness, not by inspection.
-- [ ] **M3-B · connection pool.** Spec §3, S-D. Every pipeline repo method
+- [x] **M3-B · connection pool.** (merged 2026-09-14; measured 19.5 → 0.10 sessions per item) Spec §3, S-D. Every pipeline repo method
       currently opens a fresh `psycopg.AsyncConnection` (4.19 ms measured);
       ~14 per item means ~420 connections/s ≈ 1.8 core-seconds of connect per
       wall-clock second at budget, plus a backend fork each. Invisible at
@@ -674,7 +674,7 @@ none yet (the loop writes it after V-2 merges). V-1's plan:
       (`visible` prop on the three layer components; the stack's
       `${id}-anchor` layer + `rasterFrameStackAnchorId`), plus the single
       opacity clamp in `styles.ts`.
-- [ ] **V-3 · Imagery layers + the shared time axis.** Spec §4.3 (imagery),
+- [x] **V-3 · Imagery layers + the shared time axis.** (merged 2026-09-14) Spec §4.3 (imagery),
       §4.4. `lib/map/axis.ts` (`buildAxis`, `resolveLayerFrame`) + tests;
       the Imagery option gated on serving + a newest-items probe; per-row
       asset select; the docked `TimeSlider` with `areTilesLoaded` pacing;
@@ -862,6 +862,79 @@ processor's job by the decision above and stays so.
   ≈16 statements per item more than a local box does.
 
 ## Discovered follow-ups
+
+- **M3-B landed 2026-09-14 (`ai/m3-b-pool`, merge 3abdc70), measured.**
+  `pipeline/db/pool.py`: one `psycopg_pool.AsyncConnectionPool` per DSN,
+  process-wide, lazily opened on first use under a module lock, sized by
+  `DB_POOL_MIN`/`DB_POOL_MAX` (2/16), `configure=configure_pgstac_session_async`
+  (ADR 0020). Twelve repos + two one-offs (`jobs/process.py` `_resolve`,
+  `pgstac_writer.get_collection_bbox`) check out of it; the four exemptions
+  (Procrastinate's connector, the dispatch LISTEN connection,
+  `setup()`/`check_connection()`, the pgstac queue drainer) stay direct.
+  `main.run()` closes the async pool, the writer pool and the queue in that
+  order, each isolated (`except Exception`, so a `CancelledError` still
+  propagates); `/health` gained `db_pool` keyed `host:port/dbname`.
+  **Deviations from the plan, all review-driven:** (1) the plan's
+  `pool.open()` (psycopg_pool default `wait=False`) let the min-size fill race
+  the first checkout — the DB-gated test saw 3 backends for 5 sequential
+  checkouts — so the pool opens with `wait=True`, bounded by
+  `POOL_OPEN_TIMEOUT_SECONDS = 10` (not psycopg_pool's 30 s: the lock is
+  module-global and N callers would queue N×30 s against a dead database) and
+  closes itself on any failure/cancellation before registration; a broken
+  `configure` hook now surfaces as one `PoolTimeout` at first use with the
+  cause in psycopg_pool's WARNING log. (2) `run()`'s `try` was widened to wrap
+  `queue.setup()` so a schema-apply failure releases the already-open
+  Procrastinate connector (a real pre-existing leak). (3) The DB-gated
+  session-delta assertion is a tolerance (20 calls, `< 10` new sessions), not
+  an exact count — the shared stack's other clients open sessions too.
+  **Measured (label `m3b`, 900 items at 30/s, copy/`defaults_only`, watch
+  overlapping the feed, torn down):** `pg_stat_database.sessions` **19.5 →
+  0.10 new sessions per item** (17,570 → 92 for 900 items); `/health
+  db_pool` at the end: `pool_size 2`, `connections_num 2`, `requests_num
+  17,895` (~19.9 checkouts per item — S-D's "~14" plus the periodic ticks),
+  `requests_waiting 0`; `ingest_fetch` 24 → 12 ms, `ingest_itemize` 32 → 9 ms;
+  the pooled pipeline kept pace with the 30/s feed (all 900 itemized inside
+  the feed window) where the baseline lagged at 21–24/s; `pgstac_queue_drain`
+  0.096 → 0.131 s at 5 partitions; pgstac queue flat at 0. Deferred minors
+  (logged, not fixed): no negative caching of a failed warm-up (N callers
+  still serialize N×10 s against a dead DB — documented trade); the
+  `except BaseException` close path has no unit test; `flow/repo.py` and
+  `delivery/repo.py` carry module-level "short-lived connection" docstrings
+  in different wording that are now stale; `pool_stats()` iterates the
+  registry unsnapshotted (safe on one loop); the `/health` sample omits
+  nothing now but `version` was only just added.
+- **V-3 landed 2026-09-14 (`ai/v3-map-axis`, merge f2923cd), live-checked.**
+  Six tasks as planned plus one final fix wave: `lib/map/axis.ts`
+  (`buildAxis` / `resolveLayerFrame`, hold-last, binary search, never an
+  out-of-range index); the I-112 chain inside `RasterFrameStack` (frames
+  rendered top-first, the anchor last; the preview-tab assertion inverted as
+  the lead permitted); `useLayerData` (one items query per layer, the same
+  key as the Preview tab); the Imagery option gated on serving + a five-item
+  tileable probe with `AddLayerCollectionRow` extracted so the two probe hooks
+  are legal; `MapLayerView` (footprints per frame, imagery as a stack, `null`
+  tick draws nothing); the docked `TimeBar` with the shared
+  `FRAME_MAX_WAIT_TICKS` cap and the span select resetting to the newest
+  tick. Review rounds fixed brief defects: the asset-change dispatch was
+  untested (now a real Radix Select interaction + a page-level test), and
+  `data-testid="map-layer-icon-<kind>"` was added to the row icon. Issues
+  opened: **I-119** (positional `axisIndex` moves the parked tick when the
+  axis reshapes), **I-120** (N settings + N items probes per popover open),
+  **I-121** (basemap swap lags the theme toggle by ~8–10 s). **Live check
+  (lead, Chrome, standing demo, 2026-09-14):** `goes-abi-mcmipc` (netCDF)
+  offers Footprints only, `goes-geocolor` offers Imagery; both stacked, the
+  bar docked at 51 ticks for the 50-frame span; the GeoColor night frame
+  renders under the CONUS footprint; scrubbing 51 → 48 painted a different,
+  correct frame after ~15 s of tiler cold-render latency (I-108); the theme
+  toggle swapped the basemap ~8–10 s later with both layers surviving; no
+  console errors on `/map`. **One defect found:** the collection Preview tab
+  logged `Cannot add layer "preview-anchor" before non-existing layer
+  "preview-frame-49-layer"` — the stack's anchor chains to a frame whose
+  Source is not registered yet (self-heals on `styledata`); fixed on
+  `ai/v3-anchor-fix` (chain only to layers already on the map, else the
+  caller's target). The Task 2 review had flagged the cascade as a knowledge
+  note; the live check showed it is loud. Screenshots
+  `screenshot-1789355865324-6.jpg` … `-1789356018266-12.jpg` (session temp
+  dir).
 
 - **A-1 landed 2026-09-09 (`ai/a1-alert-anchors`, merge 6600ebf), live-checked 2026-09-14.**
   Lane A (lead-defined, closes **I-84**): `ApiAlert` gained `process_id` (the

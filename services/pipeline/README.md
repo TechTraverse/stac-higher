@@ -412,6 +412,16 @@ per ingested item, ~420 connections/s at the M3 budget (scoping notes M3-S-D).
   logs the cause at WARNING) — a different thing from the 30 s checkout
   timeout above, which means the pool is undersized.
 
+Measured on the compose stack, `loadgen --label m3b`, 900 items at 30/s,
+`--mode copy --metadata defaults_only`, `pg_stat_database.sessions` delta per
+catalogued item: **19.5 → 0.10 new backend sessions per item** (2026-09-09
+baseline on the pre-pool M3-A build; 2026-09-14 pooled build — 17,570 → 92
+sessions for the same 900 items; the pool held its two warm connections for
+17,895 checkouts with `requests_waiting: 0`). `ingest_fetch` mean 24 → 12 ms,
+`ingest_itemize` 32 → 9 ms; the pipeline kept pace with the 30/s feed where the
+baseline lagged at 21–24 items/s. Laptop numbers — they rank the fix, they are
+not platform capacity.
+
 ## Docker
 
 The `Dockerfile` builds a multi-stage image whose entrypoint applies the
