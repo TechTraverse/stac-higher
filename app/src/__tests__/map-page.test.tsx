@@ -12,6 +12,10 @@ const { useCollectionsMock, useItemsMock, mapProps } = vi.hoisted(() => ({
   useItemsMock: vi.fn(),
   mapProps: { current: null as Record<string, unknown> | null },
 }));
+const { useCollectionSettingsMock, useItemTileJsonMock } = vi.hoisted(() => ({
+  useCollectionSettingsMock: vi.fn(),
+  useItemTileJsonMock: vi.fn(),
+}));
 
 // The shell is replaced by the bare QueryProvider it wraps: this test
 // exercises page content, not the sidebar/top-bar chrome.
@@ -40,6 +44,12 @@ vi.mock("@/lib/query/collections", () => ({
 }));
 vi.mock("@/lib/query/items", () => ({
   useItems: (...a: unknown[]) => useItemsMock(...a),
+}));
+vi.mock("@/lib/collections/settings-client", () => ({
+  useCollectionSettings: (...a: unknown[]) => useCollectionSettingsMock(...a),
+}));
+vi.mock("@/lib/serving/queries", () => ({
+  useItemTileJson: (...a: unknown[]) => useItemTileJsonMock(...a),
 }));
 // maplibre needs WebGL; inert stand-ins keep the tree — and the source/layer
 // specs — intact. The DEFAULT export is the Map that StacMap renders, and it
@@ -115,6 +125,30 @@ function addFootprints(collectionId: string) {
   fireEvent.click(screen.getByTestId(`map-add-footprints-${collectionId}`));
 }
 
+function addImagery(collectionId: string) {
+  fireEvent.click(screen.getByTestId("map-add-layer"));
+  fireEvent.click(screen.getByTestId(`map-add-imagery-${collectionId}`));
+}
+
+function tileableItem(id: string): StacItem {
+  return {
+    type: "Feature",
+    stac_version: "1.0.0",
+    id,
+    collection: "alpha",
+    geometry: { type: "Point", coordinates: [0, 0] },
+    properties: { datetime: "2026-09-07T00:00:00Z" },
+    links: [],
+    assets: {
+      visual: { href: "visual.tif", roles: ["visual"] },
+      cmi: {
+        href: "cmi.tif",
+        type: "image/tiff; application=geotiff; profile=cloud-optimized",
+      },
+    },
+  } as unknown as StacItem;
+}
+
 function hoverFeature(feature: Record<string, unknown>, x = 12, y = 34) {
   const onMouseMove = mapProps.current?.onMouseMove as (e: unknown) => void;
   act(() => onMouseMove({ features: [feature], point: { x, y } }));
@@ -128,6 +162,9 @@ beforeAll(() => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     })) as unknown as typeof window.matchMedia);
+  // Radix Select needs these in jsdom (same as delivery-section.test.tsx).
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  window.HTMLElement.prototype.hasPointerCapture = vi.fn() as never;
 });
 
 beforeEach(() => {
@@ -139,6 +176,10 @@ beforeEach(() => {
     isLoading: false,
   });
   useItemsMock.mockReturnValue({ data: { features: [] }, isLoading: false });
+  // No serving in V-2's fixtures: the picker offers Footprints only, exactly
+  // as it did before V-3, so every assertion in this file still holds.
+  useCollectionSettingsMock.mockReturnValue({ data: { servingEnabled: false } });
+  useItemTileJsonMock.mockReturnValue({ data: undefined, isFetched: true });
 });
 
 describe("MapPage", () => {
@@ -186,6 +227,30 @@ describe("MapPage", () => {
     fireEvent.click(screen.getByTestId("map-add-layer"));
     expect(screen.getByTestId("map-add-footprints-alpha")).toBeDisabled();
     expect(screen.getByTestId("map-add-footprints-beta")).not.toBeDisabled();
+  });
+
+  it("wires an imagery row's asset select through to the layer state", () => {
+    // Serving on + a tileable probe: the picker offers Imagery (spec §4.5),
+    // and the row it adds carries the Image icon and a real asset choice.
+    useCollectionSettingsMock.mockReturnValue({ data: { servingEnabled: true } });
+    useItemsMock.mockReturnValue({
+      data: { features: [tileableItem("i1")] },
+      isLoading: false,
+    });
+    render(<MapPage />);
+
+    addImagery("alpha");
+
+    const row = screen.getByTestId("map-layer-row");
+    expect(within(row).getByTestId("map-layer-icon-imagery")).toBeTruthy();
+
+    const select = within(row).getByRole("combobox", { name: "Layer asset" });
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole("option", { name: "cmi" }));
+
+    // The reducer's setAsset landed and useLayerData/LayerAssetSelect picked
+    // it back up: the row's select now shows the newly chosen asset.
+    expect(within(row).getByText("cmi")).toBeTruthy();
   });
 
   it("says so quietly when a product has no timestamped items", () => {

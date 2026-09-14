@@ -40,8 +40,8 @@ export const RASTER_FRAME_LOOKAHEAD = 1;
  * The stack's stable `beforeId` target (spec §11.2). Frame layer ids
  * (`${id}-frame-${n}-layer`) are mounted and unmounted on every step, and
  * maplibre no-ops an `addLayer` whose `beforeId` names a layer that is not
- * in the style — so a layer drawn above a stack chains to THIS id, never to
- * a frame.
+ * in the style — so a layer drawn below the stack names THIS id as its
+ * `beforeId`, never a frame.
  */
 export function rasterFrameStackAnchorId(id: string): string {
   return `${id}-anchor`;
@@ -81,22 +81,7 @@ export function RasterFrameStack({
     lastIndex.current = index;
   }
 
-  // Always mounted, even for an empty series: a chaining target that appears
-  // only once data arrives is not a chaining target. A `background` layer
-  // needs no source and fetches nothing — at zero opacity it paints nothing
-  // and costs one no-op draw, where an "empty tile" raster source would sit
-  // in the style making requests.
-  const anchor = (
-    <Layer
-      id={rasterFrameStackAnchorId(id)}
-      type="background"
-      beforeId={beforeId}
-      paint={{ "background-opacity": 0 }}
-    />
-  );
-
   const count = frames.length;
-  if (count === 0) return anchor;
 
   // A non-finite index shows the first frame rather than nothing.
   const safeIndex = Number.isFinite(index) ? index : 0;
@@ -106,39 +91,75 @@ export function RasterFrameStack({
   // reach past the array: previous and current are both taken modulo the
   // series, which also keeps the previous frame painted when the series
   // shrinks below the index it remembers.
-  const current = ((safeIndex % count) + count) % count;
-  const previous = ((previousIndex.current % count) + count) % count;
+  const current = count === 0 ? 0 : ((safeIndex % count) + count) % count;
+  const previous = count === 0 ? 0 : ((previousIndex.current % count) + count) % count;
 
   // Draw order, bottom to top: previous, current, then the lookahead frames
   // loading invisibly. Deduped — a series shorter than the window would
   // otherwise repeat itself.
-  const mounted = [
-    ...new Set([
-      previous,
-      ...Array.from(
-        { length: RASTER_FRAME_LOOKAHEAD + 1 },
-        (_, offset) => (current + offset) % count,
-      ),
-    ]),
-  ];
+  const mounted =
+    count === 0
+      ? []
+      : [
+          ...new Set([
+            previous,
+            ...Array.from(
+              { length: RASTER_FRAME_LOOKAHEAD + 1 },
+              (_, offset) => (current + offset) % count,
+            ),
+          ]),
+        ];
 
+  // The layer ids RasterTileLayer will mint for that window, bottom first —
+  // the links of the chain.
+  const layerIds = mounted.map((frameIndex) => `${id}-frame-${frameIndex}-layer`);
+
+  // Draw order is STATED, not inherited from React child order (I-112).
+  // maplibre fixes a layer's position at addLayer time and react-map-gl calls
+  // moveLayer only when `beforeId` changes, so a step that reorders the window
+  // — every backward step — has to change some layer's `beforeId` or the frame
+  // left over from the way up keeps painting over the current one.
+  //
+  // Each frame draws beneath the frame above it; the top frame beneath the
+  // caller's target. Rendered TOP FIRST because react-map-gl creates layers
+  // during render, in tree order, and maplibre drops a layer whose `beforeId`
+  // names a layer that does not exist yet — every target must already be on
+  // the map. The anchor, the stack's stable bottom, is rendered last for the
+  // same reason.
+  const frameLayers = mounted.map((frameIndex, position) => (
+    <RasterTileLayer
+      key={frames[frameIndex].key}
+      id={`${id}-frame-${frameIndex}`}
+      tiles={frames[frameIndex].tiles}
+      bounds={bounds}
+      minzoom={minzoom}
+      maxzoom={maxzoom}
+      visible={visible}
+      opacity={frameIndex === current || frameIndex === previous ? opacity : 0}
+      opacityTransitionMs={0}
+      beforeId={layerIds[position + 1] ?? beforeId}
+    />
+  ));
+  frameLayers.reverse();
+
+  // Always mounted, even for an empty series: a chaining target that appears
+  // only once data arrives is not a chaining target. A `background` layer
+  // needs no source and fetches nothing. It carries no `layout`: it paints
+  // nothing in either state, and hiding it would only risk maplibre dropping
+  // the target the layer below chains to.
+  //
+  // Rendered LAST because its own target is the bottom-most frame, which must
+  // exist by the time it mounts. With no frames it falls back to the caller's
+  // target, exactly as V-2 had it.
   return (
     <>
-      {anchor}
-      {mounted.map((frameIndex) => (
-        <RasterTileLayer
-          key={frames[frameIndex].key}
-          id={`${id}-frame-${frameIndex}`}
-          tiles={frames[frameIndex].tiles}
-          bounds={bounds}
-          minzoom={minzoom}
-          maxzoom={maxzoom}
-          opacity={frameIndex === current || frameIndex === previous ? opacity : 0}
-          opacityTransitionMs={0}
-          visible={visible}
-          beforeId={beforeId}
-        />
-      ))}
+      {frameLayers}
+      <Layer
+        id={rasterFrameStackAnchorId(id)}
+        type="background"
+        beforeId={layerIds[0] ?? beforeId}
+        paint={{ "background-opacity": 0 }}
+      />
     </>
   );
 }

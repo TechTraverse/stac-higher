@@ -13,12 +13,15 @@ import { useStore } from "@nanostores/react";
 import type { MapMouseEvent, MapRef } from "react-map-gl/maplibre";
 import { StacMap, bboxToLngLatBounds, footprintLayerIds } from "@stac-higher/shared";
 import { AppShell } from "@/components/layout/AppShell";
-import { FootprintsMapLayer } from "@/components/map/FootprintsMapLayer";
+import { MapLayerView } from "@/components/map/MapLayerView";
 import { LayerPanel } from "@/components/map/LayerPanel";
 import { MapTooltip } from "@/components/map/MapTooltip";
+import { TimeBar } from "@/components/map/TimeBar";
 import { useCollections } from "@/lib/query/collections";
+import { buildAxis } from "@/lib/map/axis";
 import { INITIAL_MAP_STATE, beforeIdFor, mapReducer } from "@/lib/map/state";
 import type { LayerKind } from "@/lib/map/state";
+import type { PreviewFrame } from "@/lib/serving/frames";
 import type { StacCollection } from "@/lib/stac-api/types";
 import { $builtInCatalog } from "@/stores/catalogStore";
 
@@ -179,6 +182,45 @@ function MapPageInner() {
     [state.layers],
   );
 
+  // Each layer reports its own frames; the axis is their union (spec §4.4).
+  // The `prev.get(layerId) === frames` check only avoids churn on a re-report
+  // of the same array — it is not what stops this from looping. The frames
+  // arrive from an effect, and what keeps that effect from firing every
+  // render is `useLayerData`'s own `useMemo` on `frames`.
+  const [layerFrames, setLayerFrames] = useState<Map<string, PreviewFrame[]>>(
+    () => new Map(),
+  );
+  const handleFrames = useCallback((layerId: string, frames: PreviewFrame[]) => {
+    setLayerFrames((prev) =>
+      prev.get(layerId) === frames ? prev : new Map(prev).set(layerId, frames),
+    );
+  }, []);
+  const dropFrames = useCallback((layerId: string) => {
+    setLayerFrames((prev) => {
+      if (!prev.has(layerId)) return prev;
+      const next = new Map(prev);
+      next.delete(layerId);
+      return next;
+    });
+  }, []);
+
+  const axis = useMemo(() => buildAxis(layerFrames), [layerFrames]);
+  // `axisIndex: null` means "newest", as the collection preview does — held as
+  // no-choice-yet rather than an index set by an effect, so the first render is
+  // already the newest tick and never steps through a stale one. Clamped
+  // because the axis reshapes under a span change or a removed layer.
+  const index =
+    axis.length === 0
+      ? -1
+      : Math.min(state.axisIndex ?? axis.length - 1, axis.length - 1);
+  const tickInstant = index >= 0 ? axis[index].instant : null;
+
+  // Playback waits for tiles rather than dropping frames: `areTilesLoaded`
+  // covers every mounted source, so advancing means the incoming frame of
+  // EVERY layer is complete. It is asked a full tick after the change, by
+  // which point maplibre has requested the new tiles.
+  const canAdvance = useCallback(() => mapRef.current?.areTilesLoaded() ?? true, []);
+
   // Task 8 review: hover state (above) re-renders MapPageInner on every
   // mouse-move tick. These four are handed straight to LayerPanel, which has
   // no memoization of its own, so wrapping them in useCallback does not stop
@@ -191,6 +233,10 @@ function MapPageInner() {
   );
   const onOpacityChange = useCallback(
     (id: string, opacity: number) => dispatch({ type: "setOpacity", id, opacity }),
+    [],
+  );
+  const onAssetChange = useCallback(
+    (id: string, asset: string) => dispatch({ type: "setAsset", id, asset }),
     [],
   );
   const onMove = useCallback(
@@ -209,6 +255,7 @@ function MapPageInner() {
         onAdd={addLayer}
         onVisibleChange={onVisibleChange}
         onOpacityChange={onOpacityChange}
+        onAssetChange={onAssetChange}
         onMove={onMove}
         onRemove={onRemove}
       />
@@ -223,26 +270,31 @@ function MapPageInner() {
             onClick={onClick}
             cursor={hovered ? "pointer" : undefined}
           >
-            {drawn.map(({ layer, beforeId }) =>
-              layer.kind === "footprints" ? (
-                <FootprintsMapLayer
-                  key={layer.id}
-                  layer={layer}
-                  catalogUrl={catalogUrl}
-                  frameSpan={state.frameSpan}
-                  beforeId={beforeId}
-                />
-              ) : null,
-            )}
-            {/* V-3 renders imagery layers (RasterFrameStack) and V-4 vector
-                layers (VectorTileLayer) from the same list; both chain their
-                beforeId through the same helper. */}
+            {drawn.map(({ layer, beforeId }) => (
+              <MapLayerView
+                key={layer.id}
+                layer={layer}
+                catalogUrl={catalogUrl}
+                frameSpan={state.frameSpan}
+                tickInstant={tickInstant}
+                beforeId={beforeId}
+                onFramesChange={handleFrames}
+                onFramesRemove={dropFrames}
+              />
+            ))}
+            {/* V-4 adds the vector branch inside MapLayerView; it chains its
+                beforeId through the same beforeIdFor helper. */}
           </StacMap>
           {hovered && <MapTooltip {...hovered} />}
         </div>
-        {/* V-3 docks the shared time bar here, below the map and above the
-            page edge. Nothing is rendered in V-2: an empty bar would take
-            height from the map for no reason. */}
+        <TimeBar
+          axis={axis}
+          index={index}
+          onIndexChange={(axisIndex) => dispatch({ type: "setAxisIndex", axisIndex })}
+          frameSpan={state.frameSpan}
+          onFrameSpanChange={(frameSpan) => dispatch({ type: "setFrameSpan", frameSpan })}
+          canAdvance={canAdvance}
+        />
       </div>
     </main>
   );

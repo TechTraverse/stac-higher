@@ -38,8 +38,13 @@ function frameDatetime(item: StacItem): string | null {
   return start && end ? `${start}/${end}` : null;
 }
 
-/** `2026-09-04 06:11 UTC` — minutes are the finest cadence worth reading. */
-function formatLabel(ms: number): string {
+/**
+ * `2026-09-04 06:11 UTC` — minutes are the finest cadence worth reading.
+ *
+ * Exported because the /map page's shared axis (`lib/map/axis.ts`) labels its
+ * ticks with it: a tick and the frame it came from must read identically.
+ */
+export function formatFrameLabel(ms: number): string {
   const iso = new Date(ms).toISOString();
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 }
@@ -66,9 +71,17 @@ export function buildPreviewFrames(items: StacItem[]): PreviewFrame[] {
     }
     byDatetime.set(datetime, {
       start,
-      frame: { datetime, label: formatLabel(start), itemIds: [item.id] },
+      frame: { datetime, label: formatFrameLabel(start), itemIds: [item.id] },
     });
   }
 
   return [...byDatetime.values()].sort((a, b) => a.start - b.start).map((e) => e.frame);
 }
+
+/**
+ * Ticks a player waits on `canAdvance` before advancing regardless — 10s at
+ * the shared 4 fps default. One frame the tile server never finishes would
+ * otherwise stop playback for good. Shared by the collection Preview tab and
+ * the /map page's time bar so the two play at the same pace.
+ */
+export const FRAME_MAX_WAIT_TICKS = 40;
