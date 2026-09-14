@@ -936,7 +936,9 @@ processor's job by the decision above and stays so.
   fresh mount's fallback never resolved and the anchor could sit above the
   frames until an unrelated re-render). Re-checked live: the Preview tab
   opens and scrubs backward with no console error. The Task 2 review had
-  flagged the cascade as a knowledge note; the live check showed it is loud. Screenshots
+  flagged the cascade as a knowledge note; the live check showed it is loud.
+  **Whole e2e suite after the merges (2026-09-14): 46 passed, 1 skipped** —
+  the baseline, unchanged. Screenshots
   `screenshot-1789355865324-6.jpg` … `-1789356018266-12.jpg` (session temp
   dir).
 
