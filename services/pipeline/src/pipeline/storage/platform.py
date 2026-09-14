@@ -212,25 +212,34 @@ def upload_stream(
 ) -> tuple[str, int]:
     """Streamed multipart upload of ``body`` (M3-C): boto3's transfer manager
     reads `chunk_bytes` parts with at most `concurrency` in flight, so worker
-    memory is bounded by their product, not by the object. Returns the sha256
-    hex digest and byte count of what went through. Synchronous — wrap in
+    memory is bounded by roughly ``(concurrency + 1) * chunk_bytes`` (the "+1"
+    is s3transfer's own in-flight submission chunk), not by the object.
+    ``body`` is non-seekable (`HashingStream` deliberately exposes only
+    `read`), so s3transfer buffers read-ahead chunks separately from the
+    in-flight ones, gated by `max_in_memory_upload_chunks` — left at its
+    default (10) that ceiling dominates the bound (~(10 + 1) * chunk_bytes
+    regardless of `concurrency`), so it is pinned to `concurrency` here to
+    keep the product the actual envelope. Returns the sha256 hex digest and
+    byte count of what went through. Synchronous — wrap in
     ``asyncio.to_thread``."""
     from boto3.s3.transfer import TransferConfig
 
     from pipeline.ingest.transfer import HashingStream
 
     hashing = HashingStream(body)
-    client.upload_fileobj(
-        hashing,
-        bucket,
-        key,
-        Config=TransferConfig(
-            multipart_threshold=chunk_bytes,
-            multipart_chunksize=chunk_bytes,
-            max_concurrency=concurrency,
-            use_threads=True,
-        ),
+    config = TransferConfig(
+        multipart_threshold=chunk_bytes,
+        multipart_chunksize=chunk_bytes,
+        max_concurrency=concurrency,
+        use_threads=True,
     )
+    # `max_in_memory_upload_chunks` (read-ahead buffering for a non-seekable
+    # fileobj) isn't a constructor kwarg on boto3's TransferConfig wrapper in
+    # this botocore version, but it IS a plain attribute inherited from
+    # s3transfer's own TransferConfig — set it directly rather than leaving
+    # it at the library default of 10, which would dominate the envelope.
+    config.max_in_memory_upload_chunks = concurrency
+    client.upload_fileobj(hashing, bucket, key, Config=config)
     return hashing.hexdigest(), hashing.size
 
 

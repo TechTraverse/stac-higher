@@ -84,6 +84,10 @@ def test_upload_stream_uses_a_transfer_config_and_returns_the_digest():
     assert config.multipart_chunksize == 64
     assert config.multipart_threshold == 64
     assert config.max_concurrency == 3
+    # M3-C fix round 1: pinned to `concurrency` so read-ahead buffering (which
+    # boto3 gates separately from in-flight parts for a non-seekable fileobj)
+    # doesn't dominate the memory envelope at its own default of 10.
+    assert config.max_in_memory_upload_chunks == 3
     assert digest == hashlib.sha256(b"abc" * 100).hexdigest() and size == 300
 
 
