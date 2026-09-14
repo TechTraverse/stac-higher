@@ -32,6 +32,17 @@ describe("fetchTipgCollections", () => {
     expect(init).toMatchObject({ credentials: "omit" });
   });
 
+  it("drops a non-string title rather than passing it through", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        collections: [{ id: "public.weird", title: 42, links: [] }],
+      }),
+    });
+    const list = await fetchTipgCollections();
+    expect(list).toEqual([{ id: "public.weird", title: undefined, description: undefined }]);
+  });
+
   it("throws on a non-2xx so the query lands in error, quietly", async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) });
     await expect(fetchTipgCollections()).rejects.toThrow(/503/);

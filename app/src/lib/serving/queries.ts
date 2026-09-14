@@ -78,14 +78,17 @@ export async function fetchTipgCollections(): Promise<TipgCollection[]> {
     throw new Error("tipg collections document carries no collections array");
   }
   return doc.collections
-    .filter((c): c is { id: string; title?: string; description?: string } =>
+    .filter((c): c is { id: string } =>
       typeof c === "object" && c !== null && typeof (c as { id?: unknown }).id === "string",
     )
-    .map((c) => ({
-      id: c.id,
-      title: typeof c.title === "string" ? c.title : undefined,
-      description: typeof c.description === "string" ? c.description : undefined,
-    }));
+    .map((c) => {
+      const raw = c as { title?: unknown; description?: unknown };
+      return {
+        id: c.id,
+        title: typeof raw.title === "string" ? raw.title : undefined,
+        description: typeof raw.description === "string" ? raw.description : undefined,
+      };
+    });
 }
 
 /**

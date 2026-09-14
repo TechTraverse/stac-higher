@@ -36,7 +36,28 @@ vi.mock("@stac-higher/shared", async () => {
   };
 });
 
+// VectorLayerView draws through the real (unmocked) VectorTileLayer, which
+// mounts react-map-gl's Source/Layer directly — recorded here the same way
+// footprint-layer.test.tsx and vector-tile-layer.test.tsx do.
+vi.mock("react-map-gl/maplibre", () => ({
+  Source: ({ children, ...props }: Record<string, unknown> & { children?: React.ReactNode }) => (
+    <div data-testid="source" data-props={JSON.stringify(props)}>
+      {children}
+    </div>
+  ),
+  Layer: (props: Record<string, unknown>) => (
+    <div data-testid="layer" data-props={JSON.stringify(props)} />
+  ),
+}));
+
 import { MapLayerView } from "@/components/map/MapLayerView";
+
+function sources(): Record<string, unknown>[] {
+  return screen.getAllByTestId("source").map((el) => JSON.parse(el.dataset.props as string));
+}
+function layers(): Record<string, unknown>[] {
+  return screen.getAllByTestId("layer").map((el) => JSON.parse(el.dataset.props as string));
+}
 
 function item(id: string, datetime: string): StacItem {
   return {
@@ -214,5 +235,36 @@ describe("MapLayerView — the axis", () => {
     expect(onFramesChange).toHaveBeenCalledWith("l1", FRAMES);
     unmount();
     expect(onFramesRemove).toHaveBeenCalledWith("l1");
+  });
+});
+
+describe("MapLayerView — vector", () => {
+  it("draws a tipg collection through VectorTileLayer with the default source layer and never asks useLayerData", () => {
+    useLayerDataMock.mockClear();
+    render(
+      <MapLayerView
+        layer={{ id: "v1", kind: "vector", sourceId: "public.roads", title: "Roads", visible: true, opacity: 0.5 }}
+        catalogUrl="u"
+        frameSpan={50}
+        tickInstant={null}
+        beforeId="above"
+        onFramesChange={vi.fn()}
+        onFramesRemove={vi.fn()}
+      />,
+    );
+    expect(useLayerDataMock).not.toHaveBeenCalled();
+    const source = sources().find((s) => s.id === "v1");
+    expect(source?.type).toBe("vector");
+    expect(source?.url).toMatch(/\/collections\/public\.roads\/tiles\/WebMercatorQuad\/tilejson\.json$/);
+    const fill = layers().find((l) => l.id === "v1-fill");
+    expect(fill?.["source-layer"]).toBe("default");
+    expect(fill?.paint).toMatchObject({ "fill-opacity": 0.2 * 0.5 });
+    expect(fill?.beforeId).toBe("above");
+  });
+
+  it("reports no frames for a vector layer", () => {
+    const onFramesChange = vi.fn();
+    render(<MapLayerView layer={{ id: "v1", kind: "vector", sourceId: "public.roads", title: "Roads", visible: true, opacity: 1 }} catalogUrl="u" frameSpan={50} tickInstant={null} beforeId={undefined} onFramesChange={onFramesChange} onFramesRemove={vi.fn()} />);
+    expect(onFramesChange).not.toHaveBeenCalled();
   });
 });

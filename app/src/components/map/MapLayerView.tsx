@@ -1,27 +1,35 @@
 /**
- * One STAC layer of the /map page, drawn (spec §4.3, §4.4).
+ * One layer of the /map page, drawn (spec §4.3, §4.4).
  *
- * A component per layer because each layer runs its own queries and React
- * forbids hooks in a loop. It reports its frames UP to the page, which owns
- * the shared axis, and takes the chosen tick back DOWN — resolving the tick to
- * its OWN frame index, since products have their own cadences and the page's
- * axis is their union.
+ * `MapLayerView` is a pure dispatcher on `layer.kind` — it calls no hooks
+ * itself, so each per-kind component below keeps its own stable hook order
+ * regardless of which branch renders. STAC layers (footprints, imagery) draw
+ * through `StacLayerView`, which runs its own queries per layer (a component
+ * per layer, since React forbids hooks in a loop): it reports its frames UP
+ * to the page, which owns the shared axis, and takes the chosen tick back
+ * DOWN — resolving the tick to its OWN frame index, since products have
+ * their own cadences and the page's axis is their union.
  *
  * Footprints show the items of their current frame rather than the whole span:
  * a frame's items are exactly what the imagery of the same timestep renders,
  * so the two kinds line up (spec §5, §9).
+ *
+ * Vector layers (tipg) are NOT time-aware: they contribute no frames, ignore
+ * the axis tick, and never call `useLayerData` — `VectorLayerView` just draws
+ * the tipg collection's TileJSON through the shared `VectorTileLayer`.
  */
 import { useEffect, useMemo } from "react";
 import {
   FootprintLayer,
   RasterFrameStack,
+  VectorTileLayer,
   type RasterFrame,
 } from "@stac-higher/shared";
 import type { MapLayer } from "@/lib/map/state";
 import type { StacItem } from "@/lib/stac-api/types";
 import type { PreviewFrame } from "@/lib/serving/frames";
 import { resolveLayerFrame } from "@/lib/map/axis";
-import { collectionTileUrlTemplate } from "@/lib/serving/urls";
+import { collectionTileUrlTemplate, tipgTileJsonUrl } from "@/lib/serving/urls";
 import { useLayerData } from "./useLayerData";
 
 export interface MapLayerViewProps {
@@ -38,7 +46,28 @@ export interface MapLayerViewProps {
   onFramesRemove: (layerId: string) => void;
 }
 
-export function MapLayerView({
+/** Dispatch on kind: vector layers have no items, no frames and no axis. */
+export function MapLayerView(props: MapLayerViewProps) {
+  if (props.layer.kind === "vector") {
+    return <VectorLayerView layer={props.layer} beforeId={props.beforeId} />;
+  }
+  return <StacLayerView {...props} />;
+}
+
+function VectorLayerView({ layer, beforeId }: { layer: MapLayer; beforeId?: string }) {
+  return (
+    <VectorTileLayer
+      id={layer.id}
+      url={tipgTileJsonUrl(layer.sourceId)}
+      sourceLayer="default"
+      opacity={layer.opacity}
+      visible={layer.visible}
+      beforeId={beforeId}
+    />
+  );
+}
+
+function StacLayerView({
   layer,
   catalogUrl,
   frameSpan,
@@ -126,7 +155,4 @@ export function MapLayerView({
       />
     );
   }
-
-  // Vector layers ignore the axis and arrive in V-4.
-  return null;
 }

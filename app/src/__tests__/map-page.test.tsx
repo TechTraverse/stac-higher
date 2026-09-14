@@ -20,7 +20,6 @@ const { useCollectionSettingsMock, useItemTileJsonMock, useTipgMock } = vi.hoist
   useTipgMock: vi.fn(),
 }));
 
-
 // The shell is replaced by the bare QueryProvider it wraps: this test
 // exercises page content, not the sidebar/top-bar chrome.
 vi.mock("@/components/layout/AppShell", async () => {
@@ -74,7 +73,6 @@ vi.mock("react-map-gl/maplibre", () => ({
     }));
     useEffect(() => {
       (props.onLoad as (() => void) | undefined)?.();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     return <div data-testid="map">{props.children as React.ReactNode}</div>;
   }),
@@ -232,6 +230,9 @@ describe("MapPage", () => {
     // The source id IS the layer id, so several products can share the map.
     expect(sourceIds()).toEqual(["layer-0"]);
     expect(layerProps().map((l) => l.id)).toEqual(["layer-0-fill", "layer-0-line"]);
+    // Positive control for the vector-add test below: a STAC layer's first
+    // add DOES fit the camera to its extent (spec §4.6).
+    expect(fitBoundsMock).toHaveBeenCalled();
   });
 
   it("asks the catalog for the span's newest items, per layer", () => {

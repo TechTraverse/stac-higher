@@ -54,6 +54,8 @@ describe("AddLayerPopover — Vector tiles", () => {
     const onAddVector = renderPicker();
     expect(screen.getByText("Vector tiles")).toBeInTheDocument();
     expect(screen.getByText("Roads")).toBeInTheDocument();
+    // No title on this one: the row falls back to the collection id.
+    expect(screen.getByText("public.st_hexagongrid")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("map-add-vector-public.roads"));
     expect(onAddVector).toHaveBeenCalledWith({ id: "public.roads", title: "Roads" });
   });

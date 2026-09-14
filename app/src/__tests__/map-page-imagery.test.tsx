@@ -35,9 +35,10 @@ vi.mock("@/lib/collections/settings-client", () => ({
 }));
 vi.mock("@/lib/serving/queries", () => ({
   useItemTileJson: (...a: unknown[]) => useItemTileJsonMock(...a),
-  // The Vector tiles section isn't this file's concern (V-3 predates it); a
-  // steady "nothing published" result keeps the picker quiet either way.
-  useTipgCollections: () => ({ data: undefined, isError: false }),
+  // One steady tipg collection: this file is about the shared time axis, not
+  // the picker, but V-4 needs a vector option in it for the "docks no time
+  // bar" test below.
+  useTipgCollections: () => ({ data: [{ id: "public.roads", title: "Roads" }], isError: false }),
 }));
 vi.mock("@/stores/catalogStore", async () => {
   const { atom } = await import("nanostores");
@@ -207,5 +208,14 @@ describe("MapPage — the shared time axis", () => {
       "goes-geocolor",
       expect.objectContaining({ limit: 100, sortby: "-datetime" }),
     );
+  });
+
+  it("a vector layer docks no time bar", async () => {
+    render(<MapPage />);
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("map-add-layer"));
+    await user.click(screen.getByTestId("map-add-vector-public.roads"));
+
+    expect(screen.queryByTestId("map-time-bar")).toBeNull();
   });
 });
