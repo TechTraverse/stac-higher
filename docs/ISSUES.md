@@ -758,7 +758,9 @@ NRT-subset volumes — and M3-S-B now attaches a number to it (~8 saturated
 10 GbE streams to feed one such destination at envelope volume). It becomes a
 real gap only if a deployment tries to run a high-volume SFTP source, which
 the posture says it should not. M3-C landed both halves for s3 (2026-09-14);
-this entry is now the only buffered path.
+this entry is now the only buffered path in the ingest byte path itself — the
+best-effort geometry fallback, a `CanonicalByteSource` built without platform
+access, and the public-URL stage (I-72) still buffer.
 - Tracked in: here; I-19; `services/pipeline/.../connections/adapters/base.py`.
 
 ---

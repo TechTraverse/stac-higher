@@ -477,7 +477,7 @@ worker already decrypts for boto3, in one more place.
 - `S3Adapter.copy_source` returns a source for anonymous (public-bucket)
   connections too, so each such member pays one failed server-side copy and a
   WARNING before falling back to the stream — expected noise on public NODD
-  ingest; the lead is logging it as an issue.
+  ingest.
 
 ## Docker
 
