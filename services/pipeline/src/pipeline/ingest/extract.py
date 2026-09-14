@@ -10,8 +10,9 @@ rather than an error).
 Member bytes are read via a `MemberByteSource` seam — `CanonicalByteSource` (copy mode: FETCH
 already wrote them to canonical storage) or `SourceAdapterByteSource`
 (reference mode: read in place from the source adapter) — so `build_item` is
-storage-mode-agnostic; raster reads go through an in-memory `rasterio.MemoryFile`
-either way — no GDAL S3 config needed. Output is a plain STAC item dict ready
+storage-mode-agnostic; raster reads open a `RasterLocation` in place (`/vsis3`)
+or, for adapters that cannot locate, an in-memory `rasterio.MemoryFile` (M3-C,
+I-83). Output is a plain STAC item dict ready
 for the ITEMIZE validation gate; a field that can't be resolved raises
 `ExtractError` (→ group marked failed) rather than emitting a bad item.
 """
@@ -38,6 +39,7 @@ from defusedxml.ElementTree import fromstring as _xml_fromstring
 from pipeline.connections.adapters.base import StorageAdapter
 from pipeline.ingest.config import extractor_process_id as _resolve_extractor_process_id
 from pipeline.ingest.discover import source_fetch_path
+from pipeline.ingest.raster_io import RasterSource, open_raster
 from pipeline.storage import platform
 from pipeline.storage.keys import asset_href
 
@@ -336,26 +338,30 @@ def _raster_crs_and_bounds(ds: Any) -> tuple[Any, Any]:
     return None, None
 
 
-def geometry_from_raster(data: bytes) -> tuple[dict[str, Any], list[float]] | None:
-    """Best-effort GDAL open of arbitrary raster/gridded bytes (COG, GeoTIFF,
-    netCDF, GRIB, ...) — returns ``(geometry, bbox)`` reprojected to
-    EPSG:4326, or ``None`` if the bytes can't be opened or georeferenced.
-    Never raises (ISSUE I-27 best-effort layer). ``rasterio`` is imported
-    lazily so this module stays GDAL-free at import time.
+def geometry_from_raster(data: RasterSource) -> tuple[dict[str, Any], list[float]] | None:
+    """Best-effort GDAL open of arbitrary raster/gridded bytes or a
+    `RasterLocation` (COG, GeoTIFF, netCDF, GRIB, ...) — returns
+    ``(geometry, bbox)`` reprojected to EPSG:4326, or ``None`` if the source
+    can't be opened or georeferenced. Never raises (ISSUE I-27 best-effort
+    layer). ``rasterio`` is imported lazily so this module stays GDAL-free at
+    import time.
     """
     import rasterio
     from rasterio.warp import transform_bounds
 
     crs = bounds = None
     try:
-        with rasterio.io.MemoryFile(data) as mem, mem.open() as ds:
+        with open_raster(data) as ds:
             crs, bounds = _raster_crs_and_bounds(ds)
     except Exception:
         crs = bounds = None
 
-    if crs is None:
+    if crs is None and isinstance(data, bytes):
         # Some HDF-backed netCDF/GRIB files can't be opened from /vsimem —
         # spill to a real temp file and retry (verified feasibility finding).
+        # The temp-file retry needs bytes; a location that GDAL could not
+        # open in place has nothing to spill — the caller falls back to
+        # bytes (Task 4).
         import tempfile
 
         try:
@@ -481,22 +487,22 @@ def build_raster_auto(
     item_id: str,
     members: list[ExtractMember],
     cfg: MetadataConfig,
-    raster_bytes: bytes,
+    raster: RasterSource,
     asset_href_base: str,
 ) -> dict[str, Any]:
-    """rio-stac over the primary raster (read from an in-memory file), with asset
-    hrefs rewritten to the app route and all group members attached as assets.
+    """rio-stac over the primary raster (opened in place from a `RasterLocation`,
+    or from bytes), with asset hrefs rewritten to the app route and all group
+    members attached as assets.
 
-    ``rasterio``/``rio_stac`` are imported here, not at module scope, so
-    importing this module stays cheap and non-raster tests don't require GDAL.
+    ``rio_stac`` is imported here, not at module scope, so importing this
+    module stays cheap and non-raster tests don't require GDAL.
     """
-    import rasterio
     from rio_stac.stac import create_stac_item
 
     primary = _primary(members)
     when = resolve_datetime(None, cfg, primary) if cfg.default_datetime else None
     try:
-        with rasterio.io.MemoryFile(raster_bytes) as mem, mem.open() as src:
+        with open_raster(raster) as src:
             item = create_stac_item(
                 source=src,
                 id=item_id,
