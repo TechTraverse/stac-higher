@@ -120,3 +120,29 @@ def test_db_pool_env_overrides():
     settings = Settings.from_env(env={"DB_POOL_MIN": "1", "DB_POOL_MAX": "32"})
     assert settings.db_pool_min == 1
     assert settings.db_pool_max == 32
+
+
+def test_memory_envelope_settings_default_to_the_s_e_envelope():
+    from pipeline.config import (
+        DEFAULT_FETCH_CHUNK_BYTES,
+        DEFAULT_FETCH_TRANSFER_CONCURRENCY,
+        DEFAULT_GDAL_CACHEMAX_MB,
+    )
+
+    settings = Settings.from_env(env={})
+    assert settings.gdal_cachemax_mb == DEFAULT_GDAL_CACHEMAX_MB == 64
+    assert settings.fetch_chunk_bytes == DEFAULT_FETCH_CHUNK_BYTES == 8 * 1024 * 1024
+    assert settings.fetch_transfer_concurrency == DEFAULT_FETCH_TRANSFER_CONCURRENCY == 4
+
+
+def test_memory_envelope_settings_read_their_env_names():
+    settings = Settings.from_env(
+        env={
+            "GDAL_CACHEMAX": "128",
+            "FETCH_CHUNK_BYTES": "16777216",
+            "FETCH_TRANSFER_CONCURRENCY": "2",
+        }
+    )
+    assert settings.gdal_cachemax_mb == 128
+    assert settings.fetch_chunk_bytes == 16 * 1024 * 1024
+    assert settings.fetch_transfer_concurrency == 2

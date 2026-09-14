@@ -16,6 +16,10 @@ Env contract (documented in README.md):
 - ``DB_POOL_MIN`` / ``DB_POOL_MAX`` — size bounds for the process-wide async
   connection pool the repos check out of (M3-B). ``DB_POOL_MAX`` must exceed
   the worker's job concurrency plus the overlapping periodic ticks.
+- ``GDAL_CACHEMAX``: GDAL block-cache ceiling in MB for EXTRACT's raster reads (M3-C, default 64).
+  GDAL reads this variable natively; the pipeline also passes it into every ``rasterio.Env``.
+- ``FETCH_CHUNK_BYTES``: multipart part size for streamed FETCH uploads (default 8 MiB).
+- ``FETCH_TRANSFER_CONCURRENCY``: parts in flight per streamed FETCH upload (default 4).
 
 Platform object storage (Phase 3 — the platform's OWN bucket, MinIO locally /
 S3 in cloud; distinct from per-connection endpoints):
@@ -178,6 +182,18 @@ DEFAULT_DB_POOL_MIN = 2
 #: services/pipeline/README.md: DB_POOL_MAX >= WORKER_CONCURRENCY + 4.
 DEFAULT_DB_POOL_MAX = 16
 
+# --- Memory envelope (M3-C, spec §3 / S-E) ---------------------------------
+#: GDAL block cache ceiling (MB). GDAL honours the GDAL_CACHEMAX env var on
+#: its own; it is also passed explicitly into every rasterio.Env so the bound
+#: holds even when the process env is not what the compose file set.
+DEFAULT_GDAL_CACHEMAX_MB = 64
+#: Streamed FETCH: multipart part size and parts in flight. Bounded memory per
+#: streamed upload = FETCH_CHUNK_BYTES x FETCH_TRANSFER_CONCURRENCY (32 MiB).
+DEFAULT_FETCH_CHUNK_BYTES = 8 * 1024 * 1024
+DEFAULT_FETCH_TRANSFER_CONCURRENCY = 4
+#: Per-worker peak RSS ~= 255 MiB + (GDAL_CACHEMAX + FETCH_CHUNK_BYTES x
+#: FETCH_TRANSFER_CONCURRENCY) x WORKER_CONCURRENCY — independent of asset size.
+
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
     if raw is None:
@@ -280,6 +296,11 @@ class Settings:
     #: Async repo connection pool (M3-B) — see the DEFAULT_DB_POOL_* constants.
     db_pool_min: int = DEFAULT_DB_POOL_MIN
     db_pool_max: int = DEFAULT_DB_POOL_MAX
+    #: Memory envelope (M3-C) — see the DEFAULT_GDAL_CACHEMAX_MB /
+    #: DEFAULT_FETCH_* constants.
+    gdal_cachemax_mb: int = DEFAULT_GDAL_CACHEMAX_MB
+    fetch_chunk_bytes: int = DEFAULT_FETCH_CHUNK_BYTES
+    fetch_transfer_concurrency: int = DEFAULT_FETCH_TRANSFER_CONCURRENCY
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -418,4 +439,9 @@ class Settings:
             ),
             db_pool_min=int(env.get("DB_POOL_MIN", str(DEFAULT_DB_POOL_MIN))),
             db_pool_max=int(env.get("DB_POOL_MAX", str(DEFAULT_DB_POOL_MAX))),
+            gdal_cachemax_mb=int(env.get("GDAL_CACHEMAX", str(DEFAULT_GDAL_CACHEMAX_MB))),
+            fetch_chunk_bytes=int(env.get("FETCH_CHUNK_BYTES", str(DEFAULT_FETCH_CHUNK_BYTES))),
+            fetch_transfer_concurrency=int(
+                env.get("FETCH_TRANSFER_CONCURRENCY", str(DEFAULT_FETCH_TRANSFER_CONCURRENCY))
+            ),
         )

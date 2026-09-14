@@ -68,6 +68,9 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `PROCESS_RUNTIME_IMAGE_STACTOOLS` | `stac-higher-process-runtime-stactools:local` | The image behind `runtime.runtime_image: "stactools"` (X-3, the built-in extractor library). **Empty** declares the deployment ships no such image: a run asking for the alias dies naming this variable rather than launching on the base image. |
 | `DB_POOL_MIN` | `2` | Connections the process-wide async pool keeps warm (M3-B). The pool grows on demand and trims back after `max_idle` (600 s), so a mostly-idle deployment holds two backends, not `DB_POOL_MAX`. |
 | `DB_POOL_MAX` | `16` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 4`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC). Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
+| `GDAL_CACHEMAX` | `64` | GDAL block-cache ceiling in MB for EXTRACT's `/vsis3` raster reads (M3-C). GDAL's own variable; also passed into every `rasterio.Env`. Part of the memory envelope below. |
+| `FETCH_CHUNK_BYTES` | `8388608` | Multipart part size for streamed copy-mode FETCH uploads (M3-C). |
+| `FETCH_TRANSFER_CONCURRENCY` | `4` | Parts in flight per streamed FETCH upload (M3-C). Per-upload buffer = `FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY`. |
 
 ## Connections (Phase 2)
 
