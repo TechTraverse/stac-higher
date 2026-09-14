@@ -52,6 +52,7 @@ PROCESS_EXPECTATION = _load("process-expectation.json")
 S3_CONFIG = _load("s3-connection-config.json")
 PROCESS_INPUT_MANIFEST = _load("process-input-manifest.json")
 BUILTIN_EXTRACTORS = _load("builtin-extractors.json")
+HARDWARE_PROFILES = _load("hardware-profiles.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -326,3 +327,26 @@ def test_builtin_extractor_registry_parses():
     assert [e.id for e in entries] == [
         e["id"] for e in BUILTIN_EXTRACTORS["extractors"]
     ]
+
+
+# ---------------------------------------------------------------------------
+# K-1: the hardware-profile document (process-compute spec §3.2/§4).
+# ---------------------------------------------------------------------------
+
+
+def _hardware_document(case: dict) -> dict:
+    return HARDWARE_PROFILES["document"] if case["document"] == "$document" else case["document"]
+
+
+@pytest.mark.parametrize("case", HARDWARE_PROFILES["cases"], ids=lambda c: c["name"])
+def test_hardware_profile_document_cases(case):
+    """K-1: the profile-set reader. The lenient/strict asymmetry (an extra key
+    is pipeline: accept / app: reject) is the builtin-extractors direction."""
+    from pipeline.process.hardware import HardwareProfileError, parse_hardware_profiles
+
+    document = _hardware_document(case)
+    if case["pipeline"] == "accept":
+        parse_hardware_profiles(document)
+    else:
+        with pytest.raises(HardwareProfileError):
+            parse_hardware_profiles(document)

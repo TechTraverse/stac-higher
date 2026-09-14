@@ -120,3 +120,10 @@ def test_db_pool_env_overrides():
     settings = Settings.from_env(env={"DB_POOL_MIN": "1", "DB_POOL_MAX": "32"})
     assert settings.db_pool_min == 1
     assert settings.db_pool_max == 32
+
+
+def test_hardware_profiles_file_setting():
+    """K-1: unset means the repo checkout's infra/hardware-profiles/local.json."""
+    assert Settings.from_env(env={}).process_hardware_profiles_file is None
+    settings = Settings.from_env(env={"PROCESS_HARDWARE_PROFILES_FILE": "/app/share/hp.json"})
+    assert settings.process_hardware_profiles_file == "/app/share/hp.json"
