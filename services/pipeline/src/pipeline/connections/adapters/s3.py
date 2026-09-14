@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urlparse
 
 import boto3
@@ -31,6 +32,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from pipeline.connections.adapters.base import FileEntry, StorageAdapter, TestResult
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
+from pipeline.ingest.raster_io import RasterLocation
+from pipeline.storage.platform import gdal_endpoint, gdal_session_options
 
 
 @dataclass(frozen=True)
@@ -280,6 +283,53 @@ class S3Adapter(StorageAdapter):
             )
 
         await asyncio.to_thread(_copy)
+
+    @property
+    def endpoint(self) -> str | None:
+        return self._endpoint
+
+    def copy_source(self, path: str) -> tuple[str, str] | None:
+        return (self._bucket, path)
+
+    def gdal_location(
+        self, path: str, *, options: Mapping[str, str] | None = None
+    ) -> RasterLocation:
+        """`/vsis3/<bucket>/<path>` under THIS connection's credentials (M3-C).
+        The session is built here and handed out opaque — the decrypted keys
+        now also live inside a GDAL session (spec §5 review point). The
+        endpoint is the pinned one, like every boto3 client this adapter makes."""
+        from rasterio.session import AWSSession
+
+        endpoint_url = self._pinned_endpoint()
+        if self._anonymous:
+            session = AWSSession(
+                aws_unsigned=True,
+                region_name=self._region,
+                endpoint_url=gdal_endpoint(endpoint_url),
+            )
+        else:
+            session = AWSSession(
+                aws_access_key_id=self._creds.get("access_key_id"),
+                aws_secret_access_key=self._creds.get("secret_access_key"),
+                aws_session_token=self._creds.get("session_token"),
+                region_name=self._region,
+                endpoint_url=gdal_endpoint(endpoint_url),
+            )
+        merged = gdal_session_options(endpoint_url, self._force_path_style, None)
+        merged.update(options or {})
+        return RasterLocation(uri=f"/vsis3/{self._bucket}/{path}", session=session, options=merged)
+
+    async def open(self, path: str) -> BinaryIO:
+        """A streaming read of ``path`` (botocore `StreamingBody`): nothing is
+        buffered beyond what the caller reads. The GetObject call itself runs
+        in a thread; the returned body is read by FETCH's upload thread."""
+        endpoint_url = self._pinned_endpoint()
+
+        def _open() -> BinaryIO:
+            client = self._make_client(endpoint_url)
+            return client.get_object(Bucket=self._bucket, Key=path)["Body"]
+
+        return await asyncio.to_thread(_open)
 
     async def put_atomic(self, path: str, data: bytes) -> None:
         # S3 PUT is atomically visible; skip the base .part+move dance.

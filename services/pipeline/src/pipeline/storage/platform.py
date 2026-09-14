@@ -11,6 +11,7 @@ the platform's own bucket rather than a user connection.
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -19,6 +20,7 @@ from botocore.client import Config
 
 from pipeline.config import Settings
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
+from pipeline.ingest.raster_io import RasterLocation
 
 
 class S3Like(Protocol):
@@ -30,6 +32,8 @@ class S3Like(Protocol):
     def get_object(self, **kwargs: Any) -> Any: ...
     def head_object(self, **kwargs: Any) -> Any: ...
     def copy_object(self, **kwargs: Any) -> Any: ...
+    def upload_fileobj(self, Fileobj: Any, Bucket: str, Key: str, **kwargs: Any) -> None: ...
+    def copy(self, CopySource: dict[str, str], Bucket: str, Key: str, **kwargs: Any) -> None: ...
 
 
 def pinned_endpoint_url(
@@ -80,6 +84,76 @@ def build_platform_client(settings: Settings) -> Any:
         aws_access_key_id=settings.staging_s3_access_key,
         aws_secret_access_key=settings.staging_s3_secret_key,
         config=boto_config,
+    )
+
+
+@dataclass(frozen=True)
+class PlatformS3Access:
+    """What a GDAL session needs to read the platform bucket in place (M3-C):
+    the PINNED endpoint (egress parity with `build_platform_client`) and the
+    platform's own keys. Frozen and never logged."""
+
+    endpoint_url: str | None
+    region: str
+    access_key: str
+    secret_key: str
+    force_path_style: bool
+
+
+def platform_s3_access(settings: Settings) -> PlatformS3Access:
+    return PlatformS3Access(
+        endpoint_url=pinned_endpoint_url(
+            settings.staging_s3_endpoint, settings.staging_s3_region, settings.egress_allow_hosts
+        ),
+        region=settings.staging_s3_region,
+        access_key=settings.staging_s3_access_key,
+        secret_key=settings.staging_s3_secret_key,
+        force_path_style=settings.staging_s3_force_path_style,
+    )
+
+
+def gdal_endpoint(endpoint_url: str | None) -> str | None:
+    """`AWSSession(endpoint_url=...)` wants ``host[:port]`` with no scheme."""
+    if not endpoint_url:
+        return None
+    parsed = urlparse(endpoint_url)
+    return parsed.netloc or None
+
+
+def gdal_session_options(
+    endpoint_url: str | None, force_path_style: bool, gdal_cachemax_mb: int | None
+) -> dict[str, str]:
+    """The `rasterio.Env` kwargs a custom endpoint needs. rasterio refuses raw
+    `AWS_*` options except these two (S-E caveat): plaintext endpoints need
+    `AWS_HTTPS=NO`, path-style ones `AWS_VIRTUAL_HOSTING=FALSE`."""
+    options: dict[str, str] = {}
+    if endpoint_url and urlparse(endpoint_url).scheme == "http":
+        options["AWS_HTTPS"] = "NO"
+    if endpoint_url and force_path_style:
+        options["AWS_VIRTUAL_HOSTING"] = "FALSE"
+    if gdal_cachemax_mb is not None:
+        options["GDAL_CACHEMAX"] = str(gdal_cachemax_mb)
+    return options
+
+
+def raster_location(
+    access: PlatformS3Access, bucket: str, key: str, *, gdal_cachemax_mb: int
+) -> RasterLocation:
+    """`/vsis3/<bucket>/<key>` under the platform's session (copy-mode EXTRACT)."""
+    from rasterio.session import AWSSession
+
+    session = AWSSession(
+        aws_access_key_id=access.access_key,
+        aws_secret_access_key=access.secret_key,
+        region_name=access.region,
+        endpoint_url=gdal_endpoint(access.endpoint_url),
+    )
+    return RasterLocation(
+        uri=f"/vsis3/{bucket}/{key}",
+        session=session,
+        options=gdal_session_options(
+            access.endpoint_url, access.force_path_style, gdal_cachemax_mb
+        ),
     )
 
 
