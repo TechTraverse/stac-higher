@@ -437,14 +437,14 @@ Worker memory no longer scales with asset size. Two paths changed:
 - **FETCH** (copy mode) server-side-copies when the platform's keys can read
   the source bucket on the same endpoint (`ingest/transfer.py`, the delivery
   path's `can_server_side_copy` gate), and otherwise streams a multipart upload
-  whose buffers are `FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY`. A failed
-  copy falls back to streaming. `pipeline_ingest_fetch_transfers_total{mode}`
-  counts which path ran.
+  whose buffers are `≈ (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES`
+  (below). A failed copy falls back to streaming.
+  `pipeline_ingest_fetch_transfers_total{mode}` counts which path ran.
 
 Per-worker peak RSS, S-E's formula with these settings:
 
 ```
-255 MiB + (GDAL_CACHEMAX + FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY) × WORKER_CONCURRENCY
+255 MiB + (GDAL_CACHEMAX + (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES) × WORKER_CONCURRENCY
 = 255 MiB + (64 + 40) MiB × concurrency      → ~1.5 GB at M3-D's default 12
 ```
 
@@ -458,10 +458,11 @@ worker already decrypts for boto3, in one more place.
   non-numeric value in a `RasterLocation`'s options makes `open_raster` raise
   `ValueError` (it converts MB → bytes for rasterio at its single coercion
   point; builders write `str(settings.gdal_cachemax_mb)`).
-- The streamed FETCH upload's real in-memory bound is
-  `≈ (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES`, not the simple
-  product above — s3transfer buffers `max_in_memory_upload_chunks` chunks plus
-  one submission chunk for a non-seekable body, and `upload_stream` pins
+- The streamed FETCH upload's real in-memory bound — already folded into the
+  formula above — is `≈ (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES`,
+  not the naive `FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY` product:
+  s3transfer buffers `max_in_memory_upload_chunks` chunks plus one submission
+  chunk for a non-seekable body, and `upload_stream` pins
   `max_in_memory_upload_chunks` to the concurrency. With the defaults that is
   ≈ 40 MiB, not 32.
 - Two `locate()` call sites differ on purpose: `_best_effort_raster_geometry`

@@ -29,7 +29,6 @@ the group still stores, and ITEMIZE handles partial products.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 
 from pipeline import metrics
@@ -153,11 +152,18 @@ async def _transfer(
         # Release the connection a real S3 StreamingBody holds open, on both
         # the success and the failure path (self-review: never leak it). A
         # raising close() must never mask the real upload exception (M3-C
-        # final review finding 8) — suppress it rather than let it propagate.
+        # final review finding 8) — log it instead of letting it propagate
+        # (round 2: a silently swallowed close failure is invisible).
         close = getattr(body, "close", None)
         if close is not None:
-            with contextlib.suppress(Exception):
+            try:
                 close()
+            except Exception:
+                logger.warning(
+                    "ingest fetch stream close failed",
+                    extra={"bucket": bucket, "key": key, "fetch_path": fetch_path},
+                    exc_info=True,
+                )
     return checksum, mode
 
 

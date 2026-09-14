@@ -49,19 +49,34 @@ def transfer_policy(adapter: StorageAdapter, settings: Settings) -> TransferPoli
 
 class HashingStream:
     """A read-only wrapper that sha256s everything read through it. Exposes
-    only `read`, so boto3 treats it as non-seekable and buffers per part."""
+    only `read`, so boto3 treats it as non-seekable and buffers per part.
 
-    def __init__(self, raw: BinaryIO) -> None:
+    `read()` gets called two different ways depending on which s3transfer
+    path a given upload takes: the multipart path always passes an explicit
+    amount (bounded by `chunk_bytes`), but the NON-multipart path — taken
+    whenever the body is under `multipart_threshold`, i.e. `chunk_bytes` —
+    calls `read()` with no argument at all
+    (`s3transfer.upload.UploadNonSeekableInputManager.get_put_object_body`).
+    An unbounded call is drained here in bounded pieces rather than by one
+    `self._raw.read()`, so a real `StreamingBody` is never pulled whole into
+    RAM; in practice s3transfer only reaches this branch below the multipart
+    threshold, so the drain is bounded by that threshold in the FETCH path,
+    not by the object."""
+
+    def __init__(self, raw: BinaryIO, *, drain_chunk_bytes: int = 1 << 20) -> None:
         self._raw = raw
         self._sha = hashlib.sha256()
         self.size = 0
+        self._drain_chunk_bytes = drain_chunk_bytes
 
-    def read(self, n: int = -1) -> bytes:
-        # s3transfer always passes an explicit amount; an unbounded read (`n`
-        # missing or negative) would pull the whole object into RAM on a real
-        # `StreamingBody`, defeating the bounded-memory upload path (M3-C).
+    def read(self, n: int | None = -1) -> bytes:
         if n is None or n < 0:
-            raise ValueError("HashingStream requires a bounded read")
+            parts: list[bytes] = []
+            while chunk := self._raw.read(self._drain_chunk_bytes):
+                self._sha.update(chunk)
+                self.size += len(chunk)
+                parts.append(chunk)
+            return b"".join(parts)
         chunk = self._raw.read(n)
         self._sha.update(chunk)
         self.size += len(chunk)

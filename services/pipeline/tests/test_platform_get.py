@@ -88,9 +88,7 @@ def test_upload_stream_uses_a_transfer_config_and_returns_the_digest():
             self.calls = []
 
         def upload_fileobj(self, Fileobj, Bucket, Key, Config=None):
-            # s3transfer always passes an explicit amount (HashingStream now
-            # rejects an unbounded read — M3-C final review finding 7).
-            self.calls.append((Bucket, Key, Fileobj.read(300), Config))
+            self.calls.append((Bucket, Key, Fileobj.read(), Config))
 
     client = _Client()
     digest, size = upload_stream(
@@ -106,6 +104,47 @@ def test_upload_stream_uses_a_transfer_config_and_returns_the_digest():
     # doesn't dominate the memory envelope at its own default of 10.
     assert config.max_in_memory_upload_chunks == 3
     assert digest == hashlib.sha256(b"abc" * 100).hexdigest() and size == 300
+
+
+def test_upload_stream_sub_threshold_body_via_a_real_stubbed_client():
+    # Round 2 (Critical regression, finding 7): a member SMALLER than
+    # `chunk_bytes` (= `multipart_threshold`) takes s3transfer's
+    # non-multipart path, whose `get_put_object_body` calls
+    # `Fileobj.read()` with NO argument. A botocore `Stubber` over a real
+    # `boto3.client` reproduces the exact call shape the fakes elsewhere in
+    # this suite hid (they always passed an explicit amount) — this is the
+    # case that regressed when `HashingStream.read()` raised on an
+    # unbounded call. `endpoint_url` is a black hole (port 1, localhost) so
+    # a stub miss can never reach the network.
+    import hashlib
+    import io
+
+    import boto3
+    from botocore.stub import Stubber
+
+    from pipeline.storage.platform import upload_stream
+
+    client = boto3.client(
+        "s3",
+        region_name="us-east-1",
+        endpoint_url="http://127.0.0.1:1",
+        aws_access_key_id="AK",
+        aws_secret_access_key="SK",
+    )
+    stubber = Stubber(client)
+    stubber.add_response("put_object", {})
+    stubber.activate()
+    try:
+        payload = b"y" * 1000  # well under the 8 MiB default chunk_bytes
+        digest, size = upload_stream(
+            client, "bucket", "key", io.BytesIO(payload),
+            chunk_bytes=8 * 1024 * 1024, concurrency=4,
+        )
+    finally:
+        stubber.deactivate()
+    stubber.assert_no_pending_responses()
+    assert size == 1000
+    assert digest == hashlib.sha256(payload).hexdigest()
 
 
 def test_copy_from_bucket_uses_the_managed_copy():
