@@ -38,16 +38,22 @@ def test_gdal_location_for_a_custom_http_endpoint_is_path_style_plaintext(monkey
     assert "SK" not in repr(loc)
 
 
-def test_gdal_location_on_real_aws_keeps_https_and_virtual_hosting():
+def test_gdal_location_on_real_aws_keeps_https_and_virtual_hosting(monkeypatch):
     adapter = _adapter(region="us-east-1")
+    # no custom endpoint: production _pinned_endpoint() validates the host via
+    # resolve_pinned() then returns None (real AWS — let boto3/GDAL resolve it
+    # themselves). Stub the network-touching validation step directly so this
+    # test asserts option/session shape, not DNS reachability.
+    monkeypatch.setattr(adapter, "_pinned_endpoint", lambda: None)
     loc = adapter.gdal_location("scenes/a.tif")
     assert loc.uri == "/vsis3/src/scenes/a.tif"
     assert "AWS_HTTPS" not in loc.options
     assert "AWS_VIRTUAL_HOSTING" not in loc.options
 
 
-def test_gdal_location_for_an_anonymous_bucket_is_unsigned():
+def test_gdal_location_for_an_anonymous_bucket_is_unsigned(monkeypatch):
     adapter = S3Adapter({"bucket": "noaa-goes19", "anonymous": True}, {}, allow_hosts=ALLOW)
+    monkeypatch.setattr(adapter, "_pinned_endpoint", lambda: None)
     loc = adapter.gdal_location("ABI/a.nc")
     assert loc.session.unsigned is True
 
