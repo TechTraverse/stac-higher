@@ -84,6 +84,7 @@ import { POST as testRoute } from "@/pages/api/processes/[id]/test";
 import { GET as pollRoute } from "@/pages/api/processes/[id]/checks/[checkId]";
 import { GET as runsRoute } from "@/pages/api/processes/[id]/runs/index";
 import { POST as rerunRoute } from "@/pages/api/processes/[id]/runs/[runId]/rerun";
+import { GET as hardwareProfilesRoute } from "@/pages/api/processes/hardware-profiles";
 
 const PROCESS_ID = "3a9f1c2e-0000-4000-8000-0000000000a1";
 const REVISION_ID = "3a9f1c2e-0000-4000-8000-0000000000b1";
@@ -831,5 +832,21 @@ describe("process kind (G-6)", () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toMatch(/2 ingest association/);
     expect(softDeleteProcess).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/processes/hardware-profiles (K-1)", () => {
+  it("lists the deployment's profiles without their backend blocks, member+", async () => {
+    const res = await call(hardwareProfilesRoute, member);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.backend).toBe("docker");
+    expect(body.profiles.map((p: { id: string }) => p.id)).toContain("standard");
+    expect(body.profiles.every((p: object) => !("backend" in p))).toBe(true);
+  });
+
+  it("requires authentication", async () => {
+    const res = await call(hardwareProfilesRoute, anon);
+    expect(res.status).toBe(401);
   });
 });
