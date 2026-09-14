@@ -596,6 +596,30 @@ def test_invalid_network_max_env_is_rejected_at_startup():
 
 
 # ---------------------------------------------------------------------------
+# hardware block (K-1, process-compute spec §4)
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_hardware_absent_reads_as_standard():
+    rt = parse_process_runtime({"kind": "inline_python"})
+    assert (rt.hardware_profile, rt.hardware_cpu, rt.hardware_gpu_count) == ("standard", 1.0, 0)
+
+
+def test_runtime_hardware_is_flattened():
+    rt = parse_process_runtime(
+        {"kind": "inline_python", "hardware": {"profile": "gpu-l4", "cpu": 2.5, "gpu_count": 1}}
+    )
+    assert (rt.hardware_profile, rt.hardware_cpu, rt.hardware_gpu_count) == ("gpu-l4", 2.5, 1)
+
+
+def test_runtime_hardware_rejects_a_boolean_cpu():
+    with pytest.raises(ProcessConfigError, match=r"hardware\.cpu"):
+        parse_process_runtime(
+            {"kind": "inline_python", "hardware": {"profile": "standard", "cpu": True}}
+        )
+
+
+# ---------------------------------------------------------------------------
 # inputs reach the run (GOES spec §3)
 # ---------------------------------------------------------------------------
 

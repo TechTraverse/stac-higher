@@ -40,6 +40,7 @@ describe("the process template", () => {
       retry: { max_attempts: 3, backoff: "exponential" },
       network: { level: "isolated", hosts: [] },
       runtime_image: "stactools",
+      hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
     });
     expect(template.env).toEqual([]);
     expect(processRevisionCreateSchema.safeParse(template).success).toBe(true);

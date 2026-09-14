@@ -300,6 +300,9 @@ export function CodeCard({
             // `stactools` alias is what X-4's built-in template deploys
             // (X-queue spec §8).
             runtime_image: "default",
+            // K-1: no hardware picker in this form yet — deploys the
+            // schema's own default profile at its default cpu, no GPU.
+            hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
           },
           code,
           env,

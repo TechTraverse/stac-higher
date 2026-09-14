@@ -248,6 +248,9 @@ def test_process_runtime_defaults_match_golden():
         assert runtime.network_level == golden["network"]["level"]
         assert tuple(runtime.network_hosts) == tuple(golden["network"]["hosts"])
         assert runtime.runtime_image == golden["runtime_image"]
+        assert runtime.hardware_profile == golden["hardware"]["profile"]
+        assert runtime.hardware_cpu == golden["hardware"]["cpu"]
+        assert runtime.hardware_gpu_count == golden["hardware"]["gpu_count"]
 
     # The module constants ARE those defaults — a drift here would let the
     # dataclass and the fixture disagree without any case failing.

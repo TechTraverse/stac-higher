@@ -390,6 +390,59 @@ describe("POST /api/processes/[id]/revisions (deploy)", () => {
     expect(res.status).toBe(400);
     expect(deployRevision).not.toHaveBeenCalled();
   });
+
+  it("refuses a deploy whose hardware is outside its profile's bounds (K-1, 400 naming the bound)", async () => {
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: {
+        runtime: { kind: "inline_python", hardware: { profile: "standard", cpu: 64, gpu_count: 0 } },
+        code: "print('hi')",
+        env: [],
+      },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "hardware.cpu 64 is outside profile 'standard' bounds 0.25–4",
+    );
+    expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it("refuses a deploy naming a profile this deployment does not have", async () => {
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: {
+        runtime: { kind: "inline_python", hardware: { profile: "tpu-v5", cpu: 1, gpu_count: 0 } },
+        code: "print('hi')",
+        env: [],
+      },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "hardware.profile 'tpu-v5' is not a hardware profile of this deployment",
+    );
+  });
+
+  it("stores the default hardware block when a deploy omits it", async () => {
+    vi.mocked(deployRevision).mockResolvedValue({
+      id: REVISION_ID,
+      process_id: PROCESS_ID,
+      runtime: INLINE,
+      code: "print('hi')",
+      env: [],
+      created_by: "user-1",
+      created_at: "2026-08-30T00:00:00.000Z",
+    });
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: { kind: "inline_python" }, code: "print('hi')", env: [] },
+    });
+    expect(res.status).toBe(201);
+    expect(vi.mocked(deployRevision).mock.calls[0][0].runtime.hardware).toEqual({
+      profile: "standard",
+      cpu: 1,
+      gpu_count: 0,
+    });
+  });
 });
 
 /**
