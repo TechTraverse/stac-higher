@@ -46,6 +46,7 @@ export const servingKeys = {
   all: () => ["serving"] as const,
   itemTileJson: (collectionId: string, itemId: string, assetKey: string) =>
     [...servingKeys.all(), "item-tilejson", collectionId, itemId, assetKey] as const,
+  tipgCollections: () => [...servingKeys.all(), "tipg-collections"] as const,
 };
 
 /** Alerts + monitoring surfaces (M2-B/M2-D). */

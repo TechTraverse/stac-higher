@@ -2,8 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   FOOTPRINT_SOURCE,
   clamp01,
-  footprintFillLayer,
-  footprintLineLayer,
   footprintLayerIds,
   footprintLayers,
 } from "@stac-higher/shared";
@@ -16,9 +14,10 @@ describe("footprint layer specs", () => {
       fill: "stac-footprint-fill",
       line: "stac-footprint-line",
     });
-    expect(footprintFillLayer.id).toBe("stac-footprint-fill");
-    expect(footprintLineLayer.id).toBe("stac-footprint-line");
-    expect(footprintFillLayer.source).toBe(FOOTPRINT_SOURCE);
+    const legacy = footprintLayers(FOOTPRINT_SOURCE);
+    expect(legacy.fill.id).toBe("stac-footprint-fill");
+    expect(legacy.line.id).toBe("stac-footprint-line");
+    expect(legacy.fill.source).toBe(FOOTPRINT_SOURCE);
   });
 
   it("namespaces ids and the source for any other source id", () => {
@@ -39,8 +38,6 @@ describe("footprint layer specs", () => {
     // The default spec must be byte-identical to what the single-layer pages
     // rendered before: no wrapping expression, no line-opacity key.
     const { fill, line } = footprintLayers(FOOTPRINT_SOURCE);
-    expect(fill.paint).toEqual(footprintFillLayer.paint);
-    expect(line.paint).toEqual(footprintLineLayer.paint);
     expect((fill.paint as Record<string, unknown>)["fill-opacity"]).toEqual([
       "case",
       ["boolean", ["feature-state", "hover"], false],

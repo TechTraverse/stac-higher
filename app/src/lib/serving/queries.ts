@@ -8,7 +8,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { servingKeys } from "@/lib/query/keys";
-import { itemTileJsonUrl } from "./urls";
+import { itemTileJsonUrl, tipgCollectionsUrl } from "./urls";
 
 /** The subset of TileJSON the preview layer consumes. */
 export interface TileJson {
@@ -55,6 +55,45 @@ export function useItemTileJson(
     queryKey: servingKeys.itemTileJson(collectionId, itemId, assetKey ?? ""),
     queryFn: () => fetchItemTileJson(collectionId, itemId, assetKey as string),
     enabled: enabled && Boolean(assetKey),
+    retry: false,
+    staleTime: STALE_MS,
+  });
+}
+
+/** The subset of a tipg collection the picker shows. */
+export interface TipgCollection {
+  id: string;
+  title?: string;
+  description?: string;
+}
+
+export async function fetchTipgCollections(): Promise<TipgCollection[]> {
+  // No credentials: tipg is a different origin and needs none (docs/serving.md).
+  const res = await fetch(tipgCollectionsUrl(), { credentials: "omit" });
+  if (!res.ok) {
+    throw new Error(`tipg collections request failed: ${res.status}`);
+  }
+  const doc = (await res.json()) as { collections?: unknown };
+  if (!Array.isArray(doc.collections)) {
+    throw new Error("tipg collections document carries no collections array");
+  }
+  return doc.collections
+    .filter((c): c is { id: string; title?: string; description?: string } =>
+      typeof c === "object" && c !== null && typeof (c as { id?: unknown }).id === "string",
+    )
+    .map((c) => ({ id: c.id, title: c.title, description: c.description }));
+}
+
+/**
+ * tipg's collection list for the /map Add-layer picker (spec §4.5). Runs only
+ * while the picker is open; a miss (no tipg, an error) is "no vector tiles
+ * published", never an error banner — same quiet rule as the tile server.
+ */
+export function useTipgCollections(enabled: boolean) {
+  return useQuery({
+    queryKey: servingKeys.tipgCollections(),
+    queryFn: fetchTipgCollections,
+    enabled,
     retry: false,
     staleTime: STALE_MS,
   });
