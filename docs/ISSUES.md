@@ -1270,10 +1270,26 @@ Logged when V-4 closed the V queue; none is a defect.
 - A basemap picker.
 - Whole-span footprints toggle; click-through on imagery to the item at that tick.
 - A seeded demo vector table (e.g. GOES hotspot points) — today's tipg lists only PostGIS function collections, so the Vector tiles section has nothing real to show.
+- Function collections that need parameters cannot draw: the V-4 live check added `public.st_hexagongrid` — TileJSON 200, every tile 422 `Missing Required parameters … size`, maplibre marks the source errored and stops requesting (nothing drawn, no error UI). Of tipg's six functions only `public.postgis_srs_all` serves a 200 tile (5 MB, no geometry) and `public.st_subdivide` 500s. A parameter UI (spec §4.5 lists none) or a real table is needed before the section shows anything.
 - I-122–I-125 are reserved by the C-queue spec branch `ai/c-images-spec`, not yet on ai/main — do not reuse them.
 - A pre-warmed mosaic cache for smooth first-pass playback (shared with I-108).
 - Vector layers are not hoverable and contribute no ticks (spec §4.4/§4.6 as written).
 - Tracked in: `app/src/components/map/`, `docs/superpowers/specs/2026-09-04-map-page-design.md` §8.
+
+### I-127 · tipg's `Cache-Control: max-age=3600` keeps a stale vector-tile listing for an hour 🟡
+tipg answers `/collections` (and the TileJSONs) with `Cache-Control: public,
+max-age=3600` and no ETag. `fetchTipgCollections` uses the browser's default
+cache mode, so a browser that listed the collections within the hour serves
+the list from its HTTP cache when tipg is unreachable — the V-4 live check
+saw the six-entry list with tipg stopped (0 bytes transferred), and the
+spec's "no vector tiles published" line only with a cold cache (a different
+top-level site partition). Adding a layer then fails quietly at tile time
+(errored source, nothing drawn). Fix candidate: `cache: "no-store"` (or
+`"no-cache"`) on the quiet tipg fetches in `app/src/lib/serving/queries.ts`
+— one request per picker open, which `enabled: open` + `staleTime` already
+bound. Same shape applies to `fetchItemTileJson`.
+- Tracked in: `app/src/lib/serving/queries.ts`, `app/src/components/map/AddLayerPopover.tsx`.
+- Found in: V-4 lead live check (2026-09-14).
 
 ## Resolved — archived
 

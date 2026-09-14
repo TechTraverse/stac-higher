@@ -16,7 +16,7 @@ just a wasted read.
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
 | **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
-| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04, V-2 merged 2026-09-08, **V-3 merged 2026-09-14** (closes I-112); **V-4 next**, depends on V-2 only. No migrations |
+| **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04, V-2 merged 2026-09-08, V-3 merged 2026-09-14 (closes I-112), **V-4 merged 2026-09-14 — queue complete** (I-126 holds the spec §8 deferrals, I-127 the cached-listing nit). No migrations |
 | **D** | Item lineage: `derived_from` links stamped on process outputs at finalize | Written 2026-09-06 (lead question, no separate spec — the slice text is the design). Two slices: D-1 pipeline stamp, D-2 item-page rendering (decisions settled 2026-09-07). No migrations |
 
 Every queue runs the same loop (AGENTS.md): one slice per iteration, a worktree
@@ -682,7 +682,7 @@ none yet (the loop writes it after V-2 merges). V-1's plan:
       (`goes-geocolor` imagery + `goes-abi-mcmipc` footprints, 50 frames).
       Depends on V-2. Fixes **I-112** per spec §11.3 (chained `beforeId`
       inside `RasterFrameStack`).
-- [ ] **V-4 · tipg vector layers + docs.** Spec §4.5 Vector tiles section,
+- [x] **V-4 · tipg vector layers + docs.** (merged 2026-09-14, `ai/v4-vector` 2e1896a) Spec §4.5 Vector tiles section,
       §7, §8. `useTipgCollections` (silent on failure), `VectorTileLayer`
       on the page with the source-layer name verified against the running
       tipg, `docs/FEATURES.md` + `docs/serving.md`, the §8 deferrals logged
@@ -863,6 +863,51 @@ processor's job by the decision above and stays so.
 
 ## Discovered follow-ups
 
+- **V-4 landed 2026-09-14 (`ai/v4-vector`, merge 2e1896a), live-checked.**
+  `useTipgCollections` (quiet, `enabled` only while the picker is open) lists
+  tipg's `/collections`; the Add-layer popover's "Vector tiles" section adds a
+  `vector` layer (no camera fit, no frames, not hoverable) that `MapLayerView`
+  — now a hook-free dispatcher (`StacLayerView` / `VectorLayerView`) — draws
+  through the shared `VectorTileLayer` from `tipgTileJsonUrl(id)` (source
+  layer `default`); `layerAnchorId` chains a STAC layer's `beforeId` to
+  `vectorTileLayerIds(id).fill`; the V-1 carry-forwards landed (the
+  consumerless `footprintFillLayer`/`footprintLineLayer` exports and the stale
+  `app/src/lib/map/styles.ts` proxy are gone). Gates: verify 1505 tests; whole
+  e2e 46 passed / 1 skipped (baseline). **Deviations, all review-driven:**
+  Added-state variant is `ghost` (matches `AddLayerCollectionRow`, brief said
+  `secondary`); the `map-page.test.tsx` react-map-gl mock became a
+  `forwardRef` + `onLoad` spy so the no-camera-fit assertion is live (with a
+  positive control on a footprints first-add); the section body renders
+  nothing while the listing is loading (the final review caught a
+  "no vector tiles published" flash during the pending fetch); the §8
+  deferrals are **I-126** (the plan's I-122 collides with the peer branch
+  `ai/c-images-spec`, which holds I-122–I-125); the serving.md paragraph
+  moved below the consumer list it names. **Live check (Chrome, standing
+  stack):** the section lists tipg's six `public.*` function collections;
+  adding `public.st_hexagongrid` shows the hexagon layer row, fetches the
+  TileJSON (200) and draws nothing — every tile answers 422 `Missing Required
+  parameters … size`, maplibre marks the source errored and stops requesting
+  (no error UI, spec §4.7); of the six, only `public.postgis_srs_all` serves a
+  200 tile (5 MB, no geometry) and `public.st_subdivide` 500s — so nothing in
+  today's tipg can draw (I-126's seeded-table bullet stands). With tipg
+  stopped the picker shows "no vector tiles published" — but only with a
+  cold HTTP cache: tipg answers `Cache-Control: public, max-age=3600`, so a
+  browser that listed within the hour keeps showing the stale list (I-127).
+  **Deferred minors (final review, logged not fixed):** a shared Source/Layer
+  test-mock helper (verbatim in four test files); read `vector_layers[0].id`
+  from the TileJSON instead of hardcoding `default`; a page test for a STAC
+  layer chained beneath a vector layer; `fetchTipgCollections` ignores the
+  query's AbortSignal; a `max-h` cap on the popover now that it has two
+  sections; `StacLayerView`'s implicit `undefined` return for a future kind.
+- **2026-09-14 session note (lead):** the canary was 8.5 h stale at 14:28Z
+  after the host Mac spent the night in maintenance-sleep cycles (`pmset -g
+  log`: DarkWake ~5 s every 15 min, 22:00–08:27 MDT); the pipeline log shows
+  one "extractor run died; its ingest batch is failed" per wake and 277
+  `ingest_files` rows in `failed` (the recovery sweep requeues them); the loop
+  resumed unaided at 14:28Z and the canary was fresh (13:41Z frame) by
+  14:30Z. Not a pipeline defect; no rows touched. A Sonnet session rate limit
+  (resets 02:00 MDT) killed three subagents at 22:04 MDT; all were
+  re-dispatched/resumed 08:28 MDT.
 - **M3-B landed 2026-09-14 (`ai/m3-b-pool`, merge 3abdc70), measured.**
   `pipeline/db/pool.py`: one `psycopg_pool.AsyncConnectionPool` per DSN,
   process-wide, lazily opened on first use under a module lock, sized by
