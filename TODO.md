@@ -929,10 +929,14 @@ processor's job by the decision above and stays so.
   console errors on `/map`. **One defect found:** the collection Preview tab
   logged `Cannot add layer "preview-anchor" before non-existing layer
   "preview-frame-49-layer"` — the stack's anchor chains to a frame whose
-  Source is not registered yet (self-heals on `styledata`); fixed on
-  `ai/v3-anchor-fix` (chain only to layers already on the map, else the
-  caller's target). The Task 2 review had flagged the cascade as a knowledge
-  note; the live check showed it is loud. Screenshots
+  Source is not registered yet (self-heals on `styledata`); fixed and merged
+  (60a3599): the stack chains only to frame layers `map.getLayer` already
+  has, falls back to the caller's target otherwise, and re-evaluates the
+  chain on every `styledata` event (a `useMap()` subscription — without it a
+  fresh mount's fallback never resolved and the anchor could sit above the
+  frames until an unrelated re-render). Re-checked live: the Preview tab
+  opens and scrubs backward with no console error. The Task 2 review had
+  flagged the cascade as a knowledge note; the live check showed it is loud. Screenshots
   `screenshot-1789355865324-6.jpg` … `-1789356018266-12.jpg` (session temp
   dir).
 
