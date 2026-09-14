@@ -4,18 +4,22 @@
  * beforeId chain, and the hover/click plumbing.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
+import { forwardRef, useEffect, useImperativeHandle } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { StacCollection, StacItem } from "@/lib/stac-api/types";
 
-const { useCollectionsMock, useItemsMock, mapProps } = vi.hoisted(() => ({
+const { useCollectionsMock, useItemsMock, mapProps, fitBoundsMock } = vi.hoisted(() => ({
   useCollectionsMock: vi.fn(),
   useItemsMock: vi.fn(),
   mapProps: { current: null as Record<string, unknown> | null },
+  fitBoundsMock: vi.fn(),
 }));
-const { useCollectionSettingsMock, useItemTileJsonMock } = vi.hoisted(() => ({
+const { useCollectionSettingsMock, useItemTileJsonMock, useTipgMock } = vi.hoisted(() => ({
   useCollectionSettingsMock: vi.fn(),
   useItemTileJsonMock: vi.fn(),
+  useTipgMock: vi.fn(),
 }));
+
 
 // The shell is replaced by the bare QueryProvider it wraps: this test
 // exercises page content, not the sidebar/top-bar chrome.
@@ -50,15 +54,30 @@ vi.mock("@/lib/collections/settings-client", () => ({
 }));
 vi.mock("@/lib/serving/queries", () => ({
   useItemTileJson: (...a: unknown[]) => useItemTileJsonMock(...a),
+  useTipgCollections: (...a: unknown[]) => useTipgMock(...a),
 }));
 // maplibre needs WebGL; inert stand-ins keep the tree — and the source/layer
 // specs — intact. The DEFAULT export is the Map that StacMap renders, and it
 // records its props so the test can drive the hover/click handlers.
 vi.mock("react-map-gl/maplibre", () => ({
-  default: (props: Record<string, unknown>) => {
+  // A forwardRef stand-in (not a plain function component) so StacMap's
+  // `ref={mapRef}` actually lands: its `onLoad` reads `mapRef.current` and,
+  // when set, hands it to `onMapRef` — the same path a real maplibre load
+  // uses to arm the first-add camera fit (spec §4.6). Firing `onLoad` here
+  // is what makes that fit (or its absence, for a vector add) observable.
+  default: forwardRef((props: Record<string, unknown>, ref) => {
     mapProps.current = props;
+    useImperativeHandle(ref, () => ({
+      fitBounds: fitBoundsMock,
+      areTilesLoaded: () => true,
+      setFeatureState: vi.fn(),
+    }));
+    useEffect(() => {
+      (props.onLoad as (() => void) | undefined)?.();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     return <div data-testid="map">{props.children as React.ReactNode}</div>;
-  },
+  }),
   Source: ({ children, ...props }: Record<string, unknown> & { children?: React.ReactNode }) => (
     <div data-testid="source" data-props={JSON.stringify(props)}>
       {children}
@@ -170,8 +189,10 @@ beforeAll(() => {
 
 beforeEach(() => {
   mapProps.current = null;
+  fitBoundsMock.mockReset();
   useCollectionsMock.mockReset();
   useItemsMock.mockReset();
+  useTipgMock.mockReset();
   useCollectionsMock.mockReturnValue({
     data: { collections: [collection("alpha"), collection("beta")] },
     isLoading: false,
@@ -181,6 +202,9 @@ beforeEach(() => {
   // as it did before V-3, so every assertion in this file still holds.
   useCollectionSettingsMock.mockReturnValue({ data: { servingEnabled: false } });
   useItemTileJsonMock.mockReturnValue({ data: undefined, isFetched: true });
+  // No tipg collections by default: the Vector tiles section stays quiet
+  // (map-vector-empty) unless a test opts in.
+  useTipgMock.mockReturnValue({ data: undefined, isError: false });
 });
 
 describe("MapPage", () => {
@@ -466,5 +490,19 @@ describe("MapPage", () => {
 
     fireEvent.click(screen.getByTestId("map-layer-remove"));
     expect(screen.queryByTestId("map-tooltip")).toBeNull();
+  });
+
+  it("adds a tipg collection as a vector layer with the hexagon icon and no camera fit", () => {
+    useTipgMock.mockReturnValue({ data: [{ id: "public.roads", title: "Roads" }], isError: false });
+    render(<MapPage />);
+    fireEvent.click(screen.getByTestId("map-add-layer"));
+    fireEvent.click(screen.getByTestId("map-add-vector-public.roads"));
+    const row = screen.getByTestId("map-layer-row");
+    expect(row).toHaveAttribute("data-layer-id", "layer-0");
+    expect(within(row).getByTestId("map-layer-icon-vector")).toBeInTheDocument();
+    expect(within(row).getByText("Roads")).toBeInTheDocument();
+    // Unlike a STAC layer's first add, a tipg collection carries no extent —
+    // the camera stays put (spec §4.6 courtesy is STAC-layer-only).
+    expect(fitBoundsMock).not.toHaveBeenCalled();
   });
 });

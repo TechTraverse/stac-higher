@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fetchTipgCollections } from "@/lib/serving/queries";
 import { servingKeys } from "@/lib/query/keys";
+import { tipgCollectionsUrl } from "@/lib/serving/urls";
 
 const fetchMock = vi.fn();
 
@@ -27,7 +28,7 @@ describe("fetchTipgCollections", () => {
       { id: "public.roads", title: "Roads", description: "OSM roads" },
     ]);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toMatch(/\/collections$/);
+    expect(String(url)).toBe(tipgCollectionsUrl());
     expect(init).toMatchObject({ credentials: "omit" });
   });
 

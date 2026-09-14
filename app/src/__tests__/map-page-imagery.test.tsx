@@ -35,6 +35,9 @@ vi.mock("@/lib/collections/settings-client", () => ({
 }));
 vi.mock("@/lib/serving/queries", () => ({
   useItemTileJson: (...a: unknown[]) => useItemTileJsonMock(...a),
+  // The Vector tiles section isn't this file's concern (V-3 predates it); a
+  // steady "nothing published" result keeps the picker quiet either way.
+  useTipgCollections: () => ({ data: undefined, isError: false }),
 }));
 vi.mock("@/stores/catalogStore", async () => {
   const { atom } = await import("nanostores");

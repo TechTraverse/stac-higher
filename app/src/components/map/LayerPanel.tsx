@@ -7,6 +7,7 @@ import { EmptyState } from "@stac-higher/shared";
 import { AddLayerPopover } from "@/components/map/AddLayerPopover";
 import { LayerRow } from "@/components/map/LayerRow";
 import type { StacCollection } from "@/lib/stac-api/types";
+import type { TipgCollection } from "@/lib/serving/queries";
 import type { FrameSpan, LayerKind, MapLayer } from "@/lib/map/state";
 
 export interface LayerPanelProps {
@@ -16,6 +17,7 @@ export interface LayerPanelProps {
   catalogUrl: string;
   frameSpan: FrameSpan;
   onAdd: (kind: LayerKind, collection: StacCollection) => void;
+  onAddVector: (collection: TipgCollection) => void;
   onVisibleChange: (id: string, visible: boolean) => void;
   onOpacityChange: (id: string, opacity: number) => void;
   onAssetChange: (id: string, asset: string) => void;
@@ -29,6 +31,7 @@ export function LayerPanel({
   catalogUrl,
   frameSpan,
   onAdd,
+  onAddVector,
   onVisibleChange,
   onOpacityChange,
   onAssetChange,
@@ -51,6 +54,7 @@ export function LayerPanel({
           catalogUrl={catalogUrl}
           isAdded={isAdded}
           onAdd={onAdd}
+          onAddVector={onAddVector}
         />
       </div>
 

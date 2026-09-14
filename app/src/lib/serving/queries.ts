@@ -81,7 +81,11 @@ export async function fetchTipgCollections(): Promise<TipgCollection[]> {
     .filter((c): c is { id: string; title?: string; description?: string } =>
       typeof c === "object" && c !== null && typeof (c as { id?: unknown }).id === "string",
     )
-    .map((c) => ({ id: c.id, title: c.title, description: c.description }));
+    .map((c) => ({
+      id: c.id,
+      title: typeof c.title === "string" ? c.title : undefined,
+      description: typeof c.description === "string" ? c.description : undefined,
+    }));
 }
 
 /**

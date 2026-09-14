@@ -8,18 +8,23 @@ import {
   ChevronUp,
   Eye,
   EyeOff,
+  Hexagon,
   Image,
   Layers,
   X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Button, Slider } from "@stac-higher/shared";
 import { useItems } from "@/lib/query/items";
 import { buildPreviewFrames } from "@/lib/serving/frames";
-import { opacityFromSlider, type MapLayer } from "@/lib/map/state";
+import { opacityFromSlider, type LayerKind, type MapLayer } from "@/lib/map/state";
 import { LayerAssetSelect } from "@/components/map/LayerAssetSelect";
 
-/** Kind icons: `Hexagon` (vector, V-4) follows. */
-const KIND_ICON = { footprints: Layers, imagery: Image } as const;
+const KIND_ICON: Record<LayerKind, LucideIcon> = {
+  footprints: Layers,
+  imagery: Image,
+  vector: Hexagon,
+};
 
 /**
  * A layer whose items carry no parseable time draws nothing — say so under
@@ -73,7 +78,7 @@ export function LayerRow({
   onMove,
   onRemove,
 }: LayerRowProps) {
-  const Icon = KIND_ICON[layer.kind as keyof typeof KIND_ICON] ?? Layers;
+  const Icon = KIND_ICON[layer.kind];
 
   return (
     <div
