@@ -1,14 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 
 // Every id "exists" by default so the pre-existing chain tests (written
 // before the map was consulted at all) keep passing unchanged; a test that
 // cares about a missing layer clears this and adds only the ids it wants
-// present.
+// present. `style` stands in for a loaded style (RasterFrameStack's
+// `existing()` treats no-style the same as no-map). `on`/`off` are recorders
+// so a test can grab the `styledata` handler the component registers and
+// fire it itself, and confirm the same handler is unregistered on unmount.
 let allExist = true;
 const existingLayers = new Set<string>();
 const mapStub = {
+  style: {},
   getLayer: (id: string) => (allExist || existingLayers.has(id) ? {} : undefined),
+  on: vi.fn(),
+  off: vi.fn(),
 };
 
 vi.mock("react-map-gl/maplibre", () => ({
@@ -85,6 +91,8 @@ describe("RasterFrameStack", () => {
   beforeEach(() => {
     allExist = true;
     existingLayers.clear();
+    mapStub.on.mockClear();
+    mapStub.off.mockClear();
   });
 
   it("warms exactly one frame ahead, at zero opacity", () => {
@@ -254,7 +262,8 @@ describe("RasterFrameStack", () => {
   it("falls back to the caller's target when the anchor's frame is not on the map yet", () => {
     // A fresh mount: react-map-gl calls addLayer for the anchor before the
     // bottom frame's Source has registered its layer, so chaining to it would
-    // throw. The caller's own target is always safe to name.
+    // fire an error event and skip the add. The caller's own target is
+    // always safe to name.
     allExist = false;
     render(<RasterFrameStack id="s" frames={FRAMES} index={0} beforeId="top" />);
 
@@ -284,5 +293,31 @@ describe("RasterFrameStack", () => {
       ["s-frame-1-layer", "top"],
       ["s-frame-2-layer", "top"],
     ]);
+  });
+
+  it("re-chains a fallen-back target once the map fires styledata, and unsubscribes on unmount", () => {
+    // Nothing else re-renders the stack once a frame's Source finishes
+    // registering, so the fallback would never resolve without this: the
+    // component listens for the same event react-map-gl uses to retry a
+    // skipped addLayer, and re-evaluates the chain when it fires.
+    allExist = false;
+    const { unmount } = render(<RasterFrameStack id="s" frames={FRAMES} index={0} beforeId="top" />);
+
+    expect(anchor()).toMatchObject({ id: "s-anchor", beforeId: "top" });
+
+    const styledataCall = mapStub.on.mock.calls.find(([type]) => type === "styledata");
+    expect(styledataCall).toBeDefined();
+    const handler = styledataCall?.[1] as () => void;
+
+    // The frame's layer has landed on the map since the first render.
+    existingLayers.add("s-frame-0-layer");
+    act(() => {
+      handler();
+    });
+
+    expect(anchor()).toMatchObject({ id: "s-anchor", beforeId: "s-frame-0-layer" });
+
+    unmount();
+    expect(mapStub.off).toHaveBeenCalledWith("styledata", handler);
   });
 });
