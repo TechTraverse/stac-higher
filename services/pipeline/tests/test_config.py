@@ -146,8 +146,65 @@ def test_memory_envelope_settings_read_their_env_names():
     assert settings.gdal_cachemax_mb == 128
     assert settings.fetch_chunk_bytes == 16 * 1024 * 1024
     assert settings.fetch_transfer_concurrency == 2
+
+
 def test_hardware_profiles_file_setting():
     """K-1: unset means the repo checkout's infra/hardware-profiles/local.json."""
     assert Settings.from_env(env={}).process_hardware_profiles_file is None
     settings = Settings.from_env(env={"PROCESS_HARDWARE_PROFILES_FILE": "/app/share/hp.json"})
     assert settings.process_hardware_profiles_file == "/app/share/hp.json"
+
+
+def test_worker_concurrency_defaults_to_the_settled_split():
+    """M3-D (spec §7 decision 2): 12 slots total, 4 of them for the bytes queue."""
+    from pipeline.config import (
+        DEFAULT_FLOW_STATS_FLUSH_SECONDS,
+        DEFAULT_WORKER_BYTES_CONCURRENCY,
+        DEFAULT_WORKER_CONCURRENCY,
+        Settings,
+    )
+
+    settings = Settings.from_env(env={})
+    assert settings.worker_concurrency == DEFAULT_WORKER_CONCURRENCY == 12
+    assert settings.worker_bytes_concurrency == DEFAULT_WORKER_BYTES_CONCURRENCY == 4
+    assert settings.default_queue_concurrency == 8
+    assert settings.flow_stats_flush_seconds == DEFAULT_FLOW_STATS_FLUSH_SECONDS == 2.0
+    # The README invariant M3-B documented: the pool clears the slots + ticks.
+    assert settings.db_pool_max >= settings.worker_concurrency + 4
+
+
+def test_worker_concurrency_reads_its_env_names():
+    settings = Settings.from_env(
+        env={
+            "WORKER_CONCURRENCY": "6",
+            "WORKER_BYTES_CONCURRENCY": "2",
+            "FLOW_STATS_FLUSH_SECONDS": "0.5",
+        }
+    )
+    assert settings.worker_concurrency == 6
+    assert settings.worker_bytes_concurrency == 2
+    assert settings.default_queue_concurrency == 4
+    assert settings.flow_stats_flush_seconds == 0.5
+
+
+def test_worker_concurrency_rejects_an_impossible_split():
+    import pytest
+
+    with pytest.raises(ValueError, match="WORKER_BYTES_CONCURRENCY"):
+        Settings.from_env(env={"WORKER_CONCURRENCY": "4", "WORKER_BYTES_CONCURRENCY": "4"})
+    with pytest.raises(ValueError, match="WORKER_BYTES_CONCURRENCY"):
+        Settings.from_env(env={"WORKER_BYTES_CONCURRENCY": "0"})
+    with pytest.raises(ValueError, match="WORKER_CONCURRENCY"):
+        Settings.from_env(env={"WORKER_CONCURRENCY": "0"})
+    with pytest.raises(ValueError, match="FLOW_STATS_FLUSH_SECONDS"):
+        Settings.from_env(env={"FLOW_STATS_FLUSH_SECONDS": "0"})
+
+
+def test_sizing_warnings_flag_an_undersized_pool():
+    from pipeline.config import sizing_warnings
+
+    assert sizing_warnings(Settings.from_env(env={})) == []
+    warnings = sizing_warnings(Settings.from_env(env={"DB_POOL_MAX": "10"}))
+    assert len(warnings) == 1
+    assert "DB_POOL_MAX" in warnings[0].message
+    assert warnings[0].extra == {"db_pool_max": 10, "worker_concurrency": 12, "required": 16}

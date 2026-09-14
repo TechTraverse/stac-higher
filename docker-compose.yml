@@ -289,6 +289,12 @@ services:
       - GDAL_CACHEMAX=${GDAL_CACHEMAX:-64}
       - FETCH_CHUNK_BYTES=${FETCH_CHUNK_BYTES:-8388608}
       - FETCH_TRANSFER_CONCURRENCY=${FETCH_TRANSFER_CONCURRENCY:-4}
+      # M3-D: 12 job slots — 8 on the `default` queue, 4 on the `bytes` queue
+      # (FETCH/ITEMIZE/deliver, the jobs that hold bytes). Memory scales with
+      # WORKER_BYTES_CONCURRENCY; DB_POOL_MAX must stay >= WORKER_CONCURRENCY + 4.
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-12}
+      - WORKER_BYTES_CONCURRENCY=${WORKER_BYTES_CONCURRENCY:-4}
+      - FLOW_STATS_FLUSH_SECONDS=${FLOW_STATS_FLUSH_SECONDS:-2.0}
       # Same master key the app uses to seal credentials (docs/connections.md).
       # The pipeline decrypts connection credentials with it; the drain/health
       # jobs fail their tick loudly if it is unset.
