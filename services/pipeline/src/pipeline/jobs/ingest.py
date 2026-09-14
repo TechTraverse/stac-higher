@@ -24,6 +24,7 @@ from pipeline.ingest.group import group_stage
 from pipeline.ingest.itemize import run_itemize
 from pipeline.ingest.repo import IngestAssociation, PgIngestRepo
 from pipeline.ingest.scheduler import due_associations
+from pipeline.ingest.transfer import transfer_policy
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.process import JOB_RUN_NOW
 from pipeline.process.repo import PgProcessRepo
@@ -138,6 +139,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         adapter = build_adapter(
             association.connection, master_key, settings.egress_allow_hosts
         )
+        policy = transfer_policy(adapter, settings)
         s3_client = build_platform_client(settings)
         stored = await fetch_stage(
             repo,
@@ -148,6 +150,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             settings.staging_bucket,
             item_id,
             source_paths,
+            transfer=policy,
         )
         if stored:
             await queue.enqueue(

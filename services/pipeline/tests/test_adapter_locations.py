@@ -65,6 +65,34 @@ def test_copy_source_and_endpoint():
     assert _adapter().endpoint is None
 
 
+async def test_open_returns_the_response_body_unread_from_the_pinned_endpoint(monkeypatch):
+    """FETCH's streaming consumer (M3-C): `open()` hands back the raw
+    `StreamingBody` object itself — identity, not content — so nothing is
+    buffered before the caller reads it, and the client that fetched it was
+    built for the PINNED endpoint (no new code resolves a host)."""
+    adapter = _adapter(endpoint="http://minio:9000")
+    body = io.BytesIO(b"raster-bytes")
+    seen_endpoints: list[str | None] = []
+
+    class _Client:
+        def get_object(self, Bucket, Key):
+            assert (Bucket, Key) == ("src", "scenes/a.tif")
+            return {"Body": body}
+
+    monkeypatch.setattr(adapter, "_pinned_endpoint", lambda: "http://10.0.0.5:9000")
+
+    def _fake_make_client(endpoint_url):
+        seen_endpoints.append(endpoint_url)
+        return _Client()
+
+    monkeypatch.setattr(adapter, "_make_client", _fake_make_client)
+
+    stream = await adapter.open("scenes/a.tif")
+
+    assert stream is body
+    assert seen_endpoints == ["http://10.0.0.5:9000"]
+
+
 def test_base_adapter_defaults_keep_sftp_ftp_on_the_buffered_path():
     class Buffered(StorageAdapter):
         protocol = "sftp"

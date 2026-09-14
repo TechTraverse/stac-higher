@@ -60,3 +60,45 @@ def test_gdal_endpoint_strips_the_scheme():
     assert gdal_endpoint("http://10.0.0.5:9000") == "10.0.0.5:9000"
     assert gdal_endpoint("https://s3.example.com") == "s3.example.com"
     assert gdal_endpoint(None) is None
+
+
+def test_upload_stream_uses_a_transfer_config_and_returns_the_digest():
+    import hashlib
+    import io
+
+    from pipeline.storage.platform import upload_stream
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def upload_fileobj(self, Fileobj, Bucket, Key, Config=None):
+            self.calls.append((Bucket, Key, Fileobj.read(), Config))
+
+    client = _Client()
+    digest, size = upload_stream(
+        client, "b", "k", io.BytesIO(b"abc" * 100), chunk_bytes=64, concurrency=3
+    )
+    bucket, key, body, config = client.calls[0]
+    assert (bucket, key, body) == ("b", "k", b"abc" * 100)
+    assert config.multipart_chunksize == 64
+    assert config.multipart_threshold == 64
+    assert config.max_concurrency == 3
+    assert digest == hashlib.sha256(b"abc" * 100).hexdigest() and size == 300
+
+
+def test_copy_from_bucket_uses_the_managed_copy():
+    from pipeline.storage.platform import copy_from_bucket
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def copy(self, CopySource, Bucket, Key, Config=None):
+            self.calls.append((CopySource, Bucket, Key, Config))
+
+    client = _Client()
+    copy_from_bucket(client, "src", "in/a", "plat", "assets/a", chunk_bytes=64, concurrency=2)
+    source, bucket, key, config = client.calls[0]
+    assert source == {"Bucket": "src", "Key": "in/a"} and (bucket, key) == ("plat", "assets/a")
+    assert config.multipart_chunksize == 64 and config.max_concurrency == 2

@@ -1,10 +1,11 @@
 """FETCH stage: copy (or reference) a product group's bytes into canonical
 storage (§6.1).
 
-**Copy mode**: for each member of a ready group, ``adapter.get`` the source
-bytes, checksum them (sha256), and ``put_object`` them into the platform
-bucket under the canonical key ``assets/{collection}/{item_id}/{filename}``
-(§5.3). The ledger row moves ``settled → fetching → stored``.
+**Copy mode**: for each member of a ready group, move its bytes into the
+platform bucket under the canonical key
+``assets/{collection}/{item_id}/{filename}`` (§5.3) — server-side copy or a
+hashed streamed upload, per ``ingest/transfer.py`` below. The ledger row moves
+``settled → fetching → stored``.
 
 **Reference mode** (Slice C, s3-only): no byte copy. ``_reference_stage``
 records the source object's stable, credential-free URL
@@ -18,18 +19,19 @@ or redirects to ``source_href``, offline).
 
 Idempotent: a member is fetched only while its latest ledger row is still
 ``settled``, so a re-enqueued group (GROUP re-emits until FETCH runs) can't
-double-store. The whole object is buffered in memory in copy mode (ISSUES
-I-19: streaming + multipart deferred). A per-member failure marks only that
-member ``failed`` — the rest of the group still stores, and ITEMIZE handles
-partial products.
+double-store. Copy mode moves bytes by server-side copy when the platform can
+read the source bucket, else by a bounded streamed multipart upload (M3-C,
+``ingest/transfer.py``); nothing is buffered whole except for SFTP/FTP sources
+(I-83). A per-member failure marks only that member ``failed`` — the rest of
+the group still stores, and ITEMIZE handles partial products.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 
+from pipeline import metrics
 from pipeline.connections.adapters.base import StorageAdapter
 from pipeline.ingest.config import IngestConfig
 from pipeline.ingest.discover import source_fetch_path
@@ -41,6 +43,7 @@ from pipeline.ingest.repo import (
     IngestAssociation,
     IngestRepo,
 )
+from pipeline.ingest.transfer import TransferPolicy
 from pipeline.storage import platform
 from pipeline.storage.keys import canonical_asset_key
 
@@ -56,6 +59,8 @@ async def fetch_stage(
     bucket: str,
     item_id: str,
     source_paths: list[str],
+    *,
+    transfer: TransferPolicy | None = None,
 ) -> int:
     """Copy a group's settled files into canonical storage. Returns count stored.
 
@@ -66,6 +71,7 @@ async def fetch_stage(
     if config.storage_mode == "reference":
         return await _reference_stage(repo, association, config, adapter, item_id, source_paths)
 
+    policy = transfer or TransferPolicy()
     stored = 0
     for source_path in source_paths:
         # Re-read: only fetch a row that is still settled (idempotent guard).
@@ -75,14 +81,11 @@ async def fetch_stage(
         await repo.set_ledger_fields(latest.id, status=STATUS_FETCHING, item_id=item_id)
         try:
             fetch_path = source_fetch_path(config.source_path, source_path)
-            data = await adapter.get(fetch_path)
-            checksum = hashlib.sha256(data).hexdigest()
             filename = source_path.rsplit("/", 1)[-1]
             key = canonical_asset_key(association.collection_id, item_id, filename)
-            await asyncio.to_thread(platform.put_object, s3_client, bucket, key, data)
-            await repo.set_ledger_fields(
-                latest.id, status=STATUS_STORED, checksum=checksum
-            )
+            checksum, mode = await _transfer(adapter, s3_client, bucket, key, fetch_path, policy)
+            metrics.INGEST_FETCH_TRANSFERS.labels(mode=mode).inc()
+            await repo.set_ledger_fields(latest.id, status=STATUS_STORED, checksum=checksum)
             stored += 1
         except Exception:
             await repo.set_ledger_fields(latest.id, status=STATUS_FAILED)
@@ -104,6 +107,48 @@ async def fetch_stage(
         },
     )
     return stored
+
+
+async def _transfer(
+    adapter: StorageAdapter,
+    s3_client: platform.S3Like,
+    bucket: str,
+    key: str,
+    fetch_path: str,
+    policy: TransferPolicy,
+) -> tuple[str | None, str]:
+    """Move one member into canonical storage. Returns ``(sha256 or None, mode)``:
+    the copy path reads no bytes, so it records no checksum (an honest absence,
+    nothing reads the column today)."""
+    source = adapter.copy_source(fetch_path) if policy.server_side_copy else None
+    mode = "stream"
+    if source is not None:
+        try:
+            await asyncio.to_thread(
+                platform.copy_from_bucket, s3_client, source[0], source[1], bucket, key,
+                chunk_bytes=policy.chunk_bytes, concurrency=policy.concurrency,
+            )
+            return None, "copy"
+        except Exception:  # the platform keys cannot read the source bucket — stream instead
+            logger.warning(
+                "server-side copy failed; streaming instead",
+                extra={"bucket": bucket, "key": key, "source_bucket": source[0]},
+                exc_info=True,
+            )
+            mode = "copy_fallback"
+    body = await adapter.open(fetch_path)
+    try:
+        checksum, _size = await asyncio.to_thread(
+            platform.upload_stream, s3_client, bucket, key, body,
+            chunk_bytes=policy.chunk_bytes, concurrency=policy.concurrency,
+        )
+    finally:
+        # Release the connection a real S3 StreamingBody holds open, on both
+        # the success and the failure path (self-review: never leak it).
+        close = getattr(body, "close", None)
+        if close is not None:
+            close()
+    return checksum, mode
 
 
 async def _reference_stage(

@@ -45,6 +45,7 @@ __all__ = [
     "FINALIZE_ITEMS",
     "INGEST_BYTES",
     "INGEST_EVENTS",
+    "INGEST_FETCH_TRANSFERS",
     "JOB_RUNS",
     "JOB_SECONDS",
     "METRICS_CONTENT_TYPE",
@@ -82,6 +83,13 @@ INGEST_EVENTS = Counter(
 INGEST_BYTES = Counter(
     "pipeline_ingest_bytes_total",
     "Bytes settled/itemized through ingest",
+    registry=REGISTRY,
+)
+INGEST_FETCH_TRANSFERS = Counter(
+    "pipeline_ingest_fetch_transfers_total",
+    "Copy-mode FETCH transfers by strategy (M3-C): copy = server-side, "
+    "stream = bounded multipart, copy_fallback = copy failed then streamed.",
+    ["mode"],
     registry=REGISTRY,
 )
 

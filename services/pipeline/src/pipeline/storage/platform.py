@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 from urllib.parse import urlparse
 
 import boto3
@@ -204,6 +204,62 @@ def copy_object(client: S3Like, bucket: str, src_key: str, dest_key: str) -> Non
         Bucket=bucket,
         Key=dest_key,
         CopySource={"Bucket": bucket, "Key": src_key},
+    )
+
+
+def upload_stream(
+    client: S3Like, bucket: str, key: str, body: BinaryIO, *, chunk_bytes: int, concurrency: int
+) -> tuple[str, int]:
+    """Streamed multipart upload of ``body`` (M3-C): boto3's transfer manager
+    reads `chunk_bytes` parts with at most `concurrency` in flight, so worker
+    memory is bounded by their product, not by the object. Returns the sha256
+    hex digest and byte count of what went through. Synchronous — wrap in
+    ``asyncio.to_thread``."""
+    from boto3.s3.transfer import TransferConfig
+
+    from pipeline.ingest.transfer import HashingStream
+
+    hashing = HashingStream(body)
+    client.upload_fileobj(
+        hashing,
+        bucket,
+        key,
+        Config=TransferConfig(
+            multipart_threshold=chunk_bytes,
+            multipart_chunksize=chunk_bytes,
+            max_concurrency=concurrency,
+            use_threads=True,
+        ),
+    )
+    return hashing.hexdigest(), hashing.size
+
+
+def copy_from_bucket(
+    client: S3Like,
+    src_bucket: str,
+    src_key: str,
+    bucket: str,
+    key: str,
+    *,
+    chunk_bytes: int,
+    concurrency: int,
+) -> None:
+    """Server-side copy from ANOTHER bucket on the platform endpoint into the
+    platform bucket (M3-C FETCH fast path). boto3's managed `copy` switches to
+    multipart copy above the threshold, so objects over 5 GB work. Raises when
+    the platform keys cannot read ``src_bucket`` — the caller streams instead.
+    Synchronous — wrap in ``asyncio.to_thread``."""
+    from boto3.s3.transfer import TransferConfig
+
+    client.copy(
+        {"Bucket": src_bucket, "Key": src_key},
+        bucket,
+        key,
+        Config=TransferConfig(
+            multipart_threshold=chunk_bytes,
+            multipart_chunksize=chunk_bytes,
+            max_concurrency=concurrency,
+        ),
     )
 
 
