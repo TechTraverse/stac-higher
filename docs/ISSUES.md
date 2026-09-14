@@ -1300,6 +1300,17 @@ bound. Same shape applies to `fetchItemTileJson`.
 - Tracked in: `app/src/lib/serving/queries.ts`, `app/src/components/map/AddLayerPopover.tsx`.
 - Found in: V-4 lead live check (2026-09-14).
 
+### I-128 · `S3Adapter.copy_source` offers a server-side copy for anonymous connections too 🟡
+`copy_source` returns `(bucket, key)` unconditionally, including for an
+anonymous (public-bucket, e.g. NODD) connection whose bucket the platform's
+own keys usually cannot read. M3-C's FETCH then pays one failed `CopyObject`
+and a WARNING (`copy_fallback`) per member before streaming — correct, but
+noisy at NOAA ingest rates. Fix candidate: return `None` when the adapter is
+anonymous (the platform keys cannot sign for a foreign public bucket), or
+gate on the connection's credentials in `transfer_policy`.
+- Tracked in: `services/pipeline/src/pipeline/connections/adapters/s3.py`, `services/pipeline/src/pipeline/ingest/transfer.py`.
+- Found in: M3-C Task 5 review (2026-09-14).
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

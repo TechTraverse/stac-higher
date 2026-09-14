@@ -10,7 +10,7 @@ just a wasted read.
 
 | Queue | What it is | State |
 |---|---|---|
-| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference |
+| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference; **M3-C merged 2026-09-14** (measurement owed, host disk full); M3-D plan written (`2026-09-14-m3-d-concurrency.md`) |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
@@ -123,7 +123,7 @@ load report recorded M-gate style in ROADMAP §9.
       run in a transaction block. `query_queue.py` says so at the class:
       "M3-B: keep this off the transactional repo pool." M3-B's async pool
       is a THIRD object; `configure_pgstac_session_async` exists for it.
-- [ ] **M3-C · bounded-memory byte path.** Spec §3, S-E; closes I-19/I-26.
+- [x] **M3-C · bounded-memory byte path.** (merged 2026-09-14, `ai/m3-c-byte-path` ec31710; the M3-C build's RSS measurement is OWED — host disk full, see the landed note) Spec §3, S-E; closes I-19/I-26.
       Three parts. (1) **EXTRACT reads through a URI, not a buffer**: swap the
       `MemberByteSource` seam from `-> bytes` to something GDAL can open
       (`/vsis3`). Measured: byte-identical STAC item including
@@ -863,6 +863,56 @@ processor's job by the decision above and stays so.
 
 ## Discovered follow-ups
 
+- **M3-C landed 2026-09-14 (`ai/m3-c-byte-path`, merge ec31710) — merged and gated, measurement HALF done.**
+  EXTRACT opens rasters in place through `MemberByteSource.locate()` →
+  `RasterLocation` + `open_raster` (`ingest/raster_io.py`, the single
+  `rasterio.Env` builder; `GDAL_CACHEMAX` is integer MB, converted to bytes
+  there); `S3Adapter.gdal_location/copy_source/open` and the platform
+  client's `PlatformS3Access`/`raster_location` (credentials sealed in an
+  `AWSSession`, pinned endpoints, `repr` guards); FETCH server-side-copies
+  when `can_server_side_copy` allows (ledger `checksum=NULL`, by design) else
+  streams a bounded multipart upload through `HashingStream`
+  (`max_in_memory_upload_chunks` pinned to `FETCH_TRANSFER_CONCURRENCY`, so
+  the real bound is ≈ (concurrency + 1) × chunk ≈ 40 MiB, not 32), falling
+  back on copy failure; `pipeline_ingest_fetch_transfers_total{mode}` +
+  `transfer: {mode: count}` on the group-done log. Gates on `ai/main`: pytest
+  1181 passed / ruff clean; `npm run verify` reached 604 tests and then died
+  on ENOSPC (host disk full) — RE-RUN IT. **Review-driven deviations:** GDAL
+  cache MB→bytes at the coercion point (rasterio's int path is bytes); the
+  s3transfer in-memory chunk bound; two tests monkeypatch the pin (live DNS);
+  `_best_effort_raster_geometry` swallows a raising `locate()` while
+  `build_item` lets it raise (by design); a final-review fix wave whose
+  `HashingStream.read(-1)` guard was a Critical regression (s3transfer's
+  single-part path calls `read()` with no argument below the threshold) —
+  corrected in round 2 with a botocore-Stubber test through a real client.
+  **Measured (baseline, `ai/main` BEFORE the merge, label `m3c-base2`, fresh
+  pipeline process, 60 × 64 MB `raster_auto` rasters, `--rate 0`):** RSS
+  70.5 → **205.5 MiB peak** (+135 MiB), `ingest_fetch` mean **0.359 s**,
+  `ingest_itemize` mean **0.063 s**, 60 items catalogued, torn down. (A first
+  baseline against the 12-hour-old process read 584 → 649 MiB — the
+  high-water mark hid the transient; restart before measuring.) **OWED (lead,
+  Docker):** the same run on the M3-C build (`scratchpad m3c-measure.sh m3c`,
+  restart the pipeline first): peak RSS lower and FLAT, `mode="copy"` ≈ 60
+  and `copy_fallback` = 0, itemize mean ≤ 0.063 s, one item's `raster:bands`
+  statistics identical to the baseline item (`m3c-base2.item.json` in the
+  session scratchpad; otherwise re-derive from a baseline run). The image
+  build failed on the full disk; the deployed pipeline is still the
+  pre-M3-C image (built 03:25Z). **Deferred minors (final review, logged not
+  fixed):** `gdal_session_options` lives in `storage/platform` (raster_io is
+  the neutral home); no test asserts the counter's label strings; the
+  counter increments before the ledger write; `S3Adapter.open` is typed
+  `BinaryIO` for a non-seekable body; anonymous connections pay one failed
+  copy + WARNING per member before falling back (I-128); reference-mode
+  `locate()` resolves the pin on the event loop; the itemize job's
+  `RasterAccess` wiring is untested; s3transfer raises `multipart_chunksize`
+  below S3's 5 MiB floor (README note owed); the WARNING close path is
+  unasserted. `config.py`'s RSS comment corrected in this commit.
+- **2026-09-14 HALT (lead):** the host disk filled (143 MiB free of 926 GiB;
+  Docker Desktop's 1 TB sparse `Docker.raw` holds 142 GB and could not grow),
+  Docker's VM remounted read-only, the database container stopped and the
+  STAC API returned no features. Nothing in the stack was touched. Resume:
+  free host space, restart Docker Desktop, `docker compose up -d --wait`,
+  canary, then the owed M3-C measurement, the K-1 Task 3 review, M3-D Task 1.
 - **V-4 landed 2026-09-14 (`ai/v4-vector`, merge 2e1896a), live-checked.**
   `useTipgCollections` (quiet, `enabled` only while the picker is open) lists
   tipg's `/collections`; the Add-layer popover's "Vector tiles" section adds a
