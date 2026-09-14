@@ -66,6 +66,8 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `WEBHOOK_STALL_SECONDS` | `900` | A webhook delivery stranded `delivering` this long is presumed crashed and re-enters the retry path (counts as an attempt). |
 | `PROCESS_RUNTIME_IMAGE` | `stac-higher-process-runtime:local` | The platform runtime image every `inline_python` run executes on (ADR 0013) — `runtime.runtime_image: "default"`. |
 | `PROCESS_RUNTIME_IMAGE_STACTOOLS` | `stac-higher-process-runtime-stactools:local` | The image behind `runtime.runtime_image: "stactools"` (X-3, the built-in extractor library). **Empty** declares the deployment ships no such image: a run asking for the alias dies naming this variable rather than launching on the base image. |
+| `DB_POOL_MIN` | `2` | Connections the process-wide async pool keeps warm (M3-B). The pool grows on demand and trims back after `max_idle` (600 s), so a mostly-idle deployment holds two backends, not `DB_POOL_MAX`. |
+| `DB_POOL_MAX` | `16` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 4`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC). Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
 
 ## Connections (Phase 2)
 
@@ -356,11 +358,59 @@ reachable, `503` otherwise:
 ```json
 {
   "service": "pipeline",
+  "version": "<x.y.z>",
   "status": "ok",
   "queue": { "backend": "procrastinate", "reachable": true, "error": null },
-  "heartbeat": { "count": 3, "last_run_at": "2026-07-14T12:00:00+00:00" }
+  "heartbeat": { "count": 3, "last_run_at": "2026-07-14T12:00:00+00:00" },
+  "db_pool": {
+    "database:5432/postgis": {
+      "pool_min": 2, "pool_max": 16, "pool_size": 4,
+      "pool_available": 3, "requests_waiting": 0
+    }
+  }
 }
 ```
+
+`db_pool` (M3-B) reports `psycopg_pool` stats per database, keyed by a
+redacted DSN identity (`host:port/dbname` — never the user or password). It is
+`{}` until the first pooled connection is opened, and it does **not** affect
+the 200/503 decision: the queue's own `check_connection()` is the database
+liveness signal, and an idle process with no pool is healthy. Cumulative
+counters (`connections_num`, `requests_num`, `requests_queued`, `usage_ms`)
+appear only once they are non-zero.
+
+## Connection pooling (M3-B)
+
+Every repo statement checks out of a process-wide `psycopg_pool.AsyncConnectionPool`
+(`src/pipeline/db/pool.py`), keyed by DSN and opened lazily on first use.
+Before M3-B each repo method forked its own backend — 4.19 ms measured, ~14
+per ingested item, ~420 connections/s at the M3 budget (scoping notes M3-S-D).
+
+- Each pooled connection runs the two pgstac session GUCs once, when it is
+  created (`configure=configure_pgstac_session_async`, spec §4.2; ADR 0020,
+  `docs/decisions/0020-pgstac-session-guc-pairings.md`). They are harmless on
+  the non-pgstac statements the repos issue.
+- `pool.connection()` commits on success and rolls back on exception, exactly
+  as a directly-opened connection does — transaction boundaries are unchanged.
+- **Not pooled, deliberately:** Procrastinate's `PsycopgConnector` (it owns
+  its own pool); the dispatch listener's dedicated autocommit LISTEN
+  connection; `ProcrastinateQueue.setup()` / `check_connection()` — the first
+  runs before anything else exists, the second *is* the health probe; and the
+  pgstac queue drainer (`stac/query_queue.py`), because `CALL
+  pgstac.run_queued_queries()` COMMITs inside itself and Postgres refuses that
+  inside a transaction block, so it needs an autocommit connection.
+- The pgstac UPSERT path keeps a separate **sync** pool (M3-A,
+  `writer_pool()` / `WRITER_POOL_MAX = 4` in `stac/pgstac_writer.py`):
+  pypgstac is synchronous, runs inside `asyncio.to_thread`, and sets
+  `autocommit=True` on its checkouts. Both pools carry the same GUCs through
+  the same `db/pgstac_session.py` hook.
+- `main.run()` closes both pools in its `finally`, before `queue.aclose()`.
+- The pool warms lazily on first use, and that warm-up is bounded by
+  `POOL_OPEN_TIMEOUT_SECONDS` (10 s, `pipeline/db/pool.py`). A
+  `PoolTimeout("pool initialization incomplete after 10 sec")` raised at first
+  use means the database or the `configure` hook is failing (psycopg_pool
+  logs the cause at WARNING) — a different thing from the 30 s checkout
+  timeout above, which means the pool is undersized.
 
 ## Docker
 

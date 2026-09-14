@@ -260,6 +260,13 @@ services:
     environment:
       - DATABASE_URL=postgresql://username:password@database:5432/postgis
       - HEALTH_PORT=8083
+      # M3-B: the process-wide async connection pool the repos check out of.
+      # DB_POOL_MAX must exceed the worker's job concurrency plus the periodic
+      # ticks that overlap it (WORKER_CONCURRENCY + 4); undersizing it does not
+      # error, it makes callers wait 30 s and then raise PoolTimeout. Watch
+      # `requests_waiting` in GET :8083/health.
+      - DB_POOL_MIN=${DB_POOL_MIN:-2}
+      - DB_POOL_MAX=${DB_POOL_MAX:-16}
       # Same master key the app uses to seal credentials (docs/connections.md).
       # The pipeline decrypts connection credentials with it; the drain/health
       # jobs fail their tick loudly if it is unset.

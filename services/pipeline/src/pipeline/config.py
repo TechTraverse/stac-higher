@@ -13,6 +13,9 @@ Env contract (documented in README.md):
 - ``EGRESS_ALLOW_HOSTS`` — comma-separated allowlist of hostnames the egress
   policy permits even when they resolve to private/loopback addresses (e.g. the
   compose-internal test servers). Matched case-insensitively.
+- ``DB_POOL_MIN`` / ``DB_POOL_MAX`` — size bounds for the process-wide async
+  connection pool the repos check out of (M3-B). ``DB_POOL_MAX`` must exceed
+  the worker's job concurrency plus the overlapping periodic ticks.
 
 Platform object storage (Phase 3 — the platform's OWN bucket, MinIO locally /
 S3 in cloud; distinct from per-connection endpoints):
@@ -163,6 +166,18 @@ DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY = 4
 #: A bounded DELETE — the row count is subjects x days.
 DEFAULT_FLOW_STATS_RETENTION_DAYS = 400
 
+# --- Database connection pool (M3-B, spec §3 / S-D) ------------------------
+#: Connections the async repo pool keeps warm. Small: the pool grows on demand
+#: and `max_idle` (600 s) trims it back, so a mostly-idle deployment holds two
+#: backends, not sixteen.
+DEFAULT_DB_POOL_MIN = 2
+#: Ceiling on concurrent checkouts. Must exceed the worker's job concurrency
+#: (M3-D default 12) plus the periodic ticks that can overlap a job — dispatch
+#: poll, flow monitor, history sweep, GC — or a caller waits `pool.timeout`
+#: (30 s) and then raises `psycopg_pool.PoolTimeout`. Formula in
+#: services/pipeline/README.md: DB_POOL_MAX >= WORKER_CONCURRENCY + 4.
+DEFAULT_DB_POOL_MAX = 16
+
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
     if raw is None:
@@ -262,6 +277,9 @@ class Settings:
     process_network_max: str = DEFAULT_PROCESS_NETWORK_MAX
     process_input_stage_concurrency: int = DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY
     flow_stats_retention_days: int = DEFAULT_FLOW_STATS_RETENTION_DAYS
+    #: Async repo connection pool (M3-B) — see the DEFAULT_DB_POOL_* constants.
+    db_pool_min: int = DEFAULT_DB_POOL_MIN
+    db_pool_max: int = DEFAULT_DB_POOL_MAX
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -398,4 +416,6 @@ class Settings:
                     str(DEFAULT_FLOW_STATS_RETENTION_DAYS),
                 )
             ),
+            db_pool_min=int(env.get("DB_POOL_MIN", str(DEFAULT_DB_POOL_MIN))),
+            db_pool_max=int(env.get("DB_POOL_MAX", str(DEFAULT_DB_POOL_MAX))),
         )

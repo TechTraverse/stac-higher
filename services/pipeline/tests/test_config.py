@@ -99,3 +99,24 @@ def test_pgstac_queue_env_overrides():
 def test_pgstac_queue_drainer_rejects_unknown_value():
     with pytest.raises(ValueError, match="PGSTAC_QUEUE_DRAINER"):
         Settings.from_env(env={"PGSTAC_QUEUE_DRAINER": "cron"})
+
+
+def test_db_pool_defaults():
+    """M3-B: the async repo pool is sized from env, with a default that already
+    clears M3-D's concurrency (12) plus the periodic ticks that overlap it."""
+    from pipeline.config import DEFAULT_DB_POOL_MAX, DEFAULT_DB_POOL_MIN, Settings
+
+    settings = Settings.from_env(env={})
+    assert settings.db_pool_min == DEFAULT_DB_POOL_MIN == 2
+    assert settings.db_pool_max == DEFAULT_DB_POOL_MAX == 16
+    # The sizing invariant the README documents: a pool smaller than the
+    # concurrent checkouts makes callers wait and then raise PoolTimeout.
+    assert settings.db_pool_max > 12
+
+
+def test_db_pool_env_overrides():
+    from pipeline.config import Settings
+
+    settings = Settings.from_env(env={"DB_POOL_MIN": "1", "DB_POOL_MAX": "32"})
+    assert settings.db_pool_min == 1
+    assert settings.db_pool_max == 32

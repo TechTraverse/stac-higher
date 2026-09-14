@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response
 
 from pipeline import __version__
+from pipeline.db.pool import pool_stats
 from pipeline.jobs.heartbeat import STATE, HeartbeatState
 from pipeline.metrics import METRICS_CONTENT_TYPE, render_metrics
 from pipeline.queue.interface import QueueBackend, QueueConnectionError
@@ -39,6 +40,12 @@ def create_health_app(queue: QueueBackend, heartbeat_state: HeartbeatState = STA
                     "error": queue_error,
                 },
                 "heartbeat": heartbeat_state.as_dict(),
+                # M3-B: the repo pool is session-scoped and otherwise
+                # invisible from outside the process. `{}` means no pool has
+                # been opened yet, which is the truthful answer for a process
+                # that has not touched Postgres. Cumulative counters
+                # (connections_num, requests_num, …) appear only once non-zero.
+                "db_pool": pool_stats(),
             },
         )
 

@@ -102,14 +102,19 @@ def _to_connection_row(record: Sequence[Any]) -> ConnectionRow:
 
 @dataclass
 class PgConnectionsRepo(ConnectionsRepo):
-    """psycopg-backed repo. Opens a short-lived connection per operation."""
+    """psycopg-backed repo. Checks a connection out of the process-wide async
+    pool per operation (M3-B, `pipeline/db/pool.py`)."""
 
     database_url: str
 
-    async def _connect(self):  # pragma: no cover - thin psycopg wrapper
-        import psycopg
+    async def _connect(self):  # pragma: no cover - thin pool wrapper
+        # M3-B: a checkout from the process-wide pool, not a fresh backend.
+        # `pool.connection()` is an async context manager with the same
+        # commit-on-success / rollback-on-error semantics, so every
+        # `async with await self._connect() as conn:` call site is unchanged.
+        from pipeline.db.pool import get_async_pool
 
-        return await psycopg.AsyncConnection.connect(self.database_url)
+        return (await get_async_pool(self.database_url)).connection()
 
     async def claim_pending(self, limit: int) -> list[ClaimedCheck]:  # pragma: no cover
         async with await self._connect() as conn:

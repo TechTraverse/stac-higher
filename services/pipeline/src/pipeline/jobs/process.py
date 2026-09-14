@@ -126,12 +126,13 @@ def build_secret_resolver(settings: Settings):
     async def _resolve(ref) -> str:  # pragma: no cover - needs a DB + key
         import json
 
-        import psycopg
+        from pipeline.db.pool import get_async_pool
 
         # Raises loudly when the key is unset or malformed — a run must never
         # start with a secret it could not resolve.
         key = load_master_key({"CREDENTIALS_MASTER_KEY": settings.credentials_master_key or ""})
-        async with await psycopg.AsyncConnection.connect(settings.database_url) as conn:
+        pool = await get_async_pool(settings.database_url)
+        async with pool.connection() as conn:
             cur = await conn.execute(
                 "SELECT credentials FROM stac_higher.connections"
                 " WHERE id = %s AND deleted_at IS NULL",
