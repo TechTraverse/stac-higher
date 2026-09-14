@@ -562,6 +562,29 @@ async def test_best_effort_geometry_falls_back_to_bytes_when_the_location_is_unr
     assert source.reads == 1
 
 
+async def test_best_effort_geometry_falls_back_to_bytes_when_locate_raises():
+    # S3Adapter.gdal_location's egress vetting (or any other locate() failure)
+    # must degrade the same way an unreadable object does, not propagate out
+    # of the I-27 best-effort layer and fail the whole itemize job.
+    from pipeline.ingest.extract import _best_effort_raster_geometry
+
+    class _LocateRaises:
+        def __init__(self):
+            self.reads = 0
+
+        def locate(self, member):
+            raise RuntimeError("egress blocked")
+
+        async def read(self, member):
+            self.reads += 1
+            return _geotiff_bytes()
+
+    source = _LocateRaises()
+    recovered = await _best_effort_raster_geometry(_member("scene.tif"), source)
+    assert recovered is not None
+    assert source.reads == 1
+
+
 def test_canonical_byte_source_locates_through_the_platform_access():
     from pipeline.ingest.extract import RasterAccess
     from pipeline.storage.platform import PlatformS3Access

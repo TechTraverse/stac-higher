@@ -587,7 +587,14 @@ async def _best_effort_raster_geometry(
     or missing object just means "no geometry recovered")."""
     if not is_gdal_candidate(primary.filename):
         return None
-    location = byte_source.locate(primary)
+    try:
+        location = byte_source.locate(primary)
+    except Exception:
+        # A raising locate() (e.g. S3Adapter.gdal_location's egress vetting)
+        # must degrade the same way an unreadable object does — this is the
+        # best-effort layer (I-27); build_item's own locate() call is left
+        # unguarded, where a raise is equivalent to the read() it replaces.
+        location = None
     if location is not None:
         recovered = geometry_from_raster(location)
         if recovered is not None:
