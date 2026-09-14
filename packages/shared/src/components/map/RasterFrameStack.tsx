@@ -1,5 +1,5 @@
-import { useRef } from "react";
-import { Layer } from "react-map-gl/maplibre";
+import { useEffect, useRef, useState } from "react";
+import { Layer, useMap } from "react-map-gl/maplibre";
 import { RasterTileLayer } from "./RasterTileLayer";
 
 export interface RasterFrame {
@@ -38,10 +38,13 @@ export const RASTER_FRAME_LOOKAHEAD = 1;
 
 /**
  * The stack's stable `beforeId` target (spec §11.2). Frame layer ids
- * (`${id}-frame-${n}-layer`) are mounted and unmounted on every step, and
- * maplibre no-ops an `addLayer` whose `beforeId` names a layer that is not
- * in the style — so a layer drawn below the stack names THIS id as its
- * `beforeId`, never a frame.
+ * (`${id}-frame-${n}-layer`) are mounted and unmounted on every step, and an
+ * `addLayer` whose `beforeId` names a layer that is not in the style yet
+ * fires an error event and skips the add — so a layer drawn below the stack
+ * names THIS id as its `beforeId`, never a frame. On a fresh mount the
+ * anchor's OWN target, the bottom-most frame, is not on the map yet either;
+ * it falls back to the caller's own target until a later `styledata` event
+ * (or step) lets it chain down to the frame instead.
  */
 export function rasterFrameStackAnchorId(id: string): string {
   return `${id}-anchor`;
@@ -80,6 +83,41 @@ export function RasterFrameStack({
     previousIndex.current = lastIndex.current;
     lastIndex.current = index;
   }
+
+  // A chain target is only a target if maplibre already has it: a frame whose
+  // Source is not registered yet has no layer, and an addLayer naming it as
+  // `beforeId` fires an error event and skips the add. Fall back to the
+  // caller's target — a fallen-back layer sits just below the caller's own
+  // target rather than where it belongs in the chain — until the chain is
+  // re-evaluated, which happens on every step AND on every `styledata` event
+  // (below): the moment a frame's own `addLayer` retry lands, re-running
+  // `existing()` picks it up as a target. When `useMap` gives no map (unit
+  // tests with a mocked module that omits it, or Storybook without a map),
+  // treat "no map" as "assume it exists" so the pure chain behaviour stays
+  // testable.
+  const { current: mapRef } = useMap();
+  const map = mapRef?.getMap?.();
+  const existing = (layerId: string | undefined): string | undefined => {
+    if (layerId === undefined) return undefined;
+    return map && map.style ? (map.getLayer(layerId) ? layerId : undefined) : layerId;
+  };
+
+  // Nothing else re-renders the stack once the frames' Sources finish
+  // registering, so without this a fresh mount's fallback would never
+  // resolve: every target is missing on the FIRST render, everything falls
+  // back to the caller's target, and the anchor can sit above the frames
+  // until some unrelated prop change happens to re-render. react-map-gl's own
+  // `<Layer>` retries a skipped `addLayer` on this same event, so it is the
+  // moment a fallen-back target is guaranteed to exist.
+  const [, bump] = useState(0);
+  useEffect(() => {
+    if (!map) return;
+    const rerender = () => bump((n) => n + 1);
+    map.on("styledata", rerender);
+    return () => {
+      map.off("styledata", rerender);
+    };
+  }, [map]);
 
   const count = frames.length;
 
@@ -122,10 +160,18 @@ export function RasterFrameStack({
   //
   // Each frame draws beneath the frame above it; the top frame beneath the
   // caller's target. Rendered TOP FIRST because react-map-gl creates layers
-  // during render, in tree order, and maplibre drops a layer whose `beforeId`
-  // names a layer that does not exist yet — every target must already be on
-  // the map. The anchor, the stack's stable bottom, is rendered last for the
-  // same reason.
+  // during render, in tree order, and an `addLayer` whose `beforeId` names a
+  // layer that does not exist yet fires an error event and skips the add —
+  // every target must already be on the map. The anchor, the stack's stable
+  // bottom, is rendered last for the same reason. Render order alone is not
+  // enough on a fresh mount or when a new frame joins the window, though:
+  // react-map-gl's `<Layer>` calls `addLayer` during render, but a frame's
+  // OWN layer is added only once its `<Source>` is registered, so a frame
+  // chaining to the one above (still mid-mount) would still name a target
+  // that is not in the style yet. `existing()` chains only to a layer
+  // maplibre already has and falls back to the caller's target otherwise —
+  // re-evaluated on every step and on every `styledata` event above, which is
+  // when a fallen-back target is guaranteed to have appeared.
   const frameLayers = mounted.map((frameIndex, position) => (
     <RasterTileLayer
       key={frames[frameIndex].key}
@@ -137,7 +183,7 @@ export function RasterFrameStack({
       visible={visible}
       opacity={frameIndex === current || frameIndex === previous ? opacity : 0}
       opacityTransitionMs={0}
-      beforeId={layerIds[position + 1] ?? beforeId}
+      beforeId={existing(layerIds[position + 1]) ?? beforeId}
     />
   ));
   frameLayers.reverse();
@@ -157,7 +203,7 @@ export function RasterFrameStack({
       <Layer
         id={rasterFrameStackAnchorId(id)}
         type="background"
-        beforeId={layerIds[0] ?? beforeId}
+        beforeId={existing(layerIds[0]) ?? beforeId}
         paint={{ "background-opacity": 0 }}
       />
     </>

@@ -33,6 +33,7 @@ vi.mock("react-map-gl/maplibre", () => ({
   ),
   NavigationControl: () => <div />,
   ScaleControl: () => <div />,
+  useMap: () => ({ current: undefined }),
 }));
 
 import { CollectionPreviewTab } from "@/components/collections/CollectionPreviewTab";

@@ -1,5 +1,21 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+
+// Every id "exists" by default so the pre-existing chain tests (written
+// before the map was consulted at all) keep passing unchanged; a test that
+// cares about a missing layer clears this and adds only the ids it wants
+// present. `style` stands in for a loaded style (RasterFrameStack's
+// `existing()` treats no-style the same as no-map). `on`/`off` are recorders
+// so a test can grab the `styledata` handler the component registers and
+// fire it itself, and confirm the same handler is unregistered on unmount.
+let allExist = true;
+const existingLayers = new Set<string>();
+const mapStub = {
+  style: {},
+  getLayer: (id: string) => (allExist || existingLayers.has(id) ? {} : undefined),
+  on: vi.fn(),
+  off: vi.fn(),
+};
 
 vi.mock("react-map-gl/maplibre", () => ({
   Source: ({ children, ...props }: Record<string, unknown> & { children?: React.ReactNode }) => (
@@ -10,6 +26,7 @@ vi.mock("react-map-gl/maplibre", () => ({
   Layer: (props: Record<string, unknown>) => (
     <div data-testid="layer" data-props={JSON.stringify(props)} />
   ),
+  useMap: () => ({ current: { getMap: () => mapStub } }),
 }));
 
 import {
@@ -71,6 +88,13 @@ function anchor(): Record<string, unknown> | undefined {
 }
 
 describe("RasterFrameStack", () => {
+  beforeEach(() => {
+    allExist = true;
+    existingLayers.clear();
+    mapStub.on.mockClear();
+    mapStub.off.mockClear();
+  });
+
   it("warms exactly one frame ahead, at zero opacity", () => {
     expect(RASTER_FRAME_LOOKAHEAD).toBe(1);
     render(<RasterFrameStack id="s" frames={FRAMES} index={1} />);
@@ -233,5 +257,67 @@ describe("RasterFrameStack", () => {
     // maplibre dropping it as a chaining target.
     expect(anchor()).not.toHaveProperty("layout");
     expect(screen.queryAllByTestId("source")).toHaveLength(2);
+  });
+
+  it("falls back to the caller's target when the anchor's frame is not on the map yet", () => {
+    // A fresh mount: react-map-gl calls addLayer for the anchor before the
+    // bottom frame's Source has registered its layer, so chaining to it would
+    // fire an error event and skip the add. The caller's own target is
+    // always safe to name.
+    allExist = false;
+    render(<RasterFrameStack id="s" frames={FRAMES} index={0} beforeId="top" />);
+
+    expect(anchor()).toMatchObject({ id: "s-anchor", beforeId: "top" });
+  });
+
+  it("chains the anchor to the bottom frame once that frame is already on the map", () => {
+    existingLayers.add("s-frame-0-layer");
+    allExist = false;
+    render(<RasterFrameStack id="s" frames={FRAMES} index={0} beforeId="top" />);
+
+    expect(anchor()).toMatchObject({ id: "s-anchor", beforeId: "s-frame-0-layer" });
+  });
+
+  it("chains a frame to the caller's target when its own next-frame layer is missing, leaving the rest of the chain alone", () => {
+    // Three frames mounted (previous=0, current=1, lookahead=2): frame 1's
+    // target, frame 2's layer, is not on the map yet, so frame 1 falls back
+    // to the caller's target while frame 0 keeps chaining to frame 1, which
+    // IS already on the map.
+    existingLayers.add("s-frame-1-layer");
+    allExist = false;
+    const { rerender } = render(<RasterFrameStack id="s" frames={FRAMES} index={0} beforeId="top" />);
+    rerender(<RasterFrameStack id="s" frames={FRAMES} index={1} beforeId="top" />);
+
+    expect(chain()).toEqual([
+      ["s-frame-0-layer", "s-frame-1-layer"],
+      ["s-frame-1-layer", "top"],
+      ["s-frame-2-layer", "top"],
+    ]);
+  });
+
+  it("re-chains a fallen-back target once the map fires styledata, and unsubscribes on unmount", () => {
+    // Nothing else re-renders the stack once a frame's Source finishes
+    // registering, so the fallback would never resolve without this: the
+    // component listens for the same event react-map-gl uses to retry a
+    // skipped addLayer, and re-evaluates the chain when it fires.
+    allExist = false;
+    const { unmount } = render(<RasterFrameStack id="s" frames={FRAMES} index={0} beforeId="top" />);
+
+    expect(anchor()).toMatchObject({ id: "s-anchor", beforeId: "top" });
+
+    const styledataCall = mapStub.on.mock.calls.find(([type]) => type === "styledata");
+    expect(styledataCall).toBeDefined();
+    const handler = styledataCall?.[1] as () => void;
+
+    // The frame's layer has landed on the map since the first render.
+    existingLayers.add("s-frame-0-layer");
+    act(() => {
+      handler();
+    });
+
+    expect(anchor()).toMatchObject({ id: "s-anchor", beforeId: "s-frame-0-layer" });
+
+    unmount();
+    expect(mapStub.off).toHaveBeenCalledWith("styledata", handler);
   });
 });
