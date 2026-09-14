@@ -64,6 +64,7 @@ vi.mock("react-map-gl/maplibre", () => ({
   ),
   NavigationControl: () => <div />,
   ScaleControl: () => <div />,
+  useMap: () => ({ current: undefined }),
 }));
 
 import { MapPage } from "@/components/map/MapPage";

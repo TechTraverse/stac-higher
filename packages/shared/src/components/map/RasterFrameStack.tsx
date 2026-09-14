@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { Layer } from "react-map-gl/maplibre";
+import { Layer, useMap } from "react-map-gl/maplibre";
 import { RasterTileLayer } from "./RasterTileLayer";
 
 export interface RasterFrame {
@@ -41,7 +41,9 @@ export const RASTER_FRAME_LOOKAHEAD = 1;
  * (`${id}-frame-${n}-layer`) are mounted and unmounted on every step, and
  * maplibre no-ops an `addLayer` whose `beforeId` names a layer that is not
  * in the style — so a layer drawn below the stack names THIS id as its
- * `beforeId`, never a frame.
+ * `beforeId`, never a frame. The chain to a frame (below) falls back to the
+ * caller's own target whenever that frame is not on the map yet, so this id
+ * is also what a fresh mount's anchor draws beneath.
  */
 export function rasterFrameStackAnchorId(id: string): string {
   return `${id}-anchor`;
@@ -80,6 +82,18 @@ export function RasterFrameStack({
     previousIndex.current = lastIndex.current;
     lastIndex.current = index;
   }
+
+  // A chain target is only a target if maplibre already has it: a frame whose
+  // Source is not registered yet has no layer, and addLayer throws on a
+  // beforeId it cannot find. Fall back to the caller's target; the next
+  // render (every step re-renders the stack) re-chains and moveLayer fixes
+  // the order. When `useMap` gives no map (unit tests with a mocked module
+  // that omits it, or Storybook without a map), treat "no map" as "assume it
+  // exists" so the pure chain behaviour stays testable.
+  const { current: mapRef } = useMap();
+  const map = mapRef?.getMap?.();
+  const existing = (layerId: string | undefined): string | undefined =>
+    map ? (map.getLayer(layerId as string) ? layerId : undefined) : layerId;
 
   const count = frames.length;
 
@@ -125,7 +139,13 @@ export function RasterFrameStack({
   // during render, in tree order, and maplibre drops a layer whose `beforeId`
   // names a layer that does not exist yet — every target must already be on
   // the map. The anchor, the stack's stable bottom, is rendered last for the
-  // same reason.
+  // same reason. Render order alone is not enough on a fresh mount or when a
+  // new frame joins the window, though: react-map-gl's `<Layer>` calls
+  // `addLayer` during render, but a frame's OWN layer is added only once its
+  // `<Source>` is registered, so a frame chaining to the one above (still
+  // mid-mount) would still name a target that is not in the style yet.
+  // `existing()` chains only to a layer maplibre already has and falls back
+  // to the caller's target otherwise — self-correcting on the next render.
   const frameLayers = mounted.map((frameIndex, position) => (
     <RasterTileLayer
       key={frames[frameIndex].key}
@@ -137,7 +157,7 @@ export function RasterFrameStack({
       visible={visible}
       opacity={frameIndex === current || frameIndex === previous ? opacity : 0}
       opacityTransitionMs={0}
-      beforeId={layerIds[position + 1] ?? beforeId}
+      beforeId={existing(layerIds[position + 1]) ?? beforeId}
     />
   ));
   frameLayers.reverse();
@@ -157,7 +177,7 @@ export function RasterFrameStack({
       <Layer
         id={rasterFrameStackAnchorId(id)}
         type="background"
-        beforeId={layerIds[0] ?? beforeId}
+        beforeId={existing(layerIds[0]) ?? beforeId}
         paint={{ "background-opacity": 0 }}
       />
     </>
