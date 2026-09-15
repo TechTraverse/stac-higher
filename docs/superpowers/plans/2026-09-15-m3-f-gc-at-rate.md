@@ -181,7 +181,7 @@ git commit -m "feat(gc): item_asset_prefix / key_within_collection in storage.ke
 **Files:**
 - Modify: `services/pipeline/src/pipeline/storage/platform.py` (append `DeleteOutcome`, `delete_keys`)
 - Modify: `services/pipeline/src/pipeline/gc/sweep.py` (append `DeleteBatch`, `MAX_DELETE_KEYS`, `plan_delete_batches`)
-- Test: `services/pipeline/tests/test_gc_sweep.py` (append `TestPlanDeleteBatches`), `services/pipeline/tests/test_storage_platform.py` (append; the file exists — read its fake-client pattern)
+- Test: `services/pipeline/tests/test_gc_sweep.py` (append `TestPlanDeleteBatches`), `services/pipeline/tests/test_storage_platform.py` (CREATE — no platform-level test file exists yet; `delete_prefix`'s tests live in `test_gc_sweep.py`)
 
 **Interfaces:**
 - Produces:
@@ -253,8 +253,15 @@ class TestPlanDeleteBatches:
         batches, errors = plan_delete_batches([(self._mark(1), [])])
         assert batches == [] and errors == []
 ```
-Append to `test_storage_platform.py` (use the file's existing fake S3 client pattern — a class recording `delete_objects(Bucket=, Delete=)` calls and returning a scripted response):
+Create `services/pipeline/tests/test_storage_platform.py`:
 ```python
+"""storage.platform primitives that are pure over an injected S3-like client (M3-F: delete_keys)."""
+
+from __future__ import annotations
+
+import pytest
+
+
 def test_delete_keys_is_quiet_batched_and_maps_errors():
     from pipeline.storage.platform import delete_keys
 
