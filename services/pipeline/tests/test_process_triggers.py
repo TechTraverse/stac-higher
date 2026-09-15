@@ -712,6 +712,57 @@ async def test_run_one_dies_when_the_network_level_exceeds_the_cap():
     assert executor.launched == []
 
 
+@pytest.mark.asyncio
+async def test_run_one_dies_on_a_hardware_profile_outside_the_deployment():
+    """K-1 dual enforcement: an unknown profile or out-of-bounds counts die at
+    launch naming the bound — before inputs are planned or credentials minted."""
+    repo = _remote_input_repo()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    result = await _run(
+        _remote_input_run(
+            runtime={
+                "kind": "inline_python",
+                "hardware": {"profile": "tpu-v5", "cpu": 1, "gpu_count": 0},
+            }
+        ),
+        executor,
+        repo,
+    )
+    assert result.status == "dead"
+    assert result.error == "hardware.profile 'tpu-v5' is not a hardware profile of this deployment"
+    assert executor.launched == []
+
+
+@pytest.mark.asyncio
+async def test_run_one_dies_on_cpu_above_the_profile_bound():
+    repo = _remote_input_repo()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    result = await _run(
+        _remote_input_run(
+            runtime={
+                "kind": "inline_python",
+                "hardware": {"profile": "standard", "cpu": 64, "gpu_count": 0},
+            }
+        ),
+        executor,
+        repo,
+    )
+    assert result.status == "dead"
+    assert result.error == "hardware.cpu 64 is outside profile 'standard' bounds 0.25–4"  # noqa: RUF001
+    assert executor.launched == []
+
+
+@pytest.mark.asyncio
+async def test_run_one_marks_a_test_run_interactive():
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor(results=[ExitStatus(0)])
+    result = await _run(queued(is_test=True), executor, repo)
+    assert result.status == "succeeded"
+    spec = executor.launched[-1]
+    assert spec.priority == "interactive"
+    assert spec.profile is not None and spec.profile.id == "standard"
+
+
 # ---------------------------------------------------------------------------
 # cron
 # ---------------------------------------------------------------------------

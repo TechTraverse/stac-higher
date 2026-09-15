@@ -25,6 +25,11 @@ from pipeline.metrics import PROCESS_RUNS
 from pipeline.process.config import ProcessConfigError, parse_process_env, parse_process_runtime
 from pipeline.process.credentials import RunCredentialsError
 from pipeline.process.executor import Executor, ExecutorUnavailable
+from pipeline.process.hardware import (
+    HardwareProfileError,
+    HardwareProfileSet,
+    load_hardware_profiles,
+)
 from pipeline.process.inputs import (
     KIND_EXTRACT,
     KIND_TRANSFORM,
@@ -34,9 +39,11 @@ from pipeline.process.inputs import (
     plan_inputs,
 )
 from pipeline.process.launch import (
+    HardwareProfileRejected,
     NetworkCapExceeded,
     RuntimeImageUnavailable,
     SecretResolutionError,
+    check_hardware_bounds_for,
     check_network_cap,
     execute_run,
     resolve_runtime_image,
@@ -72,6 +79,7 @@ async def run_one(
     sts_client=None,
     fetch_remote: RemoteFetcher | None = None,
     on_dead: Callable[[QueuedRun, str], Awaitable[None]] | None = None,
+    profiles: HardwareProfileSet | None = None,
 ) -> RunResult:
     """Execute a claimed run and write its outcome. Never raises for a run
     that merely failed — that is a result, recorded in the ledger.
@@ -121,6 +129,15 @@ async def run_one(
     try:
         resolve_runtime_image(runtime, settings)
     except RuntimeImageUnavailable as err:
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
+        return RunResult(run.id, "dead", error=str(err))
+
+    # K-1 spec §4: the hardware block against the deployment's profile set —
+    # the same check the app ran at deploy time, run again here because the
+    # set is deployment config that may differ from the app's.
+    try:
+        profile = check_hardware_bounds_for(runtime, profiles or load_hardware_profiles())
+    except (HardwareProfileRejected, HardwareProfileError) as err:
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
@@ -238,6 +255,8 @@ async def run_one(
             sts_client=sts_client,
             read_prefixes=plan.read_prefixes,
             extra_env=input_env(run.id, plan.manifest_key),
+            profile=profile,
+            priority="interactive" if run.is_test else "triggered",
         )
     except (ExecutorUnavailable, RunCredentialsError) as err:
         # OUR failure, not the process's: back to `queued` without spending an

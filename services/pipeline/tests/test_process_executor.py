@@ -619,6 +619,41 @@ def test_runtime_hardware_rejects_a_boolean_cpu():
         )
 
 
+def test_run_spec_carries_hardware_and_priority_with_safe_defaults():
+    from pipeline.process.executor import PRIORITIES, RunSpec
+
+    spec = RunSpec(run_id="r1", process_id="p1", image="img")
+    assert (spec.cpu, spec.gpu_count, spec.profile, spec.priority) == (1.0, 0, None, "triggered")
+    assert PRIORITIES == ("interactive", "triggered")
+
+
+def test_build_run_spec_carries_the_resolved_profile_and_priority():
+    from pipeline.process.hardware import load_hardware_profiles
+    from pipeline.process.launch import build_run_spec
+
+    profiles = load_hardware_profiles()
+    rt = parse_process_runtime(
+        {"kind": "inline_python", "hardware": {"profile": "cpu-large", "cpu": 3, "gpu_count": 0}}
+    )
+    creds = RunCredentials("AK", "SK", "TOK", "b", run_staging_prefix(RUN), None, "r")
+    spec = build_run_spec(
+        settings(),
+        run_id="r1",
+        process_id="p1",
+        runtime=rt,
+        code="print(1)",
+        env={},
+        credentials=creds,
+        profile=profiles.get("cpu-large"),
+        priority="interactive",
+    )
+    assert spec.cpu == 3.0 and spec.gpu_count == 0
+    assert spec.profile is not None and spec.profile.id == "cpu-large"
+    assert spec.priority == "interactive"
+    # No executor change this slice: memory/timeout/network are what they were.
+    assert spec.memory_mb == rt.memory_mb
+
+
 # ---------------------------------------------------------------------------
 # inputs reach the run (GOES spec §3)
 # ---------------------------------------------------------------------------
