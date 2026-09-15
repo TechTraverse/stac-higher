@@ -84,9 +84,10 @@ async def run_one(
     """Execute a claimed run and write its outcome. Never raises for a run
     that merely failed — that is a result, recorded in the ledger.
 
-    Order (GOES spec §3.2): parse → network cap → plan inputs (repo reads) →
-    stage remote inputs → mint credentials + launch. A failure anywhere
-    before launch means no container ever existed.
+    Order (GOES spec §3.2): parse → network cap → runtime image → hardware
+    bounds → plan inputs (repo reads) → stage remote inputs → mint
+    credentials + launch. A failure anywhere before launch means no
+    container ever existed.
     """
     at = now or dt.datetime.now(dt.UTC)
 
@@ -132,12 +133,37 @@ async def run_one(
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
+    # K-1 spec §4: resolve the deployment's profile set. An unreadable or
+    # missing profile document is OUR infrastructure failing, not the
+    # process's, so it goes back to `queued` without spending an attempt —
+    # the same shape as the executor-outage branch below.
+    try:
+        profile_set = profiles or load_hardware_profiles()
+    except HardwareProfileError as err:
+        transition = infrastructure_transition(
+            now=at, retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS, error=str(err)
+        )
+        PROCESS_RUNS.labels(outcome=transition.status).inc()
+        await repo.finish_run(
+            run.id,
+            status=transition.status,
+            error=transition.error,
+            log_ref=None,
+            next_attempt_at=transition.next_attempt_at,
+        )
+        logger.warning(
+            "process run could not start: hardware profiles unavailable; requeued "
+            "without spending an attempt",
+            extra={"run_id": run.id, "process_id": run.process_id, "error": str(err)},
+        )
+        return RunResult(run.id, transition.status, error=str(err))
+
     # K-1 spec §4: the hardware block against the deployment's profile set —
     # the same check the app ran at deploy time, run again here because the
     # set is deployment config that may differ from the app's.
     try:
-        profile = check_hardware_bounds_for(runtime, profiles or load_hardware_profiles())
-    except (HardwareProfileRejected, HardwareProfileError) as err:
+        profile = check_hardware_bounds_for(runtime, profile_set)
+    except HardwareProfileRejected as err:
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
