@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline.ingest.raster_io import RasterLocation, open_raster
+from pipeline.ingest.raster_io import VSICURL_TUNING, RasterLocation, env_kwargs_for, open_raster
 from test_ingest_extract import _geotiff_bytes  # the existing in-memory GeoTIFF fixture
 
 
@@ -46,14 +46,44 @@ def test_open_raster_rejects_unknown_sources():
         pass
 
 
+def test_env_kwargs_for_applies_vsicurl_tuning_to_vsi_uris():
+    loc = RasterLocation(uri="/vsis3/b/k.tif", options={"GDAL_CACHEMAX": "7"})
+
+    result = env_kwargs_for(loc)
+
+    for key, value in VSICURL_TUNING.items():
+        assert result[key] == value
+    assert result["GDAL_CACHEMAX"] == 7 * 1024 * 1024
+
+
+def test_env_kwargs_for_lets_location_options_override_the_tuning():
+    loc = RasterLocation(uri="/vsis3/b/k.tif", options={"CPL_VSIL_CURL_CHUNK_SIZE": "65536"})
+
+    result = env_kwargs_for(loc)
+
+    assert result["CPL_VSIL_CURL_CHUNK_SIZE"] == "65536"
+    for key, value in VSICURL_TUNING.items():
+        if key != "CPL_VSIL_CURL_CHUNK_SIZE":
+            assert result[key] == value
+
+
+def test_env_kwargs_for_leaves_local_paths_untuned(tmp_path):
+    loc = RasterLocation(uri=str(tmp_path / "x.tif"))
+
+    result = env_kwargs_for(loc)
+
+    for key in VSICURL_TUNING:
+        assert key not in result
+
+
 def test_env_combination_matches_production_s3_reads():
     # The exact rasterio.Env(session=..., AWS_HTTPS=..., AWS_VIRTUAL_HOSTING=...,
-    # GDAL_CACHEMAX=...) combination `open_raster` enters for a platform /vsis3
-    # read (M3-C final review finding 3). No network: an Env is entered over
-    # env_kwargs_for()'s output directly, nothing is opened.
+    # GDAL_CACHEMAX=..., plus the I-129 vsicurl tuning) combination `open_raster`
+    # enters for a platform /vsis3 read (M3-C final review finding 3). No
+    # network: an Env is entered over env_kwargs_for()'s output directly,
+    # nothing is opened.
     import rasterio
 
-    from pipeline.ingest.raster_io import env_kwargs_for
     from pipeline.storage.platform import PlatformS3Access, raster_location
 
     access = PlatformS3Access(
@@ -71,3 +101,8 @@ def test_env_combination_matches_production_s3_reads():
         assert env.get("AWS_HTTPS") == "NO"
         assert env.get("AWS_VIRTUAL_HOSTING") == "FALSE"
         assert env.get("GDAL_CACHEMAX") == 67108864
+        assert env.get("GDAL_DISABLE_READDIR_ON_OPEN") == "EMPTY_DIR"
+        assert env.get("GDAL_HTTP_MERGE_CONSECUTIVE_RANGES") == "YES"
+        assert env.get("VSI_CACHE") == "TRUE"
+        assert env.get("VSI_CACHE_SIZE") == "16777216"
+        assert env.get("CPL_VSIL_CURL_CHUNK_SIZE") == "1048576"
