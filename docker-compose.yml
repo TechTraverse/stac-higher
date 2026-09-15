@@ -256,6 +256,10 @@ services:
       # pipeline's own context is services/pipeline alone (X-2).
       additional_contexts:
         fixtures: ./tests/contract-fixtures
+        # The deployment's hardware-profile set (infra/hardware-profiles/
+        # local.json) is COPY --from=hardware'd into the image — same reason
+        # as `fixtures`: the repo-root .dockerignore excludes infra/ (K-1).
+        hardware: ./infra/hardware-profiles
     image: stac-higher-pipeline
     environment:
       - DATABASE_URL=postgresql://username:password@database:5432/postgis
@@ -327,6 +331,9 @@ services:
       # for. `isolated` until the egress proxy exists; the pipeline refuses
       # anything higher at launch, independently of the app's write gate.
       - PROCESS_NETWORK_MAX=${PROCESS_NETWORK_MAX:-isolated}
+      # K-1: where the image published the hardware-profile set the `hardware`
+      # build context copied in above. Unset means the repo checkout.
+      - PROCESS_HARDWARE_PROFILES_FILE=${PROCESS_HARDWARE_PROFILES_FILE:-/app/share/hardware-profiles/local.json}
       # GOES spec §3.4: remote input files staged concurrently per run.
       - PROCESS_INPUT_STAGE_CONCURRENCY=${PROCESS_INPUT_STAGE_CONCURRENCY:-4}
     ports:

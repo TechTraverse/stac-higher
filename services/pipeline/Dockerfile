@@ -1,8 +1,10 @@
 # services/pipeline — worker + scheduler + /health in one process (Phase 0).
-# Build context: services/pipeline/, plus a `fixtures` named context pointing
-# at tests/contract-fixtures (see the COPY --from=fixtures below):
+# Build context: services/pipeline/, plus named contexts `fixtures` (pointing
+# at tests/contract-fixtures) and `hardware` (pointing at
+# infra/hardware-profiles) — see the COPY --from=fixtures/--from=hardware below:
 #   docker compose build pipeline            (additional_contexts in compose)
-#   docker build --build-context fixtures=tests/contract-fixtures services/pipeline
+#   docker build --build-context fixtures=tests/contract-fixtures \
+#     --build-context hardware=infra/hardware-profiles services/pipeline
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
@@ -34,10 +36,17 @@ COPY --from=builder /app/src /app/src
 # build context is services/pipeline alone. Same env var the runtime image
 # publishes, so pipeline.process.builtin.load_builtin_registry finds it.
 COPY --from=fixtures builtin-extractors.json /app/share/builtin-extractors.json
+# The deployment's hardware-profile set (K-1 spec §3) — the ONE copy in
+# infra/hardware-profiles, reached through the `hardware` build context
+# (compose: build.additional_contexts; CI: build-contexts) because the
+# repo-root .dockerignore excludes infra/. Same env var the app image
+# publishes, so pipeline.process.hardware.load_hardware_profiles finds it.
+COPY --from=hardware local.json /app/share/hardware-profiles/local.json
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     HEALTH_PORT=8083 \
-    STAC_HIGHER_BUILTIN_REGISTRY=/app/share/builtin-extractors.json
+    STAC_HIGHER_BUILTIN_REGISTRY=/app/share/builtin-extractors.json \
+    PROCESS_HARDWARE_PROFILES_FILE=/app/share/hardware-profiles/local.json
 USER pipeline
 EXPOSE 8083
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \

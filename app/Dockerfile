@@ -5,8 +5,11 @@
 # carries the built-in extractor registry (X-4 — the repo-root .dockerignore
 # excludes tests/, and the registry is imported at BUILD time by
 # app/src/lib/extractors/registry.ts, so it must be at the path that import
-# resolves to before `npm run build`):
-#   docker build -f app/Dockerfile --build-context fixtures=tests/contract-fixtures .
+# resolves to before `npm run build`) and the `hardware` named context that
+# carries the deployment's hardware-profile set (K-1 — the repo-root
+# .dockerignore excludes infra/ too):
+#   docker build -f app/Dockerfile --build-context fixtures=tests/contract-fixtures \
+#     --build-context hardware=infra/hardware-profiles .
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /srv
@@ -26,7 +29,8 @@ RUN npm run build --workspace app \
 FROM node:22-bookworm-slim
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=4321
+    PORT=4321 \
+    PROCESS_HARDWARE_PROFILES_FILE=/app/share/hardware-profiles/local.json
 WORKDIR /srv
 COPY --from=build /srv/package.json ./package.json
 COPY --from=build /srv/node_modules ./node_modules
@@ -36,6 +40,11 @@ COPY --from=build /srv/packages/shared ./packages/shared
 COPY --from=build /srv/app/package.json ./app/package.json
 COPY --from=build /srv/app/node_modules ./app/node_modules
 COPY --from=build /srv/app/dist ./app/dist
+# The deployment's hardware-profile set (K-1 spec §3) — the app's checkout-
+# relative fallback (app/src/lib/processes/hardware.ts) only works in the
+# built bundle by luck of chunk depth, so the runtime image needs both this
+# file AND the env var above, not just the pipeline image.
+COPY --from=hardware local.json /app/share/hardware-profiles/local.json
 USER node
 EXPOSE 4321
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

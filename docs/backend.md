@@ -52,6 +52,7 @@ and [`decisions/0015-proxy-write-policy.md`](decisions/0015-proxy-write-policy.m
 | `PROXY_AUTH_TOKEN` | Optional; makes `/api/proxy` require an `X-Proxy-Auth` header. `/api/proxy` always rejects `Sec-Fetch-Site: cross-site`. |
 | Auth (`AUTH_MODE`, OIDC issuer/client, claims mapping) | Full reference: [`auth.md`](auth.md). Dev-bypass is the default in dev — a static operator identity, so unit tests and e2e need no IdP. |
 | `STAGING_*` | Pipeline-side TTL sweep of abandoned `staging/` uploads. |
+| `PROCESS_HARDWARE_PROFILES_FILE` | Path to the deployment's hardware-profile document (K-1); validated strictly at deploy time and served (minus `backend`) on `GET /api/processes/hardware-profiles`. Unset means the repo checkout's `infra/hardware-profiles/local.json`. |
 
 ## Astro server routes
 
@@ -101,6 +102,7 @@ requests are rows the pipeline drains (ADR 0004).
 | `/api/monitoring/graph` | GET | The pipeline graph: typed nodes (connection / collection / process) + edges (ingest, deliver, process_source, process_output), member+ scoped. Shares `lib/graph/*` with the M5-D cycle check, so the picture and the write gate cannot disagree — M5-E |
 | `/api/monitoring/flows` | GET | Cross-collection association list with `flow_stats` + expectation (member+: own groups; admin: all) — feeds `/monitoring` (M2-D) |
 | `/api/processes` | GET, POST | List (member+: own groups; admin: all) / create (operator+, audited) group-owned processes — Phase 9 M5-A |
+| `/api/processes/hardware-profiles` | GET | The deployment's hardware profiles minus their backend blocks, plus the executor backend (member+; K-1) |
 | `/api/processes/[id]` | GET, PUT, DELETE | Get / update / soft-delete a process. `current_revision` is NOT updatable — only a deploy moves it |
 | `/api/processes/[id]/revisions` | GET, POST | List immutable revision snapshots / **deploy** (operator+, audited `deploy`): insert a revision + repoint `current_revision` in one transaction. `runtime.kind: container` is refused this slice (ADR 0013) |
 | `/api/processes/[id]/sources` | GET, POST | List / attach a trigger source (operator+ who can also manage the collection; archived collections refused) |

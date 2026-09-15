@@ -66,6 +66,7 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `WEBHOOK_STALL_SECONDS` | `900` | A webhook delivery stranded `delivering` this long is presumed crashed and re-enters the retry path (counts as an attempt). |
 | `PROCESS_RUNTIME_IMAGE` | `stac-higher-process-runtime:local` | The platform runtime image every `inline_python` run executes on (ADR 0013) — `runtime.runtime_image: "default"`. |
 | `PROCESS_RUNTIME_IMAGE_STACTOOLS` | `stac-higher-process-runtime-stactools:local` | The image behind `runtime.runtime_image: "stactools"` (X-3, the built-in extractor library). **Empty** declares the deployment ships no such image: a run asking for the alias dies naming this variable rather than launching on the base image. |
+| `PROCESS_HARDWARE_PROFILES_FILE` | _(unset — the repo checkout's `infra/hardware-profiles/local.json`)_ | Path to the deployment's hardware-profile document (K-1, process-compute spec §3), re-checked at launch against the revision's `hardware` block. The image copies `infra/hardware-profiles/local.json` here through the `hardware` named build context and sets this variable to that path; unset means the checkout fallback (dev, pytest). An unreadable or missing file is our infrastructure failing, not the process's — the run is requeued without spending an attempt. |
 | `DB_POOL_MIN` | `2` | Connections the process-wide async pool keeps warm (M3-B). The pool grows on demand and trims back after `max_idle` (600 s), so a mostly-idle deployment holds two backends, not `DB_POOL_MAX`. |
 | `DB_POOL_MAX` | `16` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 4`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC). Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
 
@@ -421,6 +422,25 @@ sessions for the same 900 items; the pool held its two warm connections for
 `ingest_itemize` 32 → 9 ms; the pipeline kept pace with the 30/s feed where the
 baseline lagged at 21–24 items/s. Laptop numbers — they rank the fix, they are
 not platform capacity.
+
+## Hardware profiles (K-1)
+
+A run asks for hardware by naming a **profile** the deployment defines plus
+CPU/memory/GPU counts within its bounds (process-compute spec §3, ADR 0019).
+The profile document is one JSON file both runtimes read
+(`PROCESS_HARDWARE_PROFILES_FILE`; the image copies
+`infra/hardware-profiles/local.json` to `/app/share/hardware-profiles/` through
+the `hardware` named build context; unset means the repo checkout). The app
+validates it strictly at deploy time and serves it minus each profile's
+`backend` block on `GET /api/processes/hardware-profiles`; the pipeline
+re-checks the revision's `hardware` block at launch (`check_hardware_bounds`)
+and a run outside its profile — or naming a profile this deployment lacks —
+dies with the bound in its error, before inputs are planned or credentials
+minted. `backend` is opaque until K-3 (Docker: `NanoCpus`, `DeviceRequests`,
+per-profile capacity) and K-5 (Kubernetes) consume it. `RunSpec` already
+carries `cpu`, `gpu_count`, the resolved `profile` and a `priority`
+(`interactive` for a UI test run, `triggered` otherwise) that nothing reads
+yet.
 
 ## Docker
 
