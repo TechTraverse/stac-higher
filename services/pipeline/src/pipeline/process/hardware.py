@@ -32,9 +32,19 @@ DEFAULT_HARDWARE_PROFILE = "standard"
 DEFAULT_HARDWARE_CPU = 1.0
 DEFAULT_HARDWARE_GPU_COUNT = 0
 PROFILES_ENV_VAR = "PROCESS_HARDWARE_PROFILES_FILE"
-_CHECKOUT_PROFILES = (
-    Path(__file__).resolve().parents[5] / "infra" / "hardware-profiles" / "local.json"
-)
+
+
+def _checkout_profiles() -> Path:
+    """The repo checkout's local set — the dev fallback when the env var is
+    unset. Resolved LAZILY: inside the image this module sits at
+    /app/src/pipeline/process with fewer than six ancestors, and computing it
+    at import time raised IndexError and crash-looped the worker (K-1 landed
+    note); the image always sets PROCESS_HARDWARE_PROFILES_FILE, so the
+    fallback is never read there."""
+    here = Path(__file__).resolve()
+    root = here.parents[5] if len(here.parents) > 5 else here.parents[-1]
+    return root / "infra" / "hardware-profiles" / "local.json"
+
 _ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
@@ -164,7 +174,7 @@ def hardware_profiles_path(env: dict[str, str] | None = None) -> Path:
     override = (os.environ if env is None else env).get(PROFILES_ENV_VAR)
     if override:
         return Path(override)
-    return _CHECKOUT_PROFILES
+    return _checkout_profiles()
 
 
 def load_hardware_profiles(path: Path | None = None) -> HardwareProfileSet:

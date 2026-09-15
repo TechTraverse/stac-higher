@@ -131,3 +131,17 @@ def test_bounds_cases_from_the_fixture(case):
         with pytest.raises(HardwareProfileError) as err:
             check_hardware_bounds(**kwargs)
         assert str(err.value) == case["reason"]
+
+
+def test_checkout_fallback_is_lazy_and_survives_a_shallow_install(monkeypatch):
+    """K-1 landed note: the image has this module at /app/src/pipeline/process
+    (five ancestors, not six); computing the checkout fallback at import time
+    raised IndexError and crash-looped the worker. Resolving it lazily — and
+    tolerating a shallow path — is what lets the image boot."""
+    from pipeline.process import hardware
+
+    monkeypatch.setattr(hardware, "__file__", "/app/src/pipeline/process/hardware.py")
+    path = hardware.hardware_profiles_path({})
+    assert path.name == "local.json"
+    override = {hardware.PROFILES_ENV_VAR: "/x/p.json"}
+    assert hardware.hardware_profiles_path(override) == Path("/x/p.json")
