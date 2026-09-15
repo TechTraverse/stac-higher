@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.12, Procrastinate 3.9 (`App.run_worker_async(queues=, concurrency=, name=)`; `App.task(queue=)`), psycopg 3 + psycopg_pool, prometheus_client, pytest (`asyncio_mode = "auto"`), ruff.
 
-**Spec:** `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` §3 (M3-D row + dependency spine), §5 (the review must cover module-level state, shared clients, `to_thread` sizing), §7 decisions 2 and 4 (concurrency default 12; the `flow_stats` batching carve-out), §8 (the conceded objection); `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md` M3-S-C (the claim audit table, the FETCH defect, the queue-split recommendation) and M3-S-D "`flow_stats` — measured"; `TODO.md` M3 queue, "M3-D · concurrency" slice text and the "M3-B landed" / "M3-C landed" notes.
+**Spec:** `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` §3 (M3-D row + dependency spine), §5 (the review must cover module-level state, shared clients, `to_thread` sizing), §7 decisions 2 and 4 (concurrency default 12; the `flow_stats` batching carve-out), §8 (the conceded objection); `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md` M3-S-C (the claim audit table, the FETCH defect, the queue-split recommendation) and M3-S-D "`flow_stats` — measured"; GitHub issue #4 "M3-D · concurrency" and the M3 epic #1 (the "M3-B landed" / "M3-C landed" facts are in `docs/FEATURES.md`).
 
 ## Global Constraints
 
-- **Worktree:** `git worktree add .claude/worktrees/m3-d-concurrency -b ai/m3-d-concurrency ai/main` — only after **M3-C has merged into `ai/main`** (Task 0 checks; spec §3: "the one ordering that is not negotiable is M3-C → M3-D"). Pipeline-only: no `npm install` needed.
+- **Worktree:** `git worktree add .claude/worktrees/m3-d-concurrency -b feat/m3-d-concurrency main` (GitHub issue #4) — only after **M3-C has merged into `main`** (Task 0 checks; spec §3: "the one ordering that is not negotiable is M3-C → M3-D"). Pipeline-only: no `npm install` needed.
 - **Gates before merge:** from `services/pipeline/`: `uv run pytest -q` and `uv run ruff check .`; from the worktree root `npm run verify` (the lead runs it after merge; teammates run pytest + ruff only). Teammates never run e2e, the dev server, or Docker.
 - **Settled numbers (spec §7):** `WORKER_CONCURRENCY` default **12** — the TOTAL job slots in the process; `WORKER_BYTES_CONCURRENCY` default **4** of those go to the `bytes` queue, the `default` queue gets the remaining **8**. `DB_POOL_MAX` (16) already satisfies `>= WORKER_CONCURRENCY + 4`; it is not changed.
 - **Queue names:** exactly two — `"default"` (Procrastinate's own default queue name; every task and every periodic that does not say otherwise) and `"bytes"`. The `bytes` queue carries **`pipeline.ingest_fetch`, `pipeline.ingest_itemize`, `pipeline.deliver`** and nothing else: the jobs that hold object bytes or a GDAL block cache in the worker's memory. `process_run_now` stays on `default` (it holds a slot for a whole container run and stages inputs through its own 4-way semaphore); `finalize`/`process_finalize` stay on `default` (same-bucket server-side copies). Memory, not I/O, is what the `bytes` queue bounds.
@@ -29,11 +29,11 @@
 
 ---
 
-### Task 0: Precondition — M3-C is on `ai/main`
+### Task 0: Precondition — M3-C is on `main`
 
 **Files:** none.
 
-- [ ] From the worktree: `git log --oneline ai/main -20 | grep -i 'm3-c'` shows the M3-C merge, and `grep -n 'gdal_cachemax_mb\|fetch_transfer_concurrency' services/pipeline/src/pipeline/config.py` prints both fields. If either is missing, STOP and report — raising concurrency against whole-object buffering is the OOM the spec forbids.
+- [ ] From the worktree: `git log --oneline main -20 | grep -i 'm3-c'` shows the M3-C merge, and `grep -n 'gdal_cachemax_mb\|fetch_transfer_concurrency' services/pipeline/src/pipeline/config.py` prints both fields. If either is missing, STOP and report — raising concurrency against whole-object buffering is the OOM the spec forbids.
 
 ---
 
@@ -1096,7 +1096,7 @@ Memory-envelope section (M3-C's): change `× WORKER_CONCURRENCY` in the formula 
 
 - [ ] **Step 3:** ISSUES I-40 — append a paragraph: "**M3-D (2026-09-<merge day>):** in-process concurrency is 12 across two queues (`default` 8 / `bytes` 4); the one non-atomic ledger leg S-C found (`ingest_files` settled → fetching) is a compare-and-set; ITEMIZE's `flow_stats` bump is batched. Multi-instance stays a deployment option, not a slice: the periodic deferrer dedupes across processes and every claim leg is atomic (S-C's audit + M3-D's table in the pipeline README). Leader election remains Phase 8." Leave its status emoji unless the entry's own text says what closes it.
 
-- [ ] **Step 4:** FEATURES M3 sentence: "M3-D (2026-09-<merge day>) raised worker concurrency to 12 across a `default` (8) and a `bytes` (4: FETCH/ITEMIZE/deliver) queue, made the FETCH claim a compare-and-set, batched ITEMIZE's `flow_stats` writes, sized the blocking-call executor to the slots, and added `pipeline_jobs_in_flight`; measured numbers in `TODO.md` "M3-D landed"."
+- [ ] **Step 4:** FEATURES M3 sentence: "M3-D (2026-09-<merge day>) raised worker concurrency to 12 across a `default` (8) and a `bytes` (4: FETCH/ITEMIZE/deliver) queue, made the FETCH claim a compare-and-set, batched ITEMIZE's `flow_stats` writes, sized the blocking-call executor to the slots, and added `pipeline_jobs_in_flight`; measured numbers in the M3-D PR (issue #4)."
 
 - [ ] **Step 5:** `uv run ruff check .` (docs only, still run) → commit: `docs(pipeline): M3-D — concurrency, the two queues, the memory envelope multiplier, the shared-state audit; I-40 updated`
 
@@ -1104,11 +1104,11 @@ Memory-envelope section (M3-C's): change `× WORKER_CONCURRENCY` in the formula 
 
 ### Task 6: Measure, the G-3 check, merge (lead only, Docker)
 
-**Files:** `TODO.md` ("M3-D landed" note under Discovered follow-ups; tick M3-D; the G queue's G-3 owed-check line), `docs/FEATURES.md` / `docs/ISSUES.md` dates.
+**Files:** the PR body ("M3-D landed" note: numbers, deviations, the G-3 owed check result — also comment it on issue #20), epic #1 (tick M3-D with the PR number), `docs/FEATURES.md` / `docs/ISSUES.md` dates.
 
-- [ ] Merge `ai/m3-d-concurrency` into `ai/main` `--no-ff`; `npm run verify`; pytest + ruff. Deploy: `docker compose build pipeline && docker compose up -d pipeline`; confirm the startup log carries `worker_concurrency: 12, worker_bytes_concurrency: 4` and no sizing WARNING; the canary is fresh.
+- [ ] Rebase onto `main`; `npm run verify`; pytest + ruff; push and open the PR (`Closes #4`), squash-merge when CI is green. Deploy: `docker compose build pipeline && docker compose up -d pipeline`; confirm the startup log carries `worker_concurrency: 12, worker_bytes_concurrency: 4` and no sizing WARNING; the canary is fresh.
 - [ ] **Throughput + memory** (`set -a; source .env; set +a`, from `services/pipeline/`): `uv run python -m pipeline.loadgen --label m3d setup --mode copy --metadata defaults_only`; `feed --rate 0 --count 2000 --asset-bytes 65536` (saturation) while `docker stats stac-higher-pipeline-1 --no-stream` is sampled every 5 s into a file and `curl -s :8083/metrics | grep jobs_in_flight` every 10 s; then `feed --rate 30 --count 1800` with `watch --seconds 120 --interval 20`. Record: items/s at saturation vs M3-B's baseline (kept pace with 30/s; the pre-pool baseline lagged at 21–24/s), peak RSS and whether it is flat across the sustained window, max `jobs_in_flight` per queue (≤ 8 default, ≤ 4 bytes), `db_pool` `requests_waiting` from `/health`, any `PoolTimeout` in the pipeline log, and the duplicate-work check — `flow_stats->>'items'` for the loadgen association equals the pgstac item count for its collection (a double FETCH would over-count).
-- [ ] **G-3 owed check** (G-3 plan Task 6): `--label m3dx setup --metadata extractor --deliver`, `feed --rate 30 --count 300 --profile opaque`; then `select id, attempts from stac_higher.process_runs where attempts > 1 and status = 'succeeded'` is empty; `select count(*), count(distinct (args->>'run_id')) from procrastinate.procrastinate_jobs where task_name = 'pipeline.process_run_now'` are equal; a burst of N items for one source produced ≤ N runs. Record in TODO.md's G queue and tick the owed line.
+- [ ] **G-3 owed check** (G-3 plan Task 6): `--label m3dx setup --metadata extractor --deliver`, `feed --rate 30 --count 300 --profile opaque`; then `select id, attempts from stac_higher.process_runs where attempts > 1 and status = 'succeeded'` is empty; `select count(*), count(distinct (args->>'run_id')) from procrastinate.procrastinate_jobs where task_name = 'pipeline.process_run_now'` are equal; a burst of N items for one source produced ≤ N runs. Record the result as a comment on issue #20 and tick its loadgen half.
 - [ ] `teardown` both labels. Write the "M3-D landed" note (deviations, every number, owed steps); tick M3-D; update `docs/FEATURES.md` dates; commit docs; the K queue's K-4 is now unblocked (K plan text).
 
 ---

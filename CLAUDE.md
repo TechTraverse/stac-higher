@@ -6,9 +6,10 @@ Everything canonical lives in `AGENTS.md` (imported above) and `.agents/skills/`
 This file holds only what other harnesses can't use.
 
 ## Worktrees
-`EnterWorktree` branches from `origin/main` by default — wrong for this repo.
-Create manually off `ai/main` first, then enter by path:
-`git worktree add .claude/worktrees/<name> -b ai/<name> ai/main`
+`EnterWorktree` branches from `origin/main`, which is fine only if the local
+`main` is current. Prefer creating manually off a freshly fetched `main`, then
+enter by path:
+`git fetch origin main && git worktree add .claude/worktrees/<slug> -b feat/<slug> origin/main`
 
 ## Automated hooks (`.claude/settings.json`, committed)
 - **PostToolUse (Edit|Write)**: after any `.ts`/`.tsx`/`.astro` edit, a scoped
@@ -21,15 +22,16 @@ These run without prompting. If a hook blocks an action, read its message — it
 explains what to do instead.
 
 ## Team tasks
-Each teammate gets its own worktree off `ai/main`. The lead merges all branches
-into `ai/main` after teammates finish (full orchestrator prompt:
+Each teammate gets its own worktree off `main` and exactly one issue. The lead
+opens the PRs after teammates finish (full orchestrator prompt:
 `.claude/prompts/ai-loop.md`). Coordination mechanism:
-- `TaskCreate` one task per workstream; create a final lead-integration task
+- `TaskCreate` one task per issue; create a final lead-integration task
   blocked by the workstream task IDs.
 - Spawn each teammate via `Agent` with `run_in_background: true` and a
-  self-contained prompt: its branch name, the plan section to read, and the
-  standing constraint "run `npm run verify` only — no e2e, no dev server, no
-  Docker".
-- Teammates report on completion; don't poll. After all report, the lead merges
-  `--no-ff` in order, resolves conflicts per AGENTS.md, then runs verify (and
-  e2e if UI flows changed) serially on `ai/main`.
+  self-contained prompt: its issue number, branch name, the plan to read, and
+  the standing constraint "run `npm run verify` only — no e2e, no dev server,
+  no Docker, no push".
+- Teammates report on completion; don't poll. After each reports, the lead
+  pushes the branch, opens the PR (`Closes #<n>`), runs the lead-only steps
+  (e2e if UI flows changed, Docker measurement, live check) serially, and
+  squash-merges. Later branches rebase onto `main` before their PR.

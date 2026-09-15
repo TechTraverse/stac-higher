@@ -666,7 +666,7 @@ and the platform's compliance posture (supply-chain review before adoption).
 textarea (dependency-free first accreditation surface); when editor UX was
 justified, CodeMirror 6 — never Monaco (~98MB unpacked, worker architecture).
 **Adopted in UI-5 (ADR 0017 §6).** Supply-chain review recorded here, since
-this repo merges to `ai/main` rather than through a PR:
+this repo merged to a local `ai/main` rather than through a PR at the time:
 - **Packages (7, all pinned exactly via `--save-exact`):**
   `@codemirror/state` 6.7.2, `@codemirror/view` 6.43.10,
   `@codemirror/commands` 6.11.0, `@codemirror/language` 6.12.4,
@@ -1280,7 +1280,7 @@ Logged when V-4 closed the V queue; none is a defect.
 - Whole-span footprints toggle; click-through on imagery to the item at that tick.
 - A seeded demo vector table (e.g. GOES hotspot points) — today's tipg lists only PostGIS function collections, so the Vector tiles section has nothing real to show.
 - Function collections that need parameters cannot draw: the V-4 live check added `public.st_hexagongrid` — TileJSON 200, every tile 422 `Missing Required parameters … size`, maplibre marks the source errored and stops requesting (nothing drawn, no error UI). Of tipg's six functions only `public.postgis_srs_all` serves a 200 tile (5 MB, no geometry) and `public.st_subdivide` 500s. A parameter UI (spec §4.5 lists none) or a real table is needed before the section shows anything.
-- I-122–I-125 are reserved by the C-queue spec branch `ai/c-images-spec`, not yet on ai/main — do not reuse them.
+- I-122–I-125 are reserved by the C-queue spec branch `docs/c-images-spec` (draft PR open, not yet on `main`) — do not reuse them.
 - A pre-warmed mosaic cache for smooth first-pass playback (shared with I-108).
 - Vector layers are not hoverable and contribute no ticks (spec §4.4/§4.6 as written).
 - Tracked in: `app/src/components/map/`, `docs/superpowers/specs/2026-09-04-map-page-design.md` §8.

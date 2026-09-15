@@ -15,12 +15,16 @@
       "Bash(ls *)",
       "Bash(find *)",
       "Bash(wc *)",
-      "Bash(mkdir *)"
+      "Bash(mkdir *)",
+      "Bash(gh issue *)",
+      "Bash(gh pr *)",
+      "Bash(gh label *)"
     ],
     "deny": [
       "Bash(rm -rf *)",
       "Bash(git push --force *)",
-      "Bash(git reset --hard *)"
+      "Bash(git reset --hard *)",
+      "Bash(git push * main)"
     ]
   },
   "hooks": {
