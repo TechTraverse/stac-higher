@@ -153,54 +153,97 @@ class ProcrastinateQueue(QueueBackend):
         REPLACES the previous handler rather than layering, so the second
         worker to install one would silently steal SIGTERM/SIGINT from the
         first — that worker would then never see a stop request and this
-        method's ``gather`` would hang until SIGKILL (Fix round 1, Important
-        #1). This method owns a single handler for both instead: on
-        SIGINT/SIGTERM it cancels both run tasks, which is Procrastinate's
-        documented graceful-stop path for a worker started via
-        ``run_worker_async`` — ``Worker.run`` catches the cancellation, calls
-        its own ``stop()``, waits out ``shutdown_graceful_timeout`` for
-        in-flight jobs, then re-raises ``CancelledError``, which this method
-        treats as a clean stop rather than propagating it.
+        method's wait would hang until SIGKILL (Fix round 1, Important #1).
+        This method owns a single handler for both instead: on SIGINT/SIGTERM
+        it cancels both run tasks, which is Procrastinate's documented
+        graceful-stop path for a worker started via ``run_worker_async`` —
+        ``Worker.run`` catches the cancellation, calls its own ``stop()``,
+        waits out ``shutdown_graceful_timeout`` for in-flight jobs, then
+        re-raises ``CancelledError``.
+
+        Both drains are always waited out, whichever finishes first (Fix
+        round 2, Important #1): a plain ``asyncio.gather`` with the default
+        ``return_exceptions=False`` returns as soon as the FIRST task ends,
+        leaving the sibling's ``shutdown_graceful_timeout`` drain unobserved
+        — this method instead waits for one to finish, and if that happened
+        without a stop request (i.e. a worker crashed), cancels the other
+        too before waiting for it, so a failure always tears down both
+        workers instead of abandoning one mid-run.
+
+        The previous SIGINT/SIGTERM handlers (e.g. uvicorn's own) are saved
+        before installing ours and restored in ``finally`` (Fix round 2,
+        Minor #2) — ``loop.remove_signal_handler`` alone resets the signal to
+        ``SIG_DFL``, which would make a second SIGTERM hard-kill the process
+        and skip ``main.run``'s cleanup.
         """
         await self._ensure_open()
-        default_task = asyncio.create_task(
-            self.app.run_worker_async(
-                queues=[QUEUE_DEFAULT],
-                concurrency=concurrency - bytes_concurrency,
-                name=QUEUE_DEFAULT,
-                install_signal_handlers=False,
-            )
-        )
-        bytes_task = asyncio.create_task(
-            self.app.run_worker_async(
-                queues=[QUEUE_BYTES],
-                concurrency=bytes_concurrency,
-                name=QUEUE_BYTES,
-                install_signal_handlers=False,
-            )
-        )
         loop = asyncio.get_running_loop()
         stop_requested = asyncio.Event()
+        previous_handlers = {
+            sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
+        }
+        default_task: asyncio.Task[None] | None = None
+        bytes_task: asyncio.Task[None] | None = None
 
         def _stop() -> None:
             # asyncio signal callbacks receive no arguments.
             stop_requested.set()
-            default_task.cancel()
-            bytes_task.cancel()
+            if default_task is not None:
+                default_task.cancel()
+            if bytes_task is not None:
+                bytes_task.cancel()
 
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _stop)
         try:
-            await asyncio.gather(default_task, bytes_task)
-        except asyncio.CancelledError:
-            # Only swallow a cancellation this method itself requested; a
-            # cancellation from elsewhere (e.g. the process's own task being
-            # cancelled) must still propagate.
-            if not stop_requested.is_set():
-                raise
+            # Install before creating the tasks: a failure here must not
+            # leave either task running unobserved (Fix round 2, Minor #2).
+            for sig in previous_handlers:
+                loop.add_signal_handler(sig, _stop)
+
+            default_task = asyncio.create_task(
+                self.app.run_worker_async(
+                    queues=[QUEUE_DEFAULT],
+                    concurrency=concurrency - bytes_concurrency,
+                    name=QUEUE_DEFAULT,
+                    install_signal_handlers=False,
+                )
+            )
+            bytes_task = asyncio.create_task(
+                self.app.run_worker_async(
+                    queues=[QUEUE_BYTES],
+                    concurrency=bytes_concurrency,
+                    name=QUEUE_BYTES,
+                    install_signal_handlers=False,
+                )
+            )
+
+            _done, pending = await asyncio.wait(
+                {default_task, bytes_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if pending and not stop_requested.is_set():
+                # One worker ended on its own — both run with Procrastinate's
+                # default wait=True, so only a crash ends a worker without a
+                # stop request. Stop the other too, so its own
+                # shutdown_graceful_timeout drain still happens instead of
+                # leaving it running unattended.
+                for task in pending:
+                    task.cancel()
+            if pending:
+                await asyncio.wait(pending)
+
+            failure = next(
+                (
+                    task.exception()
+                    for task in (default_task, bytes_task)
+                    if not task.cancelled() and task.exception() is not None
+                ),
+                None,
+            )
+            if failure is not None:
+                raise failure
         finally:
-            for sig in (signal.SIGINT, signal.SIGTERM):
+            for sig, previous in previous_handlers.items():
                 loop.remove_signal_handler(sig)
+                signal.signal(sig, previous)
 
     async def aclose(self) -> None:
         if self._opened:

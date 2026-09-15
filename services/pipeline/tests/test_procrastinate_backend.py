@@ -128,11 +128,19 @@ async def test_run_worker_stop_signal_cancels_both_workers(
     workers gracefully. `run_worker` owns one signal handler for both, and
     cancelling each worker's `run_worker_async` task is Procrastinate's
     documented graceful-stop path (`Worker.run` catches the cancellation,
-    calls `stop()`, and re-raises once the graceful drain is done)."""
+    calls `stop()`, and re-raises once the graceful drain is done).
+
+    Fix round 2 (Important #1): the two fakes drain at DIFFERENT speeds
+    (`bytes` sleeps 0.05s after catching the cancellation, `default` does
+    not) — `run_worker` must not return until BOTH drains have completed, not
+    just the first one (a plain `asyncio.gather` with the default
+    `return_exceptions=False` would return as soon as `default` finished,
+    leaving `bytes`'s drain unobserved)."""
     import os
     import signal
 
     started = {"default": asyncio.Event(), "bytes": asyncio.Event()}
+    drained = {"default": asyncio.Event(), "bytes": asyncio.Event()}
     cancelled: list[str] = []
 
     async def fake_run_worker_async(*, name, **kwargs):
@@ -140,7 +148,10 @@ async def test_run_worker_stop_signal_cancels_both_workers(
         try:
             await asyncio.Event().wait()  # block forever, like the real worker
         except asyncio.CancelledError:
+            if name == "bytes":
+                await asyncio.sleep(0.05)  # the slower drain
             cancelled.append(name)
+            drained[name].set()
             raise
 
     async def fake_open():
@@ -154,10 +165,56 @@ async def test_run_worker_stop_signal_cancels_both_workers(
         asyncio.gather(*(event.wait() for event in started.values())), timeout=1
     )
 
+    # Fix round 2 (Minor #3): confirm our handler actually replaced the
+    # default disposition before sending a real signal — a future regression
+    # should fail this assertion, not kill pytest with an unhandled SIGTERM
+    # (exit 143).
+    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+
     os.kill(os.getpid(), signal.SIGTERM)
+
+    # `default` drains immediately; `bytes` is still mid-sleep — the overall
+    # task must still be running.
+    await asyncio.wait_for(drained["default"].wait(), timeout=1)
+    assert not task.done()
+    assert not drained["bytes"].is_set()
+
     await asyncio.wait_for(task, timeout=1)
 
+    assert drained["bytes"].is_set()
     assert set(cancelled) == {"default", "bytes"}
+
+
+async def test_run_worker_cancels_the_sibling_when_one_worker_crashes(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 2 (Important #1, error path): a worker ending on its own
+    (without a stop request) is a crash, not a graceful stop — its sibling
+    must be cancelled too instead of being left running unattended, and the
+    original failure must still propagate."""
+    cancelled: list[str] = []
+
+    async def fake_run_worker_async(*, name, **kwargs):
+        if name == "default":
+            raise RuntimeError("boom")
+        try:
+            await asyncio.Event().wait()  # block forever, like the real worker
+        except asyncio.CancelledError:
+            cancelled.append(name)
+            raise
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await asyncio.wait_for(
+            queue.run_worker(concurrency=12, bytes_concurrency=4), timeout=1
+        )
+
+    assert cancelled == ["bytes"]
 
 
 def test_connector_pool_sized_to_worker_concurrency_by_default(queue: ProcrastinateQueue):
