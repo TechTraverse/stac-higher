@@ -10,7 +10,7 @@ just a wasted read.
 
 | Queue | What it is | State |
 |---|---|---|
-| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference; **M3-C merged 2026-09-14** (measured; I-129 re-measure owed); M3-D plan written (`2026-09-14-m3-d-concurrency.md`) |
+| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference; **M3-C merged 2026-09-14** (measured twice; I-129 closed 2026-09-15); M3-D plan written (`2026-09-14-m3-d-concurrency.md`) |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
@@ -123,7 +123,7 @@ load report recorded M-gate style in ROADMAP §9.
       run in a transaction block. `query_queue.py` says so at the class:
       "M3-B: keep this off the transactional repo pool." M3-B's async pool
       is a THIRD object; `configure_pgstac_session_async` exists for it.
-- [x] **M3-C · bounded-memory byte path.** (merged 2026-09-14, `ai/m3-c-byte-path` ec31710; measured — fetch 5.4× faster, itemize 4.5× slower (I-129), RSS not lower in a confounded window; re-measure owed) Spec §3, S-E; closes I-19/I-26.
+- [x] **M3-C · bounded-memory byte path.** (merged 2026-09-14, `ai/m3-c-byte-path` ec31710; re-measured 2026-09-15 with the I-129 tuning — itemize 0.094 s, RSS flat at ~212–245 MiB, copy 60/60) Spec §3, S-E; closes I-19/I-26.
       Three parts. (1) **EXTRACT reads through a URI, not a buffer**: swap the
       `MemberByteSource` seam from `-> bytes` to something GDAL can open
       (`/vsis3`). Measured: byte-identical STAC item including
@@ -903,9 +903,18 @@ processor's job by the decision above and stays so.
   ~135 MiB), so the per-item transient is bounded but the steady state is
   higher and the comparison is confounded by the demo. One catalogued item's
   `raster:bands` statistics/histogram are **identical** to the baseline
-  item's. **OWED:** re-measure in a quiet window (demo caught up, pipeline
-  restarted) after the I-129 GDAL tuning, and record whether RSS is flat
-  across the run; artifacts in
+  item's. **Re-measured 2026-09-15 03:00Z (label `m3c-vsi`, the I-129 vsicurl
+  tuning merged at ea5e0b2, pipeline restarted 2 min before, the GOES demo on
+  its steady 5-min cadence — not a fully quiet window, but no catch-up):**
+  `copy` = **60 of 60**, no fallback; `ingest_fetch` mean **0.105 s**;
+  `ingest_itemize` mean **0.094 s** (was 0.283 — 3× faster; baseline 0.063,
+  so the residual is 1.5× — the range-read latency of a /vsis3 statistics
+  pass against an in-memory read, acceptable at the M3 rates); RSS
+  **90 → 270 MiB peak** (+180; baseline +135, the untuned M3-C build +241)
+  and **FLAT**: a plateau at ~212 MiB through the feed, one bump to 270,
+  ~245 MiB after — no per-item sawtooth (the 64 MB GDAL block cache + the
+  16 MiB VSI cache filling once). `raster:bands` identical again. I-129
+  closed (narrowed). Artifacts in
   `.superpowers/sdd/2026-09-09-m3-c-bounded-memory-byte-path/measurement/`.
   **Deferred minors (final review, logged not fixed):** a shared Source/Layer
   test-mock helper (verbatim in four test files); read `vector_layers[0].id`

@@ -1311,7 +1311,7 @@ gate on the connection's credentials in `transfer_policy`.
 - Tracked in: `services/pipeline/src/pipeline/connections/adapters/s3.py`, `services/pipeline/src/pipeline/ingest/transfer.py`.
 - Found in: M3-C Task 5 review (2026-09-14).
 
-### I-129 · Copy-mode `raster_auto` EXTRACT through `/vsis3` is ~4.5× slower than the buffered read it replaced 🟠
+### I-129 · Copy-mode `raster_auto` EXTRACT through `/vsis3` is ~4.5× slower than the buffered read it replaced 🟢 resolved (narrowed)
 The M3-C measurement (60 × 64 MB GeoTIFFs on local MinIO, `with_raster`
 statistics) put `ingest_itemize` at 0.283 s mean against the 0.063 s baseline
 while fetch went 0.359 → 0.067 s (server-side copy) and the items stayed
@@ -1326,6 +1326,7 @@ demo's catch-up in the same process — re-measure in a quiet window too.
 - Tracked in: `services/pipeline/src/pipeline/ingest/raster_io.py`, `docker-compose.yml` (pipeline env).
 - Found in: M3-C Task 7 measurement (2026-09-14).
 - Status 2026-09-15: vsicurl tuning applied in `raster_io.py` (`VSICURL_TUNING`); re-measurement by the lead pending.
+- Resolved 2026-09-15 (ea5e0b2 + the `m3c-vsi` measurement): itemize mean 0.283 → **0.094 s** (baseline 0.063 — the residual 1.5× is the range-read latency of a statistics pass over `/vsis3` against an in-memory read, accepted); RSS flat at ~212–245 MiB across 60 × 64 MB items (peak 270 from a 90 MiB start). Not tuned further: `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` also hides a pre-existing `.aux.xml` beside an object, so precomputed statistics no longer short-circuit the pass — the pipeline's sidecar strategy reads sidecars through the adapter, not GDAL's probe, so nothing depends on it.
 
 ## Resolved — archived
 
