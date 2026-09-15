@@ -10,11 +10,11 @@ just a wasted read.
 
 | Queue | What it is | State |
 |---|---|---|
-| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference; **M3-C merged 2026-09-14** (measured twice; I-129 closed 2026-09-15); M3-D plan written (`2026-09-14-m3-d-concurrency.md`) |
+| **M3** | NOAA-scale readiness: ~60 items/s sustained, measured | Spec approved. **M3-A merged 2026-09-08; M3-B0 (harness hygiene + ADR 0020) merged 2026-09-09; M3-B merged 2026-09-14 (19.5 → 0.10 sessions/item); M3-C next (plan written 2026-09-09).** The ordering below is a dependency spine, not a preference; **M3-C merged 2026-09-14** (measured twice; I-129 closed 2026-09-15); **M3-D in progress** on `ai/m3-d-concurrency` (Tasks 1–2 reviewed clean, 594e55c; paused 2026-09-15 — Tasks 3–6 owed); M3-F and M3-G plans written 2026-09-15 (`2026-09-15-m3-f-gc-at-rate.md`, `2026-09-15-m3-g-queue-table-retention.md`) |
 | **G** | GOES GeoColor loop: NODD → COG → deliver → tiles | **Queue complete 2026-09-04** (G-1…G-8 merged), standing demo running since 2026-09-04. Only G-8's lead-only live gate remains — see the follow-ups |
 | **P** | Pipeline graph: per-product lineage lines + a full graph view + ghost-node fix | **Queue complete 2026-09-04** (P-1…P-4 merged). Two follow-ups in the follow-ups section |
 | **X** | Built-in extractor library: stactools packages as one-click extractors | Spec **approved 2026-09-04**, **worked first**. X-1 merged 2026-09-04 (the set is **eleven**, not fourteen — I-107); X-2 next; X-3 coordinates with K-1; X-4 takes migration **028** |
-| **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. K-1 may start; K-3 takes migration **029** (X-4 has 028); K-4 coordinates with M3-D |
+| **K** | Process compute on Kubernetes + Kueue, hardware profiles | Spec **approved 2026-09-04**. **K-1 merged 2026-09-15** (I-130…I-132); K-2 plan written (`2026-09-15-k2-hardware-picker.md`, SDD workspace pre-flighted) and K-3 plan written (`2026-09-15-k3-docker-profile-capacity.md`, takes migration **029** + a ruled `next_attempt_at` column); K-4 only after M3-D merges |
 | **W** | Ingest date window + retention cap | **Queue complete 2026-09-02** (W-1 and W-2 merged). Only the two lead-only live checks remain — see the follow-ups |
 | **V** | Map page: the catalog's products as map layers (footprints, titiler imagery, tipg vector tiles) on one time axis | Spec **approved 2026-09-04**. V-1 merged 2026-09-04, V-2 merged 2026-09-08, V-3 merged 2026-09-14 (closes I-112), **V-4 merged 2026-09-14 — queue complete** (I-126 holds the spec §8 deferrals, I-127 the cached-listing nit). No migrations |
 | **D** | Item lineage: `derived_from` links stamped on process outputs at finalize | Written 2026-09-06 (lead question, no separate spec — the slice text is the design). Two slices: D-1 pipeline stamp, D-2 item-page rendering (decisions settled 2026-09-07). No migrations |
@@ -141,7 +141,7 @@ load report recorded M-gate style in ROADMAP §9.
       decrypted credentials into a GDAL session. Nothing new is exposed — the
       worker already decrypts them via `build_adapter` — but it is a new place
       they live. SFTP/FTP sources keep the buffered `get()` (I-83).
-- [ ] **M3-D · concurrency.** Spec §3, S-C. The remaining ~5.5×. Worker
+- [ ] **M3-D · concurrency.** (IN PROGRESS: `ai/m3-d-concurrency` at 594e55c — Task 1 settings + Task 2 two queues/two workers reviewed clean after two fix rounds; Tasks 3–5, the final review and the lead's Task 6 owed; ledger `.superpowers/sdd/2026-09-14-m3-d-concurrency/progress.md`) Spec §3, S-C. The remaining ~5.5×. Worker
       concurrency as a setting, **default 12** (`run_worker_async()` currently
       takes Procrastinate's `WORKER_CONCURRENCY = 1` for the whole service).
       Split the byte-heavy stages onto their own queue with a smaller
@@ -511,7 +511,7 @@ nothing in the K queue is waiting on the G queue. K-4 changes the worker's job m
 independent and may run in parallel with anything. K-8/K-9 are Phase 8 work
 and need a cloud account — lead-gated.
 
-- [ ] **K-1 · Hardware-profile contract + runtime `hardware` block.** Spec
+- [x] **K-1 · Hardware-profile contract + runtime `hardware` block.** (merged 2026-09-15, `ai/k1-hardware` 08a0a03 — gated; the lead's e2e + live check are OWED, see the landed note) Spec
       §3, §4. New fixture `hardware-profiles.json` + a loader in both
       runtimes (`PROCESS_HARDWARE_PROFILES_FILE`; in-repo default sets under
       `infra/hardware-profiles/`); `runtimeLimits` in
@@ -922,6 +922,59 @@ processor's job by the decision above and stays so.
   layer chained beneath a vector layer; `fetchTipgCollections` ignores the
   query's AbortSignal; a `max-h` cap on the popover now that it has two
   sections; `StacLayerView`'s implicit `undefined` return for a future kind.
+- **K-1 landed 2026-09-15 (`ai/k1-hardware`, merge 08a0a03 + post-merge fix
+  0d85c51) — merged, gated, deployed; the lead's e2e + Chrome live check are
+  OWED.** Five tasks + a final-review fix wave (Opus reviews, all clean):
+  `tests/contract-fixtures/hardware-profiles.json` (bounds messages pinned by
+  string equality in both suites), `infra/hardware-profiles/local.json`
+  (`standard` cpu 0.25–4 / mem 128–16384, `cpu-large`), the pipeline reader
+  (`process/hardware.py`: lenient parser, `check_hardware_bounds`,
+  `load_hardware_profiles`), the app reader (`lib/processes/hardware.ts`:
+  strict Zod, `hardwareBoundsError`, `publicProfiles`) and
+  `GET /api/processes/hardware-profiles` (member+, `backend` stripped), the
+  runtime `hardware {profile, cpu, gpu_count}` block (absent ⇒ `standard`/1/0
+  on both sides, pinned through `process-runtime.json`), the deploy-route 400
+  on EVERY deploy path (hand-written and — after the final review — the
+  built-in ones too), launch-time re-check in `run_one` (`dead` run naming
+  the bound), `RunSpec.cpu/gpu_count/profile/priority` (`interactive` for a
+  UI test run; nothing reads them until K-3/K-5), packaging via a second
+  named build context `hardware` for BOTH images + `PROCESS_HARDWARE_PROFILES_FILE`.
+  **Rulings:** an unreadable/missing profile FILE is an infrastructure fault →
+  requeue without spending an attempt (WARNING), only a bounds violation /
+  unknown profile is `dead` (I-132 tracks the no-alert hole);
+  `Settings.process_hardware_profiles_file` is threaded into `run_one` (the
+  plan had left it dead); `accelerator: {}` is kept as `{}` (was collapsed to
+  `None` after the invariant check). **Post-merge deviation:** the first
+  deploy crash-looped — `hardware.py` computed the checkout fallback with
+  `Path(__file__).parents[5]` at import time, which has no sixth ancestor
+  inside the image (`/app/src/pipeline/process`); fixed on `ai/main`
+  (0d85c51: lazy, shallow-safe) with a test; the container is healthy with
+  `/app/share/hardware-profiles/local.json`. Gates on `ai/main`: verify 1550,
+  pytest 1235, ruff clean. **OWED (lead Task 6, not run — the loop was paused
+  at the user's request):** e2e (`processes` spec, then the suite; baseline
+  46/1), the live `GET /api/processes/hardware-profiles` and an out-of-bounds
+  deploy → 400 in Chrome. Issues: I-130 (stored `memory_mb` above a
+  profile ceiling dies at launch), I-131 (free-form memory in the deploy form
+  — K-2 closes it), I-132. Deferred minors (final review, not fixed): numeric
+  type guards in `check_hardware_bounds` (K-3), the two 18-line requeue
+  blocks in `runner.py`, `hardware: null` fixture cases, the 500 body echoing
+  the profile path, the profile-id regex in four places. Next: K-2 (plan
+  `2026-09-15-k2-hardware-picker.md`, workspace pre-flighted) then K-3
+  (plan `2026-09-15-k3-docker-profile-capacity.md`).
+- **M3-D paused 2026-09-15 (`ai/m3-d-concurrency` at 594e55c, worktree kept).**
+  Task 1 (settings) and Task 2 (two queues / two workers, `jobs_in_flight`
+  gauge, executor sizing) reviewed clean after two fix rounds: both workers
+  run `install_signal_handlers=False` with ONE backend-owned handler that
+  cancels both run tasks (procrastinate 3.9's documented graceful path),
+  both drains are waited out on stop and on a sibling crash, previous
+  handlers are restored; the Procrastinate connector pool is sized to
+  `WORKER_CONCURRENCY + 4` (ruling — psycopg_pool's default max 4 would have
+  starved 12 slots). Deferred to the final review: uvicorn's `handle_exit`
+  is clobbered by `add_signal_handler`, so the CONTAINER still needs SIGKILL
+  to exit (pre-existing; Task 6's restarts will show it); the outer-cancel
+  path leaves the worker tasks un-awaited; the connection budget
+  (16 + 16 + writer pool) against `max_connections`. Owed: Tasks 3–5
+  (briefs 3 and 4 extracted), the final review, lead Task 6.
 - **2026-09-14 session note (lead):** the canary was 8.5 h stale at 14:28Z
   after the host Mac spent the night in maintenance-sleep cycles (`pmset -g
   log`: DarkWake ~5 s every 15 min, 22:00–08:27 MDT); the pipeline log shows
