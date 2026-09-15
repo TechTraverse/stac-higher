@@ -47,6 +47,34 @@ def test_parse_the_sample_document():
     assert profiles.get("nope") is None
 
 
+def test_an_empty_accelerator_object_survives_parsing():
+    """`accelerator: {}` is a bare-vendor-info-less GPU declaration, not the
+    same thing as no accelerator — `gpu_count` still says which of the two it
+    is. The reader must not fold the empty object into `None` (K-1 final
+    review Item 3; the app's schema is strict and rejects this document —
+    the pipeline reader is deliberately lenient)."""
+    document = {
+        "version": 1,
+        "profiles": [
+            {
+                "id": "standard",
+                "tier": "gpu",
+                "accelerator": {},
+                "cpu": {"min": 0.25, "max": 4, "default": 1},
+                "memory_mb": {"min": 128, "max": 16384, "default": 512},
+                "gpu_count": {"min": 0, "max": 1, "default": 0},
+                "max_queue_wait_seconds": 0,
+                "image": None,
+                "backend": {},
+            }
+        ],
+    }
+    profiles = parse_hardware_profiles(document)
+    standard = profiles.standard
+    assert standard.accelerator == {}
+    assert standard.gpu_count is not None and standard.gpu_count.max == 1
+
+
 def test_default_constants_match_the_shipped_standard_profile():
     """Both readers default an absent `hardware` block to these; the shipped
     sets must agree or a stored revision without the block would launch

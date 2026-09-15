@@ -27,7 +27,9 @@ jobs:
             context: .
             # The built-in extractor registry, bundled at build time (X-4),
             # and the deployment's hardware-profile set (K-1) — the app's
-            # checkout-relative fallback only works in the built bundle.
+            # checkout-relative fallback resolves against the source
+            # checkout, which is not reliable from the bundled `dist/`
+            # chunks and is not in this image at all.
             build-contexts: |
               fixtures=tests/contract-fixtures
               hardware=infra/hardware-profiles

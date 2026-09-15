@@ -83,6 +83,18 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       const entry = findBuiltinExtractor(loaded.process.builtin_id);
       if (!entry) return jsonResponse(409, { error: BUILTIN_REGISTRY_DRIFT });
       const template = builtinRevisionTemplate(entry);
+
+      // K-1: the registry template is deployed through the same gate as a
+      // hand-written revision — a registry entry that outgrows this
+      // deployment's profile ceiling is refused here, not left to die at
+      // launch (final review Item 1).
+      const builtinHardwareError = hardwareBoundsError(
+        template.runtime.hardware,
+        template.runtime.memory_mb,
+        loadHardwareProfiles(),
+      );
+      if (builtinHardwareError) return jsonResponse(400, { error: builtinHardwareError });
+
       const revision = await deployRevision({
         processId: loaded.process.id,
         runtime: template.runtime,

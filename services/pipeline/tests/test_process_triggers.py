@@ -756,11 +756,18 @@ async def test_run_one_dies_on_cpu_above_the_profile_bound():
 @pytest.mark.asyncio
 async def test_run_one_requeues_when_the_profile_file_is_unreadable(monkeypatch):
     """An unreadable/missing profile document is OUR infrastructure failing,
-    not the process's — it must not spend an attempt (K-1 Task 4 review)."""
-    monkeypatch.setenv(PROFILES_ENV_VAR, "/nonexistent/hardware-profiles/local.json")
+    not the process's — it must not spend an attempt (K-1 Task 4 review).
+
+    Injected through `Settings.process_hardware_profiles_file` (not just the
+    raw env var) to prove `run_one` reads the threaded setting rather than
+    re-reading `os.environ` itself (K-1 final review Item 2)."""
+    monkeypatch.delenv(PROFILES_ENV_VAR, raising=False)
+    settings = Settings.from_env(
+        {"PROCESS_HARDWARE_PROFILES_FILE": "/nonexistent/hardware-profiles/local.json"}
+    )
     repo = FakeProcessRepo()
     executor = MemoryExecutor(results=[ExitStatus(0)])
-    result = await _run(queued(), executor, repo)
+    result = await _run(queued(), executor, repo, settings=settings)
     assert result.status == "queued"
     assert repo.finished[-1]["status"] == "queued"
     assert repo.finished[-1]["next_attempt_at"] is not None

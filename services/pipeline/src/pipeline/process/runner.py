@@ -19,6 +19,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from pipeline.config import Settings
 from pipeline.metrics import PROCESS_RUNS
@@ -138,7 +139,12 @@ async def run_one(
     # process's, so it goes back to `queued` without spending an attempt —
     # the same shape as the executor-outage branch below.
     try:
-        profile_set = profiles or load_hardware_profiles()
+        if profiles is not None:
+            profile_set = profiles
+        elif settings.process_hardware_profiles_file:
+            profile_set = load_hardware_profiles(Path(settings.process_hardware_profiles_file))
+        else:
+            profile_set = load_hardware_profiles()
     except HardwareProfileError as err:
         transition = infrastructure_transition(
             now=at, retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS, error=str(err)

@@ -1291,6 +1291,35 @@ bound. Same shape applies to `fetchItemTileJson`.
 - Tracked in: `app/src/lib/serving/queries.ts`, `app/src/components/map/AddLayerPopover.tsx`.
 - Found in: V-4 lead live check (2026-09-14).
 
+### I-130 · Stored revisions with `memory_mb` above their profile's ceiling die at launch, with no deploy-time notice 🟡
+Neither schema ever had a `memory_mb` maximum; `standard.memory_mb.max` is now
+16384 (`infra/hardware-profiles/local.json`), so a revision deployed before
+K-1 with more memory becomes a `dead` run naming the bound
+(`check_hardware_bounds`) on its next run; a deployment shipping a tighter
+`standard` widens the exposure. No migration; fix candidates: a deploy-time
+advisory listing over-bound current revisions, or a one-off audit query in
+`docs/backend.md`.
+- Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `app/src/lib/processes/hardware.ts`.
+- Found in: K-1 final review (2026-09-15).
+
+### I-131 · The deploy form's memory input is free-form against a per-profile bound 🟡
+`ProcessDetailPage.tsx`'s `CodeCard` pins `standard` / cpu 1 and lets an
+operator type any memory; an out-of-bounds value is refused by the write gate
+with a 400 the form shows as a toast. Closed by K-2 (the hardware picker
+bounds the inputs from the profile).
+- Tracked in: `app/src/components/processes/ProcessDetailPage.tsx`.
+- Found in: K-1 Task 3 review (2026-09-14).
+
+### I-132 · A permanently unreadable hardware-profile file requeues every run forever with a WARNING only 🟡
+By ruling, an unreadable `PROCESS_HARDWARE_PROFILES_FILE` is an
+infrastructure fault (requeue, no attempt spent) rather than a dead run;
+there is no alert and no ceiling, so a mis-deployed file shows up as queued
+runs that never start plus a log line. Fix candidate: an `asset`-style
+monitor condition on repeated infrastructure requeues, or a startup
+assert-and-warn on the file (the M3-A `use_queue` pattern).
+- Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/hardware.py`.
+- Found in: K-1 Task 4/5 reviews (2026-09-15).
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

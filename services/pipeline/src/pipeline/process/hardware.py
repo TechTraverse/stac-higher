@@ -129,7 +129,7 @@ def _profile(raw: Any) -> HardwareProfile:
         label=str(raw.get("label") or profile_id),
         description=str(raw.get("description") or ""),
         tier=tier,
-        accelerator=dict(accelerator) if accelerator else None,
+        accelerator=dict(accelerator) if accelerator is not None else None,
         cpu=_bounds(raw.get("cpu"), f"{what}.cpu"),
         memory_mb=_bounds(raw.get("memory_mb"), f"{what}.memory_mb"),
         gpu_count=gpu_count,

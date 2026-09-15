@@ -41,9 +41,10 @@ COPY --from=build /srv/app/package.json ./app/package.json
 COPY --from=build /srv/app/node_modules ./app/node_modules
 COPY --from=build /srv/app/dist ./app/dist
 # The deployment's hardware-profile set (K-1 spec §3) — the app's checkout-
-# relative fallback (app/src/lib/processes/hardware.ts) only works in the
-# built bundle by luck of chunk depth, so the runtime image needs both this
-# file AND the env var above, not just the pipeline image.
+# relative fallback (app/src/lib/processes/hardware.ts) resolves against the
+# SOURCE checkout, which is not reliable from the bundled `dist/` chunks and
+# is not in this image at all, so the runtime image needs both this file AND
+# the env var above, not just the pipeline image.
 COPY --from=hardware local.json /app/share/hardware-profiles/local.json
 USER node
 EXPOSE 4321
