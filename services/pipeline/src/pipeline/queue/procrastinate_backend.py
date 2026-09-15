@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from collections.abc import Sequence
 
 import procrastinate
@@ -34,7 +35,19 @@ logger = logging.getLogger(__name__)
 class ProcrastinateQueue(QueueBackend):
     name = "procrastinate"
 
-    def __init__(self, database_url: str, *, schema: str = "procrastinate") -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        schema: str = "procrastinate",
+        # Fix round 1 (Important #3): unsized, psycopg_pool defaults to
+        # max_size=4 — 12 job slots' fetch/finish/heartbeat round trips would
+        # share 4 connections and PoolTimeout under load. Defaults here match
+        # DEFAULT_WORKER_CONCURRENCY (12) + 4, build_queue overrides max_size
+        # from the real settings.
+        pool_min_size: int = 2,
+        pool_max_size: int = 16,
+    ) -> None:
         if not schema.isidentifier():
             raise ValueError(f"invalid schema name: {schema!r}")
         self.database_url = database_url
@@ -43,6 +56,8 @@ class ProcrastinateQueue(QueueBackend):
         self.app = procrastinate.App(
             connector=procrastinate.PsycopgConnector(
                 conninfo=database_url,
+                min_size=pool_min_size,
+                max_size=pool_max_size,
                 # applied to every pooled connection: keep Procrastinate's
                 # objects out of public / stac_higher
                 kwargs={"options": f"-c search_path={schema},public"},
@@ -132,18 +147,60 @@ class ProcrastinateQueue(QueueBackend):
         Both run a periodic deferrer; the second defer of every tick hits the
         UNIQUE (task_name, periodic_id, defer_timestamp) row and is logged by
         Procrastinate as already deferred — one execution per tick, as before.
+
+        Each worker's own signal handling is disabled
+        (``install_signal_handlers=False``): asyncio's ``add_signal_handler``
+        REPLACES the previous handler rather than layering, so the second
+        worker to install one would silently steal SIGTERM/SIGINT from the
+        first — that worker would then never see a stop request and this
+        method's ``gather`` would hang until SIGKILL (Fix round 1, Important
+        #1). This method owns a single handler for both instead: on
+        SIGINT/SIGTERM it cancels both run tasks, which is Procrastinate's
+        documented graceful-stop path for a worker started via
+        ``run_worker_async`` — ``Worker.run`` catches the cancellation, calls
+        its own ``stop()``, waits out ``shutdown_graceful_timeout`` for
+        in-flight jobs, then re-raises ``CancelledError``, which this method
+        treats as a clean stop rather than propagating it.
         """
         await self._ensure_open()
-        await asyncio.gather(
+        default_task = asyncio.create_task(
             self.app.run_worker_async(
                 queues=[QUEUE_DEFAULT],
                 concurrency=concurrency - bytes_concurrency,
                 name=QUEUE_DEFAULT,
-            ),
-            self.app.run_worker_async(
-                queues=[QUEUE_BYTES], concurrency=bytes_concurrency, name=QUEUE_BYTES
-            ),
+                install_signal_handlers=False,
+            )
         )
+        bytes_task = asyncio.create_task(
+            self.app.run_worker_async(
+                queues=[QUEUE_BYTES],
+                concurrency=bytes_concurrency,
+                name=QUEUE_BYTES,
+                install_signal_handlers=False,
+            )
+        )
+        loop = asyncio.get_running_loop()
+        stop_requested = asyncio.Event()
+
+        def _stop() -> None:
+            # asyncio signal callbacks receive no arguments.
+            stop_requested.set()
+            default_task.cancel()
+            bytes_task.cancel()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _stop)
+        try:
+            await asyncio.gather(default_task, bytes_task)
+        except asyncio.CancelledError:
+            # Only swallow a cancellation this method itself requested; a
+            # cancellation from elsewhere (e.g. the process's own task being
+            # cancelled) must still propagate.
+            if not stop_requested.is_set():
+                raise
+        finally:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.remove_signal_handler(sig)
 
     async def aclose(self) -> None:
         if self._opened:

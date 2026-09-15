@@ -4,6 +4,8 @@ Constructing the backend and registering tasks must not open connections —
 these tests would hang or error otherwise.
 """
 
+import asyncio
+
 import pytest
 
 from pipeline.jobs import heartbeat
@@ -112,3 +114,66 @@ async def test_run_worker_starts_one_worker_per_queue(queue: ProcrastinateQueue,
     assert by_name["default"]["concurrency"] == 8
     assert by_name["bytes"]["queues"] == ["bytes"]
     assert by_name["bytes"]["concurrency"] == 4
+    # Fix round 1 (Important #1): each worker's own signal handling must stay
+    # off, or the second worker to install one steals SIGTERM/SIGINT from the
+    # first (asyncio.add_signal_handler replaces, it does not layer).
+    assert by_name["default"]["install_signal_handlers"] is False
+    assert by_name["bytes"]["install_signal_handlers"] is False
+
+
+async def test_run_worker_stop_signal_cancels_both_workers(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 1 (Important #1): a single SIGTERM/SIGINT must stop BOTH
+    workers gracefully. `run_worker` owns one signal handler for both, and
+    cancelling each worker's `run_worker_async` task is Procrastinate's
+    documented graceful-stop path (`Worker.run` catches the cancellation,
+    calls `stop()`, and re-raises once the graceful drain is done)."""
+    import os
+    import signal
+
+    started = {"default": asyncio.Event(), "bytes": asyncio.Event()}
+    cancelled: list[str] = []
+
+    async def fake_run_worker_async(*, name, **kwargs):
+        started[name].set()
+        try:
+            await asyncio.Event().wait()  # block forever, like the real worker
+        except asyncio.CancelledError:
+            cancelled.append(name)
+            raise
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+
+    task = asyncio.create_task(queue.run_worker(concurrency=12, bytes_concurrency=4))
+    await asyncio.wait_for(
+        asyncio.gather(*(event.wait() for event in started.values())), timeout=1
+    )
+
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.wait_for(task, timeout=1)
+
+    assert set(cancelled) == {"default", "bytes"}
+
+
+def test_connector_pool_sized_to_worker_concurrency_by_default(queue: ProcrastinateQueue):
+    # Fix round 1 (Important #3): unsized, psycopg_pool defaults to max_size=4
+    # — 12 slots' fetch/finish/heartbeat round trips would share 4 connections
+    # and PoolTimeout under load. Defaults here track DEFAULT_WORKER_CONCURRENCY
+    # (12) + 4, matching DB_POOL_MAX's own sizing rule.
+    pool_args = queue.app.connector._pool_args
+    assert pool_args["min_size"] == 2
+    assert pool_args["max_size"] == 16
+
+
+def test_connector_pool_size_is_configurable():
+    queue = ProcrastinateQueue(
+        DSN, schema="procrastinate_test", pool_min_size=3, pool_max_size=20
+    )
+    pool_args = queue.app.connector._pool_args
+    assert pool_args["min_size"] == 3
+    assert pool_args["max_size"] == 20

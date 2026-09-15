@@ -106,3 +106,15 @@ async def test_setup_idempotent(queue: InMemoryQueue):
     await queue.setup()
     await queue.setup()
     assert queue.is_set_up
+
+
+async def test_run_worker_accepts_and_ignores_concurrency_kwargs(queue: InMemoryQueue):
+    # Fix round 1 (Important #2): the ABC's run_worker now matches
+    # ProcrastinateQueue's real signature; InMemoryQueue accepts the same
+    # keywords (it has no worker pools to size) so callers need not
+    # special-case the backend.
+    seen = []
+    queue.register_task(lambda **kw: seen.append(kw), name="jobs.run")
+    await queue.enqueue("jobs.run")
+    await queue.run_worker(concurrency=12, bytes_concurrency=4)
+    assert seen == [{}]

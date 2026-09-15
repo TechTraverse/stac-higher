@@ -105,8 +105,14 @@ class QueueBackend(abc.ABC):
         """Idempotently provision backend infrastructure (schema, queues)."""
 
     @abc.abstractmethod
-    async def run_worker(self) -> None:
-        """Consume and execute jobs until cancelled."""
+    async def run_worker(self, *, concurrency: int, bytes_concurrency: int) -> None:
+        """Consume and execute jobs until cancelled.
+
+        ``concurrency`` is the total job slots; ``bytes_concurrency`` is how
+        many of those belong to the byte-holding ``QUEUE_BYTES`` jobs (M3-D).
+        A backend without separate worker pools (e.g. the in-memory test
+        backend) may ignore both.
+        """
 
     @abc.abstractmethod
     async def check_connection(self) -> None:

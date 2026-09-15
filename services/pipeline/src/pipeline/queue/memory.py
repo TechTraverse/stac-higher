@@ -86,7 +86,9 @@ class InMemoryQueue(QueueBackend):
     async def setup(self) -> None:
         self.is_set_up = True
 
-    async def run_worker(self) -> None:
+    async def run_worker(self, *, concurrency: int = 0, bytes_concurrency: int = 0) -> None:
+        # No worker pools to size in-memory; kept for ABC parity with
+        # ProcrastinateQueue (M3-D fix round 1).
         await self.run_pending()
 
     async def check_connection(self) -> None:

@@ -41,7 +41,14 @@ logger = logging.getLogger(__name__)
 
 
 def build_queue(settings: Settings) -> ProcrastinateQueue:
-    queue = ProcrastinateQueue(settings.database_url, schema=settings.queue_schema)
+    # Fix round 1 (Important #3): size the Procrastinate connector pool to
+    # the job slots + 4, matching the DB_POOL_MAX sizing rule — otherwise
+    # psycopg_pool's default max_size=4 starves 12 slots' round trips.
+    queue = ProcrastinateQueue(
+        settings.database_url,
+        schema=settings.queue_schema,
+        pool_max_size=settings.worker_concurrency + 4,
+    )
     heartbeat.register(queue)
     # Phase 2 connection bridge (ADR 0004): drain user-requested tests + sweep.
     drain.register(queue, settings)
