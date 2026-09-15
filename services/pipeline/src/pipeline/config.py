@@ -196,8 +196,8 @@ DEFAULT_GDAL_CACHEMAX_MB = 64
 #: plus one submission chunk).
 DEFAULT_FETCH_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_FETCH_TRANSFER_CONCURRENCY = 4
-# Per-worker peak RSS ~= 255 MiB + (GDAL_CACHEMAX + (FETCH_TRANSFER_CONCURRENCY + 1) x
-# FETCH_CHUNK_BYTES) x WORKER_CONCURRENCY — independent of asset size.
+# Per-worker peak RSS ~= 255 MiB + ((GDAL_CACHEMAX + 16 MiB VSI cache) + (FETCH_TRANSFER_CONCURRENCY
+# + 1) x FETCH_CHUNK_BYTES) x WORKER_CONCURRENCY — independent of asset size.
 
 
 def _parse_bool(raw: str | None, default: bool) -> bool:

@@ -433,7 +433,7 @@ Worker memory no longer scales with asset size. Two paths changed:
   under the platform's or the source connection's session — `ingest/raster_io.py`,
   `MemberByteSource.locate`) instead of buffering the object into a
   `MemoryFile`. GDAL's block cache does the reading and `GDAL_CACHEMAX` caps
-  it. SFTP/FTP sources cannot be located and keep the buffered read (I-83).
+  it. SFTP/FTP sources cannot be located and keep the buffered read (I-83). A `/vsi*` open also pins a per-handle VSI cache of up to 16 MiB (one per in-flight ITEMIZE), set by `VSICURL_TUNING` in `raster_io.py` (I-129).
 - **FETCH** (copy mode) server-side-copies when the platform's keys can read
   the source bucket on the same endpoint (`ingest/transfer.py`, the delivery
   path's `can_server_side_copy` gate), and otherwise streams a multipart upload
@@ -444,8 +444,8 @@ Worker memory no longer scales with asset size. Two paths changed:
 Per-worker peak RSS, S-E's formula with these settings:
 
 ```
-255 MiB + (GDAL_CACHEMAX + (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES) × WORKER_CONCURRENCY
-= 255 MiB + (64 + 40) MiB × concurrency      → ~1.5 GB at M3-D's default 12
+255 MiB + ((GDAL_CACHEMAX + 16 MiB VSI cache) + (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES) × WORKER_CONCURRENCY
+= 255 MiB + (80 + 40) MiB × concurrency      → ~1.7 GB at M3-D's default 12
 ```
 
 Size a deployment by that line, not by the largest asset. A reference-mode
