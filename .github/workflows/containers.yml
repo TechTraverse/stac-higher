@@ -25,14 +25,23 @@ jobs:
           - name: app
             dockerfile: app/Dockerfile
             context: .
-            # The built-in extractor registry, bundled at build time (X-4).
-            build-contexts: fixtures=tests/contract-fixtures
+            # The built-in extractor registry, bundled at build time (X-4),
+            # and the deployment's hardware-profile set (K-1) — the app's
+            # checkout-relative fallback resolves against the source
+            # checkout, which is not reliable from the bundled `dist/`
+            # chunks and is not in this image at all.
+            build-contexts: |
+              fixtures=tests/contract-fixtures
+              hardware=infra/hardware-profiles
           - name: pipeline
             dockerfile: services/pipeline/Dockerfile
             context: services/pipeline
-            # The built-in extractor registry reaches the image through a
-            # named build context (X-2) — compose's additional_contexts.
-            build-contexts: fixtures=tests/contract-fixtures
+            # The built-in extractor registry and the hardware-profile set
+            # (K-1) reach the image through named build contexts (X-2) —
+            # compose's additional_contexts.
+            build-contexts: |
+              fixtures=tests/contract-fixtures
+              hardware=infra/hardware-profiles
           - name: titiler
             dockerfile: infra/titiler/Dockerfile
             context: .

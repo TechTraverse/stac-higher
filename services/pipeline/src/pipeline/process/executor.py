@@ -31,6 +31,11 @@ import abc
 import datetime as dt
 from dataclasses import dataclass, field
 
+from pipeline.process.hardware import HardwareProfile
+
+#: Kueue's two priority classes (K-5/K-6) — unread until then.
+PRIORITIES = ("interactive", "triggered")
+
 
 class ExecutorError(Exception):
     """Base class for executor failures."""
@@ -68,6 +73,15 @@ class RunSpec:
     #: executor's network boundary (ADR 0013): runs attach to a dedicated
     #: restricted network, never the platform's own.
     network: str | None = None
+    # K-1 (process-compute spec §4): the hardware the run asked for, resolved
+    # against the deployment's profile set at launch. Defaults keep every
+    # existing construction valid; no executor reads them yet (K-3 does).
+    cpu: float = 1.0
+    gpu_count: int = 0
+    profile: HardwareProfile | None = None
+    #: "interactive" for a UI test run, "triggered" otherwise — Kueue's two
+    #: priority classes (K-5/K-6); unread until then.
+    priority: str = "triggered"
 
 
 @dataclass(frozen=True)

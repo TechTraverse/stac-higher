@@ -44,6 +44,7 @@ import {
 } from "@/lib/processes/network";
 import { findBuiltinExtractor } from "@/lib/extractors/registry";
 import { builtinRevisionTemplate } from "@/lib/extractors/template";
+import { hardwareBoundsError, loadHardwareProfiles } from "@/lib/processes/hardware";
 import {
   BUILTIN_CODE_DEPLOY_REFUSAL,
   BUILTIN_REGISTRY_DRIFT,
@@ -82,6 +83,18 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       const entry = findBuiltinExtractor(loaded.process.builtin_id);
       if (!entry) return jsonResponse(409, { error: BUILTIN_REGISTRY_DRIFT });
       const template = builtinRevisionTemplate(entry);
+
+      // K-1: the registry template is deployed through the same gate as a
+      // hand-written revision — a registry entry that outgrows this
+      // deployment's profile ceiling is refused here, not left to die at
+      // launch (final review Item 1).
+      const builtinHardwareError = hardwareBoundsError(
+        template.runtime.hardware,
+        template.runtime.memory_mb,
+        loadHardwareProfiles(),
+      );
+      if (builtinHardwareError) return jsonResponse(400, { error: builtinHardwareError });
+
       const revision = await deployRevision({
         processId: loaded.process.id,
         runtime: template.runtime,
@@ -113,6 +126,16 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
         error: NETWORK_CAP_MESSAGE(data.runtime.network.level, cap),
       });
     }
+
+    // K-1 (spec §4): the profile must exist here and the numbers must sit
+    // inside its bounds; the pipeline re-checks at launch. Refused at deploy
+    // time so the operator hears it at the form.
+    const hardwareError = hardwareBoundsError(
+      data.runtime.hardware,
+      data.runtime.memory_mb,
+      loadHardwareProfiles(),
+    );
+    if (hardwareError) return jsonResponse(400, { error: hardwareError });
 
     const unresolvable = await findUnresolvableSecretRef(
       data.env,

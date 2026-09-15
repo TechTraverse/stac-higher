@@ -7,7 +7,10 @@
  *   POST /api/processes/[id]/revisions — a built-in process refuses a code
  *                                        deploy and accepts "Update to current"
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/processes/storage", () => ({
   getProcess: vi.fn(),
@@ -35,9 +38,40 @@ import {
   BUILTIN_TEMPLATE_ONLY_FOR_BUILTIN,
 } from "@/lib/processes/schemas";
 import { builtinProcessBody } from "@/lib/extractors/template";
+import { resetHardwareProfilesCache } from "@/lib/processes/hardware";
 import { GET as registryRoute } from "@/pages/api/extractors/builtin";
 import { POST as builtinRoute } from "@/pages/api/processes/builtin";
 import { POST as deployRoute } from "@/pages/api/processes/[id]/revisions";
+
+// K-1 final review Item 1: a profile set whose 'standard' ceiling is below
+// the registry template's memory_mb (stactools-goes = 2048), to prove both
+// built-in deploy paths run the same write gate the hand-written path does.
+function writeLowMemoryProfiles(): string {
+  const dir = mkdtempSync(join(tmpdir(), "hardware-profiles-"));
+  const path = join(dir, "low-memory.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      version: 1,
+      profiles: [
+        {
+          id: "standard",
+          label: "Standard",
+          description: "test-only, memory capped below the registry template",
+          tier: "cpu",
+          accelerator: null,
+          cpu: { min: 0.25, max: 4, default: 1 },
+          memory_mb: { min: 128, max: 1024, default: 512 },
+          gpu_count: null,
+          max_queue_wait_seconds: 1800,
+          image: null,
+          backend: {},
+        },
+      ],
+    }),
+  );
+  return path;
+}
 
 const EO = "eo-team";
 const PROCESS_ID = "5c9f1c2e-0000-4000-8000-0000000000e1";
@@ -93,6 +127,11 @@ function call(
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  delete globalThis.process.env.PROCESS_HARDWARE_PROFILES_FILE;
+  resetHardwareProfilesCache();
 });
 
 describe("GET /api/extractors/builtin", () => {
@@ -193,6 +232,21 @@ describe("POST /api/processes/builtin (create-or-reuse)", () => {
     expect((await call(builtinRoute, anon, { method: "POST", body: {} })).status).toBe(401);
   });
 
+  it("refuses to create a process when the registry template outgrows the deployment's profile (K-1 final review Item 1)", async () => {
+    globalThis.process.env.PROCESS_HARDWARE_PROFILES_FILE = writeLowMemoryProfiles();
+    resetHardwareProfilesCache();
+    vi.mocked(findBuiltinProcess).mockResolvedValue(null);
+    const res = await call(builtinRoute, operator, {
+      method: "POST",
+      body: { builtin_id: "stactools-goes", group_id: EO },
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "memory_mb 2048 is outside profile 'standard' bounds 128–1024",
+    );
+    expect(createBuiltinProcess).not.toHaveBeenCalled();
+  });
+
   it("names a name collision with a hand-written process as a 409", async () => {
     vi.mocked(findBuiltinProcess).mockResolvedValue(null);
     vi.mocked(createBuiltinProcess).mockRejectedValue(
@@ -238,6 +292,21 @@ describe("POST /api/processes/[id]/revisions on a built-in process", () => {
     expect(input.processId).toBe(PROCESS_ID);
     expect(input.code).toContain('run("stactools-goes")');
     expect(input.runtime).toMatchObject({ runtime_image: "stactools", kind: "inline_python" });
+  });
+
+  it("refuses 'Update to current' when the registry template outgrows the deployment's profile (K-1 final review Item 1)", async () => {
+    globalThis.process.env.PROCESS_HARDWARE_PROFILES_FILE = writeLowMemoryProfiles();
+    resetHardwareProfilesCache();
+    vi.mocked(getProcess).mockResolvedValue(process());
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { from_builtin: true },
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "memory_mb 2048 is outside profile 'standard' bounds 128–1024",
+    );
+    expect(deployRevision).not.toHaveBeenCalled();
   });
 
   it("cannot update a process whose registry entry is gone", async () => {

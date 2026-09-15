@@ -84,6 +84,7 @@ import { POST as testRoute } from "@/pages/api/processes/[id]/test";
 import { GET as pollRoute } from "@/pages/api/processes/[id]/checks/[checkId]";
 import { GET as runsRoute } from "@/pages/api/processes/[id]/runs/index";
 import { POST as rerunRoute } from "@/pages/api/processes/[id]/runs/[runId]/rerun";
+import { GET as hardwareProfilesRoute } from "@/pages/api/processes/hardware-profiles";
 
 const PROCESS_ID = "3a9f1c2e-0000-4000-8000-0000000000a1";
 const REVISION_ID = "3a9f1c2e-0000-4000-8000-0000000000b1";
@@ -388,6 +389,59 @@ describe("POST /api/processes/[id]/revisions (deploy)", () => {
     });
     expect(res.status).toBe(400);
     expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it("refuses a deploy whose hardware is outside its profile's bounds (K-1, 400 naming the bound)", async () => {
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: {
+        runtime: { kind: "inline_python", hardware: { profile: "standard", cpu: 64, gpu_count: 0 } },
+        code: "print('hi')",
+        env: [],
+      },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "hardware.cpu 64 is outside profile 'standard' bounds 0.25–4",
+    );
+    expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it("refuses a deploy naming a profile this deployment does not have", async () => {
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: {
+        runtime: { kind: "inline_python", hardware: { profile: "tpu-v5", cpu: 1, gpu_count: 0 } },
+        code: "print('hi')",
+        env: [],
+      },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "hardware.profile 'tpu-v5' is not a hardware profile of this deployment",
+    );
+  });
+
+  it("stores the default hardware block when a deploy omits it", async () => {
+    vi.mocked(deployRevision).mockResolvedValue({
+      id: REVISION_ID,
+      process_id: PROCESS_ID,
+      runtime: INLINE,
+      code: "print('hi')",
+      env: [],
+      created_by: "user-1",
+      created_at: "2026-08-30T00:00:00.000Z",
+    });
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: { kind: "inline_python" }, code: "print('hi')", env: [] },
+    });
+    expect(res.status).toBe(201);
+    expect(vi.mocked(deployRevision).mock.calls[0][0].runtime.hardware).toEqual({
+      profile: "standard",
+      cpu: 1,
+      gpu_count: 0,
+    });
   });
 });
 
@@ -831,5 +885,21 @@ describe("process kind (G-6)", () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toMatch(/2 ingest association/);
     expect(softDeleteProcess).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/processes/hardware-profiles (K-1)", () => {
+  it("lists the deployment's profiles without their backend blocks, member+", async () => {
+    const res = await call(hardwareProfilesRoute, member);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.backend).toBe("docker");
+    expect(body.profiles.map((p: { id: string }) => p.id)).toContain("standard");
+    expect(body.profiles.every((p: object) => !("backend" in p))).toBe(true);
+  });
+
+  it("requires authentication", async () => {
+    const res = await call(hardwareProfilesRoute, anon);
+    expect(res.status).toBe(401);
   });
 });

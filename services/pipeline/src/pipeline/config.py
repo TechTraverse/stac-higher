@@ -45,6 +45,9 @@ S3 in cloud; distinct from per-connection endpoints):
   logs a WARNING (the staleness bound on partition statistics, spec §4.6).
 - ``PGSTAC_QUEUE_HISTORY_DAYS`` — ``pgstac.query_queue_history`` rows older
   than this are pruned by the same tick (pgstac never prunes it).
+- ``PROCESS_HARDWARE_PROFILES_FILE`` — path of the hardware-profile document
+  (K-1, spec §3). Unset means the repo checkout's
+  ``infra/hardware-profiles/local.json``; the image sets it to its copy.
 """
 
 from __future__ import annotations
@@ -166,6 +169,9 @@ DEFAULT_PROCESS_RUN_STALL_SECONDS = 3600
 #: `isolated` until the egress proxy (spec §11) exists; the pipeline enforces
 #: it at launch independently of the app's write gate.
 DEFAULT_PROCESS_NETWORK_MAX = "isolated"
+#: K-1: unset means the repo checkout's ``infra/hardware-profiles/local.json``;
+#: the image sets it to its copy of the deployment's profile set.
+DEFAULT_PROCESS_HARDWARE_PROFILES_FILE: str | None = None
 #: GOES spec §3.4: remote input files staged concurrently per run.
 DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY = 4
 #: How long the daily flow-stats history is kept (P9-E: ~400 days, so a
@@ -296,6 +302,8 @@ class Settings:
     process_run_s3_endpoint: str | None = None
     process_run_stall_seconds: int = DEFAULT_PROCESS_RUN_STALL_SECONDS
     process_network_max: str = DEFAULT_PROCESS_NETWORK_MAX
+    #: K-1: path of the hardware-profile document — see DEFAULT_PROCESS_HARDWARE_PROFILES_FILE.
+    process_hardware_profiles_file: str | None = DEFAULT_PROCESS_HARDWARE_PROFILES_FILE
     process_input_stage_concurrency: int = DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY
     flow_stats_retention_days: int = DEFAULT_FLOW_STATS_RETENTION_DAYS
     #: Async repo connection pool (M3-B) — see the DEFAULT_DB_POOL_* constants.
@@ -430,6 +438,7 @@ class Settings:
             process_network_max=_parse_network_max(
                 env.get("PROCESS_NETWORK_MAX", DEFAULT_PROCESS_NETWORK_MAX)
             ),
+            process_hardware_profiles_file=env.get("PROCESS_HARDWARE_PROFILES_FILE") or None,
             process_input_stage_concurrency=int(
                 env.get(
                     "PROCESS_INPUT_STAGE_CONCURRENCY",

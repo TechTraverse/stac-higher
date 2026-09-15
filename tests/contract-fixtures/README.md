@@ -238,6 +238,20 @@ and `hls` — exist only as untagged GitHub repos under `stactools-packages`
 and have never been published to PyPI, so they carry no pinnable release and
 are not in the registry (I-107).
 
+## Additional fixture styles (K queue, K-1)
+
+- `hardware-profiles.json` — style `document`. `document` is a sample
+  hardware-profile set (process-compute spec §3.2); `cases[]` are
+  `{ name, document, app, pipeline }` over the profile-set parsers
+  (`app/src/lib/processes/hardware.ts` `hardwareProfileSetSchema`, strict;
+  `pipeline/process/hardware.py` `parse_hardware_profiles`, lenient — the
+  established direction), where `"document": "$document"` means the
+  top-level sample; `bounds_cases[]` are `{ name, hardware, memory_mb, app,
+  pipeline, reason }` evaluated against the sample by
+  `hardwareBoundsError()` / `check_hardware_bounds()` — `reason` is the
+  message both sides produce (empty on accept). The deployment sets are
+  NOT fixtures: `infra/hardware-profiles/{local,kind,eks}.json`.
+
 ## Why `app` and `pipeline` expectations can differ
 
 The contract is deliberately asymmetric. Zod is the **strict write gatekeeper**

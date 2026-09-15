@@ -141,6 +141,22 @@ export type ProcessNetwork = z.infer<typeof processNetworkSchema>;
 export const PROCESS_RUNTIME_IMAGE_ALIASES = ["default", "stactools"] as const;
 export type RuntimeImageAlias = (typeof PROCESS_RUNTIME_IMAGE_ALIASES)[number];
 
+/**
+ * K-1 (process-compute spec §4): the hardware a run asks for — a profile id
+ * this deployment defines plus counts within the profile's bounds. The SHAPE
+ * lives here; the bounds and the profile's existence are checked by the deploy
+ * route (`hardwareBoundsError`) and again by the pipeline at launch, because
+ * the profile set is deployment config, not part of the schema.
+ */
+export const hardwareSchema = z
+  .object({
+    profile: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "hardware.profile must be a profile id"),
+    cpu: z.number().positive(),
+    gpu_count: z.number().int().min(0).default(0),
+  })
+  .strict();
+export type ProcessHardware = z.infer<typeof hardwareSchema>;
+
 const runtimeLimits = {
   memory_mb: z.number().int().min(MEMORY_MB_MIN).default(512),
   timeout_seconds: z.number().int().min(1).max(TIMEOUT_SECONDS_MAX).default(900),
@@ -151,6 +167,10 @@ const runtimeLimits = {
   // Every stored revision predates this field: the Python reader treats an
   // absent alias as `default`, and so does this default.
   runtime_image: z.enum(PROCESS_RUNTIME_IMAGE_ALIASES).default("default"),
+  // Every stored revision predates this block: absent means `standard` at its
+  // default cpu (1 — the shipped sets pin it), no GPU. The pipeline reader
+  // defaults the same way.
+  hardware: hardwareSchema.default(() => ({ profile: "standard", cpu: 1, gpu_count: 0 })),
 };
 
 const inlinePythonRuntimeSchema = z

@@ -19,12 +19,18 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from pipeline.config import Settings
 from pipeline.metrics import PROCESS_RUNS
 from pipeline.process.config import ProcessConfigError, parse_process_env, parse_process_runtime
 from pipeline.process.credentials import RunCredentialsError
 from pipeline.process.executor import Executor, ExecutorUnavailable
+from pipeline.process.hardware import (
+    HardwareProfileError,
+    HardwareProfileSet,
+    load_hardware_profiles,
+)
 from pipeline.process.inputs import (
     KIND_EXTRACT,
     KIND_TRANSFORM,
@@ -34,9 +40,11 @@ from pipeline.process.inputs import (
     plan_inputs,
 )
 from pipeline.process.launch import (
+    HardwareProfileRejected,
     NetworkCapExceeded,
     RuntimeImageUnavailable,
     SecretResolutionError,
+    check_hardware_bounds_for,
     check_network_cap,
     execute_run,
     resolve_runtime_image,
@@ -72,13 +80,15 @@ async def run_one(
     sts_client=None,
     fetch_remote: RemoteFetcher | None = None,
     on_dead: Callable[[QueuedRun, str], Awaitable[None]] | None = None,
+    profiles: HardwareProfileSet | None = None,
 ) -> RunResult:
     """Execute a claimed run and write its outcome. Never raises for a run
     that merely failed — that is a result, recorded in the ledger.
 
-    Order (GOES spec §3.2): parse → network cap → plan inputs (repo reads) →
-    stage remote inputs → mint credentials + launch. A failure anywhere
-    before launch means no container ever existed.
+    Order (GOES spec §3.2): parse → network cap → runtime image → hardware
+    bounds → plan inputs (repo reads) → stage remote inputs → mint
+    credentials + launch. A failure anywhere before launch means no
+    container ever existed.
     """
     at = now or dt.datetime.now(dt.UTC)
 
@@ -121,6 +131,45 @@ async def run_one(
     try:
         resolve_runtime_image(runtime, settings)
     except RuntimeImageUnavailable as err:
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
+        return RunResult(run.id, "dead", error=str(err))
+
+    # K-1 spec §4: resolve the deployment's profile set. An unreadable or
+    # missing profile document is OUR infrastructure failing, not the
+    # process's, so it goes back to `queued` without spending an attempt —
+    # the same shape as the executor-outage branch below.
+    try:
+        if profiles is not None:
+            profile_set = profiles
+        elif settings.process_hardware_profiles_file:
+            profile_set = load_hardware_profiles(Path(settings.process_hardware_profiles_file))
+        else:
+            profile_set = load_hardware_profiles()
+    except HardwareProfileError as err:
+        transition = infrastructure_transition(
+            now=at, retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS, error=str(err)
+        )
+        PROCESS_RUNS.labels(outcome=transition.status).inc()
+        await repo.finish_run(
+            run.id,
+            status=transition.status,
+            error=transition.error,
+            log_ref=None,
+            next_attempt_at=transition.next_attempt_at,
+        )
+        logger.warning(
+            "process run could not start: hardware profiles unavailable; requeued "
+            "without spending an attempt",
+            extra={"run_id": run.id, "process_id": run.process_id, "error": str(err)},
+        )
+        return RunResult(run.id, transition.status, error=str(err))
+
+    # K-1 spec §4: the hardware block against the deployment's profile set —
+    # the same check the app ran at deploy time, run again here because the
+    # set is deployment config that may differ from the app's.
+    try:
+        profile = check_hardware_bounds_for(runtime, profile_set)
+    except HardwareProfileRejected as err:
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
@@ -238,6 +287,8 @@ async def run_one(
             sts_client=sts_client,
             read_prefixes=plan.read_prefixes,
             extra_env=input_env(run.id, plan.manifest_key),
+            profile=profile,
+            priority="interactive" if run.is_test else "triggered",
         )
     except (ExecutorUnavailable, RunCredentialsError) as err:
         # OUR failure, not the process's: back to `queued` without spending an

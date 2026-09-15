@@ -146,3 +146,8 @@ def test_memory_envelope_settings_read_their_env_names():
     assert settings.gdal_cachemax_mb == 128
     assert settings.fetch_chunk_bytes == 16 * 1024 * 1024
     assert settings.fetch_transfer_concurrency == 2
+def test_hardware_profiles_file_setting():
+    """K-1: unset means the repo checkout's infra/hardware-profiles/local.json."""
+    assert Settings.from_env(env={}).process_hardware_profiles_file is None
+    settings = Settings.from_env(env={"PROCESS_HARDWARE_PROFILES_FILE": "/app/share/hp.json"})
+    assert settings.process_hardware_profiles_file == "/app/share/hp.json"

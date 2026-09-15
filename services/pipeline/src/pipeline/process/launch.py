@@ -29,6 +29,12 @@ from pipeline.process.config import NETWORK_LEVELS, EnvEntry, ProcessRuntime
 from pipeline.process.credentials import RunCredentials, mint_run_credentials
 from pipeline.process.docker_executor import CODE_ENV_VAR, encode_code
 from pipeline.process.executor import Executor, ExitStatus, RunSpec
+from pipeline.process.hardware import (
+    HardwareProfile,
+    HardwareProfileError,
+    HardwareProfileSet,
+    check_hardware_bounds,
+)
 from pipeline.process.logs import store_run_log
 
 logger = logging.getLogger(__name__)
@@ -49,6 +55,29 @@ class RuntimeImageUnavailable(Exception):
     """The revision's ``runtime_image`` alias names a platform image this
     deployment has not configured — configuration, so the run dies naming
     the alias and the variable rather than launching on the wrong image."""
+
+
+class HardwareProfileRejected(Exception):
+    """The revision's hardware block names a profile this deployment lacks or
+    numbers outside its bounds — configuration, so the run dies naming the
+    bound rather than launching on hardware the operator never saw."""
+
+
+def check_hardware_bounds_for(
+    runtime: ProcessRuntime, profiles: HardwareProfileSet
+) -> HardwareProfile:
+    """K-1 spec §4: the launch-time half of the dual enforcement — the app's
+    write gate ran the same check with the same messages."""
+    try:
+        return check_hardware_bounds(
+            profiles=profiles,
+            profile_id=runtime.hardware_profile,
+            cpu=runtime.hardware_cpu,
+            gpu_count=runtime.hardware_gpu_count,
+            memory_mb=runtime.memory_mb,
+        )
+    except HardwareProfileError as err:
+        raise HardwareProfileRejected(str(err)) from err
 
 
 def resolve_runtime_image(runtime: ProcessRuntime, settings: Settings) -> str:
@@ -137,6 +166,8 @@ def build_run_spec(
     env: dict[str, str],
     credentials: RunCredentials,
     extra_env: Mapping[str, str] | None = None,
+    profile: HardwareProfile | None = None,
+    priority: str = "triggered",
 ) -> RunSpec:
     """The COMPLETE environment of a run, assembled in one place.
 
@@ -167,6 +198,10 @@ def build_run_spec(
         # process network today: levels above `isolated` are refused by
         # `check_network_cap` until the egress proxy (GOES spec §11) exists.
         network=settings.process_network,
+        cpu=runtime.hardware_cpu,
+        gpu_count=runtime.hardware_gpu_count,
+        profile=profile,
+        priority=priority,
     )
 
 
@@ -184,6 +219,8 @@ def execute_run(
     sts_client=None,
     read_prefixes: Sequence[str] = (),
     extra_env: Mapping[str, str] | None = None,
+    profile: HardwareProfile | None = None,
+    priority: str = "triggered",
 ) -> RunOutcome:
     """Mint credentials, launch, wait, capture the log, reap. Always reap.
 
@@ -207,6 +244,8 @@ def execute_run(
         env=env,
         credentials=credentials,
         extra_env=extra_env,
+        profile=profile,
+        priority=priority,
     )
 
     import time

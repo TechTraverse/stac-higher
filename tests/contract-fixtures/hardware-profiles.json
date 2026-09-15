@@ -1,0 +1,69 @@
+{
+  "style": "document",
+  "$comment": "K-1 (process-compute spec §3.2/§4): the hardware-profile document both runtimes read, plus the bounds both write gates enforce. `document` is a SAMPLE deployment set (a CPU profile and a GPU profile) used by `bounds_cases`; the shipped sets live in infra/hardware-profiles/. `cases` exercise the profile-set parsers (app: app/src/lib/processes/hardware.ts; pipeline: pipeline/process/hardware.py); `bounds_cases` exercise hardwareBoundsError() / check_hardware_bounds() against `document`. app/pipeline are accept|reject.",
+  "document": {
+    "version": 1,
+    "profiles": [
+      {
+        "id": "standard",
+        "label": "Standard",
+        "description": "General purpose. Metadata extraction, small rasters.",
+        "tier": "cpu",
+        "accelerator": null,
+        "cpu": { "min": 0.25, "max": 4, "default": 1 },
+        "memory_mb": { "min": 128, "max": 16384, "default": 512 },
+        "gpu_count": null,
+        "max_queue_wait_seconds": 1800,
+        "image": null,
+        "backend": { "docker": { "device_requests": [], "capacity": 2 } }
+      },
+      {
+        "id": "gpu-l4",
+        "label": "GPU — NVIDIA L4 (24 GB)",
+        "description": "Single L4. Inference, cupy/numba kernels, medium models.",
+        "tier": "gpu",
+        "accelerator": { "vendor": "nvidia", "model": "l4", "memory_gb": 24 },
+        "cpu": { "min": 2, "max": 16, "default": 4 },
+        "memory_mb": { "min": 4096, "max": 65536, "default": 16384 },
+        "gpu_count": { "min": 1, "max": 1, "default": 1 },
+        "max_queue_wait_seconds": 7200,
+        "image": "process-runtime-cuda",
+        "backend": {
+          "kubernetes": {
+            "queue": "process-runs",
+            "node_selector": { "stac-higher.io/flavor": "gpu-l4" },
+            "tolerations": [ { "key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule" } ],
+            "runtime_class": null,
+            "extended_resources": { "nvidia.com/gpu": "gpu_count" }
+          },
+          "docker": { "device_requests": [ { "Driver": "nvidia", "Count": -1, "Capabilities": [["gpu"]] } ], "capacity": 1 }
+        }
+      }
+    ]
+  },
+  "cases": [
+    { "name": "the sample document", "document": "$document", "app": "accept", "pipeline": "accept" },
+    { "name": "a set with only standard", "document": { "version": 1, "profiles": [ { "id": "standard", "label": "Standard", "description": "", "tier": "cpu", "accelerator": null, "cpu": { "min": 1, "max": 1, "default": 1 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": null, "max_queue_wait_seconds": 60, "image": null, "backend": {} } ] }, "app": "accept", "pipeline": "accept" },
+    { "name": "no standard profile", "document": { "version": 1, "profiles": [ { "id": "big", "label": "Big", "description": "", "tier": "cpu", "accelerator": null, "cpu": { "min": 1, "max": 1, "default": 1 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": null, "max_queue_wait_seconds": 60, "image": null, "backend": {} } ] }, "app": "reject", "pipeline": "reject" },
+    { "name": "two profiles with the same id", "document": { "version": 1, "profiles": [ { "id": "standard", "label": "A", "description": "", "tier": "cpu", "accelerator": null, "cpu": { "min": 1, "max": 1, "default": 1 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": null, "max_queue_wait_seconds": 60, "image": null, "backend": {} }, { "id": "standard", "label": "B", "description": "", "tier": "cpu", "accelerator": null, "cpu": { "min": 1, "max": 1, "default": 1 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": null, "max_queue_wait_seconds": 60, "image": null, "backend": {} } ] }, "app": "reject", "pipeline": "reject" },
+    { "name": "default outside its bounds", "document": { "version": 1, "profiles": [ { "id": "standard", "label": "Standard", "description": "", "tier": "cpu", "accelerator": null, "cpu": { "min": 1, "max": 2, "default": 4 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": null, "max_queue_wait_seconds": 60, "image": null, "backend": {} } ] }, "app": "reject", "pipeline": "reject" },
+    { "name": "gpu_count without an accelerator", "document": { "version": 1, "profiles": [ { "id": "standard", "label": "Standard", "description": "", "tier": "cpu", "accelerator": null, "cpu": { "min": 1, "max": 1, "default": 1 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": { "min": 1, "max": 1, "default": 1 }, "max_queue_wait_seconds": 60, "image": null, "backend": {} } ] }, "app": "reject", "pipeline": "reject" },
+    { "name": "an accelerator without gpu_count", "document": { "version": 1, "profiles": [ { "id": "standard", "label": "Standard", "description": "", "tier": "cpu", "accelerator": { "vendor": "nvidia", "model": "l4", "memory_gb": 24 }, "cpu": { "min": 1, "max": 1, "default": 1 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": null, "max_queue_wait_seconds": 60, "image": null, "backend": {} } ] }, "app": "reject", "pipeline": "reject" },
+    { "name": "an unknown tier", "document": { "version": 1, "profiles": [ { "id": "standard", "label": "Standard", "description": "", "tier": "quantum", "accelerator": null, "cpu": { "min": 1, "max": 1, "default": 1 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": null, "max_queue_wait_seconds": 60, "image": null, "backend": {} } ] }, "app": "reject", "pipeline": "reject" },
+    { "name": "an unknown version", "document": { "version": 2, "profiles": [] }, "app": "reject", "pipeline": "reject" },
+    { "name": "an extra key on a profile (lenient pipeline, strict app)", "document": { "version": 1, "profiles": [ { "id": "standard", "label": "Standard", "description": "", "tier": "cpu", "accelerator": null, "cpu": { "min": 1, "max": 1, "default": 1 }, "memory_mb": { "min": 128, "max": 512, "default": 512 }, "gpu_count": null, "max_queue_wait_seconds": 60, "image": null, "backend": {}, "colour": "blue" } ] }, "app": "reject", "pipeline": "accept" }
+  ],
+  "bounds_cases": [
+    { "name": "standard at its defaults", "hardware": { "profile": "standard", "cpu": 1, "gpu_count": 0 }, "memory_mb": 512, "app": "accept", "pipeline": "accept", "reason": "" },
+    { "name": "standard at both cpu bounds", "hardware": { "profile": "standard", "cpu": 0.25, "gpu_count": 0 }, "memory_mb": 16384, "app": "accept", "pipeline": "accept", "reason": "bounds are inclusive" },
+    { "name": "cpu above standard's max", "hardware": { "profile": "standard", "cpu": 4.5, "gpu_count": 0 }, "memory_mb": 512, "app": "reject", "pipeline": "reject", "reason": "hardware.cpu 4.5 is outside profile 'standard' bounds 0.25–4" },
+    { "name": "cpu below standard's min", "hardware": { "profile": "standard", "cpu": 0.1, "gpu_count": 0 }, "memory_mb": 512, "app": "reject", "pipeline": "reject", "reason": "hardware.cpu 0.1 is outside profile 'standard' bounds 0.25–4" },
+    { "name": "memory above standard's max", "hardware": { "profile": "standard", "cpu": 1, "gpu_count": 0 }, "memory_mb": 32768, "app": "reject", "pipeline": "reject", "reason": "memory_mb 32768 is outside profile 'standard' bounds 128–16384" },
+    { "name": "a gpu on a cpu profile", "hardware": { "profile": "standard", "cpu": 1, "gpu_count": 1 }, "memory_mb": 512, "app": "reject", "pipeline": "reject", "reason": "hardware.gpu_count must be 0: profile 'standard' has no accelerator" },
+    { "name": "gpu-l4 at its defaults", "hardware": { "profile": "gpu-l4", "cpu": 4, "gpu_count": 1 }, "memory_mb": 16384, "app": "accept", "pipeline": "accept", "reason": "" },
+    { "name": "gpu-l4 without a gpu", "hardware": { "profile": "gpu-l4", "cpu": 4, "gpu_count": 0 }, "memory_mb": 16384, "app": "reject", "pipeline": "reject", "reason": "hardware.gpu_count 0 is outside profile 'gpu-l4' bounds 1–1" },
+    { "name": "gpu-l4 with two gpus", "hardware": { "profile": "gpu-l4", "cpu": 4, "gpu_count": 2 }, "memory_mb": 16384, "app": "reject", "pipeline": "reject", "reason": "hardware.gpu_count 2 is outside profile 'gpu-l4' bounds 1–1" },
+    { "name": "gpu-l4 below its memory floor", "hardware": { "profile": "gpu-l4", "cpu": 4, "gpu_count": 1 }, "memory_mb": 512, "app": "reject", "pipeline": "reject", "reason": "memory_mb 512 is outside profile 'gpu-l4' bounds 4096–65536" },
+    { "name": "an unknown profile", "hardware": { "profile": "tpu-v5", "cpu": 1, "gpu_count": 0 }, "memory_mb": 512, "app": "reject", "pipeline": "reject", "reason": "hardware.profile 'tpu-v5' is not a hardware profile of this deployment" }
+  ]
+}

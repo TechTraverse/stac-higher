@@ -45,6 +45,7 @@ import {
   processRuntimeSchema,
   processTriggerSchema,
 } from "@/lib/processes/schemas";
+import { hardwareProfileSetSchema } from "@/lib/processes/hardware";
 
 interface FixtureCase {
   name: string;
@@ -170,6 +171,17 @@ describe("process runtime contract (tests/contract-fixtures/process-runtime.json
     // slice's write path refuses it.
     expect(processRuntimeReadSchema.safeParse(container).success).toBe(true);
     expect(processRuntimeSchema.safeParse(container).success).toBe(false);
+  });
+});
+
+describe("hardware profiles contract (tests/contract-fixtures/hardware-profiles.json)", () => {
+  const fixture = loadFixture("hardware-profiles.json") as unknown as {
+    document: unknown;
+    cases: { name: string; document: unknown; app: "accept" | "reject" }[];
+  };
+  it.each(fixture.cases)("$name", ({ document, app }) => {
+    const doc = document === "$document" ? fixture.document : document;
+    expect(hardwareProfileSetSchema.safeParse(doc).success).toBe(app === "accept");
   });
 });
 

@@ -26,6 +26,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from pipeline.process.hardware import (
+    DEFAULT_HARDWARE_CPU,
+    DEFAULT_HARDWARE_GPU_COUNT,
+    DEFAULT_HARDWARE_PROFILE,
+)
+
 #: Trigger kinds the §5.6 shape admits.
 TRIGGER_KINDS = ("item_event", "cron")
 #: Runtime kinds the §5.6 shape admits (see the module docstring on
@@ -177,6 +183,12 @@ class ProcessRuntime:
     network_hosts: tuple[str, ...] = ()
     #: X-queue spec §8 — one of RUNTIME_IMAGE_ALIASES, resolved at launch.
     runtime_image: str = DEFAULT_RUNTIME_IMAGE_ALIAS
+    #: K-1 (process-compute spec §4) — the `hardware` block, flattened like
+    #: `network`: the profile id and the counts; bounds are checked at launch
+    #: against the deployment's profile set (`check_hardware_bounds`).
+    hardware_profile: str = DEFAULT_HARDWARE_PROFILE
+    hardware_cpu: float = DEFAULT_HARDWARE_CPU
+    hardware_gpu_count: int = DEFAULT_HARDWARE_GPU_COUNT
 
 
 def _parse_network(raw: Any) -> tuple[str, tuple[str, ...]]:
@@ -201,6 +213,31 @@ def _parse_network(raw: Any) -> tuple[str, tuple[str, ...]]:
     return level, hosts
 
 
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _parse_hardware(raw: Any) -> tuple[str, float, int]:
+    """Shape only — the profile set is not known here; `check_hardware_bounds`
+    at launch does the rest. Absent reads as the defaults (every stored
+    revision predates the block)."""
+    if raw is None:
+        return DEFAULT_HARDWARE_PROFILE, DEFAULT_HARDWARE_CPU, DEFAULT_HARDWARE_GPU_COUNT
+    doc = _obj(raw, "runtime.hardware")
+    profile = doc.get("profile")
+    if not isinstance(profile, str) or not _PROFILE_ID_RE.match(profile):
+        raise ProcessConfigError(f"runtime.hardware.profile must be a profile id, got {profile!r}")
+    cpu_raw = doc.get("cpu")
+    if isinstance(cpu_raw, bool) or not isinstance(cpu_raw, (int, float)) or cpu_raw <= 0:
+        raise ProcessConfigError(f"runtime.hardware.cpu must be a positive number, got {cpu_raw!r}")
+    gpu_raw = doc.get("gpu_count")
+    if gpu_raw is not None and isinstance(gpu_raw, float) and not gpu_raw.is_integer():
+        raise ProcessConfigError(f"runtime.hardware.gpu_count must be an integer, got {gpu_raw!r}")
+    gpu_count = _int_in_range(
+        gpu_raw, "runtime.hardware.gpu_count", default=DEFAULT_HARDWARE_GPU_COUNT, minimum=0
+    )
+    return profile, float(cpu_raw), gpu_count
+
+
 def parse_process_runtime(raw: Any) -> ProcessRuntime:
     doc = _obj(raw, "runtime")
     kind = _enum(doc.get("kind"), RUNTIME_KINDS, "runtime.kind")
@@ -214,12 +251,16 @@ def parse_process_runtime(raw: Any) -> ProcessRuntime:
         retry_raw = {}
     retry = _obj(retry_raw, "runtime.retry")
     network_level, network_hosts = _parse_network(doc.get("network"))
+    hardware_profile, hardware_cpu, hardware_gpu_count = _parse_hardware(doc.get("hardware"))
 
     return ProcessRuntime(
         kind=kind,
         image=image,
         network_level=network_level,
         network_hosts=network_hosts,
+        hardware_profile=hardware_profile,
+        hardware_cpu=hardware_cpu,
+        hardware_gpu_count=hardware_gpu_count,
         runtime_image=_enum(
             doc.get("runtime_image"),
             RUNTIME_IMAGE_ALIASES,

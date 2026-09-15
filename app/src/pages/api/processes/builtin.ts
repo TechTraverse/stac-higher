@@ -20,6 +20,7 @@ import {
   builtinRevisionTemplate,
 } from "@/lib/extractors/template";
 import { jsonResponse } from "@/lib/http/response";
+import { hardwareBoundsError, loadHardwareProfiles } from "@/lib/processes/hardware";
 import { processBuiltinCreateSchema } from "@/lib/processes/schemas";
 import {
   createBuiltinProcess,
@@ -66,12 +67,25 @@ export const POST: APIRoute = async ({ request, locals }) => {
     const existing = await findBuiltinProcess(groupId, builtinId);
     if (existing) return jsonResponse(200, existing);
 
+    const template = builtinRevisionTemplate(entry);
+
+    // K-1: the registry template is deployed through the same gate as a
+    // hand-written revision — a registry entry that outgrows this
+    // deployment's profile ceiling is refused here, not left to die at
+    // launch (final review Item 1).
+    const hardwareError = hardwareBoundsError(
+      template.runtime.hardware,
+      template.runtime.memory_mb,
+      loadHardwareProfiles(),
+    );
+    if (hardwareError) return jsonResponse(400, { error: hardwareError });
+
     const created = await createBuiltinProcess({
       ...builtinProcessDefaults(entry),
       groupId,
       builtinId,
       createdBy: auth.identity.sub,
-      revision: builtinRevisionTemplate(entry),
+      revision: template,
     });
     if (created) return jsonResponse(201, created);
     // Lost the race to a concurrent pick: the index guarantees exactly one

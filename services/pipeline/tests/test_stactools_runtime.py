@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,29 @@ from pipeline.process import builtin as pipeline_builtin
 REPO = Path(__file__).resolve().parents[3]
 FIXTURE = REPO / "tests" / "contract-fixtures" / "builtin-extractors.json"
 RUNTIME = REPO / "services" / "process-runtime"
+
+
+def _matrix_image_block(workflow_yaml: str, image_name: str) -> str:
+    """The body lines of one `strategy.matrix.image` entry in
+    `containers.yml` (everything more indented than its `- name:` line, up
+    to the next list item or a dedent). No PyYAML dependency here — the
+    workflow's `build-contexts` value is a block scalar (`|`), and this is
+    the smallest parse that survives that without a new dependency."""
+    pattern = re.compile(
+        rf"^([ \t]*)- name: {re.escape(image_name)}\n((?:\1[ \t].*\n?)*)",
+        re.MULTILINE,
+    )
+    match = pattern.search(workflow_yaml)
+    assert match, f"no matrix image named {image_name!r} in containers.yml"
+    return match.group(2)
+
+
+def _build_context_entries(image_block: str) -> list[str]:
+    """The `key=context` lines of that image's `build-contexts: |` block
+    scalar (K-1 Task 5 switched this from a single-line CSV form)."""
+    match = re.search(r"build-contexts: \|\n((?:[ \t]+\S.*\n?)*)", image_block)
+    assert match, "no `build-contexts: |` block in that matrix image"
+    return [line.strip() for line in match.group(1).splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -441,5 +465,11 @@ def test_the_registry_reaches_every_image_through_the_fixtures_context():
     assert 'fixtures = "tests/contract-fixtures"' in bake
     assert 'base     = "target:runtime"' in bake
     containers = (REPO / ".github" / "workflows" / "containers.yml").read_text()
-    assert "build-contexts: fixtures=tests/contract-fixtures" in containers
+    # K-1 Task 5 moved `build-contexts` to the multi-line block-scalar form
+    # (`|`) to add the `hardware` context alongside `fixtures` — both must
+    # still reach the app and pipeline images.
+    for image_name in ("app", "pipeline"):
+        entries = _build_context_entries(_matrix_image_block(containers, image_name))
+        assert "fixtures=tests/contract-fixtures" in entries
+        assert "hardware=infra/hardware-profiles" in entries
     assert "docker/bake-action" in containers

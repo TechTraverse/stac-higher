@@ -12,7 +12,8 @@
         "timeout_seconds": 900,
         "retry": { "max_attempts": 3, "backoff": "exponential" },
         "network": { "level": "isolated", "hosts": [] },
-        "runtime_image": "default"
+        "runtime_image": "default",
+        "hardware": { "profile": "standard", "cpu": 1, "gpu_count": 0 }
       }
     },
     "container": {
@@ -24,7 +25,8 @@
         "timeout_seconds": 900,
         "retry": { "max_attempts": 3, "backoff": "exponential" },
         "network": { "level": "isolated", "hosts": [] },
-        "runtime_image": "default"
+        "runtime_image": "default",
+        "hardware": { "profile": "standard", "cpu": 1, "gpu_count": 0 }
       }
     }
   },
@@ -249,6 +251,78 @@
       "config": { "kind": "inline_python", "runtime_image": 1 },
       "app": "reject",
       "pipeline": "reject"
+    },
+    {
+      "name": "hardware block absent reads as standard (K-1: every stored revision lacks it)",
+      "config": { "kind": "inline_python" },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "hardware standard explicitly",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": 2, "gpu_count": 0 } },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "hardware gpu_count omitted defaults to 0",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": 1 } },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "hardware with a fractional cpu",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": 0.5, "gpu_count": 0 } },
+      "app": "accept",
+      "pipeline": "accept"
+    },
+    {
+      "name": "hardware cpu zero",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": 0, "gpu_count": 0 } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "hardware cpu negative",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": -1, "gpu_count": 0 } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "hardware gpu_count fractional",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": 1, "gpu_count": 0.5 } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "hardware gpu_count negative",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": 1, "gpu_count": -1 } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "hardware profile blank",
+      "config": { "kind": "inline_python", "hardware": { "profile": "", "cpu": 1, "gpu_count": 0 } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "hardware profile not an id",
+      "config": { "kind": "inline_python", "hardware": { "profile": "GPU L4", "cpu": 1, "gpu_count": 0 } },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "hardware with an unknown key",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": 1, "gpu_count": 0, "tpu": 1 } },
+      "app": "reject",
+      "pipeline": "accept"
+    },
+    {
+      "name": "hardware naming a profile the SHAPE cannot know (bounds are the write gate's, not the schema's)",
+      "config": { "kind": "inline_python", "hardware": { "profile": "tpu-v5", "cpu": 1, "gpu_count": 0 } },
+      "app": "accept",
+      "pipeline": "accept"
     }
   ]
 }
