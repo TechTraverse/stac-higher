@@ -28,7 +28,7 @@ from pipeline.ingest.transfer import transfer_policy
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.process import JOB_RUN_NOW
 from pipeline.process.repo import PgProcessRepo
-from pipeline.queue.interface import QueueBackend, RetrySpec
+from pipeline.queue.interface import QUEUE_BYTES, QueueBackend, RetrySpec
 from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client, platform_s3_access
 
@@ -244,5 +244,5 @@ def register(queue: QueueBackend, settings: Settings) -> None:
     queue.register_periodic(recovery_sweep, name=JOB_RECOVERY_SWEEP, cron=CRON)
     queue.register_task(discover, name=JOB_DISCOVER, retry=STAGE_RETRY)
     queue.register_task(group, name=JOB_GROUP, retry=STAGE_RETRY)
-    queue.register_task(fetch, name=JOB_FETCH, retry=STAGE_RETRY)
-    queue.register_task(itemize, name=JOB_ITEMIZE, retry=STAGE_RETRY)
+    queue.register_task(fetch, name=JOB_FETCH, retry=STAGE_RETRY, queue=QUEUE_BYTES)
+    queue.register_task(itemize, name=JOB_ITEMIZE, retry=STAGE_RETRY, queue=QUEUE_BYTES)

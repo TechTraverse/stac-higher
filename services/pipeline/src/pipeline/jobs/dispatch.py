@@ -44,7 +44,7 @@ from pipeline.gc.sweep import item_prefix
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import JOB_FINALIZE
 from pipeline.jobs.process import JOB_TRIGGER as JOB_PROCESS_TRIGGER
-from pipeline.queue.interface import QueueBackend, RetrySpec
+from pipeline.queue.interface import QUEUE_BYTES, QueueBackend, RetrySpec
 from pipeline.storage.platform import build_platform_client
 
 logger = logging.getLogger(__name__)
@@ -319,4 +319,4 @@ def register(queue: QueueBackend, settings: Settings) -> None:
 
     queue.register_periodic(dispatch_poll, name=JOB_DISPATCH_POLL, cron=CRON)
     queue.register_periodic(retry_sweep, name=JOB_RETRY_SWEEP, cron=CRON)
-    queue.register_task(deliver, name=JOB_DELIVER, retry=DELIVER_RETRY)
+    queue.register_task(deliver, name=JOB_DELIVER, retry=DELIVER_RETRY, queue=QUEUE_BYTES)

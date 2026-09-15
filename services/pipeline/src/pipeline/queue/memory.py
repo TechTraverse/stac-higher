@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.queue.interface import (
+    QUEUE_DEFAULT,
     JobHandler,
     JobPayload,
     QueueBackend,
@@ -46,17 +47,25 @@ class InMemoryQueue(QueueBackend):
     #: retry specs by task name (recorded for assertions; run_pending stays
     #: single-shot — tests drive re-attempts explicitly)
     retry_specs: dict[str, RetrySpec] = field(default_factory=dict)
+    #: queue name by task name (recorded for assertions; M3-D)
+    queues: dict[str, str] = field(default_factory=dict)
     jobs: list[Job] = field(default_factory=list)
     _next_id: int = 1
 
     def register_task(
-        self, func: JobHandler, *, name: str, retry: RetrySpec | None = None
+        self,
+        func: JobHandler,
+        *,
+        name: str,
+        retry: RetrySpec | None = None,
+        queue: str = QUEUE_DEFAULT,
     ) -> None:
         if name in self.tasks or name in self.periodic:
             raise QueueError(f"task already registered: {name}")
         self.tasks[name] = func
         if retry is not None:
             self.retry_specs[name] = retry
+        self.queues[name] = queue
 
     def register_periodic(self, func: JobHandler, *, name: str, cron: str) -> None:
         if name in self.tasks or name in self.periodic:

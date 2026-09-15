@@ -24,6 +24,8 @@ from pipeline.queue.memory import InMemoryQueue
 
 
 def test_register_wires_poll_periodic_and_stage_tasks():
+    from pipeline.queue.interface import QUEUE_BYTES, QUEUE_DEFAULT
+
     queue = InMemoryQueue()
     ingest.register(queue, Settings.from_env(env={}))
     assert set(queue.tasks) == {JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE}
@@ -31,6 +33,12 @@ def test_register_wires_poll_periodic_and_stage_tasks():
     assert queue.periodic[JOB_POLL].cron == CRON
     # I-55: every chain stage carries a queue-level retry for transient faults
     assert set(queue.retry_specs) == {JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE}
+    # M3-D: the byte-holding stages run on the bounded `bytes` queue; the
+    # cheap stages and the periodics stay on `default`.
+    assert queue.queues[JOB_FETCH] == QUEUE_BYTES
+    assert queue.queues[JOB_ITEMIZE] == QUEUE_BYTES
+    assert queue.queues[JOB_DISCOVER] == QUEUE_DEFAULT
+    assert queue.queues[JOB_GROUP] == QUEUE_DEFAULT
 
 
 def test_build_queue_includes_ingest_jobs():

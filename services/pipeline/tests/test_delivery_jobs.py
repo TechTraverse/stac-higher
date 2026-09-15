@@ -47,6 +47,8 @@ def _s3_connection(endpoint):
 
 
 def test_register_wires_dispatch_poll_and_deliver_task():
+    from pipeline.queue.interface import QUEUE_BYTES
+
     queue = InMemoryQueue()
     dispatch.register(queue, Settings.from_env(env={}))
     assert JOB_DISPATCH_POLL in queue.periodic
@@ -55,6 +57,8 @@ def test_register_wires_dispatch_poll_and_deliver_task():
     # I-55: a transient failure before deliver_item records anything would
     # otherwise lose the delivery (no delivery_log row for the sweep to see)
     assert JOB_DELIVER in queue.retry_specs
+    # M3-D: deliver holds bytes in flight, so it runs on the bounded queue.
+    assert queue.queues[JOB_DELIVER] == QUEUE_BYTES
 
 
 def test_build_queue_includes_deliver_task():

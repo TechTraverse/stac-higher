@@ -46,6 +46,7 @@ __all__ = [
     "INGEST_BYTES",
     "INGEST_EVENTS",
     "INGEST_FETCH_TRANSFERS",
+    "JOBS_IN_FLIGHT",
     "JOB_RUNS",
     "JOB_SECONDS",
     "METRICS_CONTENT_TYPE",
@@ -70,6 +71,13 @@ JOB_RUNS = Counter(
 JOB_SECONDS = Histogram(
     "pipeline_job_seconds",
     "Queue task / periodic tick duration",
+    ["job"],
+    registry=REGISTRY,
+)
+JOBS_IN_FLIGHT = Gauge(
+    "pipeline_jobs_in_flight",
+    "Handlers executing right now, by job — the outside-the-process evidence"
+    " that WORKER_CONCURRENCY is in effect (M3-D)",
     ["job"],
     registry=REGISTRY,
 )
@@ -222,6 +230,8 @@ def instrument_handler(
     @wraps(func)
     async def wrapped(*args: Any, **kwargs: Any) -> None:
         start = time.monotonic()
+        in_flight = JOBS_IN_FLIGHT.labels(job=name)
+        in_flight.inc()
         try:
             result = func(*args, **kwargs)
             if inspect.isawaitable(result):
@@ -230,6 +240,7 @@ def instrument_handler(
             JOB_RUNS.labels(job=name, outcome="error").inc()
             raise
         finally:
+            in_flight.dec()
             JOB_SECONDS.labels(job=name).observe(time.monotonic() - start)
         JOB_RUNS.labels(job=name, outcome="ok").inc()
 

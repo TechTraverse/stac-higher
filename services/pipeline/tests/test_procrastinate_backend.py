@@ -76,3 +76,39 @@ def test_heartbeat_registers_through_interface(queue: ProcrastinateQueue):
 async def test_enqueue_batch_empty_is_noop(queue: ProcrastinateQueue):
     # must not touch the (nonexistent) database
     assert await queue.enqueue_batch("jobs.whatever", []) == []
+
+
+def test_register_task_lands_on_the_named_queue(queue: ProcrastinateQueue):
+    from pipeline.queue.interface import QUEUE_BYTES, QUEUE_DEFAULT
+
+    async def handler(**kw):
+        pass
+
+    queue.register_task(handler, name="jobs.cheap")
+    queue.register_task(handler, name="jobs.heavy", queue=QUEUE_BYTES)
+    assert queue.app.tasks["jobs.cheap"].queue == QUEUE_DEFAULT == "default"
+    assert queue.app.tasks["jobs.heavy"].queue == QUEUE_BYTES == "bytes"
+
+
+async def test_run_worker_starts_one_worker_per_queue(queue: ProcrastinateQueue, monkeypatch):
+    """M3-D: two Procrastinate workers in one process — the bytes queue's
+    concurrency bounds memory, the default queue's is the rest."""
+    calls: list[dict] = []
+
+    async def fake_run_worker_async(**kwargs):
+        calls.append(kwargs)
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+
+    await queue.run_worker(concurrency=12, bytes_concurrency=4)
+
+    by_name = {c["name"]: c for c in calls}
+    assert set(by_name) == {"default", "bytes"}
+    assert by_name["default"]["queues"] == ["default"]
+    assert by_name["default"]["concurrency"] == 8
+    assert by_name["bytes"]["queues"] == ["bytes"]
+    assert by_name["bytes"]["concurrency"] == 4

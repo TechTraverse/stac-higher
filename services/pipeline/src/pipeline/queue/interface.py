@@ -44,6 +44,15 @@ class RetrySpec:
     wait_seconds: int = 0
 
 
+#: Procrastinate's own default queue name — every task and periodic that does
+#: not say otherwise. Runs with WORKER_CONCURRENCY - WORKER_BYTES_CONCURRENCY slots.
+QUEUE_DEFAULT = "default"
+#: The bounded queue (M3-D): jobs that hold object bytes or a GDAL block cache
+#: — ingest FETCH/ITEMIZE, deliver. Runs with WORKER_BYTES_CONCURRENCY slots,
+#: so resident memory is bounded by that number, not by the total.
+QUEUE_BYTES = "bytes"
+
+
 class QueueError(Exception):
     """Base class for queue failures."""
 
@@ -60,12 +69,19 @@ class QueueBackend(abc.ABC):
 
     @abc.abstractmethod
     def register_task(
-        self, func: JobHandler, *, name: str, retry: RetrySpec | None = None
+        self,
+        func: JobHandler,
+        *,
+        name: str,
+        retry: RetrySpec | None = None,
+        queue: str = QUEUE_DEFAULT,
     ) -> None:
         """Register ``func`` as the handler for jobs named ``name``.
 
         ``retry`` opts the task into queue-level retries on handler
         exceptions; without it a failure is terminal after one attempt.
+        ``queue`` names the worker pool the job runs in (M3-D): ``QUEUE_DEFAULT``
+        unless the handler holds bytes.
         """
 
     @abc.abstractmethod

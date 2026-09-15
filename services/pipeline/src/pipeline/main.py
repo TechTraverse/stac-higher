@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 import uvicorn
 
-from pipeline.config import Settings
+from pipeline.config import Settings, sizing_warnings
 from pipeline.db.pool import close_pools
 from pipeline.health import create_health_app
 from pipeline.jobs import (
@@ -79,10 +80,23 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     return queue
 
 
+def blocking_executor(settings: Settings) -> ThreadPoolExecutor:
+    """The loop's default executor, sized to the job slots plus the overlapping
+    periodic ticks. Every blocking call in the worker is `asyncio.to_thread`
+    (boto3, rasterio, pgstac), so the stdlib default of min(32, cpus + 4)
+    threads would be a hidden concurrency ceiling on a small container."""
+    return ThreadPoolExecutor(
+        max_workers=settings.worker_concurrency + 4, thread_name_prefix="pipeline-blocking"
+    )
+
+
 async def run(settings: Settings) -> None:
     queue = build_queue(settings)
 
     try:
+        asyncio.get_running_loop().set_default_executor(blocking_executor(settings))
+        for warning in sizing_warnings(settings):
+            logger.warning(warning.message, extra=warning.extra)
         logger.info("applying queue schema", extra={"schema": settings.queue_schema})
         await queue.setup()
 
@@ -96,13 +110,21 @@ async def run(settings: Settings) -> None:
         )
         logger.info(
             "pipeline service starting",
-            extra={"health_port": settings.health_port, "queue_backend": queue.name},
+            extra={
+                "health_port": settings.health_port,
+                "queue_backend": queue.name,
+                "worker_concurrency": settings.worker_concurrency,
+                "worker_bytes_concurrency": settings.worker_bytes_concurrency,
+            },
         )
         # Slice C: the NOTIFY-woken dispatch loop runs alongside the worker as
         # the primary wake path; the worker's minute dispatch_poll is fallback.
         await asyncio.gather(
             server.serve(),
-            queue.run_worker(),
+            queue.run_worker(
+                concurrency=settings.worker_concurrency,
+                bytes_concurrency=settings.worker_bytes_concurrency,
+            ),
             dispatch.build_notify_listener(queue, settings),
         )
     finally:

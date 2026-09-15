@@ -10,6 +10,7 @@ touches ``stac_higher`` (see docs/decisions/0001-migration-ownership.md).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 
@@ -18,6 +19,8 @@ import psycopg
 
 from pipeline.metrics import instrument_handler
 from pipeline.queue.interface import (
+    QUEUE_BYTES,
+    QUEUE_DEFAULT,
     JobHandler,
     JobPayload,
     QueueBackend,
@@ -47,7 +50,12 @@ class ProcrastinateQueue(QueueBackend):
         )
 
     def register_task(
-        self, func: JobHandler, *, name: str, retry: RetrySpec | None = None
+        self,
+        func: JobHandler,
+        *,
+        name: str,
+        retry: RetrySpec | None = None,
+        queue: str = QUEUE_DEFAULT,
     ) -> None:
         # Procrastinate's default (retry=False) fails a job permanently on the
         # first handler exception — a RetrySpec maps to its RetryStrategy.
@@ -59,7 +67,7 @@ class ProcrastinateQueue(QueueBackend):
             else False
         )
         # M2-H: run/duration/outcome metrics for every task, centrally.
-        self.app.task(instrument_handler(func, name), name=name, retry=strategy)
+        self.app.task(instrument_handler(func, name), name=name, retry=strategy, queue=queue)
 
     def register_periodic(self, func: JobHandler, *, name: str, cron: str) -> None:
         # queueing_lock: if a previous tick is still waiting, skip instead of
@@ -114,9 +122,28 @@ class ProcrastinateQueue(QueueBackend):
         await self.app.schema_manager.apply_schema_async()
         logger.info("procrastinate schema applied", extra={"schema": self.schema})
 
-    async def run_worker(self) -> None:
+    async def run_worker(self, *, concurrency: int, bytes_concurrency: int) -> None:
+        """Two Procrastinate workers in this process, one per queue (M3-D).
+
+        A single worker with one semaphore cannot bound the byte-holding jobs
+        without also capping the cheap ones — a slot claimed by a FETCH waiting
+        on an in-process semaphore is still a slot. Two workers each claim only
+        their own queue's jobs, so ``bytes`` never holds more than its share.
+        Both run a periodic deferrer; the second defer of every tick hits the
+        UNIQUE (task_name, periodic_id, defer_timestamp) row and is logged by
+        Procrastinate as already deferred — one execution per tick, as before.
+        """
         await self._ensure_open()
-        await self.app.run_worker_async()
+        await asyncio.gather(
+            self.app.run_worker_async(
+                queues=[QUEUE_DEFAULT],
+                concurrency=concurrency - bytes_concurrency,
+                name=QUEUE_DEFAULT,
+            ),
+            self.app.run_worker_async(
+                queues=[QUEUE_BYTES], concurrency=bytes_concurrency, name=QUEUE_BYTES
+            ),
+        )
 
     async def aclose(self) -> None:
         if self._opened:
