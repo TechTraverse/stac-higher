@@ -212,7 +212,7 @@ DEFAULT_GDAL_CACHEMAX_MB = 64
 DEFAULT_FETCH_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_FETCH_TRANSFER_CONCURRENCY = 4
 # Per-worker peak RSS ~= 255 MiB + ((GDAL_CACHEMAX + 16 MiB VSI cache) + (FETCH_TRANSFER_CONCURRENCY
-# + 1) x FETCH_CHUNK_BYTES) x WORKER_CONCURRENCY — independent of asset size.
+# + 1) x FETCH_CHUNK_BYTES) x WORKER_BYTES_CONCURRENCY — independent of asset size.
 
 # --- Worker concurrency (M3-D, spec §3 / S-C) -------------------------------
 #: Jobs in flight per worker process, both queues together — S-C's 12-16 band
