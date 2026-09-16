@@ -1,5 +1,25 @@
 name: stac-higher
 
+# The pipeline image's build, shared by every service that runs it
+# (`pipeline` and the one-shot `pgstac-migrate`). It is an anchor rather than
+# two copies because the copies DID drift: `pgstac-migrate` kept the short
+# `build: ./services/pipeline` form after the named contexts were added, so
+# `COPY --from=hardware` resolved as the Docker Hub image `hardware:latest`
+# and `docker compose build pgstac-migrate` failed for everyone — it just
+# stayed hidden until the minio pull ahead of it started working again.
+x-pipeline-build: &pipeline-build
+  context: ./services/pipeline
+  # The built-in extractor registry (tests/contract-fixtures/
+  # builtin-extractors.json) is COPY --from=fixtures'd into the image — the
+  # one copy, reached through a named build context because the pipeline's own
+  # context is services/pipeline alone (X-2).
+  additional_contexts:
+    fixtures: ./tests/contract-fixtures
+    # The deployment's hardware-profile set (infra/hardware-profiles/
+    # local.json) is COPY --from=hardware'd into the image — same reason as
+    # `fixtures`: the repo-root .dockerignore excludes infra/ (K-1).
+    hardware: ./infra/hardware-profiles
+
 services:
   database:
     image: ghcr.io/stac-utils/pgstac:v0.9.11
@@ -25,7 +45,7 @@ services:
   # Reuses the pipeline image, whose lockfile pins pypgstac in lockstep with
   # the loader; a no-op at matching versions. See ADR 0001 / ISSUES I-54.
   pgstac-migrate:
-    build: ./services/pipeline
+    build: *pipeline-build
     image: stac-higher-pipeline
     command: ["pypgstac", "migrate"]
     environment:
@@ -153,7 +173,12 @@ services:
       start_period: 60s
 
   minio:
-    image: minio/minio:latest
+    # PINNED to quay.io: MinIO removed the `minio/minio` repository from Docker
+    # Hub entirely (the pull is denied, not just rate-limited), which is what
+    # broke the e2e CI job — issue #25. quay.io is MinIO's own registry and
+    # publishes no `latest` for the server, only RELEASE tags, so this is
+    # pinned by necessity as well as by preference.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=minioadmin
@@ -184,7 +209,7 @@ services:
   # stac-higher-deliveries: the destination bucket the GOES e2e and
   # `pipeline.demo goes-seed --deliver` deliver into (G-7).
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       minio:
         condition: service_healthy
@@ -248,18 +273,7 @@ services:
     restart: unless-stopped
 
   pipeline:
-    build:
-      context: ./services/pipeline
-      # The built-in extractor registry (tests/contract-fixtures/
-      # builtin-extractors.json) is COPY --from=fixtures'd into the image —
-      # the one copy, reached through a named build context because the
-      # pipeline's own context is services/pipeline alone (X-2).
-      additional_contexts:
-        fixtures: ./tests/contract-fixtures
-        # The deployment's hardware-profile set (infra/hardware-profiles/
-        # local.json) is COPY --from=hardware'd into the image — same reason
-        # as `fixtures`: the repo-root .dockerignore excludes infra/ (K-1).
-        hardware: ./infra/hardware-profiles
+    build: *pipeline-build
     image: stac-higher-pipeline
     environment:
       - DATABASE_URL=postgresql://username:password@database:5432/postgis

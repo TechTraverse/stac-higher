@@ -14,3 +14,12 @@ COPY infra/titiler/stac_higher_titiler /opt/stac-higher/titiler/stac_higher_titi
 ENV PYTHONPATH=/opt/stac-higher/titiler \
     MODULE_NAME=stac_higher_titiler.main \
     VARIABLE_NAME=app
+
+# DS-0002 (trivy HIGH): the titiler-pgstac base defaults to root and ships no
+# non-root account, so the user has to be created here before it can be used.
+# Nothing binds a privileged port — the base CMD is gunicorn on :8000 and
+# docker-compose.yml overrides it to uvicorn on :8084 — so dropping privileges
+# costs nothing here, and it matches every other Dockerfile in this repo
+# (app, pipeline, process-runtime and proxy-policy all set USER).
+RUN useradd --system --create-home --uid 1001 titiler
+USER titiler

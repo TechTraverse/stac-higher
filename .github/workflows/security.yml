@@ -76,9 +76,40 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
 
+  # dependency-review-action needs the dependency graph AND, on a PRIVATE repo,
+  # GitHub Advanced Security. This repo is private with GHAS off, so the job
+  # failed on every PR with "Dependency review is not supported on this
+  # repository". Same treatment as CodeQL (see .github/workflows/codeql.yml):
+  # ask the API instead of deleting the config, so it lights up by itself if
+  # the repo goes public or GHAS is enabled.
+  dependency-review-preflight:
+    name: Dependency review available?
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          visibility="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.visibility')"
+          advanced="$(gh api "repos/${GITHUB_REPOSITORY}" \
+            --jq '.security_and_analysis.advanced_security.status // "unset"')"
+          echo "visibility=${visibility} advanced_security=${advanced}"
+          if [ "${visibility}" = "public" ] || [ "${advanced}" = "enabled" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Dependency review skipped::Needs GitHub Advanced Security on a private repo (visibility=${visibility}, advanced_security=${advanced})."
+          fi
+
   dependency-review:
     name: Dependency review (PR)
-    if: github.event_name == 'pull_request'
+    needs: dependency-review-preflight
+    if: needs.dependency-review-preflight.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
