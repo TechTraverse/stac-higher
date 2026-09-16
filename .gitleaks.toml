@@ -6,11 +6,24 @@
 useDefault = true
 
 [allowlist]
-description = "Test fixtures and UI placeholder text — not real secrets"
+description = "Test fixtures, UI placeholder text and GOES filenames — not real secrets"
 paths = [
   # Pipeline + app test suites use obviously-fake keys (0123..., base64 thereof)
   '''services/pipeline/tests/.*''',
   '''app/src/__tests__/.*''',
   # SSH credential form: the textarea placeholder contains a PEM-style header
   '''app/src/components/connections/ConnectionForm\.tsx''',
+]
+regexes = [
+  # NOAA GOES ABI product filenames. The `generic-api-key` rule fires on them
+  # because the JSON key they sit under ends in `_key` ("asset_key"), not
+  # because the value looks like a credential — it is a satellite granule
+  # filename with an embedded scan timestamp. Allowlisted by VALUE SHAPE
+  # rather than by path: the two current hits live in
+  # tests/contract-fixtures/ and docs/superpowers/plans/, and exempting
+  # either directory wholesale would hide a real credential committed there
+  # later.
+  # The `.nc` suffix is optional: the manifest fixture's `asset_key` is the
+  # bare granule id, while `href`/`key` carry the filename.
+  '''OR_ABI-L2-[A-Za-z0-9]+-M\d+_G\d+_s\d+_e\d+_c\d+(\.nc)?''',
 ]

@@ -153,7 +153,12 @@ services:
       start_period: 60s
 
   minio:
-    image: minio/minio:latest
+    # PINNED to quay.io: MinIO removed the `minio/minio` repository from Docker
+    # Hub entirely (the pull is denied, not just rate-limited), which is what
+    # broke the e2e CI job — issue #25. quay.io is MinIO's own registry and
+    # publishes no `latest` for the server, only RELEASE tags, so this is
+    # pinned by necessity as well as by preference.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=minioadmin
@@ -184,7 +189,7 @@ services:
   # stac-higher-deliveries: the destination bucket the GOES e2e and
   # `pipeline.demo goes-seed --deliver` deliver into (G-7).
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       minio:
         condition: service_healthy

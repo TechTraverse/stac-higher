@@ -13,8 +13,47 @@ permissions:
   contents: read
 
 jobs:
+  # CodeQL uploads SARIF to the code-scanning API, which on a PRIVATE repo
+  # requires GitHub Advanced Security. This repo is private with GHAS off, so
+  # every analyze job failed with "Advanced Security must be enabled for this
+  # repository to use code scanning" — red on every push since the workflow
+  # was added, drowning out real failures.
+  #
+  # Rather than delete the config, gate it: this job asks the API whether code
+  # scanning can work, and `analyze` runs only when it can. If the repo is made
+  # public (code scanning is free there) or GHAS is enabled, CodeQL lights up on
+  # its own with no edit here.
+  #
+  # Queried through the API rather than `github.event.repository.visibility`
+  # because that field is not populated on `schedule` runs, which is exactly
+  # when nobody is watching.
+  preflight:
+    name: Code scanning available?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          visibility="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.visibility')"
+          advanced="$(gh api "repos/${GITHUB_REPOSITORY}" \
+            --jq '.security_and_analysis.advanced_security.status // "unset"')"
+          echo "visibility=${visibility} advanced_security=${advanced}"
+          if [ "${visibility}" = "public" ] || [ "${advanced}" = "enabled" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=CodeQL skipped::Code scanning needs GitHub Advanced Security on a private repo (visibility=${visibility}, advanced_security=${advanced})."
+          fi
+
   analyze:
     name: Analyze (${{ matrix.language }})
+    needs: preflight
+    if: needs.preflight.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
