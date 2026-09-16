@@ -1356,6 +1356,22 @@ assert-and-warn on the file (the M3-A `use_queue` pattern).
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/hardware.py`.
 - Found in: K-1 Task 4/5 reviews (2026-09-15).
 
+### I-133 · CodeQL and dependency review are skipped, not passing 🟡
+Both need GitHub Advanced Security on a private repo, which this repo does not
+have (`gh api repos/TechTraverse/stac-higher` → `security_and_analysis: null`),
+so every CodeQL analyze job failed with "Advanced Security must be enabled for
+this repository to use code scanning" and dependency review with "not supported
+on this repository" — on every push since the workflows were added. They are now
+gated behind a preflight job that asks the API, so they report **skipped**
+rather than red. The practical gap: **no static analysis and no PR dependency
+review actually runs.** `npm audit`, `pip-audit`, gitleaks and trivy do, and
+they are the current coverage. Closes itself if the repo goes public (code
+scanning is free there) or GHAS is enabled — the preflight flips with no edit.
+The check queries the API rather than `github.event.repository.visibility`,
+which is not populated on `schedule` runs.
+- Tracked in: `.github/workflows/codeql.yml`, `.github/workflows/security.yml`.
+- Found in: CI repair (2026-09-15).
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
