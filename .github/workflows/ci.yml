@@ -91,6 +91,27 @@ jobs:
         # ../process-runtime/stac_higher_stactools ships in the runtime image but
         # is unit-tested (and so linted) from this suite — X-2.
         run: uv run ruff check . ../process-runtime/stac_higher_stactools
+      # ADR 0001: the app owns every stac_higher.* DDL and creates it via
+      # runMigrations() on the first API request; the pipeline only reads and
+      # writes rows. Nothing starts the app in this job, so the pgstac service
+      # had pgstac's tables and nothing else, and the one test that makes a
+      # real PgIngestRepo call failed on
+      # `relation "stac_higher.collection_connections" does not exist` (#24).
+      # Applying the app's real migration list — rather than hand-maintaining a
+      # second copy of the schema in a pytest fixture — keeps the two runtimes
+      # from drifting, which is the whole point of that ADR.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install node deps (repo root — single lockfile)
+        working-directory: ${{ github.workspace }}
+        run: npm ci
+      - name: Apply the app's stac_higher schema
+        working-directory: ${{ github.workspace }}
+        env:
+          DATABASE_URL: postgresql://username:password@localhost:5433/postgis
+        run: npm run db:migrate
       - name: Tests (DB integration included)
         env:
           DATABASE_URL: postgresql://username:password@localhost:5433/postgis
