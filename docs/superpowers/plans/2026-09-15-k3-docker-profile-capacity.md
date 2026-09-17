@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.12 (psycopg 3, urllib against the Engine API v1.43), pytest; Astro 7 + React 19, vitest; migration in `app/src/lib/db/migrate.ts`; a contract fixture consumed by both suites.
 
-**Spec:** `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md` §5.2 (migration 029), §8 (DockerExecutor: `NanoCpus`, `DeviceRequests`, capacity → `pending_capacity` + 15 s), §3.4 (the docker backend block), §9 (run-row `phase` chip — the chip only; Cancel/`cancelled` are K-4); ADR 0019; `TODO.md` K queue "K-3 · DockerExecutor honours the profile".
+**Spec:** `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md` §5.2 (migration 029), §8 (DockerExecutor: `NanoCpus`, `DeviceRequests`, capacity → `pending_capacity` + 15 s), §3.4 (the docker backend block), §9 (run-row `phase` chip — the chip only; Cancel/`cancelled` are K-4); ADR 0019; GitHub issue #11 "K-3 · DockerExecutor honours the profile".
 
 ## Global Constraints
 
-- **Worktree:** `git worktree add .claude/worktrees/k3-docker-profile -b ai/k3-docker-profile ai/main` — only after **K-2 has merged into `ai/main`** (Task 0 checks: `RunsCard` exported from `ProcessDetailPage.tsx` and `hardware-public.ts` present). Then `npm install` at the worktree root.
+- **Worktree:** `git worktree add .claude/worktrees/k3-docker-profile -b feat/k3-docker-profile main` (GitHub issue #11) — only after **K-2 (#10) has merged into `main`** (Task 0 checks: `RunsCard` exported from `ProcessDetailPage.tsx` and `hardware-public.ts` present). Then `npm install` at the worktree root.
 - **Gates:** app tasks `npm run verify` from the worktree root; pipeline tasks `uv run pytest -q` and `uv run ruff check .` from `services/pipeline/`; a task that touches both runs both. Teammates never run e2e, the dev server, or Docker (image builds included).
 - **Migration 029 (spec §5.2, amended by ruling):** `ALTER TABLE stac_higher.process_runs ADD COLUMN IF NOT EXISTS` for `executor_backend text`, `executor_handle text`, `phase text`, `phase_detail text`, `submitted_at timestamptz`, `cancel_requested_at timestamptz`, `next_attempt_at timestamptz`; a CHECK constraint `process_runs_phase_check` `(phase IS NULL OR phase IN ('pending_capacity','starting','running'))`. The `status` CHECK is NOT changed (`cancelled` is K-4, migration 030). Never reorder `MIGRATIONS`; 029 follows 028. ADR 0001: the pipeline runs no DDL.
 - **Phase vocabulary, both sides, pinned by `tests/contract-fixtures/process-run-phase.json`:** `pending_capacity` (queued, released for capacity), `starting` (claimed, not yet reported running by the backend), `running`. This slice writes `pending_capacity` and `starting`; `running` is written by K-4's watcher. `phase` is NULL on every terminal row and on a plain queued row.
@@ -32,7 +32,7 @@
 
 ### Task 0: Precondition
 
-- [ ] On `ai/main`: `grep -n "export function RunsCard" app/src/components/processes/ProcessDetailPage.tsx` and `ls app/src/lib/processes/hardware-public.ts` both succeed (K-2 merged); `grep -n '"028_builtin_processes"' app/src/lib/db/migrate.ts` is the last migration name. If K-2 is not merged, STOP.
+- [ ] On `main`: `grep -n "export function RunsCard" app/src/components/processes/ProcessDetailPage.tsx` and `ls app/src/lib/processes/hardware-public.ts` both succeed (K-2 merged); `grep -n '"028_builtin_processes"' app/src/lib/db/migrate.ts` is the last migration name. If K-2 is not merged, STOP.
 
 ### Task 1: The phase fixture, migration 029, the app's run row
 
@@ -861,11 +861,11 @@ git commit -m "feat(processes): Waiting-for-capacity / Starting phase chips on r
 
 ### Task 5: Verify, merge, migrate, live check (lead only)
 
-- [ ] Worktree: `npm run verify`, pytest + ruff. `git checkout ai/main && git merge ai/k3-docker-profile --no-ff`; all three gates on `ai/main`.
+- [ ] Worktree: `npm run verify`, pytest + ruff. Rebase onto `main`; all three gates again; push, open the PR (`Closes #11`), squash-merge when CI is green.
 - [ ] `docker compose up -d --build pipeline docker-socket-proxy`; migration 029 applies on the app's first request (start the dev server or hit any API route); `psql` shows the seven columns and the CHECK.
 - [ ] Live: the pipeline log shows no `HardwareProfileError`; a test run on `standard` succeeds with `phase` cycling `starting → NULL` (`SELECT status, phase, phase_detail FROM stac_higher.process_runs ORDER BY created_at DESC LIMIT 3`). Capacity: only observable once M3-D's concurrency is deployed (two `process_run_now` jobs in flight) — with `cpu-large` (capacity 1) and two simultaneous test runs the second row shows `queued / pending_capacity` and the UI chip; if M3-D is not yet on `ai/main`, record that the capacity check is unit-tested only and re-verify at K-4 or after M3-D deploys.
 - [ ] e2e: `processes` spec, then the whole suite. Chrome: a run row with the chip (screenshot noted).
-- [ ] `TODO.md` tick + landed note (the `next_attempt_at` ruling, the `INFO=1` widening, what was live-checked); `docs/FEATURES.md`; `docs/ISSUES.md` for gaps; worktree removal.
+- [ ] PR body = the landed note (the `next_attempt_at` ruling, the `INFO=1` widening, what was live-checked); tick K-3 in epic #2 with the PR number; `docs/FEATURES.md`; `docs/ISSUES.md` for gaps; worktree removal.
 
 ## Self-review
 

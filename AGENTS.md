@@ -70,59 +70,79 @@ Cross-cutting rules that hold on every task. The per-area design lives in
 - **Byte deletion** happens only through the `asset_gc` mark-then-collect queue (ADR 0011); nothing is deleted on an unconfigured platform.
 - **Pipeline logging**: data goes in `extra={...}` structured fields, never interpolated into the message.
 
-## Workflow — Worktree Isolation (Mandatory)
+## Workflow — trunk-based, one PR per issue (Mandatory)
 
-AI work lives on `ai/main` and worktree branches off it. **Never commit directly
-to `main`** — that branch is human-reviewed integration.
+`main` is the only long-lived branch. Every change — human or agent — lands
+through a short-lived branch and a squash-merged pull request into `main`.
+**Never commit directly to `main`.** (The former `ai/main` integration branch
+is retired; anything that still names it is historical.)
 
-### Solo tasks
-1. **Start**: `git worktree add .claude/worktrees/<slug> -b ai/<slug> ai/main`
-2. **Work**: commit to the worktree branch. Run `npm run verify` (after
-   `npm install` in the worktree) before declaring done.
-3. **Merge**: `git checkout ai/main && git merge ai/<slug> --no-ff`
-4. **Cleanup**: `git worktree remove .claude/worktrees/<slug>` and delete the
-   branch. **Never push `ai/main`** — it stays local; the human promotes it.
+### One task
+1. **Pick an issue**: a GitHub issue labelled `ready` in the queue you were
+   asked to work (`gh issue list --label "queue:K" --label ready`). Assign
+   yourself. Not `blocked`, not `lead-only` unless you are the lead.
+2. **Start**: `git worktree add .claude/worktrees/<slug> -b feat/<slug> main`
+   (`fix/`, `docs/` for those kinds of change), then `npm install` in the
+   worktree. Never work in the main checkout.
+3. **Work**: read the spec section and plan the issue cites before changing
+   anything. Commit to the branch. Run `npm run verify` (plus `uv run pytest`
+   and `uv run ruff check .` in `services/pipeline/` when the pipeline is
+   touched) before declaring done.
+4. **PR**: `git push -u origin feat/<slug>`, then
+   `gh pr create --base main --fill --body "Closes #<n> …"`. CI runs verify,
+   the pipeline tests and the Storybook build. Title `<ID>: <what changed>`.
+   The PR body lists the gates run, the lead-only steps left (e2e, Docker,
+   live checks) and any deviations from the plan.
+5. **Merge**: squash-merge via the PR (the repo allows nothing else; branches
+   auto-delete). `git worktree remove .claude/worktrees/<slug>`.
 
 ### Team tasks
 Orchestration is harness-specific (Claude Code: `CLAUDE.md` "Team tasks" and
 `.claude/prompts/ai-loop.md`; opencode: `/team-task`). Invariants:
-- Each teammate works in its own worktree off `ai/main`.
+- Each teammate works in its own worktree off `main`, one issue per branch.
 - Teammates run `npm run verify` **only** — never e2e, the dev server, or Docker.
-- The lead merges all branches into `ai/main` after teammates finish, then runs
-  verify and (if UI flows changed) e2e serially on `ai/main`.
-
-### Promoting `ai/main` → `main`
-The AI never merges into `main`. Humans promote via PR `ai/main → main`. After
-anything lands on `main`, sync back with
-`git checkout ai/main && git merge main --no-ff` — the only path from `main`
-into `ai/main`.
+- The lead pushes the branch, opens the PR, runs the lead-only steps (e2e,
+  Docker measurement, live check) serially, and merges.
 
 ### Rules
-- Base branch is always `ai/main`.
-- **Singleton resources**: the dev server (:4321), the pgstac backend (:8082)
-  and the e2e suite (serial, shared DB) are shared. Only ONE process may run
-  them at a time — in team work, the lead, after merging.
+- Base branch is always `main`. Rebase (or merge `main` into) a long-running
+  branch before opening the PR; resolve conflicts per the rule below.
+- **Singleton resources**: the dev server (:4321), the pgstac backend (:8082),
+  the load harness and the e2e suite (serial, shared DB) are shared. Only ONE
+  process may run them at a time — in team work, the lead.
 - **Merge conflicts**: read both sides, understand intent, produce a correct
   merge. STOP and report only if the sides genuinely contradict.
 - **`package-lock.json` conflicts**: `git checkout --theirs package-lock.json &&
   npm install && git add package-lock.json` — never hand-edit the lockfile.
-- If verify fails after a merge, fix on `ai/main` and commit the fix there.
+- **Migration numbers** are reserved on the issue (`migration` label). Check
+  the issue list and the migrations directory before taking one; name it in
+  the PR.
+- If `main` is red after a merge, the fix is a `fix/` PR, not a push.
 
-## Solo Agent Loop (TODO.md)
+## Solo Agent Loop (GitHub Issues)
+
+The work queue is GitHub Issues, not a file. Labels: `queue:<X>` is the
+queue (M3, K, X, …); an `epic` issue per queue carries the queue's context
+(read-first spec, settled decisions, gate, ordering) and lists its slices as
+sub-issues; `ready` means unblocked; `blocked` names its blockers in the body;
+`lead-only` needs the singletons or a cloud account; `migration` reserves a
+number. `agent:go` is reserved for the Claude GitHub app.
 
 When iterating autonomously:
-1. Pick the **first unchecked item** (`- [ ]`) **in the queue you were asked
-   to work** — `TODO.md` holds several independent queues and its header routes
-   between them. No cherry-picking within a queue, no wandering across queues.
-   If nobody named a queue, ask rather than guess.
-2. Read the files the task references before changing anything. Reuse existing
-   components (`StacMap`, `FootprintLayer`, `ExtentLayer`, `BboxInput`, …).
-3. Implement in a worktree per the workflow above. One task per iteration;
+1. Work only the queue you were asked for (`gh issue list --label
+   "queue:<X>" --label ready --state open`). Read the queue's epic first, then
+   the issue. No cherry-picking across queues. If nobody named a queue, ask.
+2. Read the files, spec section and plan the issue references before changing
+   anything. A slice without a plan gets one first (`superpowers:writing-plans`,
+   committed under `docs/superpowers/plans/`). Reuse existing components
+   (`StacMap`, `FootprintLayer`, `ExtentLayer`, `BboxInput`, …).
+3. Implement in a worktree per the workflow above. One issue per branch;
    minimal, focused changes.
-4. `npm run verify` must pass. Run e2e (`run-e2e` skill) if the task touched
-   flows the suite covers.
-5. Merge to `ai/main`, mark the task `- [x]` in `TODO.md`, and append
-   discovered follow-ups to the appropriate section.
+4. `npm run verify` must pass. Run e2e (`run-e2e` skill) only if you are the
+   lead and the task touched flows the suite covers.
+5. Open the PR with `Closes #<n>`. Discovered follow-ups become new issues in
+   the same queue (or `docs/ISSUES.md` entries when they are limitations, not
+   work), and the epic's slice list is updated when a slice lands.
 
 Additional rules: no new dependencies without clear need; never edit shadcn
 primitive files by hand (`npx shadcn@latest add <component>` — in the shared

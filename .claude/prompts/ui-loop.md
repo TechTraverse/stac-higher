@@ -1,3 +1,6 @@
+> **Archived 2026-09-15.** The UI remodel queue is complete and the branch model
+> this prompt describes is retired. Use `ai-loop.md` with a GitHub Issues queue.
+
 # UI-remodel loop — session kickoff prompt
 
 You are the UI-remodel session for stac-higher. Work the queue in

@@ -8,11 +8,11 @@
 
 **Tech Stack:** Astro 7 + React 19 islands, TanStack Query, shadcn `Input`/`Label`/`Badge`, native `<select>`, vitest + @testing-library/react (jsdom), Zod (read-side runtime schema).
 
-**Spec:** `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md` §9 (UI — the deploy-form and run-row bullets; the `phase` chip, Cancel button and `cancelled` badge are K-3/K-4's), §3.3 (what the app exposes), §4 (the `hardware` block and its bounds); ADR 0019; `TODO.md` K queue "K-2 · Hardware picker in the UI"; K-1's landed note in `TODO.md` "Discovered follow-ups" for the shipped interfaces.
+**Spec:** `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md` §9 (UI — the deploy-form and run-row bullets; the `phase` chip, Cancel button and `cancelled` badge are K-3/K-4's), §3.3 (what the app exposes), §4 (the `hardware` block and its bounds); ADR 0019; GitHub issue #10 "K-2 · Hardware picker in the UI"; K-1's landed note in the K epic #2 and issue #18 for the shipped interfaces.
 
 ## Global Constraints
 
-- **Worktree:** `git worktree add .claude/worktrees/k2-hardware-picker -b ai/k2-hardware-picker ai/main` — only after **K-1 has merged into `ai/main`** (Task 0 checks). Then `npm install` at the worktree root.
+- **Worktree:** `git worktree add .claude/worktrees/k2-hardware-picker -b feat/k2-hardware-picker main` (GitHub issue #10) — only after **K-1 has merged into `main`** (it has, 2026-09-15) (Task 0 checks). Then `npm install` at the worktree root.
 - **Gates:** `npm run verify` from the worktree root before each commit (app-scoped typecheck + build + unit tests). Teammates never run e2e, the dev server, or Docker — the lead runs e2e (`processes` spec, then the whole suite) after merge.
 - **Conventions (spec §9, the processes pages):** plain `useState` forms, native `<select>` with disabled options, TanStack mutations, server-side Zod. shadcn primitives from `@/components/ui/*` (app-only) or `@stac-higher/shared`; **never hand-edit `components/ui/`**. `lucide-react` icons. No new dependency.
 - **The profile shape the UI sees (spec §3.3):** `GET /api/processes/hardware-profiles` → `{ "backend": "docker", "profiles": [ { id, label, description, tier ("cpu" | "cpu-large" | "gpu"), accelerator (null | {vendor, model, memory_gb}), cpu {min, max, default}, memory_mb {min, max, default}, gpu_count (null | {min, max, default}), max_queue_wait_seconds, image (null | string) } ] }` — no `backend` block on a profile. Exactly one profile has `id: "standard"`; bounds are inclusive.
@@ -31,7 +31,7 @@
 
 ### Task 0: Precondition
 
-- [ ] `git log ai/main --oneline -20 | grep -i "k-1\|hardware"` shows the K-1 merge, and `app/src/lib/processes/hardware.ts` exports `PublicHardwareProfile`, `publicProfiles` and `hardwareBoundsError`; `app/src/pages/api/processes/hardware-profiles.ts` exists. If not, STOP — K-2 depends on K-1.
+- [ ] `git log main --oneline -20 | grep -i "k-1\|hardware"` shows the K-1 merge, and `app/src/lib/processes/hardware.ts` exports `PublicHardwareProfile`, `publicProfiles` and `hardwareBoundsError`; `app/src/pages/api/processes/hardware-profiles.ts` exists. If not, STOP — K-2 depends on K-1.
 
 ### Task 1: The client-safe profile type, the pure formatters, the hook
 
@@ -1096,10 +1096,10 @@ git commit -m "feat(processes): run rows show the pinned revision's hardware; do
 
 ### Task 5: Verify, merge, live check (lead only)
 
-- [ ] `npm run verify` on the worktree; `git checkout ai/main && git merge ai/k2-hardware-picker --no-ff`; verify again on `ai/main`.
+- [ ] `npm run verify` on the worktree; rebase onto `main`, verify again, push, open the PR (`Closes #10`), squash-merge when CI is green.
 - [ ] e2e: `processes` spec, then the whole suite (`run-e2e` skill; baseline 46 passed / 1 skipped; `E2E_PORT=4399` if :4321 is held).
 - [ ] Chrome: open a process page on the dev server; the Hardware fieldset shows `Standard` / `CPU — large` under their tier groups, the summary line updates on a profile change, a deploy with the cpu typed as `9` on `standard` is refused with the write gate's message in the toast; a run row shows its summary. Screenshot noted in the landed note.
-- [ ] `TODO.md`: tick K-2, queue table, landed note (deviations, the Chrome check); `docs/FEATURES.md` process-compute entry; `docs/ISSUES.md` for any gap; worktree removal.
+- [ ] PR body = the landed note (deviations, the Chrome check); tick K-2 in epic #2 with the PR number; `docs/FEATURES.md` process-compute entry; `docs/ISSUES.md` for any gap; worktree removal.
 
 ## Self-review
 

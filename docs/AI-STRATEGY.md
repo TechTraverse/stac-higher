@@ -25,20 +25,24 @@ CLAUDE.md                  ← shim: "@AGENTS.md" import + Claude-only content
 .claude/skills             ← symlink → ../.agents/skills (Claude Code discovery)
 .claude/settings.json      ← Claude Code permissions + hooks (astro check, shadcn guard)
 .claude/prompts/ai-loop.md ← Claude Code multi-agent orchestrator prompt
+CONTRIBUTING.md            ← the human entry point: issue → branch → PR → review
 .claude/worktrees/         ← AI worktrees (gitignored)
 opencode.json              ← opencode permissions (bash deny-list)
 .opencode/plugin/          ← opencode hook equivalents (astro check, shadcn guard)
 .opencode/agent/           ← opencode subagent definitions (teammate)
 .opencode/command/         ← opencode slash commands (/solo-task, /team-task)
 docs/superpowers/specs/    ← approved design specs (milestone/slice scope sources —
-docs/superpowers/plans/       TODO.md cites the active one); plans are their
-                              step-by-step implementation breakdowns
+docs/superpowers/plans/       each queue's epic issue cites its spec); plans are
+                              their step-by-step implementation breakdowns
 ```
 
 The specs/plans track is part of the AI surface: a milestone is scoped by
-writing a dated spec there (brainstorm → approved design), `TODO.md` names it
-as the scope source, and the solo loop reads the spec section a task cites
-before starting it.
+writing a dated spec there (brainstorm → approved design), the queue's `epic`
+issue names it as the scope source, and the solo loop reads the spec section
+an issue cites before starting it. **The work queue itself is GitHub Issues**
+(labels `queue:<X>`, `ready`, `blocked`, `lead-only`, `migration`; one `epic`
+per queue) — the issue carries everything an agent needs to start, so no
+backlog file has to be told to it.
 
 ## Rules of the road
 
@@ -63,12 +67,15 @@ before starting it.
 
 ## Branch model (summary — full rules in AGENTS.md)
 
-AI work lives on `ai/main`; every task runs in a worktree branch `ai/<slug>`
-under `.claude/worktrees/`. Verify (`npm run verify`) gates every merge into
-`ai/main`. Humans promote via PR `ai/main → main`; the AI never commits to
-`main`. Singleton resources (dev server :4321, pgstac :8082, the serial e2e
-suite) are owned by whoever leads the merge — parallel teammates run build +
-unit tests only.
+Trunk-based: `main` is the only long-lived branch. Every issue runs in a
+worktree branch `feat/<slug>` (or `fix/`, `docs/`) under `.claude/worktrees/`
+and lands through a squash-merged PR into `main`; CI (verify, pipeline tests,
+Storybook) gates the PR. Nobody — human or agent — commits to `main`
+directly. Singleton resources (dev server :4321, pgstac :8082, the load
+harness, the serial e2e suite) are owned by whoever leads the integration —
+parallel teammates run build + unit tests only. (The former local-only
+`ai/main` integration branch was retired 2026-09-15; references to it in
+dated specs, plans and ROADMAP history are historical.)
 
 ## What's deliberately harness-specific
 
@@ -76,8 +83,8 @@ unit tests only.
   `astro check` after TS/TSX/Astro edits, and a guard that blocks hand-edits to
   `components/ui/`. Other harnesses: replicate as desired; not required.
 - **`.claude/prompts/ai-loop.md`** + `CLAUDE.md` "Team tasks" — orchestration
-  uses Claude-only tools. The invariants (worktrees off `ai/main`, lead merges,
-  singletons rule) are in `AGENTS.md` and apply to every harness.
+  uses Claude-only tools. The invariants (worktrees off `main`, one issue per
+  PR, lead runs the singletons) are in `AGENTS.md` and apply to every harness.
 - **`opencode.json` + `.opencode/**`** — opencode's equivalents, because
   opencode reads none of `.claude/`:
   - `opencode.json` — a bash **deny-list** (`rm -rf`, `git reset --hard`,

@@ -1,3 +1,7 @@
+> **Archived 2026-09-15.** This queue is complete (UI-1…UI-15 merged). The workflow
+> it describes (`ai/main`, `--no-ff` merges) is retired — see `CONTRIBUTING.md`.
+> Kept for its per-slice follow-up notes, which `docs/ISSUES.md` references.
+
 # UI-TODO — product-centric remodel queue
 
 The UI loop works this file top-down: pick the **first unchecked item**, one

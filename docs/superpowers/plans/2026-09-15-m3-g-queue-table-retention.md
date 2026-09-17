@@ -8,11 +8,11 @@
 
 **Tech Stack:** Procrastinate 3.9 (`WorkerOptions.delete_jobs`, `JobManager.delete_old_jobs(nb_hours, queue, include_failed, include_cancelled, include_aborted)`), psycopg 3, prometheus_client, pytest.
 
-**Spec:** `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` §3 (M3-G row: "`delete_jobs` policy on the worker (successful only) + a periodic `delete_old_jobs`, keeping failures"); `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md` M3-S-F "The real risk: nothing prunes the queue's tables" (3 events/job, ~660 B/job, 43.2M rows/day); `TODO.md` M3 queue "M3-G · queue-table retention".
+**Spec:** `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` §3 (M3-G row: "`delete_jobs` policy on the worker (successful only) + a periodic `delete_old_jobs`, keeping failures"); `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md` M3-S-F "The real risk: nothing prunes the queue's tables" (3 events/job, ~660 B/job, 43.2M rows/day); GitHub issue #6 "M3-G · queue-table retention".
 
 ## Global Constraints
 
-- **Worktree:** `git worktree add .claude/worktrees/m3-g-queue-retention -b ai/m3-g-queue-retention ai/main` — only after **M3-D has merged** (Task 0 checks `run_worker(*, concurrency, bytes_concurrency)` exists on `ai/main`: the two `run_worker_async` calls are where `delete_jobs` goes). Pipeline-only; no `npm install`.
+- **Worktree:** `git worktree add .claude/worktrees/m3-g-queue-retention -b feat/m3-g-queue-retention main` (GitHub issue #6) — only after **M3-D (#4) has merged** (Task 0 checks `run_worker(*, concurrency, bytes_concurrency)` exists on `ai/main`: the two `run_worker_async` calls are where `delete_jobs` goes). Pipeline-only; no `npm install`.
 - **Gates:** `uv run pytest -q` and `uv run ruff check .` from `services/pipeline/`. Teammates never run e2e, the dev server, or Docker.
 - **Settled values:** `QUEUE_DELETE_JOBS` default `successful` (accepted: `never` | `successful` | `always` — the `DeleteJobCondition` names; `always` is allowed for a deployment that wants no history at all, but the default keeps failures); `QUEUE_RETENTION_HOURS` default **24** (succeeded / cancelled / aborted stragglers); `QUEUE_FAILED_RETENTION_HOURS` default **720**, `0` = never prune failed. Cron `41 * * * *` (hourly, offset from M2-G's `17 * * * *`).
 - **Keep failures (spec):** the worker policy never deletes a failed job; the periodic prunes failed jobs only past `QUEUE_FAILED_RETENTION_HOURS`, never inside it.
@@ -29,7 +29,7 @@
 
 ### Task 0: Precondition
 
-- [ ] On `ai/main`: `grep -n "async def run_worker(self, \*, concurrency" services/pipeline/src/pipeline/queue/procrastinate_backend.py` matches and `grep -n "install_signal_handlers=False" …` matches twice (M3-D merged). If not, STOP.
+- [ ] On `main`: `grep -n "async def run_worker(self, \*, concurrency" services/pipeline/src/pipeline/queue/procrastinate_backend.py` matches and `grep -n "install_signal_handlers=False" …` matches twice (M3-D merged). If not, STOP.
 
 ### Task 1: Settings + the worker delete policy
 
@@ -442,9 +442,9 @@ tables only.
 
 ### Task 4: Deploy, backlog assertion, merge (lead only, Docker)
 
-- [ ] Worktree gates; merge `--no-ff` into `ai/main`; verify + pytest + ruff; `docker compose build pipeline && docker compose up -d pipeline`.
+- [ ] Worktree gates; rebase onto `main`; verify + pytest + ruff; push, open the PR (`Closes #6`), squash-merge when CI is green; `docker compose build pipeline && docker compose up -d pipeline`.
 - [ ] **Backlog assertion (spec §3):** record `SELECT status, count(*) FROM procrastinate.procrastinate_jobs GROUP BY status` and `pg_total_relation_size` of both tables before; run `loadgen --label m3g setup --mode copy` + `feed --profile metadata --rate 0 --count 2000` (2000 items → ~4 000 ingest jobs + deliveries); after the run: `succeeded` rows ≈ 0 (deleted at finish), the two tables' size flat within one tick; then set `QUEUE_DELETE_JOBS=never` for the test? No — instead insert 50 synthetic finished rows aged 48 h via SQL (`INSERT INTO procrastinate.procrastinate_jobs (queue_name, task_name, status, ...)` plus a `procrastinate_events` row with `at = now() - interval '48 hours'`, one `failed` set aged 31 days), trigger the retention tick (`docker compose restart pipeline` then wait for :41, or invoke `retention_tick` from a one-off `uv run python -c` against the stack), and confirm: the 48 h succeeded rows are gone, the failed rows younger than 30 d remain, the 31 d failed row is gone; `pipeline_queue_jobs_rows` reflects it. Teardown loadgen; delete the synthetic rows.
-- [ ] `TODO.md` tick + landed note (the failed-retention ruling, the numbers); `docs/FEATURES.md`; `docs/ISSUES.md` if anything is left; worktree removal; canary.
+- [ ] PR body = the landed note (the failed-retention ruling, the numbers); tick M3-G in epic #1 with the PR number; `docs/FEATURES.md`; `docs/ISSUES.md` if anything is left; worktree removal; canary.
 
 ## Self-review
 

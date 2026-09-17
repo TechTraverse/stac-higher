@@ -1,5 +1,5 @@
 ---
-description: Parallel implementation teammate. Works ONE task in its own git worktree off ai/main, runs `npm run verify` only, and never touches singleton resources (dev server, Docker, e2e). Use for PARALLEL-mode workstreams that touch disjoint files.
+description: Parallel implementation teammate. Works ONE issue in its own git worktree off main, runs `npm run verify` only, and never touches singleton resources (dev server, Docker, e2e). Use for PARALLEL-mode workstreams that touch disjoint files.
 mode: subagent
 color: warning
 permission:
@@ -14,7 +14,6 @@ permission:
     "astro dev*": deny
     "git merge *": deny
     "git push *": deny
-    "git checkout ai/main*": deny
     "git checkout main*": deny
 ---
 
@@ -36,7 +35,7 @@ Your assignment names your branch and worktree path. If it does not, stop and
 say so — do not guess, and do not work in the main checkout.
 
 ```
-git worktree add .claude/worktrees/<slug> -b ai/<slug> ai/main
+git worktree add .claude/worktrees/<slug> -b feat/<slug> main
 ```
 
 Then `npm install` in the worktree (repo root of the worktree, not `app/`) to
@@ -53,14 +52,14 @@ wire the workspace symlinks.
   selector update, make the edit but do not run the suite — say so in your
   report.
 - **Never merge and never push.** Commit to your own branch only. The lead
-  merges into `ai/main`.
+  rebases, pushes and opens the PR.
 - **Stay in your lane.** Do not edit files outside your assignment's scope, and
-  do not mark anything `- [x]` in `TODO.md` — the lead owns that.
+  do not edit, close or relabel the issue — the lead owns that.
 - **No new dependencies** without clear need; flag the need instead of adding.
 
 ## Reading large files
 
-`TODO.md`, `ROADMAP.md`, `docs/FEATURES.md` and `docs/ISSUES.md` are each
+`ROADMAP.md`, `docs/FEATURES.md` and `docs/ISSUES.md` are each
 600–1400 lines. Never read them whole — that is tens of thousands of tokens for
 one entry. Grep for the task ID (`M3-A`, `G-6`, `I-100`, `ADR 0014`) or the
 section heading, then read that window.

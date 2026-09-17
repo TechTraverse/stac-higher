@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.12, boto3 `DeleteObjects` (Quiet mode, ≤1000 keys), psycopg 3, prometheus_client, pytest; one contract fixture edit (`alert-kinds.json`) consumed by vitest and pytest; one app label.
 
-**Spec:** `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` §3 (M3-F row; "M3-F deletes real bytes at a raised rate" risk note: keep prefix construction in `storage/keys.py`, add a test that a batch never spans two collections; backlog assertion); `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md` M3-S-B "GC and retention are NOT bulk paths today"; ADR 0011; `TODO.md` M3 queue "M3-F · GC at rate".
+**Spec:** `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md` §3 (M3-F row; "M3-F deletes real bytes at a raised rate" risk note: keep prefix construction in `storage/keys.py`, add a test that a batch never spans two collections; backlog assertion); `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md` M3-S-B "GC and retention are NOT bulk paths today"; ADR 0011; GitHub issue #5 "M3-F · GC at rate".
 
 ## Global Constraints
 
-- **Worktree:** `git worktree add .claude/worktrees/m3-f-gc-at-rate -b ai/m3-f-gc-at-rate ai/main`. Pipeline + one fixture + one app label: `npm install` at the worktree root is needed only for Task 4's app gate.
+- **Worktree:** `git worktree add .claude/worktrees/m3-f-gc-at-rate -b feat/m3-f-gc-at-rate main` (GitHub issue #5). Pipeline + one fixture + one app label: `npm install` at the worktree root is needed only for Task 4's app gate.
 - **Gates:** pipeline tasks `uv run pytest -q` and `uv run ruff check .` from `services/pipeline/`; Task 4 also `npm run verify` from the worktree root. Teammates never run e2e, the dev server, or Docker.
 - **ADR 0011 is unchanged:** marks are written before catalog deletes; nothing is collected before `collect_after`; nothing is deleted on an unconfigured platform. **ADR 0001:** the pipeline runs no DDL — the existing partial index `asset_gc_due_idx (collect_after) WHERE collected_at IS NULL` serves both the claim and the backlog count.
 - **Settled numbers:** `GC_COLLECT_MARKS` default **10000** (marks per round; 2.6M/day ÷ 288 ticks = 9 028 needed), `GC_COLLECT_LIST_CONCURRENCY` default **8** (concurrent `list_objects_v2` calls), `GC_COLLECT_TICK_BUDGET_SECONDS` default **240** (drain rounds stop after this; the cron is `*/5`), `GC_BACKLOG_ALERT_MARKS` default **1000** (per collection), `GC_BACKLOG_ALERT_SECONDS` default **3600** (a mark counts as backlogged when `collect_after` is older than this). `DeleteObjects` batch size is the API's **1000**. `GC_BATCH_ITEMS` (500) keeps governing the retention leg only.
@@ -879,7 +879,7 @@ git commit -m "feat(monitor): asset_gc_backlog alert — per-collection open-mar
 
 ### Task 5: Measure, deploy, merge (lead only, Docker)
 
-- [ ] Worktree gates; `git checkout ai/main && git merge ai/m3-f-gc-at-rate --no-ff`; verify + pytest + ruff on `ai/main`; `docker compose build pipeline && docker compose up -d pipeline`.
+- [ ] Worktree gates; rebase onto `main`, verify + pytest + ruff, push, open the PR (`Closes #5`), squash-merge when CI is green; `docker compose build pipeline && docker compose up -d pipeline`.
 - [ ] **Backlog assertion (spec §3 "M3-F has a backlog assertion"):** `loadgen --label m3f setup --mode copy` + `feed --profile raster --rate 0 --count 2000 --asset-bytes 1048576` (2000 items, ~1 MB each, copy mode → 2000 canonical prefixes); then seed marks directly (the retention leg is not under test):
   ```sql
   INSERT INTO stac_higher.asset_gc (object_key, collection_id, item_id, reason, collect_after)
@@ -889,7 +889,7 @@ git commit -m "feat(monitor): asset_gc_backlog alert — per-collection open-mar
   Record `count_due` before; wait for the next collect tick (≤5 min) or `docker compose restart pipeline` to bring it forward; read the tick's log line (`marks_seen`, `collected_marks`, `deleted_objects`, `errors`, elapsed from the two timestamps) and `pipeline_asset_gc_due_marks` after. Expected: all 2000 marks collected in ONE tick (one round), `errors = 0`, `due_marks = 0`; compute marks/s and objects/s; extrapolate to 9 028 marks per tick. RSS during the tick from `docker stats`.
   Then the alert: seed 1 200 marks with `collect_after = now() - interval '2 hours'` on a prefix the collector will fail on (point them at a collection whose bucket ACL refuses, or simplest: stop MinIO for one tick → listing errors keep them open), wait one monitor tick, `GET /api/alerts` shows one `asset_gc_backlog` for the collection; restart MinIO, wait a collect + monitor tick, the alert auto-resolves. Chrome: the alert's label reads "asset GC backlog" on the monitoring page (screenshot noted).
 - [ ] `loadgen teardown`; `DELETE FROM stac_higher.asset_gc WHERE collection_id LIKE '%m3f%'` only if teardown leaves rows.
-- [ ] `TODO.md` tick + landed note (numbers, the per-collection anchor ruling); `docs/FEATURES.md`; `docs/ISSUES.md` (S-B's retention-leg 18× per-collection ceiling stays open as a note if not already an issue); worktree removal; canary re-check.
+- [ ] PR body = the landed note (numbers, the per-collection anchor ruling); tick M3-F in epic #1 with the PR number; `docs/FEATURES.md`; `docs/ISSUES.md` (S-B's retention-leg 18× per-collection ceiling stays open as a note if not already an issue); worktree removal; canary re-check.
 
 ## Self-review
 
