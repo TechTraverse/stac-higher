@@ -73,6 +73,10 @@ exist precisely to bridge the shell island and the page island.
 - `lucide-react` for icons. `useStore()` from `@nanostores/react` for global
   state. Wrap page-level components with `QueryProvider` from
   `@/components/layout/QueryProvider`.
+- Theme is **light** by default (ADR 0017). The inline script in
+  `Layout.astro` and the `$theme` persistentAtom default in
+  `packages/shared/src/stores/uiStore.ts` read the same `stac-theme` key and
+  must stay in lockstep. Toggle via `toggleTheme()` from `@stac-higher/shared`.
 
 ## Form Pattern (all CRUD forms)
 
@@ -95,16 +99,10 @@ navigation — islands make client-side routing pointless here).
   Authz failures use `{ error, code }` (401 `unauthenticated` /
   403 `forbidden`). Deliberately ungated personal-state routes (e.g.
   `POST /api/alerts/read`) are the documented exception, not a pattern.
-- **DDL**: the app owns ALL `stac_higher.*` DDL — append a migration to
-  `MIGRATIONS` in `app/src/lib/db/migrate.ts` (next number, never reorder);
-  the pipeline never runs DDL (ADR 0001). Partitioned tables are reconciled
-  by `runMigrations()` (ADR 0012).
-- **Cross-runtime contracts**: any config shape both runtimes read (Zod
-  schema ↔ Python parser) needs a golden fixture in
-  `tests/contract-fixtures/` consumed by both suites (see the `new-test`
-  skill).
-- **Outbound fetches** go through `safeFetch` (private/loopback blocked);
-  never widen it for pipeline concerns — pipeline egress has its own policy.
+- **Cross-cutting rules** — schema ownership and where migrations go,
+  contract fixtures, catalog write paths, egress via `safeFetch`, process
+  isolation, GC — are the `backend-invariants` skill. Read it before adding
+  a route, a migration or a shared config shape.
 
 ## Map Components
 

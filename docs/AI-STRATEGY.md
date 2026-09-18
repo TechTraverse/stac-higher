@@ -61,7 +61,7 @@ backlog file has to be told to it.
    skills are `/`-invocable in Claude Code and readable by every other harness.
 5. **After changing agent config** (AGENTS.md, skills, symlink), smoke-test
    discovery headlessly: `claude -p "list your project skills"` should show the
-   six skills and the AGENTS.md content. For opencode:
+   seven skills and the AGENTS.md content. For opencode:
    `opencode run "list your project skills"` — and note that opencode does NOT
    hot-reload config, so restart it after touching `opencode.json`,
    `.opencode/**`, or a skill.
