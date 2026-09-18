@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import uvicorn
@@ -89,11 +90,18 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
 
 def blocking_executor(settings: Settings) -> ThreadPoolExecutor:
     """The loop's default executor, sized to the job slots plus the overlapping
-    periodic ticks. Every blocking call in the worker is `asyncio.to_thread`
-    (boto3, rasterio, pgstac), so the stdlib default of min(32, cpus + 4)
-    threads would be a hidden concurrency ceiling on a small container."""
+    periodic ticks, and never below the stdlib default. Every blocking call in
+    the worker is `asyncio.to_thread` (boto3, rasterio, pgstac), so the stdlib
+    default of min(32, cpus + 4) threads would be a hidden concurrency ceiling
+    on a small container — and on a large host it is the HIGHER number, so it
+    stays the floor. Some jobs fan out more than one thread (process input
+    staging runs 4 fetches per run, the health sweep one probe per
+    connection); those queue on the executor rather than deadlock, since no
+    pooled thread ever waits on another `to_thread` result."""
+    stdlib_default = min(32, (os.cpu_count() or 1) + 4)
     return ThreadPoolExecutor(
-        max_workers=settings.worker_concurrency + 4, thread_name_prefix="pipeline-blocking"
+        max_workers=max(settings.worker_concurrency + 4, stdlib_default),
+        thread_name_prefix="pipeline-blocking",
     )
 
 

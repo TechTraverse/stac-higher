@@ -130,10 +130,20 @@ def test_blocking_executor_is_sized_to_the_concurrency():
     """Every blocking call is `asyncio.to_thread`; the loop's default executor
     (min(32, cpus + 4) threads) would be a hidden ceiling below 12 on a small
     container, so main sizes it to the slots plus the overlapping ticks."""
+    import os
+
     from pipeline.main import blocking_executor
 
+    stdlib_default = min(32, (os.cpu_count() or 1) + 4)
     executor = blocking_executor(Settings.from_env(env={"WORKER_CONCURRENCY": "12"}))
     try:
-        assert executor._max_workers == 16
+        # Fix round 3: never BELOW the stdlib default — on a >= 13-CPU host the
+        # stdlib number is the larger one and would otherwise be lowered.
+        assert executor._max_workers == max(16, stdlib_default)
+    finally:
+        executor.shutdown(wait=False)
+    executor = blocking_executor(Settings.from_env(env={"WORKER_CONCURRENCY": "40"}))
+    try:
+        assert executor._max_workers == 44
     finally:
         executor.shutdown(wait=False)

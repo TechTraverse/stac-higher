@@ -18,6 +18,7 @@ from collections.abc import Sequence
 import procrastinate
 import psycopg
 
+from pipeline.config import DEFAULT_WORKER_CONCURRENCY
 from pipeline.metrics import instrument_handler
 from pipeline.queue.interface import (
     QUEUE_BYTES,
@@ -42,11 +43,11 @@ class ProcrastinateQueue(QueueBackend):
         schema: str = "procrastinate",
         # Fix round 1 (Important #3): unsized, psycopg_pool defaults to
         # max_size=4 — 12 job slots' fetch/finish/heartbeat round trips would
-        # share 4 connections and PoolTimeout under load. Defaults here match
-        # DEFAULT_WORKER_CONCURRENCY (12) + 4, build_queue overrides max_size
-        # from the real settings.
+        # share 4 connections and PoolTimeout under load. The default tracks
+        # DEFAULT_WORKER_CONCURRENCY + 4 (the DB_POOL_MAX rule applied to this
+        # second pool); build_queue overrides max_size from the real settings.
         pool_min_size: int = 2,
-        pool_max_size: int = 16,
+        pool_max_size: int = DEFAULT_WORKER_CONCURRENCY + 4,
     ) -> None:
         if not schema.isidentifier():
             raise ValueError(f"invalid schema name: {schema!r}")
@@ -175,7 +176,23 @@ class ProcrastinateQueue(QueueBackend):
         Minor #2) — ``loop.remove_signal_handler`` alone resets the signal to
         ``SIG_DFL``, which would make a second SIGTERM hard-kill the process
         and skip ``main.run``'s cleanup.
+
+        An outer cancellation — ``main.run``'s gather propagating a sibling's
+        failure, or ``asyncio.run``'s teardown — lands in the ``asyncio.wait``
+        below, which does NOT cancel its futures. The ``finally`` therefore
+        cancels and waits out whichever worker is still running before the
+        handlers go back (fix round 3), so the pools are never closed under
+        an in-flight job. The stop callback is idempotent for the same
+        reason: a second SIGTERM mid-drain must not re-cancel a worker whose
+        ``Worker.run`` is already awaiting its drain — that cancel aborts the
+        drain and orphans the loop task.
         """
+        if concurrency - bytes_concurrency < 1:
+            raise ValueError(
+                "WORKER_BYTES_CONCURRENCY must leave at least one slot for the"
+                f" default queue (concurrency={concurrency},"
+                f" bytes_concurrency={bytes_concurrency})"
+            )
         await self._ensure_open()
         loop = asyncio.get_running_loop()
         stop_requested = asyncio.Event()
@@ -187,6 +204,8 @@ class ProcrastinateQueue(QueueBackend):
 
         def _stop() -> None:
             # asyncio signal callbacks receive no arguments.
+            if stop_requested.is_set():
+                return  # a repeat signal must not abort the drain in progress
             stop_requested.set()
             if default_task is not None:
                 default_task.cancel()
@@ -230,20 +249,32 @@ class ProcrastinateQueue(QueueBackend):
             if pending:
                 await asyncio.wait(pending)
 
-            failure = next(
-                (
-                    task.exception()
-                    for task in (default_task, bytes_task)
-                    if not task.cancelled() and task.exception() is not None
-                ),
-                None,
-            )
-            if failure is not None:
-                raise failure
+            failures = [
+                exc
+                for task in (default_task, bytes_task)
+                if not task.cancelled() and (exc := task.exception()) is not None
+            ]
+            if failures:
+                # Both may have crashed; the first is raised, the rest are
+                # logged here so they are never "never retrieved".
+                for extra in failures[1:]:
+                    logger.error("second worker also failed", exc_info=extra)
+                raise failures[0]
         finally:
+            live = {
+                task for task in (default_task, bytes_task) if task is not None and not task.done()
+            }
+            for task in live:
+                task.cancel()
+            if live:
+                await asyncio.wait(live)
+                for task in live:
+                    if not task.cancelled() and task.exception() is not None:
+                        logger.error("worker failed during shutdown", exc_info=task.exception())
             for sig, previous in previous_handlers.items():
                 loop.remove_signal_handler(sig)
-                signal.signal(sig, previous)
+                if previous is not None:  # None: a handler not installed from Python
+                    signal.signal(sig, previous)
 
     async def aclose(self) -> None:
         if self._opened:

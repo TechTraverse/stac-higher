@@ -234,3 +234,82 @@ def test_connector_pool_size_is_configurable():
     pool_args = queue.app.connector._pool_args
     assert pool_args["min_size"] == 3
     assert pool_args["max_size"] == 20
+
+
+def _fake_workers(queue: ProcrastinateQueue, monkeypatch, *, drain_seconds: float):
+    """Two fake workers that block until cancelled, then 'drain' for
+    `drain_seconds` before re-raising — the shape of `Worker.run`."""
+    state = {"running": set(), "drained": set(), "interrupted": set()}
+
+    async def fake_run_worker_async(*, name, **kwargs):
+        state["running"].add(name)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            try:
+                await asyncio.sleep(drain_seconds)
+            except asyncio.CancelledError:
+                state["interrupted"].add(name)
+                raise
+            state["drained"].add(name)
+            raise
+        finally:
+            state["running"].discard(name)
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+    return state
+
+
+async def test_run_worker_outer_cancellation_drains_both_workers(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 3: cancelling `run_worker` itself (main.run's gather
+    propagating a sibling's failure, asyncio.run's teardown) must not leave
+    the two worker tasks running — `asyncio.wait` does not cancel its
+    futures, so the `finally` has to."""
+    state = _fake_workers(queue, monkeypatch, drain_seconds=0.02)
+    task = asyncio.create_task(queue.run_worker(concurrency=12, bytes_concurrency=4))
+    await asyncio.sleep(0.01)
+    assert state["running"] == {"default", "bytes"}
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert state["running"] == set()
+    assert state["drained"] == {"default", "bytes"}
+
+
+async def test_run_worker_second_stop_signal_does_not_abort_the_drain(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 3: a repeat SIGTERM while both workers are draining must be
+    a no-op — re-cancelling a task that is in `Worker.run`'s `await loop_task`
+    would abort the graceful drain and orphan the loop task."""
+    import os
+    import signal
+
+    state = _fake_workers(queue, monkeypatch, drain_seconds=0.1)
+    task = asyncio.create_task(queue.run_worker(concurrency=12, bytes_concurrency=4))
+    await asyncio.sleep(0.01)
+    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.sleep(0.03)  # mid-drain
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.wait_for(task, timeout=1)
+
+    assert state["interrupted"] == set()
+    assert state["drained"] == {"default", "bytes"}
+
+
+async def test_run_worker_rejects_a_split_with_no_default_slots(queue: ProcrastinateQueue):
+    # Fix round 3: only Settings.from_env validates the split; a direct caller
+    # handing over equal numbers would otherwise get a Semaphore(0) default
+    # worker that listens and never runs a job.
+    with pytest.raises(ValueError, match="default queue"):
+        await queue.run_worker(concurrency=4, bytes_concurrency=4)
