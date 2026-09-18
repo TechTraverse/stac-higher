@@ -3,7 +3,8 @@
 Paste everything below the line into a fresh Claude Code session to start the
 loop. It is a reusable template: it reads the queue from GitHub Issues at
 runtime. One session, one or more **lanes**; a lane is one issue queue
-(`queue:<X>` label) worked in its epic's order. Two sessions must never work
+(a `queue: <name> (<code>)` label — the pinned "Start here" issue maps codes
+to names) worked in its epic's order. Two sessions must never work
 the same queue at once (the parallel-session hazard of 2026-09-04: two
 controllers drove one worktree and one merged early). Assigning the issue is
 the claim.
@@ -24,8 +25,9 @@ ask before doing anything else.
 
 1. Read `AGENTS.md` (via `CLAUDE.md`) — binding. Read the
    `project-conventions` skill.
-2. For each lane: `gh issue list --label "queue:<X>" --state open --json
-   number,title,labels,assignees`. Read the lane's `epic` issue — it names the
+2. For each lane: resolve the label from the code (`gh label list --search
+   "(<code>)"`), then `gh issue list --label "<that label>" --state open
+   --json number,title,labels,assignees`. Read the lane's `epic` issue — it names the
    spec under `docs/superpowers/specs/`, the settled decisions, the gate and
    the slice order. Take the first `ready`, unassigned, non-`lead-only` issue
    in the epic's order (an issue assigned to someone else is theirs). Read the

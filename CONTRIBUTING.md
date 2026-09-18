@@ -6,8 +6,9 @@ The rules agents follow are in `AGENTS.md`; this page is the human entry point.
 ## The loop
 
 1. **Pick an issue.** The backlog is GitHub Issues. Filter by queue and
-   readiness: `gh issue list --label "queue:K" --label ready`, or the same
-   filters in the web UI. Read the queue's `epic` issue first — it holds the
+   readiness: `gh issue list --label "queue: k8s compute (K)" --label ready`,
+   or open the queue's milestone in the web UI. The pinned **Start here**
+   issue lists every queue with its code, purpose and spec. Read the queue's `epic` issue first — it holds the
    spec to read, the settled decisions and the ordering — then the issue.
    Assign yourself so nobody else starts it.
 2. **Branch off `main`** in a worktree so several tasks can coexist:
@@ -40,12 +41,35 @@ The rules agents follow are in `AGENTS.md`; this page is the human entry point.
 
 | Label | Meaning |
 |---|---|
-| `queue:<X>` | Which work queue (M3, K, X, G, …). One `epic` issue per queue carries its context. |
+| `queue: <name> (<code>)` | Which work queue, e.g. `queue: k8s compute (K)`. One milestone and one `epic` issue per queue carry its context. |
 | `ready` | Unblocked; anyone may take it. |
 | `blocked` | The body names the blocking issues. Flip to `ready` when they close. |
 | `lead-only` | Needs the shared singletons (Docker stack, e2e suite, load harness, standing demo) or a cloud account. |
 | `migration` | Reserves a `stac_higher` migration number; read the body before adding one. |
 | `agent:go` | Reserved for the Claude GitHub app: label an issue to have it implemented automatically (not installed yet). |
+
+## Queues
+
+Work is grouped into queues. Each is a milestone (progress, description), an
+`epic` issue (spec to read, settled decisions, slice order) and a label. Issue
+titles end with a slice code such as `(K-3)`: the letter is the queue, the
+number the slice's position in its spec. Specs, plans and `docs/FEATURES.md`
+cite those codes, which is why they stay.
+
+| Queue | Code | What it is | Status |
+|---|---|---|---|
+| NOAA-scale readiness | M3 | ~60 catalog items/s sustained, measured, no lost items | active — epic #1 |
+| Process compute on Kubernetes | K | Runs as Kubernetes Jobs via Kueue, hardware profiles, non-blocking executor | active — epic #2 |
+| Built-in extractors | X | Curated stactools packages as one-click extractors | live gates only — epic #3 |
+| GOES GeoColor demo | G | The standing NODD → COG → deliver → tiles demo loop | complete; owed live looks |
+| Container images | C | Bring-your-own process images + scanning | spec pending (PR #23) |
+| Ingest window | W | Date window, prefix expansion, retention cap | complete |
+| Item lineage | D | `derived_from` links on process outputs | complete |
+| Map page | V | Products as map layers on one time axis | complete |
+| Pipeline graph | P | Lineage lines + full graph view | complete |
+
+The pinned "Start here" issue on GitHub is the same table with links; keep the
+two in step when a queue opens or closes.
 
 ## Things only one person can run at a time
 
