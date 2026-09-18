@@ -17,7 +17,9 @@ import uvicorn
 
 from pipeline.config import Settings, sizing_warnings
 from pipeline.db.pool import close_pools
+from pipeline.flow.batcher import FLOW_BATCHER
 from pipeline.health import create_health_app
+from pipeline.ingest.repo import PgIngestRepo
 from pipeline.jobs import (
     backfill,
     dispatch,
@@ -57,7 +59,7 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # Phase 3: sweep abandoned push-ingest uploads out of staging/.
     staging_cleanup.register(queue, settings)
     # Phase 4: poll-based ingest — scheduler + DISCOVER/GROUP/FETCH chain.
-    ingest.register(queue, settings)
+    ingest.register(queue, settings, batcher=FLOW_BATCHER)
     # Phase 5 Slice A: delivery dispatch (outbox → match → enqueue); the poll
     # is the fallback wake path — main.py also runs the NOTIFY listener.
     dispatch.register(queue, settings)
@@ -141,6 +143,11 @@ async def run(settings: Settings) -> None:
                 bytes_concurrency=settings.worker_bytes_concurrency,
             ),
             dispatch.build_notify_listener(queue, settings),
+            # M3-D: ITEMIZE's flow_stats deltas, written once per association
+            # per interval; a final flush runs when the gather is cancelled.
+            FLOW_BATCHER.run(
+                lambda: PgIngestRepo(settings.database_url), settings.flow_stats_flush_seconds
+            ),
         )
     finally:
         # Both pools before the queue: `queue.aclose()` releases

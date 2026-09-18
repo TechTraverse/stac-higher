@@ -13,6 +13,7 @@ import datetime as dt
 from _delivery_fake import FakeDeliveryRepo
 from _ingest_fake import FakeIngestRepo
 from pipeline.config import Settings
+from pipeline.flow.batcher import FlowStatsBatcher
 from pipeline.ingest.config import parse_ingest_config
 from pipeline.ingest.discover import DiscoverResult
 from pipeline.ingest.itemize import ItemizeOutcome
@@ -95,10 +96,12 @@ async def test_delivered_latency_recorded_from_item_created_at():
 # ingest job hooks → rollup writes
 
 
-def _wire(monkeypatch, repo: FakeIngestRepo):
+def _wire(monkeypatch, repo: FakeIngestRepo, batcher: FlowStatsBatcher | None = None):
     queue = InMemoryQueue()
     settings = Settings.from_env(env={})
-    ingest.register(queue, settings)
+    # M3-D: ITEMIZE adds to a batcher instead of writing the rollup; the
+    # itemize tests hand one in and flush it before reading `flow_stats`.
+    ingest.register(queue, settings, batcher=batcher)
     assoc = IngestAssociation(
         id=ASSOC, collection_id="col", config={"source_path": "/o"}, connection=None
     )
@@ -150,7 +153,8 @@ async def test_discover_handler_writes_nothing_on_empty_poll(monkeypatch):
 
 async def test_itemize_handler_bumps_items_on_success(monkeypatch):
     repo = FakeIngestRepo()
-    queue = _wire(monkeypatch, repo)
+    batcher = FlowStatsBatcher()
+    queue = _wire(monkeypatch, repo, batcher)
 
     async def _fake_itemize(*_a, **_k):
         return ItemizeOutcome("itemized", "scene", bytes=128, latency_seconds=61.0)
@@ -159,6 +163,8 @@ async def test_itemize_handler_bumps_items_on_success(monkeypatch):
     await queue.tasks["pipeline.ingest_itemize"](
         association_id=ASSOC, item_id="scene", source_paths=["scene.tif"]
     )
+    assert ASSOC not in repo.flow_stats  # batched (M3-D): nothing until the flush
+    await batcher.flush(repo)
     stats = repo.flow_stats[ASSOC]
     assert stats["items"] == 1
     assert stats["bytes"] == 128
@@ -168,7 +174,8 @@ async def test_itemize_handler_bumps_items_on_success(monkeypatch):
 
 async def test_itemize_handler_stamps_error_on_failure(monkeypatch):
     repo = FakeIngestRepo()
-    queue = _wire(monkeypatch, repo)
+    batcher = FlowStatsBatcher()
+    queue = _wire(monkeypatch, repo, batcher)
 
     async def _fake_itemize(*_a, **_k):
         return ItemizeOutcome("failed", "scene", "extract: boom")
@@ -177,6 +184,7 @@ async def test_itemize_handler_stamps_error_on_failure(monkeypatch):
     await queue.tasks["pipeline.ingest_itemize"](
         association_id=ASSOC, item_id="scene", source_paths=["scene.tif"]
     )
+    await batcher.flush(repo)
     stats = repo.flow_stats[ASSOC]
     assert stats["failed"] == 1
     assert "last_error_at" in stats
