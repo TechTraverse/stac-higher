@@ -40,7 +40,8 @@ The specs/plans track is part of the AI surface: a milestone is scoped by
 writing a dated spec there (brainstorm → approved design), the queue's `epic`
 issue names it as the scope source, and the solo loop reads the spec section
 an issue cites before starting it. **The work queue itself is GitHub Issues**
-(labels `queue:<X>`, `ready`, `blocked`, `lead-only`, `migration`; one `epic`
+(a milestone + `queue: <name> (<code>)` label per queue, `ready`, `blocked`,
+`lead-only`, `migration`; one `epic`
 per queue) — the issue carries everything an agent needs to start, so no
 backlog file has to be told to it.
 

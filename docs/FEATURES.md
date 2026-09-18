@@ -565,7 +565,7 @@ believing either).
 
 Design spec approved 2026-09-01
 (`docs/superpowers/specs/2026-09-01-goes-geocolor-loop-design.md`); runs in
-parallel with M3. Slices G-1…G-8 all merged; owed live looks are GitHub issues labelled `queue:G`.
+parallel with M3. Slices G-1…G-8 all merged; owed live looks are GitHub issues labelled `queue: GOES demo (G)`.
 
 | Slice | Status | Notes |
 |---|---|---|
@@ -639,7 +639,7 @@ were offered and declined).
 ## NOAA-scale readiness (M3 queue, 2026-09-01) 🔄
 
 Spec: `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md`; evidence
-`2026-08-31-m3-scoping-notes.md`; remaining slices M3-D…M3-I are GitHub issues under epic #1 (`queue:M3`).
+`2026-08-31-m3-scoping-notes.md`; remaining slices M3-D…M3-I are GitHub issues under epic #1 (`queue: scale readiness (M3)`).
 
 | Feature | Status | Notes |
 |---|---|---|
@@ -657,6 +657,6 @@ Cloud deployment, scale gate & visualization. See
 **hardware profiles** in the UI and a submit-then-reconcile executor. The
 local-buildable half (K-1…K-7: profile contract, UI picker, Docker parity,
 async executor + cancel, `KubernetesExecutor`, Kueue manifests + kind CI,
-CUDA image) is the K queue — GitHub epic #2 (`queue:K`); the EKS deployment (K-8) and the
+CUDA image) is the K queue — GitHub epic #2 (`queue: k8s compute (K)`); the EKS deployment (K-8) and the
 gate (K-9) are Phase 8. Spec:
 `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`.

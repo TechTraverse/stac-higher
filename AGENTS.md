@@ -79,7 +79,8 @@ is retired; anything that still names it is historical.)
 
 ### One task
 1. **Pick an issue**: a GitHub issue labelled `ready` in the queue you were
-   asked to work (`gh issue list --label "queue:K" --label ready`). Assign
+   asked to work (`gh issue list --label "queue: k8s compute (K)" --label ready`;
+   the queues and their codes are listed in the pinned "Start here" issue). Assign
    yourself. Not `blocked`, not `lead-only` unless you are the lead.
 2. **Start**: `git worktree add .claude/worktrees/<slug> -b feat/<slug> main`
    (`fix/`, `docs/` for those kinds of change), then `npm install` in the
@@ -121,8 +122,11 @@ Orchestration is harness-specific (Claude Code: `CLAUDE.md` "Team tasks" and
 
 ## Solo Agent Loop (GitHub Issues)
 
-The work queue is GitHub Issues, not a file. Labels: `queue:<X>` is the
-queue (M3, K, X, …); an `epic` issue per queue carries the queue's context
+The work queue is GitHub Issues, not a file. A queue is a milestone, an
+`epic` issue and a `queue: <name> (<code>)` label (e.g. `queue: k8s compute
+(K)`); the pinned "Start here" issue maps codes to names. Issue titles end
+with the slice code, `(K-3)`, which the specs and plans cite. The `epic`
+issue per queue carries the queue's context
 (read-first spec, settled decisions, gate, ordering) and lists its slices as
 sub-issues; `ready` means unblocked; `blocked` names its blockers in the body;
 `lead-only` needs the singletons or a cloud account; `migration` reserves a
@@ -130,7 +134,9 @@ number. `agent:go` is reserved for the Claude GitHub app.
 
 When iterating autonomously:
 1. Work only the queue you were asked for (`gh issue list --label
-   "queue:<X>" --label ready --state open`). Read the queue's epic first, then
+   "queue: <name> (<code>)" --label ready --state open`; given only a code,
+   find the label with `gh label list --search "(<code>)"`). Read the
+   queue's epic first, then
    the issue. No cherry-picking across queues. If nobody named a queue, ask.
 2. Read the files, spec section and plan the issue references before changing
    anything. A slice without a plan gets one first (`superpowers:writing-plans`,

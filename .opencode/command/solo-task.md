@@ -7,12 +7,14 @@ You are running this repo's solo implementation loop.
 **Queue: `$ARGUMENTS`**
 
 If that is empty, STOP and ask which queue. The backlog is GitHub Issues,
-one `queue:<X>` label per queue, and guessing costs a worktree and a PR.
+one `queue: <name> (<code>)` label per queue (the pinned "Start here" issue
+maps codes to names), and guessing costs a worktree and a PR.
 
 ## Setup
 
 1. Read `AGENTS.md` — binding. Read the `project-conventions` skill.
-2. `gh issue list --label "queue:$ARGUMENTS" --state open --json
+2. `LABEL=$(gh label list --search "($ARGUMENTS)" --json name -q '.[0].name')`,
+   then `gh issue list --label "$LABEL" --state open --json
    number,title,labels,assignees`. Read the queue's `epic` issue: it names the
    design spec under `docs/superpowers/specs/`, the settled decisions, the
    gate and the slice order.

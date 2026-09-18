@@ -8,7 +8,8 @@ you classify, dispatch and integrate.
 **Queue: `$ARGUMENTS`**
 
 If that is empty, STOP and ask which queue. The backlog is GitHub Issues, one
-`queue:<X>` label per queue; you work only the one named.
+`queue: <name> (<code>)` label per queue (resolve the code with `gh label
+list --search "(<code>)"`); you work only the one named.
 
 ## Setup
 

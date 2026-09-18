@@ -701,7 +701,7 @@ flowchart LR
   with a per-profile concurrency cap. An audited **cancel** verb rides the
   same seam (closes I-81). Design: `docs/superpowers/specs/
   2026-09-02-process-compute-k8s-kueue-design.md`; queue: GitHub epic #2
-  (`queue:K`).
+  (`queue: k8s compute (K)`).
 - **Composition:** finalized output items emit ordinary outbox events, so
   they flow to delivery associations like any other item. A process whose
   output collection is also (transitively) a source is a **feedback loop** —
@@ -843,7 +843,7 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 5 — Delivery pipeline | ✅ Done (Slices A→D live/e2e-verified by 2026-07-25) | Outbox + NOTIFY dispatcher, delivery worker + payloads/policies, retry → dead-letter → redeliver, backfill bridge, Data-flow delivery UI. [FEATURES §Phase 5](docs/FEATURES.md). |
 | 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md). |
 | 7 — Direct interaction | ✅ Done (gate met 2026-08-30) | All slices P7-B…P7-I merged (bearer auth, staged uploads, brokered BFF push path, finalize on the ADR 0014 seam, dispatcher gating, ADR 0015 proxy write policy, `push_rejected` alerting, `docs/push-ingest.md`); **P7-Z rehearsal closed the done-when live** (evidence under the Phase 7 entry below; two gate findings fixed — I-80). Open: the promotion PR (human) + human review of the provisionally-approved spec. [FEATURES §Phase 7](docs/FEATURES.md). |
-| 8 — Cloud, scale gate & viz | ⬜ Not started | Process compute target re-decided 2026-09-02: **EKS + Kueue** (ADR 0019, proposed) replaces the ECS/Fargate run backend — Fargate has no GPU. The local-buildable half (profiles, UI, async executor, kind CI) is the K queue — GitHub epic #2 (`queue:K`). |
+| 8 — Cloud, scale gate & viz | ⬜ Not started | Process compute target re-decided 2026-09-02: **EKS + Kueue** (ADR 0019, proposed) replaces the ECS/Fargate run backend — Fargate has no GPU. The local-buildable half (profiles, UI, async executor, kind CI) is the K queue — GitHub epic #2 (`queue: k8s compute (K)`). |
 | 9 — Processes | ✅ **Gate met 2026-08-31** (M5-G) | All slices M5-0…M5-F merged and the §1 done-when rehearsed live on the auth-enforced stack — evidence below. Two findings fixed during the rehearsal (item_event revision resolution; the run network could not reach object storage). Remaining human work: the promotion PR. |
 
 ### Named milestones (2026-07-24)
@@ -1034,7 +1034,7 @@ there are no intermediate demos; the first demo is M1, complete:
   **Scoping complete 2026-09-01**; findings appended to those notes and the
   design spec written and **approved 2026-09-01**:
   `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md`; the M3-A…M3-I
-  implementation queue is GitHub epic #1 (`queue:M3`; M3-A…M3-C merged). Headline: the gap is four small defects, not a re-architecture —
+  implementation queue is GitHub epic #1 (`queue: scale readiness (M3)`; M3-A…M3-C merged). Headline: the gap is four small defects, not a re-architecture —
   pgstac's inline `update_partition_stats` (O(partition) per write call;
   `use_queue = true` took the measured pipeline from 2–3.5 to 22 items/s with
   no code change), the Procrastinate worker's default `concurrency = 1`,
