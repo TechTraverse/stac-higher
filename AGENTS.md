@@ -161,10 +161,11 @@ existing pages when changing shared components.
 - The Zod v4 → `zodResolver` type mismatch forces an `as any` cast on form
   resolvers — a known pattern, not a bug to fix.
 - `extensions.spec.ts` and `proxy.spec.ts` (e2e) need the Docker backend on
-  :8082. `map.spec.ts` also needs the backend's built-in catalog to have
-  products, and is the first spec to mount a real MapLibre canvas, so the
-  suite now fetches its basemap style from `basemaps.cartocdn.com` over the
-  network. Full e2e preconditions and selector gotchas: `run-e2e` skill.
+  :8082. `map.spec.ts` needs the stack too — it seeds its own `e2e-map`
+  collection through the BFF in `beforeAll` — and is the first spec to mount
+  a real MapLibre canvas, so the suite now fetches its basemap style from
+  `basemaps.cartocdn.com` over the network. Full e2e preconditions and
+  selector gotchas: `run-e2e` skill.
 - The repo-root `.dockerignore` excludes `infra/`, `services/`, `docs/` and
   `tests/`. A new repo-root-context derived image (pattern: `infra/proxy-policy`,
   `infra/titiler`) must re-include exactly the path it `COPY`s or its build

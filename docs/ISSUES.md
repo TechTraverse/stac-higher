@@ -615,7 +615,7 @@ executor seam becomes submit-then-reconcile. The local `DockerExecutor`
 half stands. Closes again at the K-9 gate with measured queue-wait and
 cold-start numbers.
 - Tracked in: ADR 0013 (accepted; cloud half superseded), ADR 0019, the K
-  queue in `TODO.md`.
+  queue (GitHub epic #2, `queue:K`).
 
 ### I-62 · Run-log storage & retention 🟢 (settled 2026-08-29)
 **Settled by the approved Phase 9 spec (§9)**: `logs/runs/{process_id}/
@@ -696,7 +696,7 @@ resources map cleanly onto ours) would be a credible interoperability story
 for OGC-conformance-minded deployments (NOAA). Evaluate: conformance classes
 worth claiming, auth fit (the standard assumes OIDC-ish bearer auth — fine),
 and whether the facade is a Phase 9 slice or a later add-on. Related: the
-serving exposure work (titiler-pgstac / tipg, `TODO.md` "Pre-M5 hardening")
+serving exposure work (titiler-pgstac / tipg, FEATURES §Cross-phase — Pre-M5 hardening, ✅)
 covers OGC API Tiles/Features — together these make the platform's OGC
 story: Features (STAC API core), Tiles, and potentially Processes.
 **Settled by the approved Phase 9 spec (§11): worth claiming, as a
