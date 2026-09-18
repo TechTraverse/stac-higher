@@ -76,3 +76,26 @@ def test_heartbeat_registers_through_interface(queue: ProcrastinateQueue):
 async def test_enqueue_batch_empty_is_noop(queue: ProcrastinateQueue):
     # must not touch the (nonexistent) database
     assert await queue.enqueue_batch("jobs.whatever", []) == []
+
+
+async def test_run_worker_bounds_the_graceful_drain(queue: ProcrastinateQueue, monkeypatch):
+    """The drain must end before Docker's stop_grace_period (30 s in compose)
+    or SIGKILL skips the abort-with-retry, the worker unregistration and
+    main.run's pool cleanup."""
+    from pipeline.queue.procrastinate_backend import SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+
+    calls: list[dict] = []
+
+    async def fake_run_worker_async(**kwargs):
+        calls.append(kwargs)
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+
+    await queue.run_worker()
+
+    assert calls[0]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+    assert 0 < SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS < 30
