@@ -13,11 +13,12 @@ description: Run the Playwright e2e suite for the STAC Higher app, or debug a fa
    `stac_higher.*` tables, which the same stack's Postgres provides. Check
    `docker compose ps`; if not `Up`, run `docker compose up -d` from the repo
    root and wait a few seconds. (`catalogs`, `connections`, `extension-forms`
-   are UI-surface-only and pass without the stack.) `map.spec.ts`'s 2nd and
-   3rd tests also need the backend's built-in catalog to actually have
-   products (they add one as a layer); it is also the first spec to mount a
-   real MapLibre canvas, so the suite now fetches its basemap style from
-   `basemaps.cartocdn.com` — an outbound network dependency.
+   are UI-surface-only and pass without the stack.) `map.spec.ts` seeds its
+   own `e2e-map` collection through the BFF in `beforeAll`, so all three of
+   its tests need the stack (no demo products required); it is also the
+   first spec to mount a real MapLibre canvas, so the suite now fetches its
+   basemap style from `basemaps.cartocdn.com` — an outbound network
+   dependency.
 2. **Dev server / port**: Playwright reuses an existing server on the target
    port, otherwise auto-starts one. **Something else may own :4321** (editors
    with built-in servers have caused this) — Playwright then silently tests

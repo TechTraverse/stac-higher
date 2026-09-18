@@ -700,7 +700,8 @@ flowchart LR
   capacity* states); locally the Docker backend emulates the same states
   with a per-profile concurrency cap. An audited **cancel** verb rides the
   same seam (closes I-81). Design: `docs/superpowers/specs/
-  2026-09-02-process-compute-k8s-kueue-design.md`; queue: `TODO.md` K.
+  2026-09-02-process-compute-k8s-kueue-design.md`; queue: GitHub epic #2
+  (`queue:K`).
 - **Composition:** finalized output items emit ordinary outbox events, so
   they flow to delivery associations like any other item. A process whose
   output collection is also (transitively) a source is a **feedback loop** —
@@ -792,8 +793,9 @@ connection row here — it maps to catalog-exposure knobs on collection Settings
 plus the titiler-pgstac / tipg adoption. A serving toggle, not a delivery
 flow. **Pulled forward from Phase 8 stretch (2026-08-27):** both services run
 fine in docker compose, so OGC serving is local, cloud-independent work —
-tracked in `TODO.md` "Pre-M5 hardening". Until read-visibility (I-1) lands,
-the toggle can only expose collections that are already public.
+landed under Pre-M5 hardening ([FEATURES §Cross-phase](docs/FEATURES.md)).
+Until read-visibility (I-1) lands, the toggle can only expose collections
+that are already public.
 
 RBAC for the Phase 9 surface follows §7: processes are group-owned; member
 views, operator+ creates/deploys/re-runs; every deploy/run/re-run/cancel is
@@ -811,8 +813,7 @@ pages with a lineage panel, NOAA light-default theming, and full adoption of
 the Phase 9 terminology note's "product / source / destination" copy
 (copy-only; routes and APIs unchanged). Presentation-layer only by
 invariant. Brief: `docs/superpowers/specs/2026-08-31-ui-remodel-design.md`;
-queue: `app/UI-TODO.md` (runs parallel to the M3 scoping queue in
-`TODO.md`).
+slice log: `app/UI-TODO.md` (archived — UI-1…UI-15 all merged).
 
 ---
 
@@ -840,9 +841,9 @@ I-61), never as deployments. This settles I-60: M5 precedes M3.
 | 3 — Object storage & asset service | ✅ Done (live-verified 2026-07-16) | Offline presigning, asset 302 route, uploads, staging TTL sweep (ADR 0005). [FEATURES §Phase 3](docs/FEATURES.md). |
 | 4 — Ingest pipeline | ✅ Done (live-verified end-to-end 2026-07-20) | Slices A, B1–B5, C (`reference` mode). Done-when met: dropped file → catalogued item through the real scheduler, copy and reference both. [FEATURES §Phase 4](docs/FEATURES.md). |
 | 5 — Delivery pipeline | ✅ Done (Slices A→D live/e2e-verified by 2026-07-25) | Outbox + NOTIFY dispatcher, delivery worker + payloads/policies, retry → dead-letter → redeliver, backfill bridge, Data-flow delivery UI. [FEATURES §Phase 5](docs/FEATURES.md). |
-| 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md), `TODO.md`. |
+| 6 — Operable platform (M2) | ✅ Done (gate met 2026-08-28) | All slices M2-0…M2-H merged (alerts, channels/webhooks, `/monitoring` + bell, Settings tab, retention/GC, partitioning, `/metrics`); **M2-I rehearsal closed both done-when legs live** (evidence under the M2 milestone below). Open: the promotion PR (human). [FEATURES §Phase 6](docs/FEATURES.md). |
 | 7 — Direct interaction | ✅ Done (gate met 2026-08-30) | All slices P7-B…P7-I merged (bearer auth, staged uploads, brokered BFF push path, finalize on the ADR 0014 seam, dispatcher gating, ADR 0015 proxy write policy, `push_rejected` alerting, `docs/push-ingest.md`); **P7-Z rehearsal closed the done-when live** (evidence under the Phase 7 entry below; two gate findings fixed — I-80). Open: the promotion PR (human) + human review of the provisionally-approved spec. [FEATURES §Phase 7](docs/FEATURES.md). |
-| 8 — Cloud, scale gate & viz | ⬜ Not started | Process compute target re-decided 2026-09-02: **EKS + Kueue** (ADR 0019, proposed) replaces the ECS/Fargate run backend — Fargate has no GPU. The local-buildable half (profiles, UI, async executor, kind CI) is the K queue in `TODO.md`. |
+| 8 — Cloud, scale gate & viz | ⬜ Not started | Process compute target re-decided 2026-09-02: **EKS + Kueue** (ADR 0019, proposed) replaces the ECS/Fargate run backend — Fargate has no GPU. The local-buildable half (profiles, UI, async executor, kind CI) is the K queue — GitHub epic #2 (`queue:K`). |
 | 9 — Processes | ✅ **Gate met 2026-08-31** (M5-G) | All slices M5-0…M5-F merged and the §1 done-when rehearsed live on the auth-enforced stack — evidence below. Two findings fixed during the rehearsal (item_event revision resolution; the run network could not reach object storage). Remaining human work: the promotion PR. |
 
 ### Named milestones (2026-07-24)
@@ -1027,14 +1028,13 @@ there are no intermediate demos; the first demo is M1, complete:
   This pulls the Phase 8 load-gate *measurement* forward; the AWS/IaC half of
   Phase 8 stays put. **Not yet scoped** — needs its own design spec (the M2
   pattern), including redoing §2's byte-volume arithmetic at the 20×-higher
-  item rate. **Scoping started 2026-08-31**: the scoping queue is seeded in
-  `TODO.md` (M3-S-A…M3-S-G, spec + lead stop point at the end) with inputs
-  collected in
+  item rate. **Scoping started 2026-08-31**: the scoping queue (M3-S-A…M3-S-G,
+  spec + lead stop point at the end) ran with inputs collected in
   `docs/superpowers/specs/2026-08-31-m3-scoping-notes.md`.
   **Scoping complete 2026-09-01**; findings appended to those notes and the
   design spec written and **approved 2026-09-01**:
   `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md`; the M3-A…M3-I
-  implementation queue is live in `TODO.md`. Headline: the gap is four small defects, not a re-architecture —
+  implementation queue is GitHub epic #1 (`queue:M3`; M3-A…M3-C merged). Headline: the gap is four small defects, not a re-architecture —
   pgstac's inline `update_partition_stats` (O(partition) per write call;
   `use_queue = true` took the measured pipeline from 2–3.5 to 22 items/s with
   no code change), the Procrastinate worker's default `concurrency = 1`,
@@ -1137,7 +1137,7 @@ provisionally approved; human review of spec + code pending):
   services only if the numbers say so.
 - Stretch: raster previews in the collection/item UI (rides on the OGC
   serving services — titiler-pgstac/tipg themselves were **pulled forward
-  to local work 2026-08-27**, see §8 and `TODO.md` "Pre-M5 hardening";
+  to local work 2026-08-27**, see §8 and [FEATURES §Cross-phase — Pre-M5 hardening](docs/FEATURES.md);
   Phase 8 keeps only their cloud deployment).
 - **Done when:** the full ICD loop runs on AWS from IaC, with KMS-encrypted
   credentials, S3 object storage, and a written load-test report against the
