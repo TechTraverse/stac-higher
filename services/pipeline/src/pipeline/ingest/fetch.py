@@ -206,7 +206,11 @@ async def _reference_stage(
             if claimed:
                 stored += 1
         except Exception:
-            await repo.set_ledger_fields(latest.id, status=STATUS_FAILED)
+            # The row may no longer be ours to fail: if the other racer stored
+            # it between our read and here, it stays stored (fix round 4).
+            await repo.transition_ledger(
+                latest.id, expected_status=STATUS_SETTLED, status=STATUS_FAILED
+            )
             logger.exception(
                 "ingest reference-fetch failed for source file",
                 extra={

@@ -93,3 +93,23 @@ async def test_run_flushes_on_the_interval_and_once_more_on_cancel():
     with contextlib.suppress(asyncio.CancelledError):
         await task
     assert repo.flow_stats["a1"]["items"] == 2
+
+
+async def test_a_failed_write_does_not_regress_a_newer_latency():
+    """Fix round 4: a delta retained after a failed flush merges UNDER what
+    arrived during the failed write — the newer latency stays 'last'."""
+
+    class _AddsMidWriteThenFails(FakeIngestRepo):
+        batcher: FlowStatsBatcher
+
+        async def bump_flow_stats(self, association_id, **kw):
+            self.batcher.add("a1", items=1, latency_seconds=12.0)  # an ITEMIZE lands mid-write
+            raise RuntimeError("db away")
+
+    repo = _AddsMidWriteThenFails()
+    batcher = FlowStatsBatcher()
+    repo.batcher = batcher
+    batcher.add("a1", items=1, latency_seconds=61.0)
+
+    assert await batcher.flush(repo) == 0
+    assert batcher.pending == {"a1": FlowDelta(items=2, latency_seconds=12.0)}

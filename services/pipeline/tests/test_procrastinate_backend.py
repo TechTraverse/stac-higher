@@ -119,6 +119,13 @@ async def test_run_worker_starts_one_worker_per_queue(queue: ProcrastinateQueue,
     # first (asyncio.add_signal_handler replaces, it does not layer).
     assert by_name["default"]["install_signal_handlers"] is False
     assert by_name["bytes"]["install_signal_handlers"] is False
+    # Fix round 4: the drain must end before Docker's stop_grace_period (30 s
+    # in compose) or SIGKILL skips the abort-with-retry and the pool cleanup.
+    from pipeline.queue.procrastinate_backend import SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+
+    assert 0 < SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS < 30
+    assert by_name["default"]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+    assert by_name["bytes"]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
 
 
 async def test_run_worker_stop_signal_cancels_both_workers(
@@ -313,3 +320,41 @@ async def test_run_worker_rejects_a_split_with_no_default_slots(queue: Procrasti
     # worker that listens and never runs a job.
     with pytest.raises(ValueError, match="default queue"):
         await queue.run_worker(concurrency=4, bytes_concurrency=4)
+
+
+async def test_run_worker_outer_cancellation_does_not_recancel_a_draining_worker(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 4: on the crash path the sibling is already cancelled and
+    draining when an outer cancellation arrives; the `finally` must not
+    cancel it a second time — that would abort its drain."""
+    state = {"drained": set(), "interrupted": set()}
+
+    async def fake_run_worker_async(*, name, **kwargs):
+        if name == "default":
+            raise RuntimeError("boom")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            try:
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                state["interrupted"].add(name)
+                raise
+            state["drained"].add(name)
+            raise
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+
+    task = asyncio.create_task(queue.run_worker(concurrency=12, bytes_concurrency=4))
+    await asyncio.sleep(0.03)  # default crashed; bytes is mid-drain
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert state["interrupted"] == set()
+    assert state["drained"] == {"bytes"}

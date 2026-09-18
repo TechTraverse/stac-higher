@@ -44,12 +44,28 @@ class FlowDelta:
         failed: int = 0,
         latency_seconds: float | None = None,
     ) -> None:
-        self.files += files
-        self.bytes_added += bytes_added
-        self.items += items
-        self.failed += failed
-        if latency_seconds is not None:
-            self.latency_seconds = latency_seconds
+        self.merge(
+            FlowDelta(
+                files=files,
+                bytes_added=bytes_added,
+                items=items,
+                failed=failed,
+                latency_seconds=latency_seconds,
+            )
+        )
+
+    def merge(self, other: FlowDelta, *, other_is_older: bool = False) -> None:
+        """Fold ``other`` in: counts add; the latency keeps the NEWER value —
+        ``other``'s, unless ``other`` is the older delta (a retained one from
+        a failed flush) and this one already carries a fresher latency."""
+        self.files += other.files
+        self.bytes_added += other.bytes_added
+        self.items += other.items
+        self.failed += other.failed
+        if other.latency_seconds is not None and not (
+            other_is_older and self.latency_seconds is not None
+        ):
+            self.latency_seconds = other.latency_seconds
 
 
 class FlowStatsBatcher:
@@ -66,12 +82,14 @@ class FlowStatsBatcher:
         failed: int = 0,
         latency_seconds: float | None = None,
     ) -> None:
-        self._pending.setdefault(association_id, FlowDelta()).add(
-            files=files,
-            bytes_added=bytes_added,
-            items=items,
-            failed=failed,
-            latency_seconds=latency_seconds,
+        self._pending.setdefault(association_id, FlowDelta()).merge(
+            FlowDelta(
+                files=files,
+                bytes_added=bytes_added,
+                items=items,
+                failed=failed,
+                latency_seconds=latency_seconds,
+            )
         )
 
     @property
@@ -85,9 +103,9 @@ class FlowStatsBatcher:
     async def flush(self, repo: IngestRepo) -> int:
         """One ``bump_flow_stats`` per association with a pending delta.
 
-        A failed write puts that delta back (merged with whatever arrived in
-        the meantime) for the next flush and logs — the counts are not lost,
-        only late.
+        A failed write puts that delta back (merged UNDER whatever arrived in
+        the meantime, so a newer latency wins) for the next flush and logs —
+        the counts are not lost, only late.
         """
         written = 0
         for association_id, delta in self.drain().items():
@@ -106,17 +124,20 @@ class FlowStatsBatcher:
                     "flow_stats flush failed; delta retained",
                     extra={"association_id": association_id},
                 )
-                self._pending.setdefault(association_id, FlowDelta()).add(
-                    files=delta.files,
-                    bytes_added=delta.bytes_added,
-                    items=delta.items,
-                    failed=delta.failed,
-                    latency_seconds=delta.latency_seconds,
+                self._pending.setdefault(association_id, FlowDelta()).merge(
+                    delta, other_is_older=True
                 )
         return written
 
     async def run(self, repo_factory: Callable[[], IngestRepo], interval_seconds: float) -> None:
-        """Flush every ``interval_seconds`` until cancelled, then once more."""
+        """Flush every ``interval_seconds`` until cancelled, then once more.
+
+        That final flush runs at cancellation time, which is BEFORE the
+        workers have finished draining — ITEMIZEs completing during the drain
+        add after it. ``main.run()`` therefore flushes once more in its
+        ``finally``, after the workers have returned and before the pools
+        close; this one only shortens what that last flush carries.
+        """
         repo = repo_factory()
         try:
             while True:

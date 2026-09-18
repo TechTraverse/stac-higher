@@ -32,6 +32,13 @@ from pipeline.queue.interface import (
 
 logger = logging.getLogger(__name__)
 
+#: How long a stop waits for in-flight jobs before aborting them — Procrastinate
+#: re-queues a job aborted by a shutdown per its retry strategy, so the abort
+#: is a retry, not a loss. Must stay BELOW the container's `stop_grace_period`
+#: (docker-compose.yml: 30 s), or Docker's SIGKILL wins and the abort, the
+#: worker unregistration and `main.run()`'s pool cleanup never run.
+SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS = 25.0
+
 
 class ProcrastinateQueue(QueueBackend):
     name = "procrastinate"
@@ -224,6 +231,7 @@ class ProcrastinateQueue(QueueBackend):
                     concurrency=concurrency - bytes_concurrency,
                     name=QUEUE_DEFAULT,
                     install_signal_handlers=False,
+                    shutdown_graceful_timeout=SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS,
                 )
             )
             bytes_task = asyncio.create_task(
@@ -232,6 +240,7 @@ class ProcrastinateQueue(QueueBackend):
                     concurrency=bytes_concurrency,
                     name=QUEUE_BYTES,
                     install_signal_handlers=False,
+                    shutdown_graceful_timeout=SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS,
                 )
             )
 
@@ -265,7 +274,11 @@ class ProcrastinateQueue(QueueBackend):
                 task for task in (default_task, bytes_task) if task is not None and not task.done()
             }
             for task in live:
-                task.cancel()
+                # A task `_stop` or the crash path already cancelled is
+                # mid-drain: a second cancel would land in `Worker.run`'s
+                # `await loop_task` and abort that drain (fix round 4).
+                if task.cancelling() == 0:
+                    task.cancel()
             if live:
                 await asyncio.wait(live)
                 for task in live:

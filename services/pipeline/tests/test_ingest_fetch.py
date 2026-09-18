@@ -355,3 +355,31 @@ async def test_transition_ledger_is_a_no_op_when_the_row_moved_on():
         row.id, expected_status="settled", status="fetching", item_id="other"
     )
     assert row.item_id == "scene"
+
+
+async def test_reference_failure_path_does_not_clobber_a_row_the_other_racer_stored():
+    """Fix round 4: a racer holding a stale settled snapshot whose href
+    computation raises must not mark `failed` a row the other racer already
+    stored — the failure path is the same compare-and-set as the claim."""
+
+    class _StaleReadRepo(FakeIngestRepo):
+        async def get_latest_ledger(self, association_id, source_path):
+            latest = await super().get_latest_ledger(association_id, source_path)
+            return None if latest is None else dataclasses.replace(latest, status="settled")
+
+    class _RaisingUrlAdapter(FakeAdapter):
+        def public_object_url(self, path):
+            raise RuntimeError("no endpoint")
+
+    repo = _StaleReadRepo()
+    row = await _settled(repo, "scene.tif")
+    row.status = "stored"  # the other racer won the row already
+    row.item_id = "scene"
+    cfg = parse_ingest_config({"source_path": "products/", "storage_mode": "reference"})
+
+    stored = await fetch_stage(
+        repo, _assoc({}), cfg, _RaisingUrlAdapter(), FakeS3(), "stac-higher", "scene", ["scene.tif"]
+    )
+
+    assert stored == 0
+    assert row.status == "stored"

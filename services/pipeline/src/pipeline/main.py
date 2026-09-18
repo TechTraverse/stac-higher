@@ -150,6 +150,16 @@ async def run(settings: Settings) -> None:
             ),
         )
     finally:
+        # M3-D: the workers have drained by now (run_worker waits out both
+        # drains on stop, crash and outer cancellation), so this catches the
+        # deltas the last ITEMIZEs added after the batcher task's own final
+        # flush — it must run while the repo pool is still open.
+        try:
+            await FLOW_BATCHER.flush(PgIngestRepo(settings.database_url))
+        except Exception:
+            logger.warning(
+                "pool cleanup step failed", extra={"step": "flow_stats flush"}, exc_info=True
+            )
         # Both pools before the queue: `queue.aclose()` releases
         # Procrastinate's own pool, and nothing after that point may still
         # want a connection. The async pool serves the repos (M3-B); the sync
