@@ -1099,7 +1099,7 @@ git commit -m "feat(processes): run rows show the pinned revision's hardware; do
 - [ ] `npm run verify` on the worktree; rebase onto `main`, verify again, push, open the PR (`Closes #10`), squash-merge when CI is green.
 - [ ] e2e: `processes` spec, then the whole suite (`run-e2e` skill; baseline 46 passed / 1 skipped; `E2E_PORT=4399` if :4321 is held).
 - [ ] Chrome: open a process page on the dev server; the Hardware fieldset shows `Standard` / `CPU — large` under their tier groups, the summary line updates on a profile change, a deploy with the cpu typed as `9` on `standard` is refused with the write gate's message in the toast; a run row shows its summary. Screenshot noted in the landed note.
-- [ ] PR body = the landed note (deviations, the Chrome check); tick K-2 in epic #2 with the PR number; `docs/FEATURES.md` process-compute entry; `docs/ISSUES.md` for any gap; worktree removal.
+- [ ] PR body = the landed note (deviations, the Chrome check); `docs/FEATURES.md` process-compute entry; `docs/ISSUES.md` for any gap; worktree removal.
 
 ## Self-review
 

@@ -4,6 +4,8 @@ One file per significant, hard-to-reverse decision, capturing the context, the c
 
 ## Index
 
+From 2026-09-17 an ADR's **Status** line also names the PR that adopted it (`accepted — PR #N`), so the decision links to the change that made it real.
+
 | ADR | Title | Status | Phase |
 |---|---|---|---|
 | [0001](0001-migration-ownership.md) | Migration ownership for the shared Postgres | accepted | 0 |

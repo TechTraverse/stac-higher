@@ -865,7 +865,7 @@ git commit -m "feat(processes): Waiting-for-capacity / Starting phase chips on r
 - [ ] `docker compose up -d --build pipeline docker-socket-proxy`; migration 029 applies on the app's first request (start the dev server or hit any API route); `psql` shows the seven columns and the CHECK.
 - [ ] Live: the pipeline log shows no `HardwareProfileError`; a test run on `standard` succeeds with `phase` cycling `starting → NULL` (`SELECT status, phase, phase_detail FROM stac_higher.process_runs ORDER BY created_at DESC LIMIT 3`). Capacity: only observable once M3-D's concurrency is deployed (two `process_run_now` jobs in flight) — with `cpu-large` (capacity 1) and two simultaneous test runs the second row shows `queued / pending_capacity` and the UI chip; if M3-D is not yet on `ai/main`, record that the capacity check is unit-tested only and re-verify at K-4 or after M3-D deploys.
 - [ ] e2e: `processes` spec, then the whole suite. Chrome: a run row with the chip (screenshot noted).
-- [ ] PR body = the landed note (the `next_attempt_at` ruling, the `INFO=1` widening, what was live-checked); tick K-3 in epic #2 with the PR number; `docs/FEATURES.md`; `docs/ISSUES.md` for gaps; worktree removal.
+- [ ] PR body = the landed note (the `next_attempt_at` ruling, the `INFO=1` widening, what was live-checked); `docs/FEATURES.md`; `docs/ISSUES.md` for gaps; worktree removal.
 
 ## Self-review
 

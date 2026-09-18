@@ -3,9 +3,9 @@
 **Date:** 2026-09-02
 **Status:** **approved by the lead 2026-09-04** (the §13 decisions stand as
 written unless overturned later; written from the 2026-09-02 direction
-"plan on Kubernetes and Kueue"). The K queue in `TODO.md` is copied from
-§14; K-1 may start. Migration numbering settled at approval: the X queue
+"plan on Kubernetes and Kueue"). Migration numbering settled at approval: the X queue
 (worked first) takes **028**, so K-3's ledger migration is **029**.
+**Tracking:** epic #2 (milestone "Process compute on Kubernetes (K)"); the slices in §14.
 **Scope source:** ADR 0013 (executor isolation — the boundary this spec
 works inside; its cloud-backend recommendation is superseded here), ADR 0018
 (inputs + network profiles), ROADMAP §5.6 / §6.7 / §9 Phase 8, Phase 9 spec

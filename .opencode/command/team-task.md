@@ -69,8 +69,7 @@ After every teammate has reported, for each branch in the order they finished:
    <title>"` with a body that starts `Closes #<n>` and lists the gates run,
    the lead-only steps left and deviations from the plan. Wait for CI, then
    `gh pr merge --squash --delete-branch`.
-5. Remove the worktree. Update the epic's slice list; open issues for
-   follow-ups. Report "<batch> complete. main is green."
+5. Remove the worktree. Open issues for follow-ups (Slice template). Report "<batch> complete. main is green."
 
 ## Reading large files
 

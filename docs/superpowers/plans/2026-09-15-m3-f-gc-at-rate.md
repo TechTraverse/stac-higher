@@ -889,7 +889,7 @@ git commit -m "feat(monitor): asset_gc_backlog alert — per-collection open-mar
   Record `count_due` before; wait for the next collect tick (≤5 min) or `docker compose restart pipeline` to bring it forward; read the tick's log line (`marks_seen`, `collected_marks`, `deleted_objects`, `errors`, elapsed from the two timestamps) and `pipeline_asset_gc_due_marks` after. Expected: all 2000 marks collected in ONE tick (one round), `errors = 0`, `due_marks = 0`; compute marks/s and objects/s; extrapolate to 9 028 marks per tick. RSS during the tick from `docker stats`.
   Then the alert: seed 1 200 marks with `collect_after = now() - interval '2 hours'` on a prefix the collector will fail on (point them at a collection whose bucket ACL refuses, or simplest: stop MinIO for one tick → listing errors keep them open), wait one monitor tick, `GET /api/alerts` shows one `asset_gc_backlog` for the collection; restart MinIO, wait a collect + monitor tick, the alert auto-resolves. Chrome: the alert's label reads "asset GC backlog" on the monitoring page (screenshot noted).
 - [ ] `loadgen teardown`; `DELETE FROM stac_higher.asset_gc WHERE collection_id LIKE '%m3f%'` only if teardown leaves rows.
-- [ ] PR body = the landed note (numbers, the per-collection anchor ruling); tick M3-F in epic #1 with the PR number; `docs/FEATURES.md`; `docs/ISSUES.md` (S-B's retention-leg 18× per-collection ceiling stays open as a note if not already an issue); worktree removal; canary re-check.
+- [ ] PR body = the landed note (numbers, the per-collection anchor ruling); `docs/FEATURES.md`; `docs/ISSUES.md` (S-B's retention-leg 18× per-collection ceiling stays open as a note if not already an issue); worktree removal; canary re-check.
 
 ## Self-review
 

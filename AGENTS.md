@@ -3,201 +3,131 @@
 Canonical instructions for all AI coding agents in this repo, per the
 [AGENTS.md](https://agents.md/) standard. Harness-specific additions live in
 that harness's own file (`CLAUDE.md`, `opencode.json`). This file is loaded
-into every session: facts and rules only. Reference material lives in `docs/`
-and the skills — read it when the task touches that area, not up front.
+into every session: facts and rules only. Procedures and area-specific rules
+live in the skills and `docs/` — read them when the task touches that area.
 
 ## Layout
 
-npm-workspaces monorepo:
+npm-workspaces monorepo: `app/` (Astro 7 SSR + React 19 STAC client),
+`packages/shared/` (`@stac-higher/shared`: components, hooks, stores, map,
+RJSF theme, Storybook), `services/pipeline/` (Python queue worker +
+scheduler), `services/process-runtime/` (process-run image), `infra/` +
+`docker-compose.yml` (local stack), `tests/contract-fixtures/` (cross-runtime
+golden fixtures).
 
-- `app/` — the Astro 7 (SSR) + React 19 STAC client
-- `packages/shared/` — `@stac-higher/shared`: shared components, hooks, types, stores, RJSF theme, Storybook
-- `services/pipeline/` — the Python queue worker + scheduler; `services/process-runtime/` — the process-run image
-- `infra/` + `docker-compose.yml` — the local stack; `tests/contract-fixtures/` — cross-runtime golden fixtures
-
-Facts:
 - `npm install` at the **repo root** only — single lockfile, workspace symlinks.
-- **Shared components are the source of truth.** UI primitives, `shared/*` utilities, cards, all `map/` components and the RJSF theme live in `packages/shared/` and are imported from `@stac-higher/shared`; most `app/src/lib/` and `app/src/stores/` files are thin re-export proxies. App-only shadcn primitives (dialog, dropdown-menu, popover, separator, sheet, sonner, table, tabs) stay in `app/src/components/ui/`.
-- Path aliases: `@/*` → `app/src/*`; `@shared/*` → `packages/shared/src/*` (inside the shared package only).
+- **Shared components are the source of truth**: UI primitives, `shared/*`
+  utilities, cards, all `map/` components and the RJSF theme live in
+  `packages/shared/` and are imported from `@stac-higher/shared`; most
+  `app/src/lib/` and `app/src/stores/` files are thin re-export proxies.
+- Path aliases: `@/*` → `app/src/*`; `@shared/*` → `packages/shared/src/*`
+  (inside the shared package only).
 
 ## Commands
 
 - **Install**: `npm install` (repo root)
-- **Verify**: `npm run verify` (repo root — app-scoped typecheck + build + unit tests, the CI gates; **must pass before declaring any task done**)
-- **Dev**: `npm run dev` (from `app/`, http://localhost:4321)
+- **Verify**: `npm run verify` (repo root — app-scoped typecheck + build +
+  unit tests, the CI gates; **must pass before declaring any task done**).
+  Never run `npx astro check` from the repo root — it has no `src/pages`
+  there and reports nothing useful.
+- **Dev**: `npm run dev` (from `app/`, http://localhost:4321). Astro 7
+  daemonizes `astro dev` under AI agents; manage with `astro dev stop|status|logs`.
 - **Unit tests**: `npm test` / `npm run test:watch` (from `app/`)
-- **Pipeline tests**: `uv run pytest` and `uv run ruff check .` (from `services/pipeline/` — both, whenever the pipeline is touched; `DATABASE_URL=…` enables the DB-gated tests. Reference: `services/pipeline/README.md`)
-- **E2E**: `npm run test:e2e:ci` (from `app/`). Read the `run-e2e` skill first.
-- **Proxy integration tests**: `npm run test:integration` (repo root — needs the auth-enforced Docker stack; lead/human only)
-- **Demo pipeline**: `uv run python -m pipeline.demo seed | status | teardown` (from `services/pipeline`, stack up — rebuilds the scene → process → thumbnail loop after a `down -v`)
-- **Storybook**: `npm run storybook` (from `packages/shared/`)
-- **Backend**: `docker compose up -d` (repo root). Services, ports, credentials and the auth-enforced overlay: `docs/backend.md`.
+- **Pipeline tests**: `uv run pytest` and `uv run ruff check .` (from
+  `services/pipeline/` — both, whenever the pipeline is touched)
+- **E2E**: `npm run test:e2e:ci` (from `app/`). Lead-only; read the `run-e2e`
+  skill first.
+- **Backend**: `docker compose up -d` (repo root). Services, ports,
+  credentials and the auth-enforced overlay: `docs/backend.md`.
+- **Demo pipeline**: `uv run python -m pipeline.demo seed | status | teardown`
+  (from `services/pipeline`, stack up). **Storybook**: `npm run storybook`
+  (from `packages/shared/`).
 
-## Architecture
+## Architecture in one paragraph
 
-**Astro + React islands**: Astro pages (`app/src/pages/*.astro`) are thin
-routing shells; each mounts a single React island via `client:only="react"`.
-The only cross-island split is Header vs. page content.
-
-**Three-tier state**:
-1. **Nanostores** — cross-island persistent state (catalog list, theme) in localStorage. `app/src/stores/catalogStore.ts` (`$catalogs`, `$builtInCatalog`). There is **no global "active catalog"** (UI-10): product surfaces read `$builtInCatalog`; the catalog browser takes its catalog from the route (`/catalogs/[catalogId]/collections*`, `?src=` URL when present); `/search` keeps a local selection.
-2. **TanStack Query** — server state; query keys include the catalog URL. Key factory: `app/src/lib/query/keys.ts`.
-3. **React Hook Form + Zod** — form state. Schemas: `app/src/lib/stac-api/schemas.ts`.
-
-**Data flow**: `useStore($builtInCatalog)` → TanStack Query hook → API function
-(`app/src/lib/stac-api/*.ts`) → `stacFetch()` → STAC API. Mutations invalidate
-query keys; forms redirect via `window.location.href` on success.
-
-**Map**: MapLibre GL JS via `react-map-gl/maplibre`. Components `StacMap`,
-`FootprintLayer`, `ExtentLayer`, `ItemGeometryEditor`; utilities in
-`packages/shared/src/lib/map/`.
-
-Full conventions (island rationale, form pattern, import rules): the
-`project-conventions` skill — read it before any non-trivial change.
-
-## Backend invariants
-
-Cross-cutting rules that hold on every task. The per-area design lives in
-`docs/` (index: `docs/README.md`; route table + env: `docs/backend.md`).
-
-- **Schema ownership**: the app owns every `stac_higher.*` DDL (migrations run on the first API request); the pipeline reads and writes rows, never DDL (ADR 0001).
-- **Cross-runtime contracts**: any shape shared by app and pipeline (association `config`, channel config, manifests, status strings, alert kinds) has a golden fixture in `tests/contract-fixtures/` consumed by **both** vitest and pytest. A new or changed shape ⇒ a new/updated fixture (that directory's README has the format).
-- **App → pipeline** requests are rows the pipeline drains (`connection_checks`, `process_checks`, `delivery_backfills`, …), never a direct call (ADR 0004).
-- **Catalog writes** go only to the built-in catalog, through the BFF `/api/catalog/*` (ADR 0008); `stacFetch` refuses writes to any other catalog — external catalogs are read-only (I-89). Direct-to-proxy writes are gated by the ADR 0015 policy.
-- **RBAC & audit**: API mutations need `operator`/`admin` (guard in `src/middleware.ts`) and write one append-only `audit_log` row each; the dev-bypass identity is an operator. Credentials and secrets are write-only in every API.
-- **Egress**: server fetches go through `safeFetch` (blocks private/loopback; dev allow-list in `docs/backend.md`). Webhook dispatch is pipeline-side behind the connections egress policy — never widen `safeFetch` for it.
-- **Process runs** see only their revision's env, run-scoped STS credentials and their code — never the DB URL, master key or platform keys (ADR 0013). Author contract: `docs/processes.md`.
-- **Byte deletion** happens only through the `asset_gc` mark-then-collect queue (ADR 0011); nothing is deleted on an unconfigured platform.
-- **Pipeline logging**: data goes in `extra={...}` structured fields, never interpolated into the message.
+Astro pages are thin shells that each mount one React island; state is
+three-tier (nanostores for cross-island persistent state, TanStack Query for
+server state, React Hook Form + Zod for forms); there is **no global "active
+catalog"**; maps are MapLibre via `react-map-gl/maplibre` with shared
+`StacMap` / `FootprintLayer` / `ExtentLayer` components. The rules and the
+why: the `project-conventions` skill — read it before any non-trivial change.
+Cross-cutting backend rules (schema ownership, contract fixtures, RBAC +
+audit, egress, process isolation, GC): the `backend-invariants` skill — read
+it before touching the pipeline, API routes, migrations or images.
 
 ## Workflow — trunk-based, one PR per issue (Mandatory)
 
 `main` is the only long-lived branch. Every change — human or agent — lands
 through a short-lived branch and a squash-merged pull request into `main`.
-**Never commit directly to `main`.** (The former `ai/main` integration branch
-is retired; anything that still names it is historical.)
+**Never commit directly to `main`.** (`ai/main` is retired; anything that
+still names it is historical.)
 
-### One task
 1. **Pick an issue**: a GitHub issue labelled `ready` in the queue you were
    asked to work (`gh issue list --label "queue: k8s compute (K)" --label ready`;
-   the queues and their codes are listed in the pinned "Start here" issue). Assign
-   yourself. Not `blocked`, not `lead-only` unless you are the lead.
+   the pinned "Start here" issue maps codes to names). Assign yourself — that
+   is the claim. Not `blocked`, not `lead-only` unless you are the lead.
 2. **Start**: `git worktree add .claude/worktrees/<slug> -b feat/<slug> main`
    (`fix/`, `docs/` for those kinds of change), then `npm install` in the
    worktree. Never work in the main checkout.
 3. **Work**: read the spec section and plan the issue cites before changing
-   anything. Commit to the branch. Run `npm run verify` (plus `uv run pytest`
-   and `uv run ruff check .` in `services/pipeline/` when the pipeline is
-   touched) before declaring done.
-4. **PR**: `git push -u origin feat/<slug>`, then
-   `gh pr create --base main --fill --body "Closes #<n> …"`. CI runs verify,
-   the pipeline tests and the Storybook build. Title `<ID>: <what changed>`.
-   The PR body lists the gates run, the lead-only steps left (e2e, Docker,
-   live checks) and any deviations from the plan.
+   anything; a slice without a plan gets one first (`superpowers:writing-plans`,
+   committed under `docs/superpowers/plans/`). One issue per branch; minimal,
+   focused changes; reuse existing components. Run the gates (verify; plus
+   pytest + ruff when the pipeline is touched) before declaring done.
+4. **PR**: `git push -u origin feat/<slug>`, then `gh pr create --base main`
+   with a body that starts `Closes #<n>` and lists the gates run, the
+   lead-only steps left (e2e, Docker, live checks) and any deviation from
+   the plan. Title `<ID>: <what changed>`. CI runs verify, the pipeline tests
+   and the Storybook build.
 5. **Merge**: squash-merge via the PR (the repo allows nothing else; branches
-   auto-delete). `git worktree remove .claude/worktrees/<slug>`.
+   auto-delete). `git worktree remove .claude/worktrees/<slug>`. Discovered
+   follow-ups become new issues (Slice template, same queue label) or
+   `docs/ISSUES.md` entries when they are limitations, not work. Nothing else
+   is hand-updated: milestones and the epics' sub-issue bars are the only
+   live status.
 
-### Team tasks
-Orchestration is harness-specific (Claude Code: `CLAUDE.md` "Team tasks" and
-`.claude/prompts/ai-loop.md`; opencode: `/team-task`). Invariants:
-- Each teammate works in its own worktree off `main`, one issue per branch.
-- Teammates run `npm run verify` **only** — never e2e, the dev server, or Docker.
-- The lead pushes the branch, opens the PR, runs the lead-only steps (e2e,
-  Docker measurement, live check) serially, and merges.
-
-### Rules
-- Base branch is always `main`. Rebase (or merge `main` into) a long-running
-  branch before opening the PR; resolve conflicts per the rule below.
+Rules:
+- Base branch is always `main`; rebase a long-running branch before its PR.
 - **Singleton resources**: the dev server (:4321), the pgstac backend (:8082),
-  the load harness and the e2e suite (serial, shared DB) are shared. Only ONE
-  process may run them at a time — in team work, the lead.
+  the Docker stack, the load harness and the e2e suite (serial, shared DB).
+  Only ONE process may run them at a time — in team work, the lead.
+  Teammates run `npm run verify` (and pytest + ruff) **only** and never push.
 - **Merge conflicts**: read both sides, understand intent, produce a correct
   merge. STOP and report only if the sides genuinely contradict.
-- **`package-lock.json` conflicts**: `git checkout --theirs package-lock.json &&
-  npm install && git add package-lock.json` — never hand-edit the lockfile.
-- **Migration numbers** are reserved on the issue (`migration` label). Check
-  the issue list and the migrations directory before taking one; name it in
-  the PR.
+  `package-lock.json`: `git checkout --theirs package-lock.json && npm install
+  && git add package-lock.json` — never hand-edit the lockfile.
+- **Migration numbers** are reserved on the issue (`migration` label).
 - If `main` is red after a merge, the fix is a `fix/` PR, not a push.
+- No new dependencies without clear need. Never hand-edit shadcn
+  `components/ui/` files (`npx shadcn@latest add <component>`).
+- Team orchestration is harness-specific: Claude Code `CLAUDE.md` "Team
+  tasks" + `.claude/prompts/ai-loop.md`; opencode `/team-task`.
 
-## Solo Agent Loop (GitHub Issues)
+## Backlog and docs — how they connect
 
-The work queue is GitHub Issues, not a file. A queue is a milestone, an
-`epic` issue and a `queue: <name> (<code>)` label (e.g. `queue: k8s compute
-(K)`); the pinned "Start here" issue maps codes to names. Issue titles end
-with the slice code, `(K-3)`, which the specs and plans cite. The `epic`
-issue per queue carries the queue's context
-(read-first spec, settled decisions, gate, ordering) and lists its slices as
-sub-issues; `ready` means unblocked; `blocked` names its blockers in the body;
-`lead-only` needs the singletons or a cloud account; `migration` reserves a
-number. `agent:go` is reserved for the Claude GitHub app.
+GitHub Issues is the backlog. A queue is a milestone + an `epic` issue
+(spec to read, settled decisions, slice order; sub-issues show progress) +
+a `queue: <name> (<code>)` label. Labels: `ready`, `blocked` (body names the
+blockers), `lead-only`, `migration`, `ci`; `agent:go` is reserved for the
+Claude GitHub app. Human entry point: `CONTRIBUTING.md`.
 
-When iterating autonomously:
-1. Work only the queue you were asked for (`gh issue list --label
-   "queue: <name> (<code>)" --label ready --state open`; given only a code,
-   find the label with `gh label list --search "(<code>)"`). Read the
-   queue's epic first, then
-   the issue. No cherry-picking across queues. If nobody named a queue, ask.
-2. Read the files, spec section and plan the issue references before changing
-   anything. A slice without a plan gets one first (`superpowers:writing-plans`,
-   committed under `docs/superpowers/plans/`). Reuse existing components
-   (`StacMap`, `FootprintLayer`, `ExtentLayer`, `BboxInput`, …).
-3. Implement in a worktree per the workflow above. One issue per branch;
-   minimal, focused changes.
-4. `npm run verify` must pass. Run e2e (`run-e2e` skill) only if you are the
-   lead and the task touched flows the suite covers.
-5. Open the PR with `Closes #<n>`. Discovered follow-ups become new issues in
-   the same queue (or `docs/ISSUES.md` entries when they are limitations, not
-   work), and the epic's slice list is updated when a slice lands.
+Link rule: a document links its tracking issue once, in its header, and never
+carries status — spec → `Tracking: epic #N`; issue → spec section + plan path;
+PR → `Closes #N`; `docs/ISSUES.md` entry → `Tracked in: GitHub #N` only when it
+is actionable; ADR → the adopting PR in its status line.
 
-Additional rules: no new dependencies without clear need; never edit shadcn
-primitive files by hand (`npx shadcn@latest add <component>` — in the shared
-package if the app consumes it from `@stac-higher/shared`); don't break
-existing pages when changing shared components.
-
-## Gotchas
-
-- Full-project `npx astro check` from the repo root is meaningless (no
-  `src/pages` there — I-8). The app-scoped check (`npm run check` from `app/`)
-  is what `npm run verify` runs. Never run the check from the repo root.
-- Astro 7 auto-daemonizes `astro dev` in AI-agent environments (manage with
-  `astro dev stop`/`status`/`logs`). Playwright needs a foreground server —
-  `playwright.config.ts` sets `ASTRO_DEV_BACKGROUND` in the webServer env;
-  keep it, and set it yourself for a foreground dev server.
-- The Zod v4 → `zodResolver` type mismatch forces an `as any` cast on form
-  resolvers — a known pattern, not a bug to fix.
-- `extensions.spec.ts` and `proxy.spec.ts` (e2e) need the Docker backend on
-  :8082. `map.spec.ts` needs the stack too — it seeds its own `e2e-map`
-  collection through the BFF in `beforeAll` — and is the first spec to mount
-  a real MapLibre canvas, so the suite now fetches its basemap style from
-  `basemaps.cartocdn.com` over the network. Full e2e preconditions and
-  selector gotchas: `run-e2e` skill.
-- The repo-root `.dockerignore` excludes `infra/`, `services/`, `docs/` and
-  `tests/`. A new repo-root-context derived image (pattern: `infra/proxy-policy`,
-  `infra/titiler`) must re-include exactly the path it `COPY`s or its build
-  fails with `"/<path>": not found`.
-- Theme is **light** by default (ADR 0017). The inline script in `Layout.astro`
-  and the `$theme` persistentAtom default in
-  `packages/shared/src/stores/uiStore.ts` read the same `stac-theme` key and
-  must stay in lockstep. Toggle via `toggleTheme()` from `@stac-higher/shared`.
-- Keycloak realm import is skipped once the realm exists in the persisted
-  volume — realm-file edits need `docker compose down -v`.
+`docs/` (index: `docs/README.md`): **`FEATURES.md`** — what's built, per
+phase, with entry points; **`decisions/`** — ADRs, add the next-numbered one
+for any significant, hard-to-reverse choice; **`ISSUES.md`** — accepted
+limitations, deferrals and residual risk (not a backlog); **`superpowers/`**
+— dated specs and plans. Read the relevant track before non-trivial work
+and update it after.
 
 ## Agent Skills
 
 Task playbooks live in `.agents/skills/` ([Agent Skills](https://agentskills.io/)
 standard; Claude Code reads them through the `.claude/skills` symlink). Read the
 matching `SKILL.md` *before* starting: `project-conventions` (any non-trivial
-change), `new-component`, `new-page`, `new-test`, `add-stac-endpoint`,
-`run-e2e`. How the pieces fit: `docs/AI-STRATEGY.md`.
-
-## Documentation
-
-`docs/` (index: `docs/README.md`) has three tracks — read the relevant one
-before non-trivial work and update it after:
-
-- **`docs/FEATURES.md`** — what's built, per phase, with entry points.
-- **`docs/decisions/`** — ADRs (index + invariants in `docs/decisions/README.md`).
-  Add the next-numbered ADR for any significant, hard-to-reverse choice.
-- **`docs/ISSUES.md`** — carried-forward work, known limitations, deferrals.
-  Log new gaps here rather than leaving them implicit.
+change), `backend-invariants` (pipeline, API routes, migrations, images),
+`new-component`, `new-page`, `new-test`, `add-stac-endpoint`, `run-e2e`. How
+the pieces fit: `docs/AI-STRATEGY.md`.

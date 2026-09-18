@@ -2,8 +2,9 @@
 
 **Date:** 2026-09-01
 **Status:** **approved** (lead sign-off 2026-09-01; runs in PARALLEL with the M3
-queue — the lead's call). Implementation queue: `TODO.md` "G queue"; per-slice
-plans in `docs/superpowers/plans/2026-09-0{1,2}-goes-*.md`.
+queue — the lead's call). Per-slice plans in
+`docs/superpowers/plans/2026-09-0{1,2}-goes-*.md`.
+**Tracking:** milestone "GOES GeoColor demo (G)" (queue complete; owed live looks are its open issues).
 **Progress:** G-1, G-2, G-4 merged 2026-09-01; **live-checked 2026-09-02** on the
 compose stack: the derived tile server renders item, mosaic and preview tiles
 for a canonical-href COG (after a `.dockerignore` fix — infra/ was excluded
@@ -13,7 +14,7 @@ mesoscale file staged into `inputs/`, and was denied a non-source collection.
 Finding for §5: the item-write → dispatcher hop is ALREADY event-driven
 (outbox `pg_notify` → `dispatcher/listener.py`); two events 30 ms apart became
 two runs, which G-3's queued-run coalescing addresses. G-6 merged 2026-09-03.
-G-7 merged 2026-09-03; live gate MET 2026-09-03 (see TODO.md follow-ups for the three live-only defects).
+G-7 merged 2026-09-03; live gate MET 2026-09-03 (the three live-only defects are in `docs/ISSUES.md`, GOES section).
 **Scope source:** the lead's request for a real end-to-end use case: consume
 GOES ABI data from the NOAA Open Data Dissemination (NODD) buckets, produce a
 GeoColor-style Cloud-Optimized GeoTIFF (COG) with an operator-authored
