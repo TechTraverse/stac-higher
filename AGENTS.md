@@ -132,6 +132,11 @@ sub-issues; `ready` means unblocked; `blocked` names its blockers in the body;
 `lead-only` needs the singletons or a cloud account; `migration` reserves a
 number. `agent:go` is reserved for the Claude GitHub app.
 
+Link rule: a document links its tracking issue once, in its header, and never
+carries status — spec → `Tracking: epic #N`; issue → spec section + plan path;
+PR → `Closes #N`; `docs/ISSUES.md` entry → `Tracked in: GitHub #N` only when it
+is actionable; ADR → the adopting PR in its status line.
+
 When iterating autonomously:
 1. Work only the queue you were asked for (`gh issue list --label
    "queue: <name> (<code>)" --label ready --state open`; given only a code,
@@ -147,8 +152,9 @@ When iterating autonomously:
 4. `npm run verify` must pass. Run e2e (`run-e2e` skill) only if you are the
    lead and the task touched flows the suite covers.
 5. Open the PR with `Closes #<n>`. Discovered follow-ups become new issues in
-   the same queue (or `docs/ISSUES.md` entries when they are limitations, not
-   work), and the epic's slice list is updated when a slice lands.
+   the same queue (use the Slice issue template) or `docs/ISSUES.md` entries
+   when they are limitations, not work. Nothing else is hand-updated on
+   landing: milestones and the epics' sub-issue bars are the only live status.
 
 Additional rules: no new dependencies without clear need; never edit shadcn
 primitive files by hand (`npx shadcn@latest add <component>` — in the shared

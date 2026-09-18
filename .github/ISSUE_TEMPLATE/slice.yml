@@ -1,0 +1,68 @@
+name: Slice
+description: One unit of work from an approved spec — written so a person new to the repo, or an agent, can start from this issue alone.
+title: "<What changes, in plain words> (<CODE>)"
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Title: plain language first, the slice code last, e.g. `Docker executor honours the hardware profile (K-3)`.
+        Add the queue label, the milestone, and `ready` or `blocked`. If it needs the Docker stack, e2e suite or a cloud account, add `lead-only`.
+  - type: input
+    id: spec
+    attributes:
+      label: Spec section
+      description: Path and section of the approved design spec this slice implements.
+      placeholder: docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md §8
+    validations:
+      required: true
+  - type: input
+    id: plan
+    attributes:
+      label: Plan
+      description: Path under docs/superpowers/plans/, or "none — write one first with superpowers:writing-plans".
+      placeholder: docs/superpowers/plans/2026-09-15-k3-docker-profile-capacity.md
+  - type: input
+    id: depends
+    attributes:
+      label: Depends on
+      description: Issue numbers that must close first (label this issue `blocked` while any is open). Cross-queue coordination goes here too.
+      placeholder: "#10; coordinate with #4"
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What to build, with the file, module and setting names an implementer needs. Write as though for someone brand new to the codebase.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How a reviewer knows it is done. Behaviour, tests that must exist, numbers that must be measured, docs that must change.
+      placeholder: |
+        - `npm run verify` and `uv run pytest` green; new tests cover X and Y
+        - `GET /api/...` returns ... ; unknown profile ⇒ dead run naming the bound
+        - docs/FEATURES.md row; docs/ISSUES.md entry for any gap
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files in scope
+      description: Where the change lives. Anything outside this list is out of scope for the PR.
+      placeholder: |
+        services/pipeline/src/pipeline/process/executor.py
+        app/src/lib/processes/schemas.ts
+        tests/contract-fixtures/process-runtime.json
+  - type: textarea
+    id: lead
+    attributes:
+      label: Lead-only steps
+      description: e2e runs, Docker measurements, live checks on the standing demo — anything only the lead can run, so the PR can say what it left open.
+  - type: input
+    id: migration
+    attributes:
+      label: Migration number reserved
+      description: If this slice adds a stac_higher migration, the number reserved for it (add the `migration` label).
+      placeholder: "030"

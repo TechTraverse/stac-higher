@@ -56,20 +56,21 @@ titles end with a slice code such as `(K-3)`: the letter is the queue, the
 number the slice's position in its spec. Specs, plans and `docs/FEATURES.md`
 cite those codes, which is why they stay.
 
-| Queue | Code | What it is | Status |
-|---|---|---|---|
-| NOAA-scale readiness | M3 | ~60 catalog items/s sustained, measured, no lost items | active — epic #1 |
-| Process compute on Kubernetes | K | Runs as Kubernetes Jobs via Kueue, hardware profiles, non-blocking executor | active — epic #2 |
-| Built-in extractors | X | Curated stactools packages as one-click extractors | live gates only — epic #3 |
-| GOES GeoColor demo | G | The standing NODD → COG → deliver → tiles demo loop | complete; owed live looks |
-| Container images | C | Bring-your-own process images + scanning | spec pending (PR #23) |
-| Ingest window | W | Date window, prefix expansion, retention cap | complete |
-| Item lineage | D | `derived_from` links on process outputs | complete |
-| Map page | V | Products as map layers on one time axis | complete |
-| Pipeline graph | P | Lineage lines + full graph view | complete |
+| Queue | Code | What it is |
+|---|---|---|
+| NOAA-scale readiness | M3 | ~60 catalog items/s sustained, measured, no lost items |
+| Process compute on Kubernetes | K | Runs as Kubernetes Jobs via Kueue, hardware profiles, non-blocking executor |
+| Built-in extractors | X | Curated stactools packages as one-click extractors |
+| GOES GeoColor demo | G | The standing NODD → COG → deliver → tiles demo loop |
+| Container images | C | Bring-your-own process images + scanning |
+| Ingest window | W | Date window, prefix expansion, retention cap |
+| Item lineage | D | `derived_from` links on process outputs |
+| Map page | V | Products as map layers on one time axis |
+| Pipeline graph | P | Lineage lines + full graph view |
 
-The pinned "Start here" issue on GitHub is the same table with links; keep the
-two in step when a queue opens or closes.
+The pinned "Start here" issue on GitHub has the same table with milestone
+links. **Live status lives only in the milestones and the epics' sub-issue
+bars**; no document carries it.
 
 ## Things only one person can run at a time
 
@@ -79,6 +80,12 @@ running them, and never run two at once. Agents working in parallel run
 `npm run verify` only; the lead runs the rest before merging.
 
 ## Adding work
+
+One link rule: a document links its tracking issue once, in its header, and
+never carries status. Spec → `Tracking: epic #N`; issue → spec section + plan
+path (the **Slice** issue template has the fields); PR → `Closes #N`;
+`docs/ISSUES.md` entry → `Tracked in: GitHub #N` only when it is actionable;
+ADR → the adopting PR in its status line.
 
 - A new slice of an approved spec: open an issue in the queue, link the spec
   section, add it to the epic's list, label it `ready` or `blocked`.
