@@ -157,6 +157,18 @@ class FakeIngestRepo(IngestRepo):
             setattr(row, key, value)
         row.updated_at = self.now
 
+    async def transition_ledger(
+        self, entry_id: str, *, expected_status: str, status: str, **fields: Any
+    ) -> bool:
+        row = self.rows[entry_id]
+        if row.status != expected_status:
+            return False
+        row.status = status
+        for key, value in fields.items():
+            setattr(row, key, value)
+        row.updated_at = self.now
+        return True
+
     async def sweep_stuck_fetching(self, older_than_seconds: int) -> int:
         cutoff = self.now - dt.timedelta(seconds=older_than_seconds)
         count = 0
@@ -324,6 +336,11 @@ class FakeAdapter:
     @property
     def endpoint(self) -> str | None:
         return None
+
+    def public_object_url(self, path: str) -> str:
+        # Reference mode's stable source URL (the real S3Adapter derives it
+        # from its endpoint + bucket); the fake just needs a deterministic one.
+        return f"https://src.example/{path}"
 
     def copy_source(self, path: str) -> tuple[str, str] | None:
         return (self.copy_bucket, path) if self.copy_bucket else None

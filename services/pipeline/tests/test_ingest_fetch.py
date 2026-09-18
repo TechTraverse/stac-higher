@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import hashlib
 
 from _ingest_fake import FakeAdapter, FakeIngestRepo, FakeS3, make_association
@@ -284,3 +286,72 @@ async def test_fetch_never_copies_from_an_adapter_without_a_copy_source():
         transfer=TransferPolicy(server_side_copy=True),
     )
     assert s3.copies == [] and s3.puts[0]["Body"] == b"zzz"
+
+
+class _YieldingRepo(FakeIngestRepo):
+    """Yields to the event loop between the read and the claim, the way a real
+    round trip does — two concurrent FETCH calls interleave like two workers —
+    and hands back a SNAPSHOT of the row, the way a real SELECT does. (The
+    plain fake returns the live object, so a racer would see the other's
+    write through it and the old read-then-write guard would look safe.)"""
+
+    async def get_latest_ledger(self, association_id, source_path):
+        latest = await super().get_latest_ledger(association_id, source_path)
+        # Snapshot BEFORE yielding: the copy is what the SELECT returned, not
+        # what the row looks like once the other racer has written to it.
+        snapshot = None if latest is None else dataclasses.replace(latest)
+        await asyncio.sleep(0)
+        return snapshot
+
+
+async def test_two_concurrent_fetches_store_the_row_once():
+    """S-C's one real defect: the settled -> fetching move was a read-then-write
+    guard, so two overlapping FETCH jobs both fetched and both bumped. The
+    claim is now the guard (M3-D): exactly one wins the row."""
+    repo = _YieldingRepo()
+    await _settled(repo, "scene.tif")
+    cfg = parse_ingest_config({"source_path": "products/"})
+    adapter = FakeAdapter(blobs={"products/scene.tif": b"abc"})
+    s3 = FakeS3()
+
+    stored = await asyncio.gather(
+        fetch_stage(repo, _assoc({}), cfg, adapter, s3, "stac-higher", "scene", ["scene.tif"]),
+        fetch_stage(repo, _assoc({}), cfg, adapter, s3, "stac-higher", "scene", ["scene.tif"]),
+    )
+
+    assert sorted(stored) == [0, 1]
+    assert len(s3.puts) == 1
+    assert adapter.open_calls == ["products/scene.tif"]
+    (row,) = repo.rows.values()
+    assert row.status == "stored"
+
+
+async def test_two_concurrent_reference_fetches_store_the_row_once():
+    repo = _YieldingRepo()
+    await _settled(repo, "scene.tif")
+    cfg = parse_ingest_config({"source_path": "products/", "storage_mode": "reference"})
+    adapter = FakeAdapter(blobs={"products/scene.tif": b"abc"})
+    s3 = FakeS3()
+
+    stored = await asyncio.gather(
+        fetch_stage(repo, _assoc({}), cfg, adapter, s3, "stac-higher", "scene", ["scene.tif"]),
+        fetch_stage(repo, _assoc({}), cfg, adapter, s3, "stac-higher", "scene", ["scene.tif"]),
+    )
+
+    assert sorted(stored) == [0, 1]
+    (row,) = repo.rows.values()
+    assert row.status == "stored"
+    assert row.item_id == "scene"
+
+
+async def test_transition_ledger_is_a_no_op_when_the_row_moved_on():
+    repo = FakeIngestRepo()
+    row = await _settled(repo, "scene.tif")
+    assert await repo.transition_ledger(
+        row.id, expected_status="settled", status="fetching", item_id="scene"
+    )
+    assert row.status == "fetching" and row.item_id == "scene"
+    assert not await repo.transition_ledger(
+        row.id, expected_status="settled", status="fetching", item_id="other"
+    )
+    assert row.item_id == "scene"

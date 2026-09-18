@@ -130,6 +130,15 @@ class IngestRepo(abc.ABC):
         ``updated_at``. Unknown columns are rejected."""
 
     @abc.abstractmethod
+    async def transition_ledger(
+        self, entry_id: str, *, expected_status: str, status: str, **fields: Any
+    ) -> bool:
+        """Compare-and-set (M3-D): move the row to ``status`` and apply ``fields``
+        only if it is still in ``expected_status``; ``False`` (and nothing
+        written) when another worker moved it first. The FETCH claim — the
+        same one-statement shape as ``process_runs.claim_due_runs`` (S-C)."""
+
+    @abc.abstractmethod
     async def sweep_stuck_fetching(self, older_than_seconds: int) -> int:
         """Crash recovery (ISSUES I-52): reset ``fetching`` rows whose
         updated_at is older than the threshold back to ``settled`` — a worker
@@ -416,6 +425,22 @@ class PgIngestRepo(IngestRepo):
                 (*values, entry_id),
             )
             await conn.commit()
+
+    async def transition_ledger(  # pragma: no cover
+        self, entry_id: str, *, expected_status: str, status: str, **fields: Any
+    ) -> bool:
+        unknown = set(fields) - _LEDGER_MUTABLE
+        if unknown:
+            raise ValueError(f"non-mutable ledger columns: {sorted(unknown)}")
+        assignments = ", ".join(f"{col} = %s" for col in ("status", *fields))
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                f"UPDATE stac_higher.ingest_files SET {assignments}, updated_at = now()"
+                " WHERE id = %s AND status = %s",
+                (status, *fields.values(), entry_id, expected_status),
+            )
+            await conn.commit()
+            return cur.rowcount == 1
 
     async def sweep_stuck_fetching(self, older_than_seconds: int) -> int:  # pragma: no cover
         async with await self._connect() as conn:

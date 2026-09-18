@@ -17,10 +17,12 @@ Either way EXTRACT + ITEMIZE (Slice B4) build the STAC item from the
 in both storage modes (the app's asset route resolves the canonical object,
 or redirects to ``source_href``, offline).
 
-Idempotent: a member is fetched only while its latest ledger row is still
-``settled``, so a re-enqueued group (GROUP re-emits until FETCH runs) can't
-double-store. Copy mode moves bytes by server-side copy when the platform can
-read the source bucket, else by a bounded streamed multipart upload (M3-C,
+Idempotent: the ``settled → fetching`` move is an atomic compare-and-set
+(M3-D, ``IngestRepo.transition_ledger``), so a re-enqueued group (GROUP
+re-emits until FETCH runs) or two overlapping FETCH jobs for the same group
+can't double-store — exactly one claims each row, the other skips it. Copy
+mode moves bytes by server-side copy when the platform can read the source
+bucket, else by a bounded streamed multipart upload (M3-C,
 ``ingest/transfer.py``); nothing is buffered whole except for SFTP/FTP sources
 (I-83). A per-member failure marks only that member ``failed`` — the rest of
 the group still stores, and ITEMIZE handles partial products.
@@ -78,11 +80,18 @@ async def fetch_stage(
     # moved (copy / stream / a copy that fell back to streaming).
     transfer_modes = {"copy": 0, "stream": 0, "copy_fallback": 0}
     for source_path in source_paths:
-        # Re-read: only fetch a row that is still settled (idempotent guard).
         latest = await repo.get_latest_ledger(association.id, source_path)
-        if latest is None or latest.status != STATUS_SETTLED:
+        if latest is None:
             continue
-        await repo.set_ledger_fields(latest.id, status=STATUS_FETCHING, item_id=item_id)
+        # M3-D: the claim IS the guard — one atomic compare-and-set. A second
+        # FETCH for the same group (GROUP re-emitting before this ran, or two
+        # overlapping GROUP ticks) loses the row here instead of fetching the
+        # same bytes twice and bumping the rollup twice (S-C).
+        claimed = await repo.transition_ledger(
+            latest.id, expected_status=STATUS_SETTLED, status=STATUS_FETCHING, item_id=item_id
+        )
+        if not claimed:
+            continue
         try:
             fetch_path = source_fetch_path(config.source_path, source_path)
             filename = source_path.rsplit("/", 1)[-1]
@@ -176,8 +185,10 @@ async def _reference_stage(
     source_paths: list[str],
 ) -> int:
     """Reference mode: no byte copy. Record the stable source URL and advance the
-    ledger settled → stored so EXTRACT/ITEMIZE run. Idempotent (only acts on a
-    still-`settled` row). A per-member failure marks only that member failed."""
+    ledger settled → stored so EXTRACT/ITEMIZE run. Idempotent: the settled →
+    stored move is a compare-and-set (M3-D); the status pre-check only avoids
+    computing an href for a row that is visibly done. A per-member failure
+    marks only that member failed."""
     stored = 0
     for source_path in source_paths:
         latest = await repo.get_latest_ledger(association.id, source_path)
@@ -185,10 +196,15 @@ async def _reference_stage(
             continue
         try:
             href = adapter.public_object_url(source_fetch_path(config.source_path, source_path))
-            await repo.set_ledger_fields(
-                latest.id, status=STATUS_STORED, item_id=item_id, source_href=href
+            claimed = await repo.transition_ledger(
+                latest.id,
+                expected_status=STATUS_SETTLED,
+                status=STATUS_STORED,
+                item_id=item_id,
+                source_href=href,
             )
-            stored += 1
+            if claimed:
+                stored += 1
         except Exception:
             await repo.set_ledger_fields(latest.id, status=STATUS_FAILED)
             logger.exception(
