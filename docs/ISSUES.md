@@ -205,6 +205,16 @@ single-instance assumption is documented where the `LISTEN` loop landed
 - Tracked in: `services/pipeline/.../dispatcher/repo.py`, ROADMAP §10;
   found in the Slice A whole-branch review.
 
+**M3-D (PR #22):** in-process concurrency is 12 across two queues (`default`
+8 / `bytes` 4); the one non-atomic ledger leg S-C found (`ingest_files`
+settled → fetching) is a compare-and-set; ITEMIZE's `flow_stats` bump is
+batched. Multi-instance stays a deployment option, not a slice: the periodic
+deferrer dedupes across processes and every claim leg is atomic (S-C's audit +
+M3-D's shared-state table in the pipeline README "Concurrency"). One pipeline
+process holds up to 40 Postgres connections, so a second replica needs
+`max_connections` raised (README "Connections"). Leader election remains
+Phase 8.
+
 ### I-41 · `item_filter` is not CQL2-validated on write 🟡
 `deliveryConfigSchema` validates `item_filter` only as a non-empty string —
 there is no CQL2 grammar check on the app write path (a CQL2 parser exists only
@@ -1174,6 +1184,20 @@ exist before this branch.
 - Tracked in: `services/pipeline/src/pipeline/metrics.py` (queue-depth gauge
   comment), `services/pipeline/README.md` (`PGSTAC_QUEUE_DRAINER`); found in
   the M3-A final whole-branch review.
+
+### I-134 · Delivery reads each canonical object whole — the `bytes` queue bounds job count, not bytes 🟡
+`delivery/worker.py` `_stream_canonical` reads the canonical object into
+memory (`platform.get_object` → `Body.read()`), hashes it, then writes it
+through the adapter; server-side copy avoids that only when the destination
+shares the platform endpoint and the checksum algorithm is not sha256. M3-D
+puts `pipeline.deliver` on the 4-slot `bytes` queue, which bounds *how many*
+such jobs run, but the per-slot memory is one whole asset — so the M3-C
+envelope's "independent of asset size" holds for FETCH and the located
+EXTRACT read only (~1 GB above baseline at the 250 MB tier with 4 slots,
+against ~480 MB by the formula). Found in the M3-D whole-branch review; M3-C
+had logged the buffered residuals as SFTP/FTP-only (I-83) and process staging
+(I-91). Streaming delivery through `StorageAdapter.open()` is M3-K (#38).
+- Tracked in: #38; `services/pipeline/README.md` "Concurrency (M3-D)".
 
 ## Map page (V queue, 2026-09-07)
 

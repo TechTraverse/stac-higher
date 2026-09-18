@@ -384,7 +384,10 @@ redacted DSN identity (`host:port/dbname` — never the user or password). It is
 the 200/503 decision: the queue's own `check_connection()` is the database
 liveness signal, and an idle process with no pool is healthy. Cumulative
 counters (`connections_num`, `requests_num`, `requests_queued`, `usage_ms`)
-appear only once they are non-zero.
+appear only once they are non-zero. `pipeline_jobs_in_flight{job}` on
+`/metrics` is the in-process evidence that the job slots are in use (M3-D):
+at most 8 across the `default` jobs and 4 across `ingest_fetch` /
+`ingest_itemize` / `deliver`.
 
 ## Connection pooling (M3-B)
 
@@ -429,6 +432,108 @@ sessions for the same 900 items; the pool held its two warm connections for
 baseline lagged at 21–24 items/s. Laptop numbers — they rank the fix, they are
 not platform capacity.
 
+## Concurrency (M3-D)
+
+One process, two Procrastinate workers, twelve job slots (`WORKER_CONCURRENCY`):
+
+| queue | slots | jobs | why |
+|---|---:|---|---|
+| `default` | `WORKER_CONCURRENCY - WORKER_BYTES_CONCURRENCY` (8) | every periodic tick, DISCOVER, GROUP, dispatch, backfill, finalize, process triggers/runs/finalize, GC, notify, drains | metadata and SQL; the memory budget never caps them |
+| `bytes` | `WORKER_BYTES_CONCURRENCY` (4) | `pipeline.ingest_fetch`, `pipeline.ingest_itemize`, `pipeline.deliver` | the jobs that hold object bytes (FETCH's stream buffers, delivery's transfer) or a GDAL block cache (EXTRACT) |
+
+Two workers rather than one semaphore because a slot a FETCH holds while
+waiting on an in-process semaphore is still a slot: only a worker that claims
+just its own queue leaves the other queue's slots free. Both workers run a
+periodic deferrer; the second defer of every tick hits the
+`UNIQUE (task_name, periodic_id, defer_timestamp)` row and is logged by
+Procrastinate as already deferred — one execution per tick, as before, and
+every periodic runs on `default` (they are registered without a queue).
+Neither worker installs its own signal handler (asyncio's
+`add_signal_handler` replaces rather than layers, so the second would steal
+SIGTERM from the first): `ProcrastinateQueue.run_worker` owns one handler that
+cancels both, waits out both graceful drains whichever ends first, and does
+the same on an outer cancellation or a crash of either worker — the pools are
+never closed under an in-flight job. The process-level exit on one SIGTERM
+(the health server and the NOTIFY listener stopping with the worker) is M3-J
+(#37).
+
+**Memory.** For the ingest byte path (M3-C):
+
+```
+peak RSS ≈ 255 MiB + ((GDAL_CACHEMAX + 16 MiB VSI cache) + (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES) × WORKER_BYTES_CONCURRENCY
+         = 255 MiB + 120 MiB × 4 ≈ 735 MiB with the defaults
+```
+
+The multiplier is the `bytes` queue's slots, because only its jobs hold
+buffers. **That formula is asset-size-independent for FETCH and the located
+EXTRACT read only.** `pipeline.deliver` still reads each canonical object
+whole before hashing and writing it (I-134; streaming it is M3-K, #38), so
+while that holds the honest envelope per `bytes` slot is the LARGER of the
+120 MiB buffer term and the largest asset the deployment delivers — about
+1.25 GB at the 250 MB size tier with 4 slots. Process input staging on
+`default` also buffers whole inputs, bounded per run by its own 4-way
+semaphore (I-91). Raise `WORKER_BYTES_CONCURRENCY` when the byte-realistic
+mix needs more than four transfers in flight (S-C: ~10 slots for 30 items/s
+of 34 MB streamed objects; ~3 when the server-side copy gate allows) and size
+the container from the formula. `WORKER_CONCURRENCY` is the total;
+`DB_POOL_MAX >= WORKER_CONCURRENCY + 4` or the process logs a WARNING at
+startup and callers wait on the pool under load.
+
+**Connections.** Per pipeline process, worst case: the repo pool
+(`DB_POOL_MAX`, 16) + Procrastinate's own pool (`WORKER_CONCURRENCY + 4`, 16)
++ the pgstac writer pool (4) + one standalone LISTEN connection per worker (2)
++ the dispatch LISTEN connection (1) + the health probe (1) = **40**. The rest
+of the compose stack holds about 28 (the STAC API, titiler, tipg, the app), so
+Postgres's default `max_connections = 100` fits one pipeline replica; a second
+needs `max_connections` raised or the pools trimmed. Idle, the pools hold
+their `min_size` only (2 + 2 + 1).
+
+**The FETCH claim.** `ingest_files` settled → fetching is a single
+`UPDATE … WHERE id = %s AND status = 'settled'` (`IngestRepo.transition_ledger`;
+`rowcount = 0` means another worker won the row and this one skips it). S-C's
+audit found this the only ledger transition that was a read-then-write guard
+rather than a claim; every other leg was already `FOR UPDATE SKIP LOCKED` or a
+single conditional statement. Two overlapping FETCHes for one group (GROUP
+re-emitting before FETCH ran, or two overlapping GROUP ticks) now store the row
+once instead of fetching the same bytes twice and bumping the rollup twice.
+
+**`flow_stats` batching (spec §7.4).** ITEMIZE's per-item bump goes to the
+process `FlowStatsBatcher` (`flow/batcher.py`) and the association row is
+written once per association per `FLOW_STATS_FLUSH_SECONDS` — the DISCOVER
+shape (one rollup per tick) applied to ITEMIZE. The row lock behind
+`bump_flow_stats` measured flat at ~460 bumps/s per association (S-D): not a
+ceiling at 30 items/s, but a serialization point every concurrent ITEMIZE on
+one association would queue behind. Counts are exact; `last_activity_at` /
+`last_error_at` trail by at most one interval; a crash loses at most one
+interval of telemetry, never a row. DISCOVER's bump and the delivery repo's
+in-transaction rollup are unchanged (delivery batching is M3-E, cut).
+
+**Blocking calls.** Every blocking call in the worker is `asyncio.to_thread`
+(boto3, rasterio, pgstac). `main.run()` sizes the loop's default executor to
+`max(WORKER_CONCURRENCY + 4, min(32, cpus + 4))` threads: the stdlib default
+would be a hidden ceiling below the slots on a small container, and on a
+large host it is the higher number, so it stays the floor. Some jobs fan out
+more than one thread (process input staging, the health sweep); they queue on
+the executor rather than deadlock, since no pooled thread waits on another
+`to_thread` result.
+
+**Shared in-process state under 12 concurrent jobs** — the review spec §5/§8
+asked for beyond S-C's database-level audit:
+
+| state | where | shared how | verdict |
+|---|---|---|---|
+| async repo pool registry | `db/pool.py` `_pools` + `asyncio.Lock` | one pool per DSN, double-checked under the lock; sized `DB_POOL_MAX` | safe; the pool is the bound |
+| pgstac writer pool registry | `stac/pgstac_writer.py` `_POOLS` + `threading.Lock`, `WRITER_POOL_MAX = 4` | sync pool used from `to_thread`; at most 4 upserts in flight | safe; ITEMIZE (≤ 4 on `bytes`) alone can fill it, so a concurrent finalize / process-finalize upsert waits `pool.timeout` — watch for `PoolTimeout` in a load run before raising it |
+| Procrastinate connector pool | `PsycopgConnector`, `min_size 2 / max_size WORKER_CONCURRENCY + 4` | claims, finishes, heartbeats and in-handler `enqueue`s; job work itself uses the repo pool | safe; 2 of the connections are the workers' LISTENs (standalone, outside the pool) |
+| boto3 clients | `storage/platform.build_platform_client`, `connections/adapters/s3.py` | built per job handler / per adapter instance; never module-level | safe (boto3 clients are also documented thread-safe) |
+| GDAL / rasterio | `ingest/raster_io.open_raster` | `rasterio.Env` per open; GDAL's block cache is one **process-global** cache bounded by `GDAL_CACHEMAX`, thread-safe | safe; the per-slot term in the formula over-counts it, in the safe direction |
+| Prometheus registry | `metrics.REGISTRY` | module-level, client-library locking | safe |
+| heartbeat state | `jobs/heartbeat.STATE` | single writer (the periodic, `queueing_lock`) | safe |
+| flow_stats batcher | `flow/batcher.FLOW_BATCHER` | event-loop-only callers, no threads | safe by construction |
+| process input staging | `process/staging.py` own `asyncio.Semaphore` | per run | safe; runs stay on `default`; buffers whole inputs (I-91) |
+| delivery transfer | `delivery/worker.py` `_stream_canonical` | per job; whole object in memory | bounded by the 4 `bytes` slots, not by asset size (I-134, M3-K) |
+| `global` statements | none in `pipeline/` outside `loadgen/fixtures.py` | — | — |
+
 ## Memory envelope (M3-C)
 
 Worker memory no longer scales with asset size. Two paths changed:
@@ -448,11 +553,15 @@ Worker memory no longer scales with asset size. Two paths changed:
 Per-worker peak RSS, S-E's formula with these settings:
 
 ```
-255 MiB + ((GDAL_CACHEMAX + 16 MiB VSI cache) + (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES) × WORKER_CONCURRENCY
-= 255 MiB + (80 + 40) MiB × concurrency      → ~1.7 GB at M3-D's default 12
+255 MiB + ((GDAL_CACHEMAX + 16 MiB VSI cache) + (FETCH_TRANSFER_CONCURRENCY + 1) × FETCH_CHUNK_BYTES) × WORKER_BYTES_CONCURRENCY
+= 255 MiB + (80 + 40) MiB × bytes slots      → ~735 MiB at M3-D's default 4
 ```
 
-Size a deployment by that line, not by the largest asset. A reference-mode
+The multiplier is `WORKER_BYTES_CONCURRENCY` (M3-D: the `bytes` queue's
+slots — see "Concurrency"), because only that queue's jobs hold buffers. Size
+a deployment by that line for the ingest path; delivery still buffers whole
+objects (I-134), so until M3-K the per-slot term is the larger of 120 MiB and
+the largest delivered asset. A reference-mode
 `/vsis3` read puts the connection's decrypted credentials into a GDAL session
 (built inside `S3Adapter.gdal_location`, never logged) — the same keys the
 worker already decrypts for boto3, in one more place.

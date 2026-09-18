@@ -81,6 +81,18 @@ runs are queueing faster than the executor drains them, not that ingest itself
 is slow. `teardown` removes the installed process (runs → revisions → the
 process row) alongside the usual association and connection cleanup.
 
+
+## Concurrency (M3-D)
+
+The worker runs 12 slots (8 `default`, 4 `bytes`); `pipeline_jobs_in_flight`
+on `:8083/metrics` shows the split in use. G-3's concurrency check
+(`setup --metadata extractor --deliver`, then `feed`) is run at this
+concurrency: `process_runs.attempts` stays 1 for succeeded runs,
+`procrastinate_jobs` holds one `pipeline.process_run_now` per run id, and a
+burst of N items for one source yields ≤ N runs. The duplicate-work check for
+the FETCH claim: `flow_stats->>'items'` for the loadgen association equals the
+pgstac item count for its collection (a double FETCH would over-count).
+
 ## Reading the pgstac queue (M3-A)
 
 With `use_queue` on, `catalog items` climbs at the write rate while `BACKLOG
