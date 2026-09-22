@@ -1201,6 +1201,22 @@ had logged the buffered residuals as SFTP/FTP-only (I-83) and process staging
 (I-91). Streaming delivery through `StorageAdapter.open()` is M3-K (#38).
 - Tracked in: #38; `services/pipeline/README.md` "Concurrency (M3-D)".
 
+### I-135 · `flow_stats` rollups took `FOR UPDATE` on the association row that the ledger inserts already share-lock — 🟢 resolved (M3-L, #41)
+`delivery_log.association_id` and `ingest_files.association_id` reference
+`collection_connections(id)`, so an INSERT into either takes a `FOR KEY
+SHARE` lock on the association row for the rest of its transaction. The
+in-transaction `flow_stats` rollups then asked for `FOR UPDATE` on that row,
+which conflicts with the *other* transaction's share lock: two concurrent
+deliveries for one association deadlocked (`DeadlockDetected` after
+`deadlock_timeout`, 1 s). Invisible at concurrency 1; on M3-D's first load run
+at 4 concurrent deliveries 48 `deliver` jobs failed permanently and 190 more
+succeeded only on retry. S-C's audit had marked the rollup "`SELECT … FOR
+UPDATE` — safe under concurrency": safe from races, not from the lock upgrade.
+Both sites now take `FOR NO KEY UPDATE`, which does not conflict with `FOR KEY
+SHARE` (`flow_stats` is not a key column). The 140 deliveries those failed
+jobs carried were lost — that gap is #42.
+- Tracked in: GitHub #41 (fix), #42 (the loss).
+
 ## Map page (V queue, 2026-09-07)
 
 ### I-115 · Layer opacity slider has no accessible name 🟡

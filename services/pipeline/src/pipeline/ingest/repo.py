@@ -596,12 +596,16 @@ class PgIngestRepo(IngestRepo):
         from psycopg.types.json import Json
 
         async with await self._connect() as conn:
-            # FOR UPDATE serializes concurrent rollup writes; the math is the
+            # The row lock serializes concurrent rollup writes; the math is the
             # same pure function the fakes apply. flow_stats only — updated_at
-            # means "user edit" and stays untouched.
+            # means "user edit" and stays untouched. FOR NO KEY UPDATE, never
+            # FOR UPDATE (M3-L, #41): ingest_files rows reference this row, so
+            # a transaction that inserted them holds its FOR KEY SHARE lock,
+            # which the strong lock conflicts with (a deadlock when two such
+            # transactions meet) and the no-key lock does not.
             cur = await conn.execute(
                 "SELECT flow_stats FROM stac_higher.collection_connections"
-                " WHERE id = %s FOR UPDATE",
+                " WHERE id = %s FOR NO KEY UPDATE",
                 (association_id,),
             )
             row = await cur.fetchone()

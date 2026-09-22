@@ -221,9 +221,19 @@ class PgDeliveryRepo(DeliveryRepo):
         """Fold status ``transitions`` (+ scalar telemetry) into the
         association's ``flow_stats``, inside the caller's open transaction.
 
-        Locks the association row FOR UPDATE (always AFTER the delivery_log
-        rows — one consistent order, no deadlock) and applies the same pure
-        math the fakes use. A pre-M2-A association has no ``counts`` key yet:
+        Locks the association row ``FOR NO KEY UPDATE`` — never ``FOR UPDATE``
+        (M3-L, #41): ``delivery_log.association_id`` references this row, so
+        the caller's own INSERTs already hold a ``FOR KEY SHARE`` lock on it
+        for the rest of the transaction. Two concurrent deliveries for one
+        association each hold that share lock and then ask for the strong
+        one; ``FOR UPDATE`` conflicts with the other's share lock (a lock
+        upgrade — deadlock, `DeadlockDetected` after `deadlock_timeout`),
+        ``FOR NO KEY UPDATE`` does not, and `flow_stats` is not a key column.
+        Reproduced live on M3-D's load run at 4 concurrent deliveries; the
+        "lock the association AFTER the delivery_log rows" ordering the
+        previous docstring relied on cannot help, because the share lock is
+        taken by the insert itself. Applies the same pure math the fakes
+        use. A pre-M2-A association has no ``counts`` key yet:
         the snapshot is seeded from the log itself — this transaction's
         delivery_log write is already visible here, so the transitions must
         NOT be re-applied on top of the seed. Never touches ``updated_at``.
@@ -232,7 +242,7 @@ class PgDeliveryRepo(DeliveryRepo):
 
         cur = await conn.execute(
             "SELECT flow_stats FROM stac_higher.collection_connections"
-            " WHERE id = %s FOR UPDATE",
+            " WHERE id = %s FOR NO KEY UPDATE",
             (association_id,),
         )
         row = await cur.fetchone()
