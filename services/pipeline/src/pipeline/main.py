@@ -12,13 +12,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-<<<<<<< HEAD
 import os
-from concurrent.futures import ThreadPoolExecutor
-=======
 from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
->>>>>>> origin/main
 
 import uvicorn
 
@@ -97,7 +94,6 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     return queue
 
 
-<<<<<<< HEAD
 def blocking_executor(settings: Settings) -> ThreadPoolExecutor:
     """The loop's default executor, sized to the job slots plus the overlapping
     periodic ticks, and never below the stdlib default. Every blocking call in
@@ -113,7 +109,6 @@ def blocking_executor(settings: Settings) -> ThreadPoolExecutor:
         max_workers=max(settings.worker_concurrency + 4, stdlib_default),
         thread_name_prefix="pipeline-blocking",
     )
-=======
 async def run_until_first_exit(server: Any, *coroutines: Coroutine[Any, Any, Any]) -> None:
     """Run the health server and the worker-side coroutines together and take
     the whole process down when the FIRST of them ends, however it ends.
@@ -146,7 +141,6 @@ async def run_until_first_exit(server: Any, *coroutines: Coroutine[Any, Any, Any
     ]
     if failures:
         raise failures[0]
->>>>>>> origin/main
 
 
 async def run(settings: Settings) -> None:
@@ -178,21 +172,16 @@ async def run(settings: Settings) -> None:
         )
         # Slice C: the NOTIFY-woken dispatch loop runs alongside the worker as
         # the primary wake path; the worker's minute dispatch_poll is fallback.
-<<<<<<< HEAD
-        await asyncio.gather(
-            server.serve(),
+        await run_until_first_exit(
+            server,
             queue.run_worker(
                 concurrency=settings.worker_concurrency,
                 bytes_concurrency=settings.worker_bytes_concurrency,
             ),
-=======
-        await run_until_first_exit(
-            server,
-            queue.run_worker(),
->>>>>>> origin/main
             dispatch.build_notify_listener(queue, settings),
             # M3-D: ITEMIZE's flow_stats deltas, written once per association
-            # per interval; a final flush runs when the gather is cancelled.
+            # per interval; its task is cancelled with the listener when the
+            # worker returns, and main.run's finally flushes once more after.
             FLOW_BATCHER.run(
                 lambda: PgIngestRepo(settings.database_url), settings.flow_stats_flush_seconds
             ),

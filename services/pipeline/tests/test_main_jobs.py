@@ -117,7 +117,6 @@ async def test_run_isolates_a_failing_close_so_the_rest_still_run(monkeypatch):
     assert "queue" in order
 
 
-<<<<<<< HEAD
 def test_build_queue_puts_only_the_byte_holding_jobs_on_the_bytes_queue():
     from pipeline.jobs.dispatch import JOB_DELIVER
     from pipeline.queue.interface import QUEUE_BYTES, QUEUE_DEFAULT
@@ -150,7 +149,6 @@ def test_blocking_executor_is_sized_to_the_concurrency():
         assert executor._max_workers == 44
     finally:
         executor.shutdown(wait=False)
-=======
 class _FakeServer:
     """uvicorn.Server's shape as `run_until_first_exit` uses it: `serve()`
     runs until `should_exit` is set."""
@@ -235,4 +233,3 @@ async def test_run_until_first_exit_stops_the_workers_when_the_server_dies():
         )
     assert worker_cancelled.is_set()
     assert listener_cancelled.is_set()
->>>>>>> origin/main

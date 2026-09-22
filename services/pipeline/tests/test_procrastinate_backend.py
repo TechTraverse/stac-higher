@@ -80,7 +80,6 @@ async def test_enqueue_batch_empty_is_noop(queue: ProcrastinateQueue):
     assert await queue.enqueue_batch("jobs.whatever", []) == []
 
 
-<<<<<<< HEAD
 def test_register_task_lands_on_the_named_queue(queue: ProcrastinateQueue):
     from pipeline.queue.interface import QUEUE_BYTES, QUEUE_DEFAULT
 
@@ -96,14 +95,6 @@ def test_register_task_lands_on_the_named_queue(queue: ProcrastinateQueue):
 async def test_run_worker_starts_one_worker_per_queue(queue: ProcrastinateQueue, monkeypatch):
     """M3-D: two Procrastinate workers in one process — the bytes queue's
     concurrency bounds memory, the default queue's is the rest."""
-=======
-async def test_run_worker_bounds_the_graceful_drain(queue: ProcrastinateQueue, monkeypatch):
-    """The drain must end before Docker's stop_grace_period (30 s in compose)
-    or SIGKILL skips the abort-with-retry, the worker unregistration and
-    main.run's pool cleanup."""
-    from pipeline.queue.procrastinate_backend import SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
-
->>>>>>> origin/main
     calls: list[dict] = []
 
     async def fake_run_worker_async(**kwargs):
@@ -115,7 +106,6 @@ async def test_run_worker_bounds_the_graceful_drain(queue: ProcrastinateQueue, m
     monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
     monkeypatch.setattr(queue, "_ensure_open", fake_open)
 
-<<<<<<< HEAD
     await queue.run_worker(concurrency=12, bytes_concurrency=4)
 
     by_name = {c["name"]: c for c in calls}
@@ -368,9 +358,3 @@ async def test_run_worker_outer_cancellation_does_not_recancel_a_draining_worker
 
     assert state["interrupted"] == set()
     assert state["drained"] == {"bytes"}
-=======
-    await queue.run_worker()
-
-    assert calls[0]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
-    assert 0 < SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS < 30
->>>>>>> origin/main

@@ -201,7 +201,6 @@ class ProcrastinateQueue(QueueBackend):
                 f" bytes_concurrency={bytes_concurrency})"
             )
         await self._ensure_open()
-<<<<<<< HEAD
         loop = asyncio.get_running_loop()
         stop_requested = asyncio.Event()
         previous_handlers = {
@@ -289,11 +288,6 @@ class ProcrastinateQueue(QueueBackend):
                 loop.remove_signal_handler(sig)
                 if previous is not None:  # None: a handler not installed from Python
                     signal.signal(sig, previous)
-=======
-        await self.app.run_worker_async(
-            shutdown_graceful_timeout=SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
-        )
->>>>>>> origin/main
 
     async def aclose(self) -> None:
         if self._opened:
