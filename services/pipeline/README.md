@@ -506,7 +506,11 @@ ceiling at 30 items/s, but a serialization point every concurrent ITEMIZE on
 one association would queue behind. Counts are exact; `last_activity_at` /
 `last_error_at` trail by at most one interval; a crash loses at most one
 interval of telemetry, never a row. DISCOVER's bump and the delivery repo's
-in-transaction rollup are unchanged (delivery batching is M3-E, cut).
+in-transaction rollup are unchanged (delivery batching is M3-E, cut) — but
+both rollups lock the association row `FOR NO KEY UPDATE`, never `FOR
+UPDATE`: the ledger inserts in the same transaction already hold the row's
+foreign-key share lock, and the strong lock deadlocks against another
+transaction's share lock (I-135).
 
 **Blocking calls.** Every blocking call in the worker is `asyncio.to_thread`
 (boto3, rasterio, pgstac). `main.run()` sizes the loop's default executor to
