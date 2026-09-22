@@ -24,6 +24,8 @@ from pipeline.queue.memory import InMemoryQueue
 
 
 def test_register_wires_poll_periodic_and_stage_tasks():
+    from pipeline.queue.interface import QUEUE_BYTES, QUEUE_DEFAULT
+
     queue = InMemoryQueue()
     ingest.register(queue, Settings.from_env(env={}))
     assert set(queue.tasks) == {JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE}
@@ -31,6 +33,12 @@ def test_register_wires_poll_periodic_and_stage_tasks():
     assert queue.periodic[JOB_POLL].cron == CRON
     # I-55: every chain stage carries a queue-level retry for transient faults
     assert set(queue.retry_specs) == {JOB_DISCOVER, JOB_GROUP, JOB_FETCH, JOB_ITEMIZE}
+    # M3-D: the byte-holding stages run on the bounded `bytes` queue; the
+    # cheap stages and the periodics stay on `default`.
+    assert queue.queues[JOB_FETCH] == QUEUE_BYTES
+    assert queue.queues[JOB_ITEMIZE] == QUEUE_BYTES
+    assert queue.queues[JOB_DISCOVER] == QUEUE_DEFAULT
+    assert queue.queues[JOB_GROUP] == QUEUE_DEFAULT
 
 
 def test_build_queue_includes_ingest_jobs():
@@ -118,9 +126,12 @@ async def test_fetch_handler_skips_itemize_when_nothing_stored(monkeypatch):
 async def test_itemize_handler_bumps_nothing_when_the_group_goes_to_an_extractor(monkeypatch):
     # G-6: "extracting" is not a terminal outcome — the extract finalize
     # branch bumps the rollup when the item actually lands.
+    from pipeline.flow.batcher import FlowStatsBatcher
+
     queue = InMemoryQueue()
     settings = Settings.from_env(env={})
-    ingest.register(queue, settings)
+    batcher = FlowStatsBatcher()
+    ingest.register(queue, settings, batcher=batcher)
 
     assoc = IngestAssociation(
         id="a1", collection_id="col", config={"source_path": "/o"}, connection=None
@@ -151,6 +162,57 @@ async def test_itemize_handler_bumps_nothing_when_the_group_goes_to_an_extractor
     )
 
     assert repo.flow_stats == {}
+    assert batcher.pending == {}
+
+
+async def test_itemize_handler_batches_the_rollup_instead_of_writing_it(monkeypatch):
+    """M3-D (spec §7.4): the per-item bump goes to the process batcher; the
+    association row is written once per flush, not once per ITEMIZE."""
+    from pipeline.flow.batcher import FlowDelta, FlowStatsBatcher
+
+    queue = InMemoryQueue()
+    settings = Settings.from_env(env={})
+    batcher = FlowStatsBatcher()
+    ingest.register(queue, settings, batcher=batcher)
+
+    assoc = IngestAssociation(
+        id="a1", collection_id="col", config={"source_path": "/o"}, connection=None
+    )
+    config = parse_ingest_config({"source_path": "/o"})
+    repo = FakeIngestRepo()
+
+    async def _fake_load(_settings, _aid):
+        return (repo, assoc, config)
+
+    outcomes = iter(
+        [
+            ItemizeOutcome("itemized", "scene", bytes=10, latency_seconds=1.5),
+            ItemizeOutcome("failed", "scene2"),
+        ]
+    )
+
+    async def _fake_run_itemize(*_a, **_k):
+        return next(outcomes)
+
+    monkeypatch.setattr(ingest, "load_key_or_skip", lambda _s, _j: b"key")
+    monkeypatch.setattr(ingest, "_load_association", _fake_load)
+    monkeypatch.setattr(ingest, "build_adapter", lambda *_a, **_k: object())
+    monkeypatch.setattr(ingest, "build_platform_client", lambda _s: object())
+    monkeypatch.setattr(ingest, "platform_s3_access", lambda _s: None)
+    monkeypatch.setattr(ingest, "PgPgstacWriter", lambda _u: object())
+    monkeypatch.setattr(ingest, "PgProcessRepo", lambda _u: object())
+    monkeypatch.setattr(ingest, "run_itemize", _fake_run_itemize)
+
+    await queue.tasks[JOB_ITEMIZE](association_id="a1", item_id="scene", source_paths=["a.nc"])
+    await queue.tasks[JOB_ITEMIZE](association_id="a1", item_id="scene2", source_paths=["b.nc"])
+
+    assert repo.flow_stats == {}
+    assert batcher.pending == {
+        "a1": FlowDelta(items=1, bytes_added=10, failed=1, latency_seconds=1.5)
+    }
+    await batcher.flush(repo)
+    assert repo.flow_stats["a1"]["items"] == 1
+    assert repo.flow_stats["a1"]["failed"] == 1
 
 
 async def test_recovery_sweep_fails_extracting_rows_whose_run_vanished(monkeypatch):

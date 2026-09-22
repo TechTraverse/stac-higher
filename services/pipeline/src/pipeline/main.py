@@ -12,14 +12,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import uvicorn
 
-from pipeline.config import Settings
+from pipeline.config import Settings, sizing_warnings
 from pipeline.db.pool import close_pools
+from pipeline.flow.batcher import FLOW_BATCHER
 from pipeline.health import create_health_app
+from pipeline.ingest.repo import PgIngestRepo
 from pipeline.jobs import (
     backfill,
     dispatch,
@@ -44,7 +48,14 @@ logger = logging.getLogger(__name__)
 
 
 def build_queue(settings: Settings) -> ProcrastinateQueue:
-    queue = ProcrastinateQueue(settings.database_url, schema=settings.queue_schema)
+    # Fix round 1 (Important #3): size the Procrastinate connector pool to
+    # the job slots + 4, matching the DB_POOL_MAX sizing rule — otherwise
+    # psycopg_pool's default max_size=4 starves 12 slots' round trips.
+    queue = ProcrastinateQueue(
+        settings.database_url,
+        schema=settings.queue_schema,
+        pool_max_size=settings.worker_concurrency + 4,
+    )
     heartbeat.register(queue)
     # Phase 2 connection bridge (ADR 0004): drain user-requested tests + sweep.
     drain.register(queue, settings)
@@ -52,7 +63,7 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # Phase 3: sweep abandoned push-ingest uploads out of staging/.
     staging_cleanup.register(queue, settings)
     # Phase 4: poll-based ingest — scheduler + DISCOVER/GROUP/FETCH chain.
-    ingest.register(queue, settings)
+    ingest.register(queue, settings, batcher=FLOW_BATCHER)
     # Phase 5 Slice A: delivery dispatch (outbox → match → enqueue); the poll
     # is the fallback wake path — main.py also runs the NOTIFY listener.
     dispatch.register(queue, settings)
@@ -83,6 +94,21 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     return queue
 
 
+def blocking_executor(settings: Settings) -> ThreadPoolExecutor:
+    """The loop's default executor, sized to the job slots plus the overlapping
+    periodic ticks, and never below the stdlib default. Every blocking call in
+    the worker is `asyncio.to_thread` (boto3, rasterio, pgstac), so the stdlib
+    default of min(32, cpus + 4) threads would be a hidden concurrency ceiling
+    on a small container — and on a large host it is the HIGHER number, so it
+    stays the floor. Some jobs fan out more than one thread (process input
+    staging runs 4 fetches per run, the health sweep one probe per
+    connection); those queue on the executor rather than deadlock, since no
+    pooled thread ever waits on another `to_thread` result."""
+    stdlib_default = min(32, (os.cpu_count() or 1) + 4)
+    return ThreadPoolExecutor(
+        max_workers=max(settings.worker_concurrency + 4, stdlib_default),
+        thread_name_prefix="pipeline-blocking",
+    )
 async def run_until_first_exit(server: Any, *coroutines: Coroutine[Any, Any, Any]) -> None:
     """Run the health server and the worker-side coroutines together and take
     the whole process down when the FIRST of them ends, however it ends.
@@ -121,6 +147,9 @@ async def run(settings: Settings) -> None:
     queue = build_queue(settings)
 
     try:
+        asyncio.get_running_loop().set_default_executor(blocking_executor(settings))
+        for warning in sizing_warnings(settings):
+            logger.warning(warning.message, extra=warning.extra)
         logger.info("applying queue schema", extra={"schema": settings.queue_schema})
         await queue.setup()
 
@@ -134,16 +163,40 @@ async def run(settings: Settings) -> None:
         )
         logger.info(
             "pipeline service starting",
-            extra={"health_port": settings.health_port, "queue_backend": queue.name},
+            extra={
+                "health_port": settings.health_port,
+                "queue_backend": queue.name,
+                "worker_concurrency": settings.worker_concurrency,
+                "worker_bytes_concurrency": settings.worker_bytes_concurrency,
+            },
         )
         # Slice C: the NOTIFY-woken dispatch loop runs alongside the worker as
         # the primary wake path; the worker's minute dispatch_poll is fallback.
         await run_until_first_exit(
             server,
-            queue.run_worker(),
+            queue.run_worker(
+                concurrency=settings.worker_concurrency,
+                bytes_concurrency=settings.worker_bytes_concurrency,
+            ),
             dispatch.build_notify_listener(queue, settings),
+            # M3-D: ITEMIZE's flow_stats deltas, written once per association
+            # per interval; its task is cancelled with the listener when the
+            # worker returns, and main.run's finally flushes once more after.
+            FLOW_BATCHER.run(
+                lambda: PgIngestRepo(settings.database_url), settings.flow_stats_flush_seconds
+            ),
         )
     finally:
+        # M3-D: the workers have drained by now (run_worker waits out both
+        # drains on stop, crash and outer cancellation), so this catches the
+        # deltas the last ITEMIZEs added after the batcher task's own final
+        # flush — it must run while the repo pool is still open.
+        try:
+            await FLOW_BATCHER.flush(PgIngestRepo(settings.database_url))
+        except Exception:
+            logger.warning(
+                "pool cleanup step failed", extra={"step": "flow_stats flush"}, exc_info=True
+            )
         # Both pools before the queue: `queue.aclose()` releases
         # Procrastinate's own pool, and nothing after that point may still
         # want a connection. The async pool serves the repos (M3-B); the sync

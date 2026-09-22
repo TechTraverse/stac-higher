@@ -72,3 +72,22 @@ def test_metrics_endpoint_serves_exposition_format():
     assert 'pipeline_deliveries_total{outcome="delivered"}' in body
     assert 'pipeline_ingest_events_total{stage="settled_file"}' in body
     assert "pipeline_job_seconds" in body  # histogram family is registered
+
+
+async def test_instrument_handler_tracks_jobs_in_flight():
+    import asyncio
+
+    from pipeline.metrics import instrument_handler, render_metrics
+
+    release = asyncio.Event()
+
+    async def handler():
+        await release.wait()
+
+    wrapped = instrument_handler(handler, "jobs.inflight")
+    task = asyncio.create_task(wrapped())
+    await asyncio.sleep(0)
+    assert b'pipeline_jobs_in_flight{job="jobs.inflight"} 1.0' in render_metrics()
+    release.set()
+    await task
+    assert b'pipeline_jobs_in_flight{job="jobs.inflight"} 0.0' in render_metrics()

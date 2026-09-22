@@ -117,6 +117,38 @@ async def test_run_isolates_a_failing_close_so_the_rest_still_run(monkeypatch):
     assert "queue" in order
 
 
+def test_build_queue_puts_only_the_byte_holding_jobs_on_the_bytes_queue():
+    from pipeline.jobs.dispatch import JOB_DELIVER
+    from pipeline.queue.interface import QUEUE_BYTES, QUEUE_DEFAULT
+
+    queue = build_queue(Settings.from_env(env={}))
+    on_bytes = {name for name, task in queue.app.tasks.items() if task.queue == QUEUE_BYTES}
+    assert on_bytes == {JOB_FETCH, JOB_ITEMIZE, JOB_DELIVER}
+    assert queue.app.tasks[HEARTBEAT_JOB].queue == QUEUE_DEFAULT
+    assert queue.app.tasks[JOB_RUN_NOW].queue == QUEUE_DEFAULT
+
+
+def test_blocking_executor_is_sized_to_the_concurrency():
+    """Every blocking call is `asyncio.to_thread`; the loop's default executor
+    (min(32, cpus + 4) threads) would be a hidden ceiling below 12 on a small
+    container, so main sizes it to the slots plus the overlapping ticks."""
+    import os
+
+    from pipeline.main import blocking_executor
+
+    stdlib_default = min(32, (os.cpu_count() or 1) + 4)
+    executor = blocking_executor(Settings.from_env(env={"WORKER_CONCURRENCY": "12"}))
+    try:
+        # Fix round 3: never BELOW the stdlib default — on a >= 13-CPU host the
+        # stdlib number is the larger one and would otherwise be lowered.
+        assert executor._max_workers == max(16, stdlib_default)
+    finally:
+        executor.shutdown(wait=False)
+    executor = blocking_executor(Settings.from_env(env={"WORKER_CONCURRENCY": "40"}))
+    try:
+        assert executor._max_workers == 44
+    finally:
+        executor.shutdown(wait=False)
 class _FakeServer:
     """uvicorn.Server's shape as `run_until_first_exit` uses it: `serve()`
     runs until `should_exit` is set."""

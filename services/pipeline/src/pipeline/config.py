@@ -16,6 +16,14 @@ Env contract (documented in README.md):
 - ``DB_POOL_MIN`` / ``DB_POOL_MAX`` — size bounds for the process-wide async
   connection pool the repos check out of (M3-B). ``DB_POOL_MAX`` must exceed
   the worker's job concurrency plus the overlapping periodic ticks.
+- ``WORKER_CONCURRENCY`` — jobs the worker process runs at once, both queues
+  together (M3-D, default 12; spec §7 decision 2).
+- ``WORKER_BYTES_CONCURRENCY`` — how many of those slots belong to the ``bytes``
+  queue (ingest FETCH/ITEMIZE, deliver — the jobs that hold object bytes or a
+  GDAL cache; default 4). The ``default`` queue runs everything else with the
+  remainder. At least 1, and less than ``WORKER_CONCURRENCY``.
+- ``FLOW_STATS_FLUSH_SECONDS`` — how long ITEMIZE's per-item flow_stats deltas
+  are summed in memory before one rollup write per association (default 2.0).
 - ``GDAL_CACHEMAX`` — GDAL block-cache ceiling in MB for EXTRACT's raster reads
   (M3-C, default 64). GDAL reads this variable natively; the pipeline also
   passes it into every ``rasterio.Env``.
@@ -54,6 +62,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 DEFAULT_DATABASE_URL = "postgresql://username:password@localhost:5433/postgis"
 DEFAULT_HEALTH_PORT = 8083
@@ -203,7 +212,24 @@ DEFAULT_GDAL_CACHEMAX_MB = 64
 DEFAULT_FETCH_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_FETCH_TRANSFER_CONCURRENCY = 4
 # Per-worker peak RSS ~= 255 MiB + ((GDAL_CACHEMAX + 16 MiB VSI cache) + (FETCH_TRANSFER_CONCURRENCY
-# + 1) x FETCH_CHUNK_BYTES) x WORKER_CONCURRENCY — independent of asset size.
+# + 1) x FETCH_CHUNK_BYTES) x WORKER_BYTES_CONCURRENCY — independent of asset size.
+
+# --- Worker concurrency (M3-D, spec §3 / S-C) -------------------------------
+#: Jobs in flight per worker process, both queues together — S-C's 12-16 band
+#: for the byte-realistic mix, at the conservative end (spec §7, decision 2).
+#: DB_POOL_MAX must be >= this + 4 (the periodic ticks that overlap jobs).
+DEFAULT_WORKER_CONCURRENCY = 12
+#: Slots reserved for the `bytes` queue: ingest FETCH/ITEMIZE and deliver, the
+#: jobs that hold object bytes or a GDAL block cache. Resident memory scales
+#: with THIS number (S-E: 255 MiB + (GDAL_CACHEMAX + fetch buffers) x slots),
+#: so the cheap stages on `default` are never capped by the memory budget.
+DEFAULT_WORKER_BYTES_CONCURRENCY = 4
+#: ITEMIZE's flow_stats deltas are summed in memory and written once per
+#: association per this interval (spec §7.4 carve-out). The row lock behind
+#: `bump_flow_stats` measured flat at ~460 bumps/s per association (S-D), so
+#: at concurrency 12 every ITEMIZE on one association would otherwise queue
+#: ~2 ms behind the others — a serialization point, not a throughput ceiling.
+DEFAULT_FLOW_STATS_FLUSH_SECONDS = 2.0
 
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
@@ -235,6 +261,28 @@ def _parse_pgstac_queue_drainer(raw: str | None) -> str:
         raise ValueError(
             f"PGSTAC_QUEUE_DRAINER must be one of {PGSTAC_QUEUE_DRAINERS}, got {raw!r}"
         )
+    return value
+
+
+def _parse_worker_concurrency(env: dict[str, str]) -> tuple[int, int]:
+    total = int(env.get("WORKER_CONCURRENCY", str(DEFAULT_WORKER_CONCURRENCY)))
+    bytes_slots = int(
+        env.get("WORKER_BYTES_CONCURRENCY", str(DEFAULT_WORKER_BYTES_CONCURRENCY))
+    )
+    if total < 1:
+        raise ValueError(f"WORKER_CONCURRENCY must be >= 1, got {total}")
+    if bytes_slots < 1 or bytes_slots >= total:
+        raise ValueError(
+            "WORKER_BYTES_CONCURRENCY must be >= 1 and < WORKER_CONCURRENCY"
+            f" ({total}), got {bytes_slots}"
+        )
+    return total, bytes_slots
+
+
+def _parse_flush_seconds(raw: str | None) -> float:
+    value = float(raw) if raw is not None else DEFAULT_FLOW_STATS_FLUSH_SECONDS
+    if value <= 0:
+        raise ValueError(f"FLOW_STATS_FLUSH_SECONDS must be > 0, got {value}")
     return value
 
 
@@ -309,15 +357,25 @@ class Settings:
     #: Async repo connection pool (M3-B) — see the DEFAULT_DB_POOL_* constants.
     db_pool_min: int = DEFAULT_DB_POOL_MIN
     db_pool_max: int = DEFAULT_DB_POOL_MAX
+    #: Worker concurrency (M3-D) — see the DEFAULT_WORKER_* constants.
+    worker_concurrency: int = DEFAULT_WORKER_CONCURRENCY
+    worker_bytes_concurrency: int = DEFAULT_WORKER_BYTES_CONCURRENCY
+    flow_stats_flush_seconds: float = DEFAULT_FLOW_STATS_FLUSH_SECONDS
     #: Memory envelope (M3-C) — see the DEFAULT_GDAL_CACHEMAX_MB /
     #: DEFAULT_FETCH_* constants.
     gdal_cachemax_mb: int = DEFAULT_GDAL_CACHEMAX_MB
     fetch_chunk_bytes: int = DEFAULT_FETCH_CHUNK_BYTES
     fetch_transfer_concurrency: int = DEFAULT_FETCH_TRANSFER_CONCURRENCY
 
+    @property
+    def default_queue_concurrency(self) -> int:
+        """Slots left for the `default` queue once the `bytes` queue has its share."""
+        return self.worker_concurrency - self.worker_bytes_concurrency
+
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
         env = os.environ if env is None else env
+        worker_concurrency, worker_bytes_concurrency = _parse_worker_concurrency(env)
         return cls(
             database_url=env.get("DATABASE_URL", DEFAULT_DATABASE_URL),
             health_port=int(env.get("HEALTH_PORT", str(DEFAULT_HEALTH_PORT))),
@@ -453,9 +511,43 @@ class Settings:
             ),
             db_pool_min=int(env.get("DB_POOL_MIN", str(DEFAULT_DB_POOL_MIN))),
             db_pool_max=int(env.get("DB_POOL_MAX", str(DEFAULT_DB_POOL_MAX))),
+            worker_concurrency=worker_concurrency,
+            worker_bytes_concurrency=worker_bytes_concurrency,
+            flow_stats_flush_seconds=_parse_flush_seconds(env.get("FLOW_STATS_FLUSH_SECONDS")),
             gdal_cachemax_mb=int(env.get("GDAL_CACHEMAX", str(DEFAULT_GDAL_CACHEMAX_MB))),
             fetch_chunk_bytes=int(env.get("FETCH_CHUNK_BYTES", str(DEFAULT_FETCH_CHUNK_BYTES))),
             fetch_transfer_concurrency=int(
                 env.get("FETCH_TRANSFER_CONCURRENCY", str(DEFAULT_FETCH_TRANSFER_CONCURRENCY))
             ),
         )
+
+
+class SizingWarning(NamedTuple):
+    """A startup WARNING `main.run()` logs: the message is constant, the numbers ride in `extra`."""
+
+    message: str
+    extra: dict[str, int]
+
+
+def sizing_warnings(settings: Settings) -> list[SizingWarning]:
+    """Cross-setting invariants that do not error but degrade under load (M3-D).
+
+    A pool smaller than the job slots plus the overlapping periodic ticks makes
+    callers wait `pool.timeout` and raise PoolTimeout — invisible until the
+    first load rehearsal, so it is said out loud at startup instead.
+    """
+    warnings: list[SizingWarning] = []
+    required = settings.worker_concurrency + 4
+    if settings.db_pool_max < required:
+        warnings.append(
+            SizingWarning(
+                "DB_POOL_MAX is below WORKER_CONCURRENCY + 4; repo checkouts will wait"
+                " and raise PoolTimeout under load",
+                {
+                    "db_pool_max": settings.db_pool_max,
+                    "worker_concurrency": settings.worker_concurrency,
+                    "required": required,
+                },
+            )
+        )
+    return warnings

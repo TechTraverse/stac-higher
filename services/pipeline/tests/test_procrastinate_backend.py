@@ -4,6 +4,8 @@ Constructing the backend and registering tasks must not open connections —
 these tests would hang or error otherwise.
 """
 
+import asyncio
+
 import pytest
 
 from pipeline.jobs import heartbeat
@@ -78,12 +80,21 @@ async def test_enqueue_batch_empty_is_noop(queue: ProcrastinateQueue):
     assert await queue.enqueue_batch("jobs.whatever", []) == []
 
 
-async def test_run_worker_bounds_the_graceful_drain(queue: ProcrastinateQueue, monkeypatch):
-    """The drain must end before Docker's stop_grace_period (30 s in compose)
-    or SIGKILL skips the abort-with-retry, the worker unregistration and
-    main.run's pool cleanup."""
-    from pipeline.queue.procrastinate_backend import SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+def test_register_task_lands_on_the_named_queue(queue: ProcrastinateQueue):
+    from pipeline.queue.interface import QUEUE_BYTES, QUEUE_DEFAULT
 
+    async def handler(**kw):
+        pass
+
+    queue.register_task(handler, name="jobs.cheap")
+    queue.register_task(handler, name="jobs.heavy", queue=QUEUE_BYTES)
+    assert queue.app.tasks["jobs.cheap"].queue == QUEUE_DEFAULT == "default"
+    assert queue.app.tasks["jobs.heavy"].queue == QUEUE_BYTES == "bytes"
+
+
+async def test_run_worker_starts_one_worker_per_queue(queue: ProcrastinateQueue, monkeypatch):
+    """M3-D: two Procrastinate workers in one process — the bytes queue's
+    concurrency bounds memory, the default queue's is the rest."""
     calls: list[dict] = []
 
     async def fake_run_worker_async(**kwargs):
@@ -95,7 +106,255 @@ async def test_run_worker_bounds_the_graceful_drain(queue: ProcrastinateQueue, m
     monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
     monkeypatch.setattr(queue, "_ensure_open", fake_open)
 
-    await queue.run_worker()
+    await queue.run_worker(concurrency=12, bytes_concurrency=4)
 
-    assert calls[0]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+    by_name = {c["name"]: c for c in calls}
+    assert set(by_name) == {"default", "bytes"}
+    assert by_name["default"]["queues"] == ["default"]
+    assert by_name["default"]["concurrency"] == 8
+    assert by_name["bytes"]["queues"] == ["bytes"]
+    assert by_name["bytes"]["concurrency"] == 4
+    # Fix round 1 (Important #1): each worker's own signal handling must stay
+    # off, or the second worker to install one steals SIGTERM/SIGINT from the
+    # first (asyncio.add_signal_handler replaces, it does not layer).
+    assert by_name["default"]["install_signal_handlers"] is False
+    assert by_name["bytes"]["install_signal_handlers"] is False
+    # Fix round 4: the drain must end before Docker's stop_grace_period (30 s
+    # in compose) or SIGKILL skips the abort-with-retry and the pool cleanup.
+    from pipeline.queue.procrastinate_backend import SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+
     assert 0 < SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS < 30
+    assert by_name["default"]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+    assert by_name["bytes"]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+
+
+async def test_run_worker_stop_signal_cancels_both_workers(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 1 (Important #1): a single SIGTERM/SIGINT must stop BOTH
+    workers gracefully. `run_worker` owns one signal handler for both, and
+    cancelling each worker's `run_worker_async` task is Procrastinate's
+    documented graceful-stop path (`Worker.run` catches the cancellation,
+    calls `stop()`, and re-raises once the graceful drain is done).
+
+    Fix round 2 (Important #1): the two fakes drain at DIFFERENT speeds
+    (`bytes` sleeps 0.05s after catching the cancellation, `default` does
+    not) — `run_worker` must not return until BOTH drains have completed, not
+    just the first one (a plain `asyncio.gather` with the default
+    `return_exceptions=False` would return as soon as `default` finished,
+    leaving `bytes`'s drain unobserved)."""
+    import os
+    import signal
+
+    started = {"default": asyncio.Event(), "bytes": asyncio.Event()}
+    drained = {"default": asyncio.Event(), "bytes": asyncio.Event()}
+    cancelled: list[str] = []
+
+    async def fake_run_worker_async(*, name, **kwargs):
+        started[name].set()
+        try:
+            await asyncio.Event().wait()  # block forever, like the real worker
+        except asyncio.CancelledError:
+            if name == "bytes":
+                await asyncio.sleep(0.05)  # the slower drain
+            cancelled.append(name)
+            drained[name].set()
+            raise
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+
+    task = asyncio.create_task(queue.run_worker(concurrency=12, bytes_concurrency=4))
+    await asyncio.wait_for(
+        asyncio.gather(*(event.wait() for event in started.values())), timeout=1
+    )
+
+    # Fix round 2 (Minor #3): confirm our handler actually replaced the
+    # default disposition before sending a real signal — a future regression
+    # should fail this assertion, not kill pytest with an unhandled SIGTERM
+    # (exit 143).
+    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+
+    os.kill(os.getpid(), signal.SIGTERM)
+
+    # `default` drains immediately; `bytes` is still mid-sleep — the overall
+    # task must still be running.
+    await asyncio.wait_for(drained["default"].wait(), timeout=1)
+    assert not task.done()
+    assert not drained["bytes"].is_set()
+
+    await asyncio.wait_for(task, timeout=1)
+
+    assert drained["bytes"].is_set()
+    assert set(cancelled) == {"default", "bytes"}
+
+
+async def test_run_worker_cancels_the_sibling_when_one_worker_crashes(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 2 (Important #1, error path): a worker ending on its own
+    (without a stop request) is a crash, not a graceful stop — its sibling
+    must be cancelled too instead of being left running unattended, and the
+    original failure must still propagate."""
+    cancelled: list[str] = []
+
+    async def fake_run_worker_async(*, name, **kwargs):
+        if name == "default":
+            raise RuntimeError("boom")
+        try:
+            await asyncio.Event().wait()  # block forever, like the real worker
+        except asyncio.CancelledError:
+            cancelled.append(name)
+            raise
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await asyncio.wait_for(
+            queue.run_worker(concurrency=12, bytes_concurrency=4), timeout=1
+        )
+
+    assert cancelled == ["bytes"]
+
+
+def test_connector_pool_sized_to_worker_concurrency_by_default(queue: ProcrastinateQueue):
+    # Fix round 1 (Important #3): unsized, psycopg_pool defaults to max_size=4
+    # — 12 slots' fetch/finish/heartbeat round trips would share 4 connections
+    # and PoolTimeout under load. Defaults here track DEFAULT_WORKER_CONCURRENCY
+    # (12) + 4, matching DB_POOL_MAX's own sizing rule.
+    pool_args = queue.app.connector._pool_args
+    assert pool_args["min_size"] == 2
+    assert pool_args["max_size"] == 16
+
+
+def test_connector_pool_size_is_configurable():
+    queue = ProcrastinateQueue(
+        DSN, schema="procrastinate_test", pool_min_size=3, pool_max_size=20
+    )
+    pool_args = queue.app.connector._pool_args
+    assert pool_args["min_size"] == 3
+    assert pool_args["max_size"] == 20
+
+
+def _fake_workers(queue: ProcrastinateQueue, monkeypatch, *, drain_seconds: float):
+    """Two fake workers that block until cancelled, then 'drain' for
+    `drain_seconds` before re-raising — the shape of `Worker.run`."""
+    state = {"running": set(), "drained": set(), "interrupted": set()}
+
+    async def fake_run_worker_async(*, name, **kwargs):
+        state["running"].add(name)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            try:
+                await asyncio.sleep(drain_seconds)
+            except asyncio.CancelledError:
+                state["interrupted"].add(name)
+                raise
+            state["drained"].add(name)
+            raise
+        finally:
+            state["running"].discard(name)
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+    return state
+
+
+async def test_run_worker_outer_cancellation_drains_both_workers(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 3: cancelling `run_worker` itself (main.run's gather
+    propagating a sibling's failure, asyncio.run's teardown) must not leave
+    the two worker tasks running — `asyncio.wait` does not cancel its
+    futures, so the `finally` has to."""
+    state = _fake_workers(queue, monkeypatch, drain_seconds=0.02)
+    task = asyncio.create_task(queue.run_worker(concurrency=12, bytes_concurrency=4))
+    await asyncio.sleep(0.01)
+    assert state["running"] == {"default", "bytes"}
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert state["running"] == set()
+    assert state["drained"] == {"default", "bytes"}
+
+
+async def test_run_worker_second_stop_signal_does_not_abort_the_drain(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 3: a repeat SIGTERM while both workers are draining must be
+    a no-op — re-cancelling a task that is in `Worker.run`'s `await loop_task`
+    would abort the graceful drain and orphan the loop task."""
+    import os
+    import signal
+
+    state = _fake_workers(queue, monkeypatch, drain_seconds=0.1)
+    task = asyncio.create_task(queue.run_worker(concurrency=12, bytes_concurrency=4))
+    await asyncio.sleep(0.01)
+    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.sleep(0.03)  # mid-drain
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.wait_for(task, timeout=1)
+
+    assert state["interrupted"] == set()
+    assert state["drained"] == {"default", "bytes"}
+
+
+async def test_run_worker_rejects_a_split_with_no_default_slots(queue: ProcrastinateQueue):
+    # Fix round 3: only Settings.from_env validates the split; a direct caller
+    # handing over equal numbers would otherwise get a Semaphore(0) default
+    # worker that listens and never runs a job.
+    with pytest.raises(ValueError, match="default queue"):
+        await queue.run_worker(concurrency=4, bytes_concurrency=4)
+
+
+async def test_run_worker_outer_cancellation_does_not_recancel_a_draining_worker(
+    queue: ProcrastinateQueue, monkeypatch
+):
+    """Fix round 4: on the crash path the sibling is already cancelled and
+    draining when an outer cancellation arrives; the `finally` must not
+    cancel it a second time — that would abort its drain."""
+    state = {"drained": set(), "interrupted": set()}
+
+    async def fake_run_worker_async(*, name, **kwargs):
+        if name == "default":
+            raise RuntimeError("boom")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            try:
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                state["interrupted"].add(name)
+                raise
+            state["drained"].add(name)
+            raise
+
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue.app, "run_worker_async", fake_run_worker_async)
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+
+    task = asyncio.create_task(queue.run_worker(concurrency=12, bytes_concurrency=4))
+    await asyncio.sleep(0.03)  # default crashed; bytes is mid-drain
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert state["interrupted"] == set()
+    assert state["drained"] == {"bytes"}

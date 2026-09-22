@@ -16,6 +16,7 @@ import logging
 from pipeline import metrics
 from pipeline.config import Settings
 from pipeline.connections.build import build_adapter
+from pipeline.flow.batcher import FLOW_BATCHER, FlowStatsBatcher
 from pipeline.ingest.config import IngestConfig, parse_ingest_config
 from pipeline.ingest.discover import discover_stage
 from pipeline.ingest.extract import RasterAccess
@@ -28,7 +29,7 @@ from pipeline.ingest.transfer import transfer_policy
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.process import JOB_RUN_NOW
 from pipeline.process.repo import PgProcessRepo
-from pipeline.queue.interface import QueueBackend, RetrySpec
+from pipeline.queue.interface import QUEUE_BYTES, QueueBackend, RetrySpec
 from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client, platform_s3_access
 
@@ -57,7 +58,12 @@ async def _load_association(
     return repo, association, parse_ingest_config(association.config)
 
 
-def register(queue: QueueBackend, settings: Settings) -> None:
+def register(
+    queue: QueueBackend, settings: Settings, *, batcher: FlowStatsBatcher | None = None
+) -> None:
+    # M3-D: ITEMIZE's flow_stats deltas go to the process batcher (main.run
+    # flushes it); tests hand in their own.
+    batcher = batcher if batcher is not None else FLOW_BATCHER
     async def _enqueue_run_now(run_id: str) -> None:
         # The same immediate-dispatch job the process trigger uses (G-3).
         await queue.enqueue(JOB_RUN_NOW, {"run_id": run_id})
@@ -193,12 +199,13 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             process_repo=process_repo,
             enqueue_now=_enqueue_run_now,
         )
-        # Flow telemetry (M2-A): one rollup write per item — itemized counts as
-        # activity, a terminal itemize failure stamps last_error_at. "skipped"
-        # (idempotent re-run) writes nothing, and neither does "extracting" —
-        # the extract finalize branch bumps the rollup when the item lands.
+        # Flow telemetry (M2-A), batched (M3-D): the per-item delta goes to the
+        # process batcher and the association row is written once per flush —
+        # the per-association row lock is not on the ITEMIZE hot path anymore.
+        # "skipped" and "extracting" still write nothing (the extract finalize
+        # branch bumps the rollup when the item lands).
         if outcome.status == "itemized":
-            await repo.bump_flow_stats(
+            batcher.add(
                 association_id,
                 items=1,
                 bytes_added=outcome.bytes,
@@ -207,7 +214,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             metrics.INGEST_EVENTS.labels(stage="itemized_item").inc()
             metrics.INGEST_BYTES.inc(outcome.bytes or 0)
         elif outcome.status == "failed":
-            await repo.bump_flow_stats(association_id, failed=1)
+            batcher.add(association_id, failed=1)
             metrics.INGEST_EVENTS.labels(stage="failed").inc()
 
     async def recovery_sweep(timestamp: int) -> None:
@@ -244,5 +251,5 @@ def register(queue: QueueBackend, settings: Settings) -> None:
     queue.register_periodic(recovery_sweep, name=JOB_RECOVERY_SWEEP, cron=CRON)
     queue.register_task(discover, name=JOB_DISCOVER, retry=STAGE_RETRY)
     queue.register_task(group, name=JOB_GROUP, retry=STAGE_RETRY)
-    queue.register_task(fetch, name=JOB_FETCH, retry=STAGE_RETRY)
-    queue.register_task(itemize, name=JOB_ITEMIZE, retry=STAGE_RETRY)
+    queue.register_task(fetch, name=JOB_FETCH, retry=STAGE_RETRY, queue=QUEUE_BYTES)
+    queue.register_task(itemize, name=JOB_ITEMIZE, retry=STAGE_RETRY, queue=QUEUE_BYTES)
