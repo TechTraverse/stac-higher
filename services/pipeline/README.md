@@ -538,6 +538,31 @@ asked for beyond S-C's database-level audit:
 | delivery transfer | `delivery/worker.py` `_stream_canonical` | per job; whole object in memory | bounded by the 4 `bytes` slots, not by asset size (I-134, M3-K) |
 | `global` statements | none in `pipeline/` outside `loadgen/fixtures.py` | — | — |
 
+**Measured** on the compose stack, 2026-09-21, `loadgen --label m3d…`,
+`--mode copy --metadata defaults_only --deliver`, 64 KiB opaque assets, the
+pipeline restarted before the run (laptop numbers — they rank the change, they
+are not platform capacity; the harness and its preconditions:
+`src/pipeline/loadgen/README.md`):
+
+| measure | result |
+|---|---|
+| saturation ingest (2000 items offered at once) | **84.8 items/s** — all 2000 itemized in 23.6 s (M3-B kept pace with 30/s; the pre-pool baseline lagged at 21–24/s) |
+| sustained 30 items/s for 60 s (1800 items) | every DISCOVER minute-batch cleared inside its minute (ingest bursts of 36–71 items/s) |
+| container RSS | peak 142.5 MiB, flat 131–143 MiB across every window (72 MiB idle) |
+| `pipeline_jobs_in_flight` | `bytes` max 4 of 4, `default` max 2 |
+| double-FETCH check | `flow_stats` items = files = pgstac items on every label |
+| repo pool (`DB_POOL_MAX` 16) | grew to 14; `requests_waiting` 0; 104 of 100,580 checkouts queued; `PoolTimeout` 0 |
+| delivery, after I-135 | 1800/1800 delivered, 0 retries across 555 `deliver` jobs, job mean 0.093 s, bursts to 54 items/s |
+| G-3 concurrency check | 120 process runs for 300 items, every run `attempts = 1` |
+
+Before the I-135 fix the same sustained run failed 48 `deliver` jobs
+permanently and retried 190 more on `DeadlockDetected`, and the `deliver`
+mean read 0.5–0.6 s — that figure was deadlock wait, not delivery work. A
+retried attempt logs at INFO (`job_error_retry`), not ERROR: read the Postgres
+log for `deadlock detected` and `procrastinate_events` for retries, not just
+the pipeline's error lines. The full run record is the "M3-D landed" comment
+on PR #22.
+
 ## Memory envelope (M3-C)
 
 Worker memory no longer scales with asset size. Two paths changed:
