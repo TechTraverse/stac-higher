@@ -444,7 +444,7 @@ tables only.
 
 - [ ] Worktree gates; rebase onto `main`; verify + pytest + ruff; push, open the PR (`Closes #6`), squash-merge when CI is green; `docker compose build pipeline && docker compose up -d pipeline`.
 - [ ] **Backlog assertion (spec §3):** record `SELECT status, count(*) FROM procrastinate.procrastinate_jobs GROUP BY status` and `pg_total_relation_size` of both tables before; run `loadgen --label m3g setup --mode copy` + `feed --profile metadata --rate 0 --count 2000` (2000 items → ~4 000 ingest jobs + deliveries); after the run: `succeeded` rows ≈ 0 (deleted at finish), the two tables' size flat within one tick; then set `QUEUE_DELETE_JOBS=never` for the test? No — instead insert 50 synthetic finished rows aged 48 h via SQL (`INSERT INTO procrastinate.procrastinate_jobs (queue_name, task_name, status, ...)` plus a `procrastinate_events` row with `at = now() - interval '48 hours'`, one `failed` set aged 31 days), trigger the retention tick (`docker compose restart pipeline` then wait for :41, or invoke `retention_tick` from a one-off `uv run python -c` against the stack), and confirm: the 48 h succeeded rows are gone, the failed rows younger than 30 d remain, the 31 d failed row is gone; `pipeline_queue_jobs_rows` reflects it. Teardown loadgen; delete the synthetic rows.
-- [ ] PR body = the landed note (the failed-retention ruling, the numbers); tick M3-G in epic #1 with the PR number; `docs/FEATURES.md`; `docs/ISSUES.md` if anything is left; worktree removal; canary.
+- [ ] PR body = the landed note (the failed-retention ruling, the numbers); `docs/FEATURES.md`; `docs/ISSUES.md` if anything is left; worktree removal; canary.
 
 ## Self-review
 

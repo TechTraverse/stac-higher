@@ -2,16 +2,23 @@
 
 Order matters: apply the Procrastinate schema (idempotent) before the worker
 starts, then run the worker (which owns the periodic scheduler) and the
-health server concurrently. If either exits, the process exits — compose
-restarts it.
+health server concurrently. When any of them ends, the others are stopped and
+the process exits — cleanly on a stop signal, with the failure re-raised on a
+crash so compose restarts it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+<<<<<<< HEAD
 import os
 from concurrent.futures import ThreadPoolExecutor
+=======
+from collections.abc import Coroutine
+from typing import Any
+>>>>>>> origin/main
 
 import uvicorn
 
@@ -90,6 +97,7 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     return queue
 
 
+<<<<<<< HEAD
 def blocking_executor(settings: Settings) -> ThreadPoolExecutor:
     """The loop's default executor, sized to the job slots plus the overlapping
     periodic ticks, and never below the stdlib default. Every blocking call in
@@ -105,6 +113,40 @@ def blocking_executor(settings: Settings) -> ThreadPoolExecutor:
         max_workers=max(settings.worker_concurrency + 4, stdlib_default),
         thread_name_prefix="pipeline-blocking",
     )
+=======
+async def run_until_first_exit(server: Any, *coroutines: Coroutine[Any, Any, Any]) -> None:
+    """Run the health server and the worker-side coroutines together and take
+    the whole process down when the FIRST of them ends, however it ends.
+
+    A stop signal reaches the worker only: Procrastinate installs its handler
+    with asyncio's ``add_signal_handler``, which displaces uvicorn's plain
+    ``signal.signal`` one, so ``server.should_exit`` is never set by the
+    signal itself — and the NOTIFY listener runs until cancelled by design. A
+    plain ``gather`` therefore waited forever after a clean worker stop, and
+    Docker SIGKILLed the container at ``stop_grace_period``, skipping
+    ``run()``'s pool cleanup. Here the worker's return (or any sibling's
+    failure) IS the stop: the server is asked to exit, the rest are
+    cancelled, everything is awaited, and the first failure is re-raised.
+    """
+    server_task = asyncio.create_task(server.serve(), name="health-server")
+    sibling_tasks = [asyncio.create_task(coro) for coro in coroutines]
+    tasks = [server_task, *sibling_tasks]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        logger.info("pipeline service stopping")
+        # uvicorn polls this flag every tick and then runs its own graceful
+        # shutdown — asking beats cancelling, which would skip that.
+        server.should_exit = True
+        for task in sibling_tasks:
+            task.cancel()
+        await asyncio.wait(tasks)
+    failures = [
+        exc for task in tasks if not task.cancelled() and (exc := task.exception()) is not None
+    ]
+    if failures:
+        raise failures[0]
+>>>>>>> origin/main
 
 
 async def run(settings: Settings) -> None:
@@ -136,12 +178,18 @@ async def run(settings: Settings) -> None:
         )
         # Slice C: the NOTIFY-woken dispatch loop runs alongside the worker as
         # the primary wake path; the worker's minute dispatch_poll is fallback.
+<<<<<<< HEAD
         await asyncio.gather(
             server.serve(),
             queue.run_worker(
                 concurrency=settings.worker_concurrency,
                 bytes_concurrency=settings.worker_bytes_concurrency,
             ),
+=======
+        await run_until_first_exit(
+            server,
+            queue.run_worker(),
+>>>>>>> origin/main
             dispatch.build_notify_listener(queue, settings),
             # M3-D: ITEMIZE's flow_stats deltas, written once per association
             # per interval; a final flush runs when the gather is cancelled.
@@ -192,10 +240,9 @@ async def run(settings: Settings) -> None:
 def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(run(settings))
-    except KeyboardInterrupt:
-        logger.info("pipeline service stopped")
+    logger.info("pipeline service stopped")
 
 
 if __name__ == "__main__":

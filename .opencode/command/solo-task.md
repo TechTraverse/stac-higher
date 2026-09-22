@@ -43,9 +43,9 @@ maps codes to names), and guessing costs a worktree and a PR.
    `gh pr create --base main --title "<ID>: <title>" --body "Closes #<n> …"`
    — the body lists the gates run, the lead-only steps left and any deviation
    from the plan. Wait for CI, then `gh pr merge --squash --delete-branch`.
-6. Remove the worktree. Update the epic's slice list; open new issues for
-   discovered follow-ups (same queue label, `lead-only` for live checks you
-   could not run).
+6. Remove the worktree. Open new issues for discovered follow-ups (Slice
+   template, same queue label, `lead-only` for live checks you could not run).
+   The epic's sub-issue bar and the milestone update themselves.
 
 Then start the next iteration, or stop if the queue has no `ready` issue.
 

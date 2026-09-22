@@ -82,8 +82,7 @@ Run them **concurrently, one slice per lane at a time**:
   Wait for CI green, then `gh pr merge <pr> --squash --delete-branch`, then
   `git worktree remove`. Merge lanes in the order they finish; never hold one
   lane's PR for the other.
-- After the merge: update the epic's slice list (tick the slice with its PR
-  number), open new issues for discovered follow-ups (same queue label;
+- After the merge: open new issues for discovered follow-ups (Slice template, same queue label;
   `lead-only` for live checks you could not run; `docs/ISSUES.md` for
   limitations), and start the lane's next `ready` issue (plan first if it
   has none). A blocked issue whose blockers just closed flips to `ready`.

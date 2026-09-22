@@ -275,6 +275,9 @@ services:
   pipeline:
     build: *pipeline-build
     image: stac-higher-pipeline
+    # Above the worker's SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS (25 s): a stop lets
+    # in-flight jobs finish or be aborted-with-retry before Docker's SIGKILL.
+    stop_grace_period: 30s
     environment:
       - DATABASE_URL=postgresql://username:password@database:5432/postgis
       - HEALTH_PORT=8083

@@ -2,7 +2,7 @@
 
 Known gaps, residual risk, and deferrals — tracked honestly so they aren't mistaken for "done." Status: 🔴 open · 🟡 accepted/mitigated · 🟢 resolved · ⚪ deferred-by-design.
 
-Each entry: what it is, why it exists, and where it's tracked. Close an entry by moving it to 🟢 with the resolving commit/PR; fully-closed entries move to [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md), leaving a one-line stub in the list at the bottom so inbound references still land. Entries that keep an open or amber half stay here. **This file is not sorted by number** — sections are chronological, not numeric — so a new entry must take the next number above the file's actual MAXIMUM `I-N` (`grep -n '^### I-' docs/ISSUES.md`, sort numerically, take the top), never just the highest number visible near wherever you're inserting.
+Each entry: what it is, why it exists, and where it's tracked. **This file is the record of accepted limitations, deferrals and residual risk — not a backlog.** An entry gets a GitHub issue only when it becomes work someone should do; then its "Tracked in" line names the issue (`GitHub #N`) and the issue title carries the `(I-N)` code. Everything else stays here, ADR-consequences style. Close an entry by moving it to 🟢 with the resolving commit/PR; fully-closed entries move to [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md), leaving a one-line stub in the list at the bottom so inbound references still land. Entries that keep an open or amber half stay here. **This file is not sorted by number** — sections are chronological, not numeric — so a new entry must take the next number above the file's actual MAXIMUM `I-N` (`grep -n '^### I-' docs/ISSUES.md`, sort numerically, take the top), never just the highest number visible near wherever you're inserting.
 
 ---
 
@@ -10,7 +10,7 @@ Each entry: what it is, why it exists, and where it's tracked. Close an entry by
 
 ### I-1 · Per-collection read-visibility at the proxy 🔴
 Phase 1 delivered authenticated transactions + audience validation, but **read-visibility filtering** (different groups see different collections) cannot be done with auth-proxy config alone — it needs OPA or a custom filter factory. Deferred out of Phase 1.
-- Tracked in: [ADR 0002](decisions/0002-auth-proxy-enforcement.md); Phase 1 note in [`../ROADMAP.md`](../ROADMAP.md).
+- Tracked in: [ADR 0002](decisions/0002-auth-proxy-enforcement.md); GitHub #34 (blocked on a lead design decision); Phase 1 note in [`../ROADMAP.md`](../ROADMAP.md).
 - Blocks: fully multi-tenant read isolation.
 
 ---
@@ -624,8 +624,8 @@ Kubernetes Jobs + Kueue on EKS (Auto Mode, available in GovCloud), and the
 executor seam becomes submit-then-reconcile. The local `DockerExecutor`
 half stands. Closes again at the K-9 gate with measured queue-wait and
 cold-start numbers.
-- Tracked in: ADR 0013 (accepted; cloud half superseded), ADR 0019, the K
-  queue (GitHub epic #2, `queue:K`).
+- Tracked in: ADR 0013 (accepted; cloud half superseded), ADR 0019, GitHub #17 (K-9 closes the cloud half), the K
+  queue (GitHub epic #2, `queue: k8s compute (K)`).
 
 ### I-62 · Run-log storage & retention 🟢 (settled 2026-08-29)
 **Settled by the approved Phase 9 spec (§9)**: `logs/runs/{process_id}/
@@ -735,7 +735,7 @@ cooperation (stop the container, flip the row terminal, keep the crash-safe
 ordering) plus an audited verb + UI affordance. Also the reason the future
 OGC facade cannot claim the `dismiss` conformance class (ADR 0016 §3) —
 the facade never fakes a verb the platform does not have.
-- Tracked in: here; [ADR 0016](decisions/0016-ogc-processes-conformance-posture.md);
+- Tracked in: here; GitHub #12 (K-4 adds the cancel verb); [ADR 0016](decisions/0016-ogc-processes-conformance-posture.md);
   `services/pipeline/src/pipeline/process/docker_executor.py` (timeout is
   the existing kill path a cancel would reuse).
 - **Planned (2026-09-02):** lands with **K-4** (ADR 0019 spec §5.3) — the
@@ -921,6 +921,7 @@ rasters are not vendored); `viirs` (no fixture in its repo) and `sentinel1`
 (3 MB of SAFE annotation) are tested with the package's `create_item`
 replaced by a double, so for those two only the platform's half — file
 picking and the SAFE rebuild — is proved.
+- Tracked in: GitHub #9 (X-5 live gates).
 
 ### I-106 · A process cannot take a static reference asset as an input 🟡
 ADR 0018 stages the TRIGGERING items into a run; there is no way to hand a
@@ -932,6 +933,7 @@ be given. Shape when wanted: a catalogued reference collection granted
 read-only in the run's STS policy and named in the revision (`runtime.
 reference_inputs`), staged under `inputs/reference/` — an ADR-sized
 addition, not a slice of G-8.
+- Tracked in: GitHub #19 (the owed night-frame look; city lights stay out of scope).
 
 ### I-108 · Collection preview playback is paced by the tile server 🟡
 The Preview tab's first pass through a 50-frame series runs at roughly 1.5
@@ -962,7 +964,7 @@ discriminator on the registry entry (`pypi` with a version, or `git` with an
 immutable commit SHA) so the three can be installed from their repos — a
 supply-chain decision, not a registry-schema one, which is why it was not
 taken unilaterally. Cheaper trigger: one of the three cutting a release.
-- Tracked in: X-queue spec §2/§3.5; `tests/contract-fixtures/README.md`.
+- Tracked in: X-queue spec §2/§3.5; `tests/contract-fixtures/README.md`. GitHub #9 (X-5 gate B records the missing two).
 
 ### I-109 · Three stactools packages cap pystac below the platform pin — overridden, not dropped 🟡
 Found by X-2's first step (the resolver, in one second): `stactools-goes-glm
@@ -1048,7 +1050,7 @@ position. In EKS the pipeline's own credentials come from Pod Identity /
 IRSA, and `AssumeRole` from role credentials is **role chaining, capped at
 one hour**, which bounds cloud profiles' `max_queue_wait_seconds` unless the
 run role is assumed with web identity directly. Measure at K-9.
-- Tracked in: spec §5.4; K-4; K-9.
+- Tracked in: spec §5.4; K-4; K-9. GitHub #12, #17.
 
 ### I-94 · Run logs are captured at exit only ⚪
 Both backends read the run's combined output once, at exit, capped at
@@ -1359,7 +1361,7 @@ K-1 with more memory becomes a `dead` run naming the bound
 `standard` widens the exposure. No migration; fix candidates: a deploy-time
 advisory listing over-bound current revisions, or a one-off audit query in
 `docs/backend.md`.
-- Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `app/src/lib/processes/hardware.ts`.
+- Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `app/src/lib/processes/hardware.ts`. GitHub #10 (K-2 surfaces the bound at deploy time).
 - Found in: K-1 final review (2026-09-15).
 
 ### I-131 · The deploy form's memory input is free-form against a per-profile bound 🟡
@@ -1367,7 +1369,7 @@ advisory listing over-bound current revisions, or a one-off audit query in
 operator type any memory; an out-of-bounds value is refused by the write gate
 with a 400 the form shows as a toast. Closed by K-2 (the hardware picker
 bounds the inputs from the profile).
-- Tracked in: `app/src/components/processes/ProcessDetailPage.tsx`.
+- Tracked in: `app/src/components/processes/ProcessDetailPage.tsx`. GitHub #10 (K-2 closes this).
 - Found in: K-1 Task 3 review (2026-09-14).
 
 ### I-132 · A permanently unreadable hardware-profile file requeues every run forever with a WARNING only 🟡
