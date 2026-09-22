@@ -1,5 +1,7 @@
 """build_queue wires the heartbeat, both connection bridge jobs, and cleanup."""
 
+import asyncio
+
 import pytest
 
 from pipeline.config import Settings
@@ -113,3 +115,89 @@ async def test_run_isolates_a_failing_close_so_the_rest_still_run(monkeypatch):
 
     assert "writer-pools" in order
     assert "queue" in order
+
+
+class _FakeServer:
+    """uvicorn.Server's shape as `run_until_first_exit` uses it: `serve()`
+    runs until `should_exit` is set."""
+
+    def __init__(self, fail: Exception | None = None) -> None:
+        self.should_exit = False
+        self.fail = fail
+
+    async def serve(self) -> None:
+        if self.fail is not None:
+            raise self.fail
+        while not self.should_exit:
+            await asyncio.sleep(0.005)
+
+
+def _blocking_until_cancelled(flag: asyncio.Event):
+    async def coro() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            flag.set()
+            raise
+
+    return coro()
+
+
+async def test_run_until_first_exit_stops_everything_when_the_worker_returns():
+    """A stop signal reaches the worker only (its asyncio handler displaces
+    uvicorn's); the worker's clean return must take the server and the
+    listener down instead of leaving the gather waiting for a SIGKILL."""
+    from pipeline.main import run_until_first_exit
+
+    server = _FakeServer()
+    listener_cancelled = asyncio.Event()
+
+    async def worker() -> None:
+        await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(
+        run_until_first_exit(server, worker(), _blocking_until_cancelled(listener_cancelled)),
+        timeout=1,
+    )
+    assert server.should_exit
+    assert listener_cancelled.is_set()
+
+
+async def test_run_until_first_exit_reraises_a_crash_after_stopping_the_rest():
+    from pipeline.main import run_until_first_exit
+
+    server = _FakeServer()
+    listener_cancelled = asyncio.Event()
+
+    async def worker() -> None:
+        raise RuntimeError("worker boom")
+
+    with pytest.raises(RuntimeError, match="worker boom"):
+        await asyncio.wait_for(
+            run_until_first_exit(
+                server, worker(), _blocking_until_cancelled(listener_cancelled)
+            ),
+            timeout=1,
+        )
+    assert server.should_exit
+    assert listener_cancelled.is_set()
+
+
+async def test_run_until_first_exit_stops_the_workers_when_the_server_dies():
+    from pipeline.main import run_until_first_exit
+
+    server = _FakeServer(fail=RuntimeError("port in use"))
+    worker_cancelled = asyncio.Event()
+    listener_cancelled = asyncio.Event()
+
+    with pytest.raises(RuntimeError, match="port in use"):
+        await asyncio.wait_for(
+            run_until_first_exit(
+                server,
+                _blocking_until_cancelled(worker_cancelled),
+                _blocking_until_cancelled(listener_cancelled),
+            ),
+            timeout=1,
+        )
+    assert worker_cancelled.is_set()
+    assert listener_cancelled.is_set()

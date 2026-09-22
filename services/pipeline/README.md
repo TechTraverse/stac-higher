@@ -499,6 +499,20 @@ carries `cpu`, `gpu_count`, the resolved `profile` and a `priority`
 (`interactive` for a UI test run, `triggered` otherwise) that nothing reads
 yet.
 
+## Shutdown
+
+One SIGTERM (`docker compose stop`, a deploy restart) stops the process
+cleanly. The worker stops fetching, waits up to 25 s
+(`SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS`) for in-flight jobs, then aborts the
+rest — Procrastinate re-queues an aborted job per its retry strategy — and
+its return takes the health server and the NOTIFY listener down with it
+(`main.run_until_first_exit`), after which `main.run()` closes the pools. The
+compose service's `stop_grace_period` is 30 s so the drain finishes before
+Docker's SIGKILL; keep the two numbers in that order. A container that exits
+137 was killed before the drain completed — raise the grace period, not the
+timeout. A crash in any of the three takes the others down the same way and
+re-raises, so compose restarts the service.
+
 ## Docker
 
 The `Dockerfile` builds a multi-stage image whose entrypoint applies the

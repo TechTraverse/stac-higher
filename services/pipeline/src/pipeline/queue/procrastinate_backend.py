@@ -27,6 +27,13 @@ from pipeline.queue.interface import (
 
 logger = logging.getLogger(__name__)
 
+#: How long a stop waits for in-flight jobs before aborting them — Procrastinate
+#: re-queues a job aborted by a shutdown per its retry strategy, so the abort
+#: is a retry, not a loss. Must stay BELOW the container's `stop_grace_period`
+#: (docker-compose.yml: 30 s), or Docker's SIGKILL wins and the abort, the
+#: worker unregistration and `main.run()`'s pool cleanup never run.
+SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS = 25.0
+
 
 class ProcrastinateQueue(QueueBackend):
     name = "procrastinate"
@@ -116,7 +123,9 @@ class ProcrastinateQueue(QueueBackend):
 
     async def run_worker(self) -> None:
         await self._ensure_open()
-        await self.app.run_worker_async()
+        await self.app.run_worker_async(
+            shutdown_graceful_timeout=SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+        )
 
     async def aclose(self) -> None:
         if self._opened:
