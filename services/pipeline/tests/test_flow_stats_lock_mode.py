@@ -49,7 +49,11 @@ class _Conn:
 
 
 def _lock_statements(conn: _Conn) -> list[str]:
-    return [s for s in conn.statements if "collection_connections" in s and s.lstrip().startswith("SELECT")]
+    return [
+        s
+        for s in conn.statements
+        if "collection_connections" in s and s.lstrip().startswith("SELECT")
+    ]
 
 
 async def test_delivery_rollup_locks_the_association_row_without_the_key_lock():
