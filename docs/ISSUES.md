@@ -205,7 +205,7 @@ single-instance assumption is documented where the `LISTEN` loop landed
 - Tracked in: `services/pipeline/.../dispatcher/repo.py`, ROADMAP §10;
   found in the Slice A whole-branch review.
 
-**M3-D (PR #22):** in-process concurrency is 12 across two queues (`default`
+**M3-D (2026-09-21, PR #22):** in-process concurrency is 12 across two queues (`default`
 8 / `bytes` 4); the one non-atomic ledger leg S-C found (`ingest_files`
 settled → fetching) is a compare-and-set; ITEMIZE's `flow_stats` bump is
 batched. Multi-instance stays a deployment option, not a slice: the periodic
