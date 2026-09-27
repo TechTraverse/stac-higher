@@ -234,9 +234,11 @@ services:
   # hold /var/run/docker.sock itself: that is unrestricted control of the host
   # daemon, and the pipeline is the process that also holds the DB URL and the
   # credentials master key. This HAProxy allowlist is the auditable seam —
-  # container create/start/wait/logs/remove and (C-2) image inspect/pull are
-  # permitted, everything else (exec, volumes, networks, swarm, the daemon
-  # socket's write API) returns 403. P9-A verified exactly this configuration.
+  # container create/start/wait/logs/remove and (C-2) the image endpoints
+  # (see SEC2 below) are permitted, everything else (exec, volumes, networks,
+  # swarm, the daemon socket's write API) returns 403. P9-A verified the
+  # container-only configuration (CONTAINERS=1, POST=1, everything else 0);
+  # C-2 added IMAGES=1 on top of it.
   #
   # RESIDUAL RISK, documented rather than hidden (ADR 0013): create/start with
   # arbitrary HostConfig can still request bind mounts and privileged flags.
@@ -244,10 +246,11 @@ services:
   # is not published and not on the run network), and our executor never asks
   # for a mount (the revision's code travels in the environment instead).
   #
-  # C-2 (ADR 0021, spec §8.5): IMAGES=1 lets the pipeline pull (and delete)
-  # images on the daemon. The executor pulls only digests that exist as an
-  # approved/flagged container_images row, and it is still the proxy's only
-  # client. NETWORKS, VOLUMES and EXEC stay off.
+  # C-2 (ADR 0021, spec §8.5): IMAGES=1 lets the pipeline pull, push, tag,
+  # delete, load and fromSrc-import images on the daemon (see SEC2 below).
+  # The executor pulls only digests that exist as an approved/flagged
+  # container_images row, and it is still the proxy's only client. NETWORKS,
+  # VOLUMES and EXEC stay off.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0
     environment:
@@ -537,8 +540,10 @@ networks:
   # can also reach every port this compose file publishes: Postgres 5433,
   # the auth proxy 8081, the API 8082, the pipeline 8083, titiler 8084,
   # tipg 8085, Keycloak 8180, and MinIO 9000/9001. The egress boundary for
-  # registries is this network plus the `allowed_registries` allow-list
-  # above -- not network isolation, which this network does not provide.
+  # registries is this network plus the `allowed_registries` allow-list in
+  # the image policy file (infra/image-policy/default.json, or the
+  # PROCESS_IMAGE_POLICY_FILE override) -- not network isolation, which this
+  # network does not provide.
   scanner-egress:
     driver: bridge
 

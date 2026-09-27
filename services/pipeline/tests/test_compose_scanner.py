@@ -39,5 +39,7 @@ def test_the_pipeline_names_the_scanner_network_and_the_hub_credential():
     assert "IMAGE_SCANNER_IMAGE=${IMAGE_SCANNER_IMAGE:-stac-higher-image-scanner:local}" in pipeline
     assert "REGISTRY_DOCKERHUB_USER=${REGISTRY_DOCKERHUB_USER:-}" in pipeline
     assert "REGISTRY_DOCKERHUB_TOKEN=${REGISTRY_DOCKERHUB_TOKEN:-}" in pipeline
-    # The pipeline itself never joins the scanner's network.
-    assert "scanner-egress\n" not in pipeline.split("environment:", 1)[0]
+    # The pipeline itself never joins the scanner's network. The env line
+    # ends with `scanner-egress}` (the default value's suffix), so it cannot
+    # false-match a `- scanner-egress` networks-list entry.
+    assert "- scanner-egress" not in pipeline
