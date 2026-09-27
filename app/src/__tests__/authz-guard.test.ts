@@ -261,4 +261,33 @@ describe("route-supplied audit detail (C-3)", () => {
       status: 202,
     });
   });
+
+  it("cannot spoof path/method/outcome/status but a route-specific field like reason survives (controller ruling F4)", async () => {
+    const ctx = makeContext("POST", "/api/images", authed(["operator"]));
+    const next = vi.fn(async () => {
+      (ctx.locals as { auditDetail?: Record<string, unknown> }).auditDetail = {
+        path: "/spoofed",
+        method: "GET",
+        outcome: "x",
+        status: 1,
+        reason: "r",
+      };
+      return new Response(JSON.stringify({ id: "img-2" }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await applyApiGuard(ctx, next);
+
+    expect(mockWriteAudit).toHaveBeenCalledTimes(1);
+    const entry = mockWriteAudit.mock.calls[0][0];
+    expect(entry.detail).toMatchObject({
+      path: "/api/images",
+      method: "POST",
+      outcome: "allowed",
+      status: 202,
+      reason: "r",
+    });
+  });
 });

@@ -122,11 +122,13 @@ export async function applyApiGuard(
     action: gate.action,
     resourceType: gate.resourceType,
     resourceId,
-    // Route-supplied detail sits BENEATH the guard's own keys, so a route
-    // can never rewrite the outcome or status of its own audit row.
+    // Route-supplied detail sits BENEATH the guard's own keys, so a route can
+    // never rewrite the request-derived method/path, or the outcome/status,
+    // of its own audit row (security: a route must not be able to spoof the
+    // audit trail of the very action it is performing).
     detail: {
-      ...requestDetail,
       ...(context.locals.auditDetail ?? {}),
+      ...requestDetail,
       outcome: "allowed",
       status: response.status,
     },
