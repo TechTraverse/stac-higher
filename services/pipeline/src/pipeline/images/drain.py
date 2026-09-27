@@ -599,10 +599,12 @@ async def drain_one(
             )
 
     stored = scan_result_to_json(result)
-    if kind == "rescan":
-        # The scanner's own tag_drift is always null (C-2); the pipeline's
-        # HEAD is the record (spec §8.2, §5).
-        stored["tag_drift"] = drift
+    # F10 (fix round 1): unconditional -- the scanner's own tag_drift is
+    # untrusted (an admission's scanner never runs a HEAD, but nothing stops
+    # it from writing a tag_drift into result.json anyway); `drift` is the
+    # pipeline's own record, always None for an admission or when no check
+    # ran, and must always win, never merged with or gated on `kind`.
+    stored["tag_drift"] = drift
     stored = {**stored, "verdict": verdict_json, "diff": diff}
     finished = await repo.finish_scan(
         scan.id,

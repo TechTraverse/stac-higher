@@ -793,6 +793,39 @@ async def test_an_admission_stores_a_null_diff_and_never_heads_the_tag():
     assert IMG not in repo.tag_digests
 
 
+# ---------------------------------------------------------------------------
+# Fix round 1 (F10): the drain's own tag_drift assignment must be
+# unconditional -- an admission's SCANNER is untrusted and nothing stops it
+# from writing its own tag_drift into result.json even though it never runs
+# a HEAD; the drain must overwrite it with the pipeline's record (always
+# None for an admission), not merely skip writing over it.
+# ---------------------------------------------------------------------------
+
+
+async def test_an_admissions_own_lying_tag_drift_is_never_stored():
+    repo = repo_with()
+    lie = {"current_digest": MOVED, "drifted": True}
+    outcome = await drain(repo, Scanner(result_doc(tag_drift=lie)))
+    assert outcome.image_status == "approved"
+    assert repo.scans[SCAN]["result"]["tag_drift"] is None
+    assert IMG not in repo.tag_digests
+
+
+async def test_a_digest_folds_lying_tag_drift_is_never_stored():
+    """The same lie, on the digest-fold path (spec §9.1): the provisional
+    scan's own untrusted tag_drift must not survive the merge either."""
+    repo = repo_with()
+    repo.add_image(
+        id=OTHER, reference=REF, tag_at_add="3.12", status="approved", digest=DIGEST,
+        sbom_ref=f"scans/{OTHER}/{OLD}/sbom.syft.json",
+    )
+    lie = {"current_digest": MOVED, "drifted": True}
+    outcome = await drain(repo, Scanner(result_doc(tag_drift=lie)))
+    assert outcome.image_id == OTHER and outcome.image_status == "approved"
+    assert repo.scans[SCAN]["result"]["tag_drift"] is None
+    assert OTHER not in repo.tag_digests
+
+
 async def test_a_rescan_records_where_the_tag_points_now():
     repo = rescan_repo()
     drift = Drift({"current_digest": MOVED, "drifted": True})
