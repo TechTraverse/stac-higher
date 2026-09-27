@@ -162,7 +162,18 @@ async def resolve_run_image(
             raise ImagePolicyUnavailable(str(err)) from err
     row = await repo.get_image(runtime.image_id or "")
     check_user_image_launchable(runtime, row, scan_window_days=policy.scan_window_days, now=now)
-    assert row is not None  # check_user_image_launchable raised otherwise
+    if row is None:
+        # check_user_image_launchable raises on a None row (the
+        # row-not-found path) before returning here -- this is a defensive
+        # backstop, not a reachable branch in normal operation, but it must
+        # be an explicit raise: a bare `assert` is stripped under `python
+        # -O`, which would otherwise crash on `row.reference` below with an
+        # AttributeError instead of the controlled `image_not_approved`
+        # path (final-review fix wave item 7).
+        raise ImageUnusable(
+            f"image_not_approved: image {runtime.image_id} "
+            f"({runtime.image_reference}@{runtime.image_digest}) is not in the registry"
+        )
     try:
         auth = await resolve_registry_auth(row, repo=repo, settings=settings, master_key=master_key)
     except RegistryCredentialGone as err:

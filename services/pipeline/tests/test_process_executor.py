@@ -13,6 +13,7 @@ import json
 import pytest
 
 from pipeline.config import Settings
+from pipeline.images.policy import load_image_policy
 from pipeline.process.config import (
     NETWORK_LEVELS,
     EnvEntry,
@@ -39,6 +40,7 @@ from pipeline.process.docker_executor import (
 from pipeline.process.executor import ExecutorUnavailable, ExitStatus, RunHandle
 from pipeline.process.inputs import input_env
 from pipeline.process.launch import (
+    ImageUnusable,
     NetworkCapExceeded,
     RuntimeImageUnavailable,
     SecretResolutionError,
@@ -46,6 +48,7 @@ from pipeline.process.launch import (
     check_network_cap,
     execute_run,
     resolve_env,
+    resolve_run_image,
     resolve_runtime_image,
 )
 from pipeline.process.logs import TRUNCATION_MARKER, cap, store_run_log
@@ -843,3 +846,41 @@ def test_a_platform_image_gets_no_home_default():
     )
     assert "HOME" not in spec.env
     assert spec.user_image is False and spec.entrypoint == ()
+
+
+@pytest.mark.asyncio
+async def test_resolve_run_image_raises_cleanly_if_the_row_check_is_bypassed(monkeypatch):
+    """Item 7: `check_user_image_launchable` already raises `ImageUnusable`
+    on a None row (the row-not-found path) before `resolve_run_image` ever
+    reaches its old `assert row is not None`. That assert was purely
+    defensive -- and a bare assert in control flow is stripped under
+    `python -O`, which would then crash on `row.reference` with an
+    AttributeError instead of the controlled `image_not_approved` path. The
+    guard can never actually let a None row through in normal operation, so
+    it is neutralised here to prove the replacement raise, not the assert,
+    is what now stands between a None row and that attribute access."""
+    import datetime as local_dt
+
+    import pipeline.process.launch as launch_module
+    from _images_fake import FakeImagesRepo
+
+    monkeypatch.setattr(launch_module, "check_user_image_launchable", lambda *a, **k: None)
+    runtime = parse_process_runtime(
+        {
+            "kind": "container",
+            "image": {
+                "id": "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
+                "reference": "ghcr.io/example/tool",
+                "digest": "sha256:" + "a" * 64,
+            },
+        }
+    )
+    with pytest.raises(ImageUnusable, match="image_not_approved"):
+        await resolve_run_image(
+            runtime,
+            settings(),
+            repo=FakeImagesRepo(),
+            policy=load_image_policy(),
+            master_key=None,
+            now=local_dt.datetime.now(local_dt.UTC),
+        )
