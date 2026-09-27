@@ -575,18 +575,32 @@ async def test_ruling2_a_revoked_existing_row_gets_a_clear_reason():
 
 @pytest.mark.asyncio
 async def test_fake_finish_scan_only_finishes_a_running_scan():
-    """Item 3: mirrors the PgImagesRepo `AND status = 'running'` guard."""
-    repo = repo_with()
-    repo.scans[SCAN]["status"] = "failed"
-    repo.scans[SCAN]["result"] = {
-        "version": 1, "kind": "admission", "reference": REF, "tag": "3.12-slim",
-        "error": "the scan stalled",
-    }
-    changed = await repo.finish_scan(
+    """Item 3: mirrors the PgImagesRepo `AND status = 'running'` guard --
+    seeded the same way as the DB integration test (fix round 2): the scan
+    is 'running' before the first finish, so the first finish actually
+    exercises the guard's PASS case, not just its refusal case."""
+    repo = FakeImagesRepo(clock=NOW)
+    repo.add_image(id=IMG, reference=REF, tag_at_add="3.12-slim", status="scanning")
+    repo.add_scan(SCAN, IMG, status="running", started_at=NOW)
+
+    first = await repo.finish_scan(
+        SCAN,
+        status="failed",
+        result={
+            "version": 1, "kind": "admission", "reference": REF, "tag": "3.12-slim",
+            "error": "the scan stalled",
+        },
+        findings_ref=None,
+        log_ref=None,
+        executor_handle=None,
+    )
+    assert first is True
+
+    second = await repo.finish_scan(
         SCAN, status="done", result={"version": 1}, findings_ref=None, log_ref=None,
         executor_handle="c1",
     )
-    assert changed is False
+    assert second is False
     assert repo.scans[SCAN]["status"] == "failed"
     assert repo.scans[SCAN]["result"]["error"] == "the scan stalled"
 

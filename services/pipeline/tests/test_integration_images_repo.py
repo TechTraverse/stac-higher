@@ -503,6 +503,14 @@ async def test_finish_scan_does_not_overwrite_an_already_finished_scan(conn):
         (image_id,) = await cur.fetchone()
         cur = await conn.execute(INSERT_SCAN_SQL, (image_id, "admission"))
         (scan_id,) = await cur.fetchone()
+        # finish_scan only writes a row still 'running' (the guard under
+        # test) -- INSERT_SCAN_SQL seeds 'pending', so move it to 'running'
+        # on this test's own row first, the same as claim_pending_scan would.
+        await conn.execute(
+            "UPDATE stac_higher.image_scans SET status = 'running', started_at = now()"
+            " WHERE id = %s::uuid",
+            (scan_id,),
+        )
 
         repo = PgImagesRepo(DATABASE_URL)
         first = await repo.finish_scan(
