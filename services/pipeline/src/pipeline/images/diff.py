@@ -7,9 +7,10 @@ history read it, and the alert-fatigue rule keys off it (new findings, a new
 KEV, a verdict flip), never off raw counts.
 
 The comparison is over the two stored SUMMARIES (spec §6.4): ``kev`` (the
-complete KEV list) and ``top`` (<= 25 findings, chosen policy-first). A
-finding that falls below the top-25 cut therefore reads as ``resolved``
-although the scanner may still see it; ``counts_delta``, taken from the
+complete KEV list) and ``top`` (<= 25 findings, chosen policy-first). The
+top-25 cut caveat is symmetric: a finding that falls below it reads as
+``resolved``, and one that rises into it reads as ``new``, although the
+scanner may have seen both all along; ``counts_delta``, taken from the
 complete counts, is the authoritative "how many" (ISSUES I-140). Diffing the
 two full Grype JSON files would be exact, but they are large, untrusted and
 object-stored, while the summaries are already parsed and validated.
