@@ -216,6 +216,36 @@ def test_an_unreachable_daemon_is_an_outage_not_a_pull_failure():
     assert not isinstance(err.value, ImagePullFailed)
 
 
+def test_a_reference_half_that_is_not_a_valid_image_reference_is_refused():
+    engine = Engine()
+    with pytest.raises(ImagePullFailed, match="not pinned by digest"):
+        executor(engine).launch(spec(image=f"NOTVALID@{DIGEST}"))
+    assert engine.calls == []
+
+
+@pytest.mark.parametrize("status", [400, 422])
+def test_an_inspect_400_or_422_is_a_pull_failure_that_spends_an_attempt(status):
+    engine = Engine(
+        inspect_error=EngineHTTPError(
+            f"docker GET failed: {status}", status=status, detail="bad reference"
+        )
+    )
+    with pytest.raises(ImagePullFailed):
+        executor(engine).launch(spec())
+
+
+@pytest.mark.parametrize("status", [403, 500, 503])
+def test_an_inspect_403_or_5xx_stays_an_outage(status):
+    engine = Engine(
+        inspect_error=EngineHTTPError(
+            f"docker GET failed: {status}", status=status, detail="daemon trouble"
+        )
+    )
+    with pytest.raises(ExecutorUnavailable) as err:
+        executor(engine).launch(spec())
+    assert not isinstance(err.value, ImagePullFailed)
+
+
 def test_a_process_container_is_labelled_with_its_kind_and_process():
     engine = Engine()
     executor(engine).launch(spec())

@@ -42,7 +42,7 @@ import urllib.request
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from pipeline.images.reference import is_image_digest
+from pipeline.images.reference import is_image_digest, is_image_reference
 from pipeline.process.executor import (
     Executor,
     ExecutorUnavailable,
@@ -215,7 +215,7 @@ class DockerExecutor(Executor):
         on the daemon; a tag of the same repository is irrelevant.
         """
         reference, sep, digest = image.partition("@")
-        if not sep or not is_image_digest(digest):
+        if not sep or not is_image_reference(reference) or not is_image_digest(digest):
             raise ImagePullFailed(
                 f"refusing to launch a user image not pinned by digest: {image!r}"
             )
@@ -223,7 +223,19 @@ class DockerExecutor(Executor):
             self._request("GET", f"/images/{urllib.parse.quote(image, safe='/:@')}/json")
             return
         except EngineHTTPError as err:
-            if err.status != 404:
+            if err.status == 404:
+                pass
+            elif err.status in (400, 422):
+                # The daemon answered with something other than "not found"
+                # or an infrastructure fault -- a malformed reference or
+                # digest it refuses to even look up. That is the image's
+                # problem, not the daemon's, so it spends a pull attempt
+                # like any other ImagePullFailed rather than requeuing
+                # forever as an outage.
+                raise ImagePullFailed(
+                    f"inspecting {image!r} failed: {err.status} {err.detail}"
+                ) from err
+            else:
                 raise
         query = urllib.parse.urlencode({"fromImage": reference, "tag": digest})
         headers = {"X-Registry-Auth": encode_registry_auth(auth)} if auth is not None else None
