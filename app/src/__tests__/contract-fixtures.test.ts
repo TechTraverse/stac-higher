@@ -16,7 +16,7 @@ import {
   ingestConfigSchema,
   ingestExpectationSchema,
 } from "@/lib/associations/schemas";
-import { s3ConfigSchema } from "@/lib/connections/schemas";
+import { registryConfigSchema, s3ConfigSchema } from "@/lib/connections/schemas";
 import { webhookChannelConfigSchema } from "@/lib/notifications/schemas";
 import {
   isStagedHref,
@@ -102,6 +102,10 @@ describe("delivery config contract (tests/contract-fixtures/delivery-config.json
 
 describe("s3 connection config contract (tests/contract-fixtures/s3-connection-config.json)", () => {
   describeDirection("s3-connection-config.json", s3ConfigSchema);
+});
+
+describe("registry connection config contract (tests/contract-fixtures/registry-connection-config.json)", () => {
+  describeDirection("registry-connection-config.json", registryConfigSchema);
 });
 
 describe("ingest expectation contract (tests/contract-fixtures/ingest-expectation.json)", () => {

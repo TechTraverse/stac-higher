@@ -58,6 +58,7 @@ IMAGE_STATUS = _load("image-status.json")
 IMAGE_REFERENCE = _load("image-reference.json")
 IMAGE_POLICY = _load("image-policy.json")
 IMAGE_SCAN_RESULT = _load("image-scan-result.json")
+REGISTRY_CONFIG = _load("registry-connection-config.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -466,3 +467,17 @@ def test_image_policy_evaluate_cases(case):
     verdict = evaluate(result, policy, now=now)
     assert list(verdict.reasons) == case["reasons"]
     assert verdict.passed is (case["reasons"] == [])
+
+
+@pytest.mark.parametrize("case", REGISTRY_CONFIG["cases"], ids=lambda c: c["name"])
+def test_registry_config_cases(case):
+    from pipeline.connections.registry import parse_registry_config
+
+    _check(parse_registry_config, case)
+
+
+def test_registry_config_minimal_parses_to_defaults():
+    from pipeline.connections.registry import parse_registry_config
+
+    parsed = parse_registry_config(REGISTRY_CONFIG["minimal"])
+    assert parsed.host == REGISTRY_CONFIG["defaults"]["host"]

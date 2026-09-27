@@ -268,3 +268,27 @@ describe("parseConnectionUpdate", () => {
     ).toBe(false);
   });
 });
+
+describe("parseConnectionCreate — registry (C-1)", () => {
+  it("accepts a registry with username + password", () => {
+    const result = create({
+      protocol: "registry",
+      config: { host: "ghcr.io" },
+      credentials: { username: "bot", password: "ghp_x" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("requires both credentials: a registry connection exists to pull privately", () => {
+    expect(
+      create({ protocol: "registry", config: { host: "ghcr.io" }, credentials: { username: "bot" } })
+        .success,
+    ).toBe(false);
+    expect(create({ protocol: "registry", config: { host: "ghcr.io" } }).success).toBe(false);
+  });
+
+  it("exposes exactly username/password to secret_ref", async () => {
+    const { CREDENTIAL_KEYS } = await import("@/lib/connections/schemas");
+    expect(CREDENTIAL_KEYS.registry).toEqual(["username", "password"]);
+  });
+});

@@ -18,6 +18,7 @@ import { authzError } from "@/lib/authz/guard";
 import { canMutate, isAdmin } from "@/lib/authz/permissions";
 import { getCollectionSettings } from "@/lib/collections/settings";
 import { getConnection } from "@/lib/connections/storage";
+import { REGISTRY_NOT_A_FLOW_MESSAGE } from "@/lib/connections/schemas";
 import { jsonResponse } from "@/lib/http/response";
 import { getProcess } from "@/lib/processes/storage";
 import { getAssociation } from "./storage";
@@ -133,6 +134,11 @@ export async function resolveUsableConnection(
         error: "connection_id must reference a connection in one of your groups",
       }),
     };
+  }
+  // C-1 (container-images spec §5): a registry connection is image pull
+  // credentials for processes. No adapter can list or move files through it.
+  if (connection.protocol === "registry") {
+    return { response: jsonResponse(400, { error: REGISTRY_NOT_A_FLOW_MESSAGE }) };
   }
   return { protocol: connection.protocol, group_id: connection.group_id };
 }

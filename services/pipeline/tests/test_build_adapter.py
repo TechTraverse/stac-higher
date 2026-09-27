@@ -60,3 +60,13 @@ def test_build_adapter_reserved_protocol():
     # stac-api is reserved; the factory raises NotImplementedError → build error.
     with pytest.raises(AdapterBuildError):
         build_adapter(_conn(protocol="stac-api", config={}), KEY, ALLOW)
+
+
+def test_a_registry_connection_is_not_a_storage_adapter():
+    with pytest.raises(AdapterBuildError, match="image pull credentials"):
+        connection = _conn(
+            protocol="registry",
+            config={"host": "ghcr.io"},
+            creds={"username": "u", "password": "p"},
+        )
+        build_adapter(connection, KEY, ALLOW)

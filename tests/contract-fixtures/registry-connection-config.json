@@ -1,0 +1,21 @@
+{
+  "$comment": "C-1 (container-images spec §5): the `registry` connection's config: {host}, a bare registry hostname with an optional port. Credentials are {username, password} (a PAT, an ECR token, a robot account) sealed in the existing envelope. Validated by registryConfigSchema (app/src/lib/connections/schemas.ts, strict: lowercase only) and parse_registry_config (pipeline/connections/registry.py, which strips and case-folds). Both host checks reuse the image reference grammar's HOST fragment (image-reference.json) rather than a separate regex, so every host a credential can be configured for is a host an image reference can name. Docker Hub's short host `docker.io` is probed at registry-1.docker.io.",
+  "minimal": { "host": "ghcr.io" },
+  "defaults": { "host": "ghcr.io" },
+  "cases": [
+    { "name": "GHCR", "config": { "host": "ghcr.io" }, "app": "accept", "pipeline": "accept" },
+    { "name": "a private ECR host", "config": { "host": "123456789012.dkr.ecr.us-gov-west-1.amazonaws.com" }, "app": "accept", "pipeline": "accept" },
+    { "name": "Docker Hub by its short name", "config": { "host": "docker.io" }, "app": "accept", "pipeline": "accept" },
+    { "name": "a host with a port", "config": { "host": "registry.example.com:5000" }, "app": "accept", "pipeline": "accept" },
+    { "name": "a host with a scheme", "config": { "host": "https://ghcr.io" }, "app": "reject", "pipeline": "reject" },
+    { "name": "a host with a path", "config": { "host": "ghcr.io/example" }, "app": "reject", "pipeline": "reject" },
+    { "name": "a blank host", "config": { "host": "   " }, "app": "reject", "pipeline": "reject" },
+    { "name": "no host", "config": {}, "app": "reject", "pipeline": "reject" },
+    { "name": "a numeric host", "config": { "host": 5 }, "app": "reject", "pipeline": "reject" },
+    { "name": "a label with a leading hyphen", "config": { "host": "-bad.example.com" }, "app": "reject", "pipeline": "reject" },
+    { "name": "a port with too many digits", "config": { "host": "ghcr.io:123456" }, "app": "reject", "pipeline": "reject" },
+    { "name": "a single-label host (the reference grammar admits no bare label but localhost)", "config": { "host": "myregistry:5000" }, "app": "reject", "pipeline": "reject" },
+    { "name": "uppercase (the writer stores lowercase; the reader folds)", "config": { "host": "GHCR.IO" }, "app": "reject", "pipeline": "accept" },
+    { "name": "an unknown key", "config": { "host": "ghcr.io", "insecure": true }, "app": "reject", "pipeline": "accept" }
+  ]
+}

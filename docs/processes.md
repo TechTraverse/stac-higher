@@ -456,6 +456,7 @@ you can name are exactly that protocol's credential fields:
 | `s3` | `access_key_id`, `secret_access_key`, `session_token` |
 | `ssh`, `sftp` | `username`, `password`, `private_key`, `passphrase` |
 | `ftp`, `ftps` | `username`, `password` |
+| `registry` | `username`, `password` |
 
 and the connection must belong to **the process's own group**. The deploy is
 refused otherwise — a missing connection and one in another group give the same

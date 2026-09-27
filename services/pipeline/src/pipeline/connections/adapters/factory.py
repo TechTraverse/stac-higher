@@ -2,6 +2,7 @@
 
 Keyed on ``protocol``. ``ssh`` and ``sftp`` share :class:`SftpAdapter` (the SSH
 transport carries the SFTP subsystem). ``stac-api`` is reserved and raises.
+``registry`` holds pull credentials and raises too.
 """
 
 from __future__ import annotations
@@ -36,6 +37,10 @@ def adapter_for(
         return FtpAdapter(config, credentials, allow_hosts=allow_hosts)
     if protocol == "ftps":
         return FtpsAdapter(config, credentials, allow_hosts=allow_hosts)
+    if protocol == "registry":
+        raise NotImplementedError(
+            "registry connections hold image pull credentials; they carry no files"
+        )
     if protocol == "stac-api":
         raise NotImplementedError("reserved for a future release")
     raise ValueError(f"unknown connection protocol: {protocol!r}")

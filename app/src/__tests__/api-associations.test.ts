@@ -245,6 +245,14 @@ describe("POST /api/collections/[id]/connections", () => {
     expect(createAssociation).not.toHaveBeenCalled();
   });
 
+  it("refuses a registry connection as a data flow (C-1: it holds pull credentials, not files)", async () => {
+    vi.mocked(getConnection).mockResolvedValue({ ...s3Connection, protocol: "registry" } as ApiConnection);
+    const res = await call(createRoute, authed(["operator"]), { body: validCreateBody });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/registry connection/);
+    expect(createAssociation).not.toHaveBeenCalled();
+  });
+
   it("maps a duplicate association to 409", async () => {
     vi.mocked(createAssociation).mockRejectedValue(new DuplicateAssociationError());
     const res = await call(createRoute, authed(["operator"]), { body: validCreateBody });

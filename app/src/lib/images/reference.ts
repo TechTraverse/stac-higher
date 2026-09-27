@@ -19,6 +19,12 @@ export const IMAGE_REFERENCE_RE = new RegExp(`^${HOST}(?:/${COMPONENT})+$`);
 export const IMAGE_DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 export const IMAGE_REFERENCE_MAX_LENGTH = 255;
 
+/** The registry-host fragment on its own (C-1: the `registry` connection's
+ * `config.host` reuses this exact grammar — a dotted name or `localhost`,
+ * optional port — so every host a credential can be configured for is a host
+ * an image reference can name). */
+export const IMAGE_HOST_RE = new RegExp(`^${HOST}$`);
+
 export function isImageReference(value: string): boolean {
   return value.length <= IMAGE_REFERENCE_MAX_LENGTH && IMAGE_REFERENCE_RE.test(value);
 }
