@@ -204,3 +204,74 @@ def parse_scan_result(raw: Any) -> ScanResult:
         top=tuple(_finding(f, i) for i, f in enumerate(top)),
         tag_drift=drift,
     )
+
+
+# ---------------------------------------------------------------------------
+# C-2: what the drain STORES in image_scans.result. The scanner's document is
+# untrusted, so the stored copy is rebuilt from the parsed ScanResult (unknown
+# keys dropped, types normalized), never the raw bytes.
+# ---------------------------------------------------------------------------
+
+ERROR_MAX_CHARS = 1000
+
+
+def failure_result(kind: str, reference: str, tag: str, error: str) -> dict[str, Any]:
+    """A failed scan's document (Decision 1): its identity plus ``error``,
+    the shape both C-1 readers accept."""
+    message = (error or "").strip() or "scan failed"
+    return {
+        "version": SCAN_RESULT_VERSION,
+        "kind": kind,
+        "reference": reference,
+        "tag": tag,
+        "error": message[:ERROR_MAX_CHARS],
+    }
+
+
+def _finding_json(f: Finding) -> dict[str, Any]:
+    return {
+        "id": f.id,
+        "severity": f.severity,
+        "package": f.package,
+        "version": f.version,
+        "fixed_in": f.fixed_in,
+        "kev": f.kev,
+        "epss": f.epss,
+        "risk": f.risk,
+        "published_at": f.published_at,
+    }
+
+
+def _tag_drift_json(drift: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Rebuilt as exactly ``{current_digest, drifted}`` -- never the raw dict,
+    which may carry unknown keys the scanner is not trusted to add."""
+    if drift is None:
+        return None
+    return {"current_digest": drift.get("current_digest"), "drifted": bool(drift.get("drifted"))}
+
+
+def scan_result_to_json(result: ScanResult) -> dict[str, Any]:
+    """The canonical section 6.4 document for a parsed result."""
+    if result.error is not None:
+        return failure_result(result.kind, result.reference, result.tag, result.error)
+    return {
+        "version": SCAN_RESULT_VERSION,
+        "kind": result.kind,
+        "reference": result.reference,
+        "tag": result.tag,
+        "digest": result.digest,
+        "platform_digest": result.platform_digest,
+        "platform": dict(result.platform or {}),
+        "size_bytes": result.size_bytes,
+        "config": dict(result.config or {}),
+        "scanner": dict(result.scanner or {}),
+        "sbom_ref": result.sbom_ref,
+        "findings_ref": result.findings_ref,
+        "counts": dict(result.counts),
+        "fixed_counts": dict(result.fixed_counts),
+        "kev": list(result.kev),
+        "max_risk": result.max_risk,
+        "top": [_finding_json(f) for f in result.top],
+        "tag_drift": _tag_drift_json(result.tag_drift),
+        "error": None,
+    }
