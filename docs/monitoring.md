@@ -53,8 +53,9 @@ over open rows (the `collection_id` anchor joined in Phase 7's migration 021).
 Lifecycle: `firing → acknowledged → resolved`. **Ack suppresses notification,
 not detection** — the monitor keeps bumping `last_seen`. A manual resolve with
 the condition still true re-fires as a NEW row, which is what re-notifies.
-Group scoping is derived (alert → connection | channel | collection →
-group, coalesced in that order since Phase 7), never stored.
+Group scoping is derived (alert → connection | channel | collection | process
+→ group, coalesced in that order; the process leg since C-4), never stored.
+Webhook payloads carry `process_id` for process-anchored alerts.
 
 Routes: `GET /api/alerts` (member+, own groups; admin all;
 `?state=firing|acknowledged|resolved|open`, `?limit`); operator+ audited

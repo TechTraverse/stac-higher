@@ -39,6 +39,7 @@ class NotifiableAlert:
     #: channel's group for channel-anchored alerts, or the collection's
     #: settings group for collection-anchored alerts (P7-H). None when the
     #: anchor row is gone or the collection is unowned — nothing to notify.
+    #: C-4: a process-anchored alert takes its process's group.
     group_id: str | None
     connection_id: str | None = None
     association_id: str | None = None
@@ -49,6 +50,9 @@ class NotifiableAlert:
     collection_id: str | None = None
     first_seen: dt.datetime | None = None
     last_seen: dt.datetime | None = None
+    #: The effective process of a process-anchored alert (its own
+    #: ``process_id``, else the parent of its ``source_id``); None otherwise.
+    process_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,13 +156,19 @@ class PgNotifyRepo(NotifyRepo):
         " LEFT JOIN stac_higher.notification_channels nch ON nch.id = a.channel_id"
         " LEFT JOIN stac_higher.collection_settings cs"
         "   ON cs.collection_id = a.collection_id"
+        # C-4: process-anchored alerts (process_failed, process_rate_limited,
+        # process_image_flagged; process_stalled through its source) route
+        # to the process's group. A deleted process routes nowhere.
+        " LEFT JOIN stac_higher.process_sources ps ON ps.id = a.source_id"
+        " LEFT JOIN stac_higher.processes pr"
+        "   ON pr.id = COALESCE(a.process_id, ps.process_id) AND pr.deleted_at IS NULL"
     )
     _ALERT_COLUMNS = (
         "SELECT a.id, a.source, a.kind, a.message,"
-        " COALESCE(c.group_id, nch.group_id, cs.group_id),"
+        " COALESCE(c.group_id, nch.group_id, cs.group_id, pr.group_id),"
         " a.connection_id, a.association_id, a.channel_id,"
         " c.name, COALESCE(a.collection_id, cc.collection_id),"
-        " a.first_seen, a.last_seen"
+        " a.first_seen, a.last_seen, pr.id"
     )
 
     @staticmethod
@@ -176,6 +186,7 @@ class PgNotifyRepo(NotifyRepo):
             collection_id=r[9],
             first_seen=r[10],
             last_seen=r[11],
+            process_id=str(r[12]) if r[12] else None,
         )
 
     async def list_unnotified_alerts(self) -> list[NotifiableAlert]:  # pragma: no cover

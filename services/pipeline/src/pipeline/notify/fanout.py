@@ -123,6 +123,7 @@ def build_payload(alert: NotifiableAlert) -> bytes:
                 "connection_name": alert.connection_name,
                 "association_id": alert.association_id,
                 "collection_id": alert.collection_id,
+                "process_id": alert.process_id,
                 "first_seen": _iso(alert.first_seen),
                 "last_seen": _iso(alert.last_seen),
             },
