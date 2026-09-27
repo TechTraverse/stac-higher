@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from pipeline.connections import build as build_mod
+from pipeline.connections import probe as probe_mod
 from pipeline.connections.envelope import load_master_key, seal
 from pipeline.connections.probe import evaluate_test_outcome, run_adapter_test
 from pipeline.connections.repo import ConnectionRow
@@ -133,3 +136,32 @@ async def test_run_adapter_test_never_leaks_credentials_on_adapter_error(monkeyp
     # message is the error TYPE only — no credential material echoed.
     assert "s3cr3t" not in result["message"]
     assert result["message"] == "test error: RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_registry_connections_take_the_registry_probe(monkeypatch):
+    async def fake(connection, master_key, allow_hosts):
+        return {"ok": True, "message": "registry ok"}
+
+    monkeypatch.setattr(probe_mod, "test_registry_connection", fake)
+    connection = _conn(protocol="registry", config={"host": "ghcr.io"})
+    result = await run_adapter_test(connection, KEY, frozenset())
+    assert result == {"ok": True, "message": "registry ok"}
+    assert evaluate_test_outcome("registry", None, result).connection_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_registry_probe_exception_is_converted_not_raised(monkeypatch):
+    """Defense in depth: even if check_registry (or the decrypt/parse step
+    ahead of it) somehow raised something unforeseen, run_adapter_test's
+    "never raises" promise must still hold for registry connections, the
+    same as it already does for the adapter path."""
+
+    async def boom(connection, master_key, allow_hosts):
+        raise RuntimeError("secret-should-not-appear s3cr3t")
+
+    monkeypatch.setattr(probe_mod, "test_registry_connection", boom)
+    connection = _conn(protocol="registry", config={"host": "ghcr.io"})
+    result = await run_adapter_test(connection, KEY, frozenset())
+    assert result == {"ok": False, "message": "test error: RuntimeError"}
+    assert "s3cr3t" not in result["message"]

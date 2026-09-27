@@ -19,6 +19,8 @@ x-pipeline-build: &pipeline-build
     # local.json) is COPY --from=hardware'd into the image — same reason as
     # `fixtures`: the repo-root .dockerignore excludes infra/ (K-1).
     hardware: ./infra/hardware-profiles
+    # The deployment's image policy (C-1) — same reason as hardware.
+    imagepolicy: ./infra/image-policy
 
 services:
   database:
@@ -362,6 +364,9 @@ services:
       # K-1: where the image published the hardware-profile set the `hardware`
       # build context copied in above. Unset means the repo checkout.
       - PROCESS_HARDWARE_PROFILES_FILE=${PROCESS_HARDWARE_PROFILES_FILE:-/app/share/hardware-profiles/local.json}
+      # C-1: where the image published the image policy the `imagepolicy`
+      # build context copied in above. Unset means the repo checkout.
+      - PROCESS_IMAGE_POLICY_FILE=${PROCESS_IMAGE_POLICY_FILE:-/app/share/image-policy/default.json}
       # GOES spec §3.4: remote input files staged concurrently per run.
       - PROCESS_INPUT_STAGE_CONCURRENCY=${PROCESS_INPUT_STAGE_CONCURRENCY:-4}
     ports:

@@ -47,6 +47,8 @@ over open rows (the `collection_id` anchor joined in Phase 7's migration 021).
 | `job_failure` (Phase 7) | Recent `rejected` `staged_uploads` rows for a collection (`PUSH_ALERT_LOOKBACK_SECONDS`, default 24 h; a resolved-at floor keeps a manual resolve stuck until a NEW rejection) — collection-anchored; group via `collection_settings.group_id` (unowned → admin-only) | `push_rejected` |
 | (notify) | A channel's webhook dead-letters — written by the notify sweep, outside `MONITOR_KINDS`, so the monitor never clobbers it | `webhook_failed` (channel-anchored; auto-resolved by the next successful delivery) |
 
+Declared, no writer yet (`alert-kinds.json` `declared_kinds`): `process_image_flagged` (C-1, container-images spec §10). It will be one open alert per process whose current revision references a user image that is `flagged`, `revoked` or stale, anchored on `process_id` and auto-resolved when the image is approved again or the process moves off it. C-4 lands its writer. Routing will treat it like `process_failed`, and the process health verdict will treat it as degraded, not failing.
+
 Lifecycle: `firing → acknowledged → resolved`. **Ack suppresses notification,
 not detection** — the monitor keeps bumping `last_seen`. A manual resolve with
 the condition still true re-fires as a NEW row, which is what re-notifies.

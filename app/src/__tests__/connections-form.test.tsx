@@ -213,3 +213,20 @@ describe("ConnectionForm — s3 anonymous connections", () => {
     expect(createMock).not.toHaveBeenCalled();
   });
 });
+
+describe("ConnectionForm — registry (C-1)", () => {
+  it("creates a registry connection from its type card", async () => {
+    render(<ConnectionForm open onOpenChange={() => {}} groups={["g1"]} />);
+    fireEvent.click(screen.getByRole("radio", { name: "registry" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "GHCR bot" } });
+    fireEvent.change(screen.getByLabelText("Registry host"), { target: { value: "ghcr.io" } });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "bot" } });
+    fireEvent.change(screen.getByLabelText("Password or token"), { target: { value: "ghp_x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(createMock).toHaveBeenCalled());
+    const payload = createMock.mock.calls[0][0];
+    expect(payload.protocol).toBe("registry");
+    expect(payload.config).toEqual({ host: "ghcr.io" });
+    expect(payload.credentials).toEqual({ username: "bot", password: "ghp_x" });
+  });
+});

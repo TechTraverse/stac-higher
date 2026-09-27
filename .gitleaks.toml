@@ -26,4 +26,11 @@ regexes = [
   # The `.nc` suffix is optional: the manifest fixture's `asset_key` is the
   # bare granule id, while `href`/`key` carry the filename.
   '''OR_ABI-L2-[A-Za-z0-9]+-M\d+_G\d+_s\d+_e\d+_c\d+(\.nc)?''',
+  # The suites' fixed dummy CREDENTIALS_MASTER_KEY: base64 of the ASCII
+  # "0123456789abcdef" twice. Plans under docs/superpowers/plans/ quote test
+  # code verbatim, so it appears outside the allowlisted test paths too.
+  # Exact values only (the raw hex form and its base64) — any other key
+  # there is still flagged.
+  '''MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=''',
+  '''^0123456789abcdef0123456789abcdef$''',
 ]

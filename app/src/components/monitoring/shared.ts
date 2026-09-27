@@ -58,6 +58,7 @@ export const ALERT_KIND_LABEL: Record<string, string> = {
   process_stalled: "process not running",
   process_failed: "process runs dead-lettered",
   process_rate_limited: "process rate ceiling hit",
+  process_image_flagged: "process image flagged",
   webhook_failed: "webhook delivery failed",
 };
 

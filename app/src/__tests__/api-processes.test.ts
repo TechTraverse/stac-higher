@@ -42,6 +42,7 @@ vi.mock("@/lib/collections/settings", () => ({
 vi.mock("@/lib/db/migrate", () => ({ runMigrations: vi.fn(async () => {}) }));
 vi.mock("@/lib/graph/storage", () => ({ loadGraphEdges: vi.fn(async () => []) }));
 vi.mock("@/lib/connections/storage", () => ({ getConnection: vi.fn() }));
+vi.mock("@/lib/images/storage", () => ({ getImageForGate: vi.fn() }));
 
 import type { AuthContext, CanonicalRole } from "@/lib/auth/types";
 import { canManageCollection } from "@/lib/associations/access";
@@ -50,6 +51,8 @@ import { loadGraphEdges } from "@/lib/graph/storage";
 import { collectionNode, processNode } from "@/lib/graph/edges";
 import { getCollectionSettings } from "@/lib/collections/settings";
 import { getConnection } from "@/lib/connections/storage";
+import { getImageForGate } from "@/lib/images/storage";
+import { resetImagePolicyCache } from "@/lib/images/policy";
 import {
   createOutput,
   createProcess,
@@ -149,6 +152,24 @@ function call(
 const INLINE = { kind: "inline_python" as const };
 const RUN_ID = "3a9f1c2e-0000-4000-8000-0000000000d1";
 
+const SNAP = {
+  id: "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
+  reference: "ghcr.io/example/satpy-runtime",
+  digest: "sha256:" + "a".repeat(64),
+};
+function approvedImage(overrides: Record<string, unknown> = {}) {
+  return {
+    id: SNAP.id,
+    reference: SNAP.reference,
+    digest: SNAP.digest,
+    status: "approved",
+    last_scanned_at: new Date(Date.now() - 86_400_000),
+    registry_connection_id: null,
+    registry_connection_group_id: null,
+    ...overrides,
+  } as never;
+}
+
 function run(overrides: Partial<ApiProcessRun> = {}): ApiProcessRun {
   return {
     id: RUN_ID,
@@ -178,6 +199,8 @@ beforeEach(() => {
     archived: false,
   } as never);
   vi.mocked(loadGraphEdges).mockResolvedValue([]);
+  vi.mocked(getImageForGate).mockResolvedValue(null);
+  resetImagePolicyCache();
 });
 
 describe("GET /api/processes", () => {
@@ -293,16 +316,80 @@ describe("GET/PUT/DELETE /api/processes/[id]", () => {
 });
 
 describe("POST /api/processes/[id]/revisions (deploy)", () => {
-  it("refuses the container runtime this slice (spec §4, ADR 0013)", async () => {
+  it("refuses a user image no scan has approved (C-1: 422 image_not_approved)", async () => {
     const res = await call(deployRoute, operator, {
       method: "POST",
-      body: {
-        runtime: { kind: "container", image: "ghcr.io/example/p:1" },
-        code: null,
-      },
+      body: { runtime: { kind: "container", image: SNAP }, code: null },
+    });
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe("image_not_approved");
+    expect(getImageForGate).toHaveBeenCalledWith(SNAP.id);
+    expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["image_stale", { last_scanned_at: new Date(Date.now() - 31 * 86_400_000) }],
+    ["image_digest_mismatch", { digest: "sha256:" + "b".repeat(64) }],
+    ["image_group_mismatch", { registry_connection_id: "c-1", registry_connection_group_id: "weather" }],
+    ["image_not_approved", { status: "flagged" }],
+  ])("answers 422 %s", async (code, overrides) => {
+    vi.mocked(getImageForGate).mockResolvedValue(approvedImage(overrides));
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: { kind: "inline_python_on_image", image: SNAP }, code: "print(1)" },
+    });
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe(code);
+    expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it("deploys kind 2 on an approved, fresh image, snapshot stored verbatim", async () => {
+    vi.mocked(getImageForGate).mockResolvedValue(approvedImage());
+    vi.mocked(deployRevision).mockResolvedValue({ id: REVISION_ID } as never);
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: { kind: "inline_python_on_image", image: SNAP }, code: "print(1)" },
+    });
+    expect(res.status).toBe(201);
+    const input = vi.mocked(deployRevision).mock.calls[0][0];
+    expect(input.runtime).toMatchObject({ kind: "inline_python_on_image", image: SNAP, runtime_image: null });
+  });
+
+  it("fails closed with 503 when the policy cannot be read, and still deploys inline code", async () => {
+    vi.stubEnv("PROCESS_IMAGE_POLICY_FILE", "/nonexistent/policy.json");
+    try {
+      const refused = await call(deployRoute, operator, {
+        method: "POST",
+        body: { runtime: { kind: "container", image: SNAP }, code: null },
+      });
+      expect(refused.status).toBe(503);
+      expect((await refused.json()).code).toBe("image_policy_unavailable");
+
+      vi.mocked(deployRevision).mockResolvedValue({ id: REVISION_ID } as never);
+      const inline = await call(deployRoute, operator, {
+        method: "POST",
+        body: { runtime: INLINE, code: "print(1)" },
+      });
+      expect(inline.status).toBe(201);
+    } finally {
+      vi.unstubAllEnvs();
+      resetImagePolicyCache();
+    }
+  });
+
+  it("400s a container revision that carries code (schema, before any DB read)", async () => {
+    const res = await call(deployRoute, operator, {
+      method: "POST",
+      body: { runtime: { kind: "container", image: SNAP }, code: "print(1)" },
     });
     expect(res.status).toBe(400);
-    expect(deployRevision).not.toHaveBeenCalled();
+    expect(getImageForGate).not.toHaveBeenCalled();
+  });
+
+  it("never reads the image registry for an inline revision", async () => {
+    vi.mocked(deployRevision).mockResolvedValue({ id: REVISION_ID } as never);
+    await call(deployRoute, operator, { method: "POST", body: { runtime: INLINE, code: "print(1)" } });
+    expect(getImageForGate).not.toHaveBeenCalled();
   });
 
   it("400s an inline_python revision with no code", async () => {

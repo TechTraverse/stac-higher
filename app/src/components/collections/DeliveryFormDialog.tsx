@@ -223,7 +223,7 @@ export function DeliveryFormDialog({
                 <SelectValue placeholder="Select a connection" />
               </SelectTrigger>
               <SelectContent>
-                {connections.map((c) => (
+                {connections.filter((c) => c.protocol !== "registry").map((c) => (
                   <SelectItem key={c.id} value={c.id}>
                     {c.name} ({c.protocol})
                   </SelectItem>

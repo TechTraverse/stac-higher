@@ -53,6 +53,7 @@ and [`decisions/0015-proxy-write-policy.md`](decisions/0015-proxy-write-policy.m
 | Auth (`AUTH_MODE`, OIDC issuer/client, claims mapping) | Full reference: [`auth.md`](auth.md). Dev-bypass is the default in dev — a static operator identity, so unit tests and e2e need no IdP. |
 | `STAGING_*` | Pipeline-side TTL sweep of abandoned `staging/` uploads. |
 | `PROCESS_HARDWARE_PROFILES_FILE` | Path to the deployment's hardware-profile document (K-1); validated strictly at deploy time and served (minus `backend`) on `GET /api/processes/hardware-profiles`. Unset means the repo checkout's `infra/hardware-profiles/local.json`. |
+| `PROCESS_IMAGE_POLICY_FILE` | Path to the deployment's image policy (C-1, container-images spec §7): allowed registries, size cap, block rules, scan window. It is read only when a revision names a user image (`inline_python_on_image` / `container`). A missing or invalid file makes those deploys fail closed (503 `image_policy_unavailable`), and inline deploys never read it. Unset means the repo checkout's `infra/image-policy/default.json`. The app (`app/src/lib/images/policy.ts`) caches the parsed policy in memory for the life of the process, keyed by path, so editing the file on disk needs an app restart to take effect; the pipeline side (`pipeline/images/policy.py`) reads and reparses the file on every call, so it always sees the current contents. |
 
 ## Astro server routes
 
@@ -104,7 +105,7 @@ requests are rows the pipeline drains (ADR 0004).
 | `/api/processes` | GET, POST | List (member+: own groups; admin: all) / create (operator+, audited) group-owned processes — Phase 9 M5-A |
 | `/api/processes/hardware-profiles` | GET | The deployment's hardware profiles minus their backend blocks, plus the executor backend (member+; K-1) |
 | `/api/processes/[id]` | GET, PUT, DELETE | Get / update / soft-delete a process. `current_revision` is NOT updatable — only a deploy moves it |
-| `/api/processes/[id]/revisions` | GET, POST | List immutable revision snapshots / **deploy** (operator+, audited `deploy`): insert a revision + repoint `current_revision` in one transaction. `runtime.kind: container` is refused this slice (ADR 0013) |
+| `/api/processes/[id]/revisions` | GET, POST | List immutable revision snapshots / **deploy** (operator+, audited `deploy`): insert a revision + repoint `current_revision` in one transaction. `runtime.kind` is `inline_python` \| `inline_python_on_image` \| `container`. A kind 2/3 snapshot must name an approved, fresh, digest-equal image the process's group may use: otherwise **422** with `code` `image_not_approved` \| `image_stale` \| `image_group_mismatch` \| `image_digest_mismatch`, or **503** `image_policy_unavailable` when the policy cannot be read (C-1, ADR 0021) |
 | `/api/processes/[id]/sources` | GET, POST | List / attach a trigger source (operator+ who can also manage the collection; archived collections refused) |
 | `/api/processes/[id]/sources/[sourceId]` | PUT, DELETE | Update trigger/expectation/enabled, or detach. `collection_id` is immutable (unique key + M5-D cycle edge) |
 | `/api/processes/[id]/outputs` | GET, POST | List / attach an output collection (operator+, same collection rules) |

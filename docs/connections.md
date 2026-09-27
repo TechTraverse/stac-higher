@@ -14,7 +14,8 @@ Migration 004 (`app/src/lib/db/migrate.ts`) creates two tables in
 pipeline, which codes against them and never creates them (ADR 0001):
 
 - **`connections`** — one row per endpoint: `protocol`
-  (`ssh|sftp|ftp|ftps|s3|stac-api`), per-protocol `config` jsonb, encrypted
+  (`ssh|sftp|ftp|ftps|s3|stac-api|registry`, migration 030 widened the CHECK),
+  per-protocol `config` jsonb, encrypted
   `credentials` bytea, TOFU `host_key` + `host_key_pinned_at` (SSH family),
   `group_id`, health (`status` `unverified|ok|error`, `last_checked_at`,
   `last_error`). `updated_at` is maintained app-side (user edits only) — the
@@ -31,6 +32,7 @@ pipeline, which codes against them and never creates them (ADR 0001):
 | `ssh` / `sftp` | `{host, port (default 22), root_path (default "/")}` |
 | `ftp` | `{host, port (default 21), root_path (default "/")}` |
 | `ftps` | ftp + `{implicit (default false)}` |
+| `registry` | `{host}`: a bare registry hostname with an optional port (`docker.io`, `ghcr.io`, `123456789012.dkr.ecr.us-gov-west-1.amazonaws.com`). Image pull credentials for user-supplied process images (C-1, ADR 0021). A registry connection cannot carry a data flow (400). |
 | `stac-api` | reserved — create/update reject it ("reserved for a future release") |
 
 ### Per-protocol `credentials` (write-only)
@@ -40,6 +42,7 @@ pipeline, which codes against them and never creates them (ADR 0001):
 | `s3` | `{access_key_id, secret_access_key, session_token?}` |
 | `ssh` / `sftp` | `{username, password?, private_key?, passphrase?}` — at least one of password/private_key |
 | `ftp` / `ftps` | `{username, password}` |
+| `registry` | `{username, password}` (a PAT, an ECR token, a robot account) |
 
 For s3 with `anonymous: true` the credentials are optional and, if present,
 ignored by the adapter. Worked example (no `credentials` key at all):
@@ -123,6 +126,13 @@ The Python pipeline (`services/pipeline`) is the only runtime that decrypts
   `S3Adapter` builds an unsigned boto3 client (`botocore.UNSIGNED`) when
   `anonymous` is set; the egress policy still vets the endpoint host. The s3
   `config` shape is pinned by the `s3-connection-config.json` contract fixture.
+- **Registry check** — `connections/registry.py`'s `check_registry` is
+  `GET https://{host}/v2/` with Basic auth, following a Bearer challenge to its
+  HTTPS token endpoint with the same credentials (`docker.io` is probed at
+  `registry-1.docker.io`). Every host goes through `resolve_pinned`.
+  `registry.py` itself logs nothing; the drain and the health sweep — which
+  runs this same `GET /v2/` against every enabled `registry` connection on
+  its own schedule — log `connection_id` / `protocol` / `ok`.
 - **Bridge jobs** — `pipeline.connection_check_drain` (drains
   `connection_checks`) and `pipeline.connection_health_sweep` (tests enabled
   connections). Both update only health/pin columns, never `updated_at`. Drain

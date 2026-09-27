@@ -1470,6 +1470,120 @@ const MIGRATIONS = [
         WHERE builtin_id IS NOT NULL AND deleted_at IS NULL;
     `,
   },
+  {
+    // C-1 (container-images spec §4, ADR 0021): the platform-wide image
+    // registry (metadata only, never bytes) and its ADR 0004 scan ledger.
+    // The app INSERTs admission rows (C-3); the pipeline claims them FOR
+    // UPDATE SKIP LOCKED, INSERTs its own daily rescan rows, and moves the
+    // image through the §4.3 status machine (C-2/C-4). Stale is computed from
+    // last_scanned_at, never stored.
+    //
+    // digest is NULL only while the tag has not been resolved (pending,
+    // scanning, or an admission that failed before resolving; a revoked
+    // pending row keeps its NULL). UNIQUE (reference, digest) keeps the
+    // default NULLS DISTINCT, so two pending rows for one reference coexist
+    // until the drain dedups them by digest. last_scan_id carries no FK: it
+    // would be circular with image_scans.image_id. registry_connection_id is
+    // ON DELETE RESTRICT; connections are soft-deleted, and a soft-deleted
+    // credential reads as "another group" at the deploy gate, never as a
+    // public image.
+    //
+    // Also: the connections protocol CHECK admits `registry` (spec §5), and
+    // process_revisions gains an expression index on the snapshot's image id.
+    //
+    // Numbering: 029 is K-3's (#11) and may merge after this. The two touch
+    // disjoint objects, so either apply order is safe; K-3 inserts its entry
+    // between 028 and this one (names, not positions, are what is recorded).
+    name: "030_container_images",
+    sql: `
+      ALTER TABLE stac_higher.connections
+        DROP CONSTRAINT IF EXISTS connections_protocol_check;
+      ALTER TABLE stac_higher.connections
+        ADD CONSTRAINT connections_protocol_check
+        CHECK (protocol IN ('ssh','sftp','ftp','ftps','s3','stac-api','registry'));
+
+      CREATE TABLE IF NOT EXISTS stac_higher.container_images (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        reference text NOT NULL,
+        tag_at_add text NOT NULL,
+        digest text,
+        platform_digest text,
+        platform jsonb,
+        size_bytes bigint,
+        config jsonb,
+        status text NOT NULL DEFAULT 'pending'
+          CONSTRAINT container_images_status_check
+          CHECK (status IN ('pending','scanning','approved','rejected','flagged','revoked','scan_failed')),
+        verdict jsonb,
+        sbom_ref text,
+        last_scan_id uuid,
+        last_scanned_at timestamptz,
+        added_by text NOT NULL,
+        registry_connection_id uuid
+          REFERENCES stac_higher.connections(id) ON DELETE RESTRICT,
+        exception_reason text,
+        exception_by text,
+        exception_at timestamptz,
+        exception_expires_at timestamptz,
+        tag_current_digest text,
+        tag_checked_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT container_images_reference_digest_key UNIQUE (reference, digest),
+        CONSTRAINT container_images_digest_format_check CHECK (
+          (digest IS NULL OR digest ~ '^sha256:[a-f0-9]{64}$')
+          AND (platform_digest IS NULL OR platform_digest ~ '^sha256:[a-f0-9]{64}$')
+        ),
+        CONSTRAINT container_images_digest_required_check CHECK (
+          digest IS NOT NULL OR status IN ('pending','scanning','scan_failed','revoked')
+        ),
+        CONSTRAINT container_images_exception_check CHECK (
+          (exception_at IS NULL) = (exception_expires_at IS NULL)
+          AND (exception_at IS NULL) = (exception_reason IS NULL)
+          AND (exception_at IS NULL) = (exception_by IS NULL)
+        )
+      );
+
+      CREATE INDEX IF NOT EXISTS container_images_status_idx
+        ON stac_higher.container_images (status);
+      CREATE INDEX IF NOT EXISTS container_images_rescan_idx
+        ON stac_higher.container_images (last_scanned_at)
+        WHERE status IN ('approved','flagged');
+      CREATE INDEX IF NOT EXISTS container_images_registry_connection_idx
+        ON stac_higher.container_images (registry_connection_id)
+        WHERE registry_connection_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS stac_higher.image_scans (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        image_id uuid NOT NULL
+          REFERENCES stac_higher.container_images(id) ON DELETE CASCADE,
+        kind text NOT NULL
+          CONSTRAINT image_scans_kind_check
+          CHECK (kind IN ('admission','rescan')),
+        status text NOT NULL DEFAULT 'pending'
+          CONSTRAINT image_scans_status_check
+          CHECK (status IN ('pending','running','done','failed')),
+        requested_by text NOT NULL,
+        requested_at timestamptz NOT NULL DEFAULT now(),
+        started_at timestamptz,
+        finished_at timestamptz,
+        executor_handle text,
+        log_ref text,
+        result jsonb,
+        findings_ref text
+      );
+
+      CREATE INDEX IF NOT EXISTS image_scans_image_idx
+        ON stac_higher.image_scans (image_id, requested_at DESC);
+      CREATE INDEX IF NOT EXISTS image_scans_pending_idx
+        ON stac_higher.image_scans (requested_at)
+        WHERE status = 'pending';
+
+      CREATE INDEX IF NOT EXISTS process_revisions_image_id_idx
+        ON stac_higher.process_revisions ((runtime->'image'->>'id'))
+        WHERE runtime->'image'->>'id' IS NOT NULL;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that

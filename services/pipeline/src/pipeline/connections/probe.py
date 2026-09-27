@@ -4,7 +4,8 @@ health/pin decisions both the drain and health-sweep jobs persist.
 Two layers:
 
 - :func:`run_adapter_test` — decrypt credentials, build the adapter, run
-  ``test()``. Egress is enforced inside the adapter. Failures return a
+  ``test()`` (or the registry v2 handshake for ``registry`` connections).
+  Egress is enforced inside the adapter. Failures return a
   ``{ok: False, message}`` result; credentials/host keys are never logged or
   echoed.
 - :func:`evaluate_test_outcome` — a **pure** function turning a protocol, the
@@ -23,6 +24,7 @@ from pipeline.connections.adapters import TestResult
 from pipeline.connections.adapters.tofu import TofuVerdict, evaluate_host_key
 from pipeline.connections.build import AdapterBuildError, build_adapter
 from pipeline.connections.egress import EgressBlocked
+from pipeline.connections.registry import REGISTRY_PROTOCOL, test_registry_connection
 from pipeline.connections.repo import ConnectionRow
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,21 @@ async def run_adapter_test(
     error) — those become ``{ok: False, message}``. Credentials never appear in
     the message or the logs.
     """
+    if connection.protocol == REGISTRY_PROTOCOL:
+        # C-1: a registry is not a storage adapter; its check is the v2
+        # handshake. check_registry is defensive about a hostile registry's
+        # responses, but this catch-all is the same belt-and-suspenders the
+        # adapter path below gets, so an unforeseen exception still cannot
+        # escape run_adapter_test's "never raises" promise.
+        try:
+            return await test_registry_connection(connection, master_key, allow_hosts)
+        except Exception as exc:
+            logger.warning(
+                "registry probe raised",
+                extra={"protocol": connection.protocol, "error_type": type(exc).__name__},
+            )
+            return {"ok": False, "message": f"test error: {type(exc).__name__}"}
+
     try:
         adapter = build_adapter(connection, master_key, allow_hosts)
     except AdapterBuildError as exc:

@@ -120,6 +120,15 @@ const CONFIG_FIELDS: Record<WritableProtocol, FieldDef[]> = {
     ...ftpConfigFields,
     { name: "implicit", label: "Implicit TLS", type: "switch", optional: true },
   ],
+  registry: [
+    {
+      name: "host",
+      label: "Registry host",
+      type: "text",
+      placeholder: "ghcr.io",
+      help: "Bare hostname, no scheme: docker.io, ghcr.io, or an ECR host such as 123456789012.dkr.ecr.us-gov-west-1.amazonaws.com.",
+    },
+  ],
 };
 
 const sshCredFields: FieldDef[] = [
@@ -160,6 +169,10 @@ const CRED_FIELDS: Record<WritableProtocol, FieldDef[]> = {
   sftp: sshCredFields,
   ftp: ftpCredFields,
   ftps: ftpCredFields,
+  registry: [
+    { name: "username", label: "Username", type: "text" },
+    { name: "password", label: "Password or token", type: "password" },
+  ],
 };
 
 function defaultConfig(protocol: WritableProtocol): Record<string, unknown> {
@@ -179,6 +192,8 @@ function defaultConfig(protocol: WritableProtocol): Record<string, unknown> {
       return { host: "", port: 21, root_path: "/" };
     case "ftps":
       return { host: "", port: 21, root_path: "/", implicit: false };
+    case "registry":
+      return { host: "" };
   }
 }
 
@@ -315,6 +330,7 @@ const PROTOCOL_ORDER: readonly WritableProtocol[] = [
   "ssh",
   "ftp",
   "ftps",
+  "registry",
 ];
 
 const PROTOCOL_LABEL: Record<WritableProtocol, string> = {
@@ -323,6 +339,7 @@ const PROTOCOL_LABEL: Record<WritableProtocol, string> = {
   ssh: "SSH",
   ftp: "FTP",
   ftps: "FTPS",
+  registry: "Container registry",
 };
 
 const PROTOCOL_HINT: Record<WritableProtocol, string> = {
@@ -331,6 +348,7 @@ const PROTOCOL_HINT: Record<WritableProtocol, string> = {
   ssh: "Remote host, key auth",
   ftp: "Legacy transfer",
   ftps: "FTP over TLS",
+  registry: "Image pull credentials",
 };
 
 export function ConnectionForm({

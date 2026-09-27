@@ -21,6 +21,22 @@ class AdapterBuildError(Exception):
     or an unsupported protocol). Carries a caller-safe message with no secrets."""
 
 
+def decrypt_credentials(connection: ConnectionRow, master_key: bytes) -> dict:
+    """Decrypt a connection's credential envelope. Raises
+    :class:`AdapterBuildError` with a caller-safe message (never the secret)."""
+    if connection.credentials is None:
+        raise AdapterBuildError("connection has no stored credentials")
+    try:
+        credentials = json.loads(decrypt(connection.credentials, master_key))
+    except EnvelopeError as exc:
+        raise AdapterBuildError(f"credential decryption failed: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise AdapterBuildError("credential payload is not valid JSON") from exc
+    if not isinstance(credentials, dict):
+        raise AdapterBuildError("credential payload is not an object")
+    return credentials
+
+
 def build_adapter(
     connection: ConnectionRow,
     master_key: bytes,
@@ -33,15 +49,7 @@ def build_adapter(
     protocol) so callers can surface one uniform error. Egress is still enforced
     later, inside the adapter's own calls.
     """
-    if connection.credentials is None:
-        raise AdapterBuildError("connection has no stored credentials")
-
-    try:
-        credentials = json.loads(decrypt(connection.credentials, master_key))
-    except EnvelopeError as exc:
-        raise AdapterBuildError(f"credential decryption failed: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise AdapterBuildError("credential payload is not valid JSON") from exc
+    credentials = decrypt_credentials(connection, master_key)
 
     try:
         return adapter_for(

@@ -16,7 +16,7 @@ import {
   ingestConfigSchema,
   ingestExpectationSchema,
 } from "@/lib/associations/schemas";
-import { s3ConfigSchema } from "@/lib/connections/schemas";
+import { registryConfigSchema, s3ConfigSchema } from "@/lib/connections/schemas";
 import { webhookChannelConfigSchema } from "@/lib/notifications/schemas";
 import {
   isStagedHref,
@@ -46,6 +46,19 @@ import {
   processTriggerSchema,
 } from "@/lib/processes/schemas";
 import { hardwareProfileSetSchema } from "@/lib/processes/hardware";
+import {
+  DEPLOY_IMAGE_STATUSES,
+  IMAGE_GATE_REASONS,
+  IMAGE_SCAN_KINDS,
+  IMAGE_SCAN_STATUSES,
+  IMAGE_STATUSES,
+  IMAGE_STATUS_LABEL,
+  LAUNCH_IMAGE_STATUSES,
+  type ImageStatus,
+} from "@/lib/images/status";
+import { isImageDigest, isImageReference } from "@/lib/images/reference";
+import { imagePolicySchema, registryAllowed } from "@/lib/images/policy";
+import { imageScanResultSchema } from "@/lib/images/scan-result";
 
 interface FixtureCase {
   name: string;
@@ -89,6 +102,10 @@ describe("delivery config contract (tests/contract-fixtures/delivery-config.json
 
 describe("s3 connection config contract (tests/contract-fixtures/s3-connection-config.json)", () => {
   describeDirection("s3-connection-config.json", s3ConfigSchema);
+});
+
+describe("registry connection config contract (tests/contract-fixtures/registry-connection-config.json)", () => {
+  describeDirection("registry-connection-config.json", registryConfigSchema);
 });
 
 describe("ingest expectation contract (tests/contract-fixtures/ingest-expectation.json)", () => {
@@ -154,23 +171,23 @@ describe("process trigger contract (tests/contract-fixtures/process-trigger.json
 });
 
 describe("process runtime contract (tests/contract-fixtures/process-runtime.json)", () => {
-  // The fixture's `app` column is the WRITE gate: slice 1 refuses `container`
-  // (spec §4), so every container case is app: reject / pipeline: accept.
+  // The fixture's `app` column is the WRITE gate (network rule); defaults round-trip through the read schema.
   describeUnion(
     "process-runtime.json",
     processRuntimeSchema,
     processRuntimeReadSchema,
   );
 
-  it("the container arm is refused by the write gate, not by the shape", () => {
-    const container = (
-      loadFixture("process-runtime.json") as unknown as UnionFixture
-    ).variants.container.minimal;
-    // The asymmetry the fixture encodes: the contract carries `container` (so
-    // the pipeline reader and any future slice can parse it) while this
-    // slice's write path refuses it.
-    expect(processRuntimeReadSchema.safeParse(container).success).toBe(true);
-    expect(processRuntimeSchema.safeParse(container).success).toBe(false);
+  it("the write gate accepts every kind's minimal document (C-1: the image check is the route's)", () => {
+    const fixture = loadFixture("process-runtime.json") as unknown as UnionFixture;
+    for (const [kind, variant] of Object.entries(fixture.variants)) {
+      expect(processRuntimeSchema.safeParse(variant.minimal).success, kind).toBe(true);
+    }
+    expect(Object.keys(fixture.variants)).toEqual([
+      "inline_python",
+      "inline_python_on_image",
+      "container",
+    ]);
   });
 });
 
@@ -327,6 +344,12 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
       expect(ALERT_KIND_LABEL[kind], `label for ${kind}`).toBeTruthy();
     }
   });
+
+  it("process_image_flagged waits in declared_kinds until C-4 names its writer", () => {
+    expect(fixture.kinds).toContain("process_image_flagged");
+    expect(fixture.declared_kinds).toEqual(["process_image_flagged"]);
+    expect(fixture.monitor_kinds).not.toContain("process_image_flagged");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -374,5 +397,128 @@ describe("built-in extractor registry (tests/contract-fixtures/builtin-extractor
     expect(() =>
       parseBuiltinExtractors({ ...fixture, extractors: [one, one] }),
     ).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C queue, C-1 (container-images spec §3/§4): the image vocabularies and the
+// reference/digest grammar.
+// ---------------------------------------------------------------------------
+
+describe("image status vocabularies (tests/contract-fixtures/image-status.json)", () => {
+  const fixture = loadFixture("image-status.json") as unknown as {
+    image_statuses: string[];
+    deploy_statuses: string[];
+    launch_statuses: string[];
+    scan_kinds: string[];
+    scan_statuses: string[];
+    gate_reasons: string[];
+  };
+
+  it("pins every vocabulary verbatim, order included", () => {
+    expect(fixture.image_statuses).toEqual([...IMAGE_STATUSES]);
+    expect(fixture.deploy_statuses).toEqual([...DEPLOY_IMAGE_STATUSES]);
+    expect(fixture.launch_statuses).toEqual([...LAUNCH_IMAGE_STATUSES]);
+    expect(fixture.scan_kinds).toEqual([...IMAGE_SCAN_KINDS]);
+    expect(fixture.scan_statuses).toEqual([...IMAGE_SCAN_STATUSES]);
+    expect(fixture.gate_reasons).toEqual([...IMAGE_GATE_REASONS]);
+  });
+
+  it("deploy ⊆ launch ⊆ statuses: flagged launches but does not deploy", () => {
+    for (const s of fixture.deploy_statuses) expect(fixture.launch_statuses).toContain(s);
+    for (const s of fixture.launch_statuses) expect(fixture.image_statuses).toContain(s);
+    expect(fixture.launch_statuses).toContain("flagged");
+    expect(fixture.deploy_statuses).not.toContain("flagged");
+  });
+
+  it("labels every status, so a status cannot land unlabelled (the ALERT_KIND_LABEL rule)", () => {
+    for (const status of fixture.image_statuses) {
+      expect(IMAGE_STATUS_LABEL[status as ImageStatus], status).toBeTruthy();
+    }
+  });
+});
+
+describe("image reference grammar (tests/contract-fixtures/image-reference.json)", () => {
+  const fixture = loadFixture("image-reference.json") as unknown as {
+    cases: { name: string; value: string; reference: boolean }[];
+    digest_cases: { name: string; value: string; digest: boolean }[];
+  };
+  it.each(fixture.cases)("reference — $name", ({ value, reference }) => {
+    expect(isImageReference(value)).toBe(reference);
+  });
+  it.each(fixture.digest_cases)("digest — $name", ({ value, digest }) => {
+    expect(isImageDigest(value)).toBe(digest);
+  });
+});
+
+interface PolicyCaseShape {
+  patch?: Record<string, unknown>;
+  block_patch?: Record<string, unknown>;
+  remove?: string[];
+  block_remove?: string[];
+}
+
+/** image-policy.json's case rule: patch, block_patch, then the removals. */
+function policyDoc(document: Record<string, unknown>, c: PolicyCaseShape): Record<string, unknown> {
+  const doc: Record<string, unknown> = { ...document, ...(c.patch ?? {}) };
+  const block: Record<string, unknown> = {
+    ...(document.block as Record<string, unknown>),
+    ...(c.block_patch ?? {}),
+  };
+  for (const key of c.block_remove ?? []) delete block[key];
+  doc.block = block;
+  for (const key of c.remove ?? []) delete doc[key];
+  return doc;
+}
+
+describe("image policy contract (tests/contract-fixtures/image-policy.json)", () => {
+  const fixture = loadFixture("image-policy.json") as unknown as {
+    document: Record<string, unknown> & { allowed_registries: string[] };
+    cases: (PolicyCaseShape & { name: string; app: "accept" | "reject" })[];
+    registry_cases: { name: string; host: string; allowed: boolean }[];
+  };
+
+  it("the in-repo default policy IS the fixture document", () => {
+    const shipped = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("../../../infra/image-policy/default.json", import.meta.url)),
+        "utf8",
+      ),
+    );
+    expect(shipped).toEqual(fixture.document);
+  });
+
+  it.each(fixture.cases)("$app: $name", (c) => {
+    expect(imagePolicySchema.safeParse(policyDoc(fixture.document, c)).success).toBe(
+      c.app === "accept",
+    );
+  });
+
+  it.each(fixture.registry_cases)("registry — $name", ({ host, allowed }) => {
+    expect(registryAllowed(host, fixture.document.allowed_registries)).toBe(allowed);
+  });
+});
+
+describe("image scan result contract (tests/contract-fixtures/image-scan-result.json)", () => {
+  const fixture = loadFixture("image-scan-result.json") as unknown as {
+    document: Record<string, unknown>;
+    cases: {
+      name: string;
+      doc?: unknown;
+      patch?: Record<string, unknown>;
+      remove?: string[];
+      app: "accept" | "reject";
+    }[];
+  };
+
+  function scanDoc(c: (typeof fixture.cases)[number]): unknown {
+    if (c.doc !== undefined) return c.doc;
+    const doc: Record<string, unknown> = { ...fixture.document, ...(c.patch ?? {}) };
+    for (const key of c.remove ?? []) delete doc[key];
+    return doc;
+  }
+
+  it.each(fixture.cases)("$app: $name", (c) => {
+    expect(imageScanResultSchema.safeParse(scanDoc(c)).success).toBe(c.app === "accept");
   });
 });

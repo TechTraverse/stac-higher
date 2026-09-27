@@ -13,10 +13,11 @@ ignored and numbers are coerced, but a present-and-unusable value raises —
 a silently mis-read trigger or limit would run the wrong thing, or nothing,
 invisibly.
 
-**The slice-1 asymmetry is deliberate**: ``runtime.kind == "container"`` parses
-FINE here while the app's write gate refuses it (design spec §4). The contract
-carries the arm so nothing is foreclosed; the accreditation-scope decision is
-enforced at the single place that stores revisions, not duplicated here.
+**Three runtime kinds since C-1** (container-images spec §3, ADR 0021):
+``inline_python``, ``inline_python_on_image`` and ``container``. The
+snapshot ``image`` of kinds 2-3 is parsed here. Whether that image may
+deploy is the app's DB-backed gate, and whether it may LAUNCH is the launch
+path's (``launch.check_user_image_launchable``; C-2 makes that a digest check).
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from pipeline.images.reference import is_image_digest, is_image_reference
 from pipeline.process.hardware import (
     DEFAULT_HARDWARE_CPU,
     DEFAULT_HARDWARE_GPU_COUNT,
@@ -34,9 +36,12 @@ from pipeline.process.hardware import (
 
 #: Trigger kinds the §5.6 shape admits.
 TRIGGER_KINDS = ("item_event", "cron")
-#: Runtime kinds the §5.6 shape admits (see the module docstring on
-#: ``container``).
-RUNTIME_KINDS = ("inline_python", "container")
+#: Runtime kinds the shape admits (C-1, container-images spec §3).
+RUNTIME_KINDS = ("inline_python", "inline_python_on_image", "container")
+#: Kinds that run on a scanned USER image, named by an immutable snapshot.
+USER_IMAGE_KINDS = frozenset({"inline_python_on_image", "container"})
+#: ``command`` (kind 3) overrides the image's Cmd; never Entrypoint or User.
+MAX_COMMAND_ENTRIES = 64
 BACKOFF = ("exponential", "fixed")
 
 #: Mirrors ``processRuntimeSchema``'s bounds. The memory floor leaves room for
@@ -56,8 +61,8 @@ DEFAULT_MAX_ATTEMPTS = 3
 NETWORK_LEVELS = ("isolated", "inputs", "hosts", "open")
 DEFAULT_NETWORK_LEVEL = "isolated"
 #: Platform runtime image ALIASES (X-queue spec §8). An alias names one of the
-#: platform-built images — never a user-supplied reference (that is
-#: ``runtime.image``, refused by the app's write gate under ADR 0013). The
+#: platform-built images — never a user image (that is ``runtime.image``, the
+#: scanned snapshot of kinds 2-3). The
 #: launch path resolves an alias through settings (``PROCESS_RUNTIME_IMAGE``,
 #: ``PROCESS_RUNTIME_IMAGE_STACTOOLS``) and a run whose alias has no image in
 #: this deployment dies with a reason. Mirrors ``PROCESS_RUNTIME_IMAGE_ALIASES``
@@ -169,10 +174,13 @@ def parse_process_trigger(raw: Any) -> ProcessTrigger:
 @dataclass(frozen=True)
 class ProcessRuntime:
     kind: str
-    #: container only — the user-supplied image reference. Always ``None`` for
-    #: inline_python, whose code is mounted read-only into the platform
-    #: executor image (spec §4).
-    image: str | None = None
+    #: Kinds 2-3 only: the immutable snapshot of a ``container_images`` row.
+    #: ``None`` for inline_python.
+    image_id: str | None = None
+    image_reference: str | None = None
+    image_digest: str | None = None
+    #: Kind 3 only: overrides the image's Cmd. ``None`` means the image's own.
+    command: tuple[str, ...] | None = None
     memory_mb: int = DEFAULT_MEMORY_MB
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
@@ -181,8 +189,9 @@ class ProcessRuntime:
     #: level is "hosts".
     network_level: str = DEFAULT_NETWORK_LEVEL
     network_hosts: tuple[str, ...] = ()
-    #: X-queue spec §8 — one of RUNTIME_IMAGE_ALIASES, resolved at launch.
-    runtime_image: str = DEFAULT_RUNTIME_IMAGE_ALIAS
+    #: X-queue spec §8: one of RUNTIME_IMAGE_ALIASES for inline_python;
+    #: ``None`` for kinds 2-3, which run by digest.
+    runtime_image: str | None = DEFAULT_RUNTIME_IMAGE_ALIAS
     #: K-1 (process-compute spec §4) — the `hardware` block, flattened like
     #: `network`: the profile id and the counts; bounds are checked at launch
     #: against the deployment's profile set (`check_hardware_bounds`).
@@ -238,13 +247,71 @@ def _parse_hardware(raw: Any) -> tuple[str, float, int]:
     return profile, float(cpu_raw), gpu_count
 
 
+def _parse_image_snapshot(raw: Any) -> tuple[str, str, str]:
+    doc = _obj(raw, "runtime.image")
+    image_id = doc.get("id")
+    if not isinstance(image_id, str) or not _UUID_RE.match(image_id):
+        raise ProcessConfigError(
+            f"runtime.image.id must be a container image id, got {image_id!r}"
+        )
+    reference = doc.get("reference")
+    if not isinstance(reference, str) or not is_image_reference(reference):
+        raise ProcessConfigError(
+            f"runtime.image.reference must be a normalized repository, got {reference!r}"
+        )
+    digest = doc.get("digest")
+    if not isinstance(digest, str) or not is_image_digest(digest):
+        raise ProcessConfigError(
+            f"runtime.image.digest must be a sha256 digest, got {digest!r}"
+        )
+    return image_id, reference, digest
+
+
+def _parse_command(raw: Any) -> tuple[str, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(isinstance(arg, str) for arg in raw):
+        raise ProcessConfigError("runtime.command must be a list of strings")
+    if not raw:
+        raise ProcessConfigError("runtime.command must be non-empty when present")
+    if len(raw) > MAX_COMMAND_ENTRIES:
+        raise ProcessConfigError(
+            f"runtime.command carries at most {MAX_COMMAND_ENTRIES} entries"
+        )
+    if any(not arg.strip() for arg in raw):
+        raise ProcessConfigError("runtime.command entries must be non-blank")
+    return tuple(raw)
+
+
 def parse_process_runtime(raw: Any) -> ProcessRuntime:
     doc = _obj(raw, "runtime")
     kind = _enum(doc.get("kind"), RUNTIME_KINDS, "runtime.kind")
 
-    image: str | None = None
-    if kind == "container":
-        image = _non_blank(doc.get("image"), "runtime.image")
+    image_id = image_reference = image_digest = None
+    command: tuple[str, ...] | None = None
+    runtime_image: str | None
+    if kind == "inline_python":
+        if doc.get("image") is not None:
+            raise ProcessConfigError(
+                "runtime.image must be null for inline_python; use inline_python_on_image "
+                "to run code on your own image"
+            )
+        runtime_image = _enum(
+            doc.get("runtime_image"),
+            RUNTIME_IMAGE_ALIASES,
+            "runtime.runtime_image",
+            default=DEFAULT_RUNTIME_IMAGE_ALIAS,
+        )
+    else:
+        image_id, image_reference, image_digest = _parse_image_snapshot(doc.get("image"))
+        if doc.get("runtime_image") is not None:
+            raise ProcessConfigError(
+                f"runtime.runtime_image must be null for {kind}: a platform alias and a user "
+                "image cannot both name what runs"
+            )
+        runtime_image = None
+        if kind == "container":
+            command = _parse_command(doc.get("command"))
 
     retry_raw = doc.get("retry")
     if retry_raw is None:
@@ -255,18 +322,16 @@ def parse_process_runtime(raw: Any) -> ProcessRuntime:
 
     return ProcessRuntime(
         kind=kind,
-        image=image,
+        image_id=image_id,
+        image_reference=image_reference,
+        image_digest=image_digest,
+        command=command,
         network_level=network_level,
         network_hosts=network_hosts,
         hardware_profile=hardware_profile,
         hardware_cpu=hardware_cpu,
         hardware_gpu_count=hardware_gpu_count,
-        runtime_image=_enum(
-            doc.get("runtime_image"),
-            RUNTIME_IMAGE_ALIASES,
-            "runtime.runtime_image",
-            default=DEFAULT_RUNTIME_IMAGE_ALIAS,
-        ),
+        runtime_image=runtime_image,
         memory_mb=_int_in_range(
             doc.get("memory_mb"),
             "runtime.memory_mb",

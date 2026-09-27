@@ -29,19 +29,22 @@ jobs:
             # and the deployment's hardware-profile set (K-1) — the app's
             # checkout-relative fallback resolves against the source
             # checkout, which is not reliable from the bundled `dist/`
-            # chunks and is not in this image at all.
+            # chunks and is not in this image at all — and the image policy
+            # (C-1).
             build-contexts: |
               fixtures=tests/contract-fixtures
               hardware=infra/hardware-profiles
+              imagepolicy=infra/image-policy
           - name: pipeline
             dockerfile: services/pipeline/Dockerfile
             context: services/pipeline
             # The built-in extractor registry and the hardware-profile set
             # (K-1) reach the image through named build contexts (X-2) —
-            # compose's additional_contexts.
+            # compose's additional_contexts — and the image policy (C-1).
             build-contexts: |
               fixtures=tests/contract-fixtures
               hardware=infra/hardware-profiles
+              imagepolicy=infra/image-policy
           - name: titiler
             dockerfile: infra/titiler/Dockerfile
             context: .

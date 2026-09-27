@@ -10,10 +10,12 @@
  *               ssh/sftp  {host, port (default 22), root_path (default "/")}
  *               ftp       {host, port (default 21), root_path (default "/")}
  *               ftps      ftp + {implicit (default false)}
+ *               registry  {host}
  *   credentials s3        {access_key_id, secret_access_key, session_token?}
  *               ssh/sftp  {username, password?, private_key?, passphrase?}
  *                         (at least one of password / private_key)
  *               ftp/ftps  {username, password}
+ *               registry  {username, password}
  *
  * credentials are OPTIONAL for s3 when config.anonymous is true (public
  * buckets — NODD); the pipeline signs nothing.
@@ -26,6 +28,7 @@
  * the API, so there is no response-side credential schema by design.
  */
 import { z } from "zod";
+import { IMAGE_HOST_RE } from "@/lib/images/reference";
 
 /** Everything the DB enum admits, including the reserved future protocol. */
 export const CONNECTION_PROTOCOLS = [
@@ -35,11 +38,19 @@ export const CONNECTION_PROTOCOLS = [
   "ftps",
   "s3",
   "stac-api",
+  "registry",
 ] as const;
 export type ConnectionProtocol = (typeof CONNECTION_PROTOCOLS)[number];
 
 /** Protocols a connection can actually be created with today. */
-export const WRITABLE_PROTOCOLS = ["ssh", "sftp", "ftp", "ftps", "s3"] as const;
+export const WRITABLE_PROTOCOLS = [
+  "ssh",
+  "sftp",
+  "ftp",
+  "ftps",
+  "s3",
+  "registry",
+] as const;
 export type WritableProtocol = (typeof WRITABLE_PROTOCOLS)[number];
 
 export const STAC_API_RESERVED_MESSAGE =
@@ -47,6 +58,12 @@ export const STAC_API_RESERVED_MESSAGE =
 
 export const S3_CREDENTIALS_REQUIRED_MESSAGE =
   "access_key_id and secret_access_key are required unless config.anonymous is true";
+
+/** C-1: a registry connection is image pull credentials for processes, not an
+ * adapter — no ingest/delivery association may name one. */
+export const REGISTRY_NOT_A_FLOW_MESSAGE =
+  "connection_id names a registry connection. Registry connections hold image pull " +
+  "credentials for processes and cannot carry a data flow";
 
 /** SSH-family protocols carry TOFU-pinned host keys (ROADMAP §5.2). */
 export function isSshFamily(protocol: string): protocol is "ssh" | "sftp" {
@@ -98,6 +115,22 @@ export const ftpsConfigSchema = z
   })
   .strict();
 
+/** A registry host (C-1, container-images spec §5): a bare hostname with an
+ * optional port. No scheme or path, lowercase. Reuses the image reference
+ * grammar's host fragment (`IMAGE_HOST_RE`) rather than a separate regex, so
+ * every host a credential can be configured for is a host an image
+ * reference can name. Pinned by registry-connection-config.json. */
+export const registryConfigSchema = z
+  .object({
+    host: z
+      .string()
+      .regex(
+        IMAGE_HOST_RE,
+        "host must be a bare lowercase registry hostname (e.g. ghcr.io), no scheme or path",
+      ),
+  })
+  .strict();
+
 // ---------------------------------------------------------------------------
 // credential shapes (validated on write, then sealed into the envelope —
 // never stored or returned as plaintext)
@@ -137,12 +170,22 @@ export const ftpCredentialsSchema = z
   })
   .strict();
 
+/** Pull credentials: a PAT, an ECR token or a robot account. Both are
+ * required, because a registry connection exists to pull privately. */
+export const registryCredentialsSchema = z
+  .object({
+    username: z.string().min(1, "username is required"),
+    password: z.string().min(1, "password or token is required"),
+  })
+  .strict();
+
 const CONFIG_SCHEMAS = {
   s3: s3ConfigSchema,
   ssh: sshConfigSchema,
   sftp: sshConfigSchema,
   ftp: ftpConfigSchema,
   ftps: ftpsConfigSchema,
+  registry: registryConfigSchema,
 } as const;
 
 const CREDENTIALS_SCHEMAS = {
@@ -151,6 +194,7 @@ const CREDENTIALS_SCHEMAS = {
   sftp: sshCredentialsSchema,
   ftp: ftpCredentialsSchema,
   ftps: ftpCredentialsSchema,
+  registry: registryCredentialsSchema,
 } as const;
 
 /**
@@ -169,6 +213,7 @@ export const CREDENTIAL_KEYS: Record<WritableProtocol, readonly string[]> = {
   sftp: Object.keys(sshCredentialsObject.shape),
   ftp: Object.keys(ftpCredentialsSchema.shape),
   ftps: Object.keys(ftpCredentialsSchema.shape),
+  registry: Object.keys(registryCredentialsSchema.shape),
 };
 
 /** Keys for any protocol string, including the reserved `stac-api` (none). */
@@ -226,6 +271,12 @@ const connectionCreateUnion = z.discriminatedUnion("protocol", [
     config: ftpsConfigSchema,
     // ftps shares the plain ftp credential shape.
     credentials: ftpCredentialsSchema,
+  }),
+  z.object({
+    protocol: z.literal("registry"),
+    ...baseCreateFields,
+    config: registryConfigSchema,
+    credentials: registryCredentialsSchema,
   }),
 ]);
 

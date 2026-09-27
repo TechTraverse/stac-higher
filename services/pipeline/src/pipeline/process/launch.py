@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from pipeline.config import Settings
 from pipeline.metrics import PROCESS_RUN_SECONDS
-from pipeline.process.config import NETWORK_LEVELS, EnvEntry, ProcessRuntime
+from pipeline.process.config import NETWORK_LEVELS, USER_IMAGE_KINDS, EnvEntry, ProcessRuntime
 from pipeline.process.credentials import RunCredentials, mint_run_credentials
 from pipeline.process.docker_executor import CODE_ENV_VAR, encode_code
 from pipeline.process.executor import Executor, ExitStatus, RunSpec
@@ -55,6 +55,31 @@ class RuntimeImageUnavailable(Exception):
     """The revision's ``runtime_image`` alias names a platform image this
     deployment has not configured — configuration, so the run dies naming
     the alias and the variable rather than launching on the wrong image."""
+
+
+class ImageUnusable(Exception):
+    """A revision on a user-supplied image (kinds 2-3) that must not launch.
+    C-1: the contract and the deploy gate exist but no scanner does, so no
+    user image can launch yet. C-2 replaces
+    :func:`check_user_image_launchable`'s body with the spec §8.4 check (row
+    exists, digest equal, status approved|flagged, not stale). The run dies
+    with the reason; it never falls back to the platform image."""
+
+
+USER_IMAGE_LAUNCH_UNAVAILABLE = (
+    "revision runs on a user-supplied image ({kind} {reference}); this pipeline "
+    "cannot launch user images yet (ADR 0021: scan, approve, run by digest)"
+)
+
+
+def check_user_image_launchable(runtime: ProcessRuntime) -> None:
+    """Raise :class:`ImageUnusable` for a kind 2/3 runtime (C-1)."""
+    if runtime.kind in USER_IMAGE_KINDS:
+        raise ImageUnusable(
+            USER_IMAGE_LAUNCH_UNAVAILABLE.format(
+                kind=runtime.kind, reference=runtime.image_reference
+            )
+        )
 
 
 class HardwareProfileRejected(Exception):
@@ -89,6 +114,11 @@ def resolve_runtime_image(runtime: ProcessRuntime, settings: Settings) -> str:
     reaches here — the reader refuses it, and the run dies as an unusable
     revision — so the branch below is exhaustive by construction.
     """
+    if runtime.kind in USER_IMAGE_KINDS:
+        # Defence in depth: run_one refuses kinds 2-3 before this is reached.
+        raise RuntimeImageUnavailable(
+            f"{runtime.kind} revisions run their own image by digest, never a platform alias"
+        )
     alias = runtime.runtime_image
     if alias == "default":
         image = settings.process_runtime_image
@@ -186,10 +216,8 @@ def build_run_spec(
     return RunSpec(
         run_id=run_id,
         process_id=process_id,
-        # Always a PLATFORM image, chosen by the revision's `runtime_image`
-        # alias (X-queue spec §8): `container` runtimes are refused at the
-        # app's write gate, so a revision carrying `image` is a contract
-        # violation rather than something to honour here.
+        # Always a PLATFORM image chosen by the alias (X-queue spec §8). Kinds 2-3
+        # are refused before this point (C-1) and pulled by digest from C-2 on.
         image=resolve_runtime_image(runtime, settings),
         env=run_env,
         memory_mb=runtime.memory_mb,

@@ -1,0 +1,29 @@
+{
+  "style": "grammar-cases",
+  "$comment": "C-1 (container-images spec §3/§4.1): the grammar of a NORMALIZED image reference (registry/namespace/name: lowercase, an explicit registry host, no tag, no digest, at most 255 characters) and of a manifest digest (sha256 only, lowercase hex). Every snapshot, container_images row and scan result uses them. Normalizing what a person types (a bare `python:3.12` becoming `docker.io/library/python`) is C-3's POST /api/images; these cases pin only what may be STORED. Consumed by app/src/lib/images/reference.ts and pipeline/images/reference.py.",
+  "cases": [
+    { "name": "GHCR repository", "value": "ghcr.io/example/satpy-runtime", "reference": true },
+    { "name": "Docker Hub official image, normalized", "value": "docker.io/library/python", "reference": true },
+    { "name": "ECR private registry", "value": "123456789012.dkr.ecr.us-gov-west-1.amazonaws.com/team/tool", "reference": true },
+    { "name": "ECR public", "value": "public.ecr.aws/docker/library/alpine", "reference": true },
+    { "name": "registry with a port", "value": "registry.example.com:5000/team/tool", "reference": true },
+    { "name": "localhost registry", "value": "localhost:5000/tool", "reference": true },
+    { "name": "separators inside a component", "value": "ghcr.io/example/satpy_runtime-v2.x", "reference": true },
+    { "name": "bare name (not normalized)", "value": "python", "reference": false },
+    { "name": "namespace/name without a registry host", "value": "library/python", "reference": false },
+    { "name": "a tag (a tag is resolved, never stored)", "value": "ghcr.io/example/proc:1.2.3", "reference": false },
+    { "name": "a digest suffix (the digest is its own field)", "value": "ghcr.io/example/proc@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reference": false },
+    { "name": "uppercase", "value": "ghcr.io/Example/proc", "reference": false },
+    { "name": "a scheme", "value": "https://ghcr.io/example/proc", "reference": false },
+    { "name": "a trailing slash", "value": "ghcr.io/example/proc/", "reference": false },
+    { "name": "empty", "value": "", "reference": false }
+  ],
+  "digest_cases": [
+    { "name": "sha256, lowercase", "value": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest": true },
+    { "name": "uppercase hex", "value": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "digest": false },
+    { "name": "too short", "value": "sha256:abc", "digest": false },
+    { "name": "sha512 (not accepted: every registry addresses manifests by sha256)", "value": "sha512:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest": false },
+    { "name": "no algorithm", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest": false },
+    { "name": "a tag", "value": "latest", "digest": false }
+  ]
+}

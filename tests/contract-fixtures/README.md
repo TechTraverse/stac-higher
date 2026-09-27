@@ -119,16 +119,7 @@ the set reject/reject — the pipeline resolves a known alias through
 `PROCESS_RUNTIME_IMAGE*` at launch and dies the run by name when the
 deployment has left that image empty.
 
-**`process-runtime.json` carries the M5 slice-1 asymmetry**, and it is a
-decision rather than an oversight: the `container` arm is part of the contract
-(the pipeline reader parses it, so nothing is foreclosed) while the app's
-**write gate** refuses it — user-supplied images are a supply-chain review
-surface deferred past the first accreditation scope (design spec §4, ADR 0013).
-Every `container` case is therefore `app: "reject"` / `pipeline: "accept"`,
-and the vitest consumer runs the `cases[]` through `processRuntimeWriteSchema`
-while asserting `defaults` against the read schema `processRuntimeSchema`. A
-`container` document that is *also* malformed (no image) stays `reject`/
-`reject` — broken is not the same as gated.
+**`process-runtime.json` carries three kinds since C-1** (container-images spec §3): `inline_python`, `inline_python_on_image` and `container`, one `{minimal, defaults}` pair each. The `container` arm is no longer refused by the shape. Whether a snapshot's image may be deployed is decided by the DB-backed check in the revisions route (422 with `image_not_approved` / `image_stale` / `image_group_mismatch` / `image_digest_mismatch`), which a fixture cannot express, so every well-formed kind 2/3 case is accept/accept. `image` is the snapshot `{id, reference, digest}` (grammar pinned by `image-reference.json`). `runtime_image` is null on kinds 2 and 3, reject/reject when violated, because a lenient reader silently ignoring it would run something other than what the revision says. `command` exists only on kind 3 (a non-empty list of non-blank strings, at most 64): a malformed value there is reject/reject, but on kinds 1 and 2 the key itself is only unknown-key noise (app reject, pipeline accept).
 
 ### `process-env.json` and `process-expectation.json`
 
@@ -263,3 +254,11 @@ the reader tolerates are annotated `"app": "reject", "pipeline": "accept"`.
 Anything both sides must reject (missing/blank required fields, unknown enum
 values, wrong container types) is `reject`/`reject` — those are the documents
 that would otherwise become silently dead flows or a stalled dispatcher.
+
+## Additional fixture styles (C queue, C-1)
+
+- `image-status.json` is style `pinned-enum`. It holds the `container_images.status`, `image_scans.kind`/`.status` vocabularies, the statuses a new revision may snapshot (`deploy_statuses`) or a run may launch on (`launch_statuses`), and the deploy gate's four 422 reasons. Three things consume it: `app/src/lib/images/status.ts` (whose `IMAGE_STATUS_LABEL` must cover every status), `pipeline/images/status.py`, and migration 030's CHECK constraints (`images-migration.test.ts`).
+- `image-reference.json` is style `grammar-cases`, like `staged-asset-href.json`. It pins the grammar of a STORED image reference (normalized, lowercase, with an explicit registry host and no tag or digest) and of a manifest digest (sha256 only). Both sides must agree on each `reference`/`digest` boolean. Consumers: `app/src/lib/images/reference.ts` and `pipeline/images/reference.py`.
+- `image-policy.json` is style `document`. `document` must equal `infra/image-policy/default.json`. `cases[]` apply `patch` / `block_patch` / `remove` / `block_remove` to it and are run through `imagePolicySchema` (strict) and `parse_image_policy` (unknown keys ignored, otherwise strict). `registry_cases[]` pin the host-pattern rule on both sides: `*` is one DNS label, the host is case-folded, and a port matches literally. `evaluate_cases[]` are pytest-only (the pipeline is the only evaluator).
+- `image-scan-result.json` is style `document`. It is the scanner's `result.json` (spec §6.4). A case is `doc` (used as-is), or `patch` merged onto `document` minus the `remove` keys. The pipeline parser is the STRICT side (untrusted input: `version == 1`, `top` ≤ 25, digests and the reference grammar). The app reader is lenient (a newer `version` and unknown keys pass). A failed scan is `{version, kind, reference, tag, error}`.
+- `registry-connection-config.json` uses the ordinary `minimal`/`defaults`/`cases[]` format. It is the `registry` connection's `{host}`: strict and lowercase-only in `registryConfigSchema`, stripped and case-folded in `parse_registry_config`. Both validators reuse the image reference grammar's host fragment (`IMAGE_HOST_RE` in `reference.ts`/`reference.py`) rather than a separate host regex, so a single-label host such as `myregistry:5000` (no dot, not `localhost`) is rejected on both sides just as it would be as an image reference's registry host.

@@ -1,6 +1,6 @@
 {
   "style": "pinned-enum",
-  "description": "The closed alert `kind` enum (Phase 7 §10, pulled forward from the P9-D plan). `kinds` is the full enum every consumer must recognize; the remaining lists partition it by single-writer ownership: the flow monitor raises AND auto-resolves `monitor_kinds` (pipeline/flow/monitor.py MONITOR_KINDS), the notify module owns `notify_kinds` (pipeline/notify/repo.py WEBHOOK_FAILED_KIND), and `declared_kinds` is the enum's waiting room — kinds that exist for labelling and cross-runtime agreement but have NO writer yet. The app's EXPECTATION_BREACH_KIND branch and the monitoring UI's kind labels pin against `kinds`. Phase 9 (M5-0) declared the three process kinds in `declared_kinds`; M5-E claimed all three for the monitor, because each is evaluated as a CONDITION observed from state (a dead run, a deferred run, a breached per-source expectation) rather than raised at the moment it happens — which is exactly what makes auto-resolve fall out of the condition's absence. `declared_kinds` stays as the mechanism for the next kind whose writer is not yet decided.",
+  "description": "The closed alert `kind` enum (Phase 7 §10, pulled forward from the P9-D plan). `kinds` is the full enum every consumer must recognize; the remaining lists partition it by single-writer ownership: the flow monitor raises AND auto-resolves `monitor_kinds` (pipeline/flow/monitor.py MONITOR_KINDS), the notify module owns `notify_kinds` (pipeline/notify/repo.py WEBHOOK_FAILED_KIND), and `declared_kinds` is the enum's waiting room — kinds that exist for labelling and cross-runtime agreement but have NO writer yet. The app's EXPECTATION_BREACH_KIND branch and the monitoring UI's kind labels pin against `kinds`. Phase 9 (M5-0) declared the three process kinds in `declared_kinds`; M5-E claimed all three for the monitor, because each is evaluated as a CONDITION observed from state (a dead run, a deferred run, a breached per-source expectation) rather than raised at the moment it happens — which is exactly what makes auto-resolve fall out of the condition's absence. `declared_kinds` stays as the mechanism for the next kind whose writer is not yet decided. C-1 (container-images spec §10) declared `process_image_flagged` (one open alert per process whose CURRENT revision references an image that is flagged, revoked or stale); C-4 moves it to its writer (pipeline/images/alerts.py).",
   "kinds": [
     "ingest_inactivity",
     "delivery_slo",
@@ -12,6 +12,7 @@
     "process_stalled",
     "process_failed",
     "process_rate_limited",
+    "process_image_flagged",
     "webhook_failed"
   ],
   "monitor_kinds": [
@@ -26,6 +27,6 @@
     "process_failed",
     "process_rate_limited"
   ],
-  "declared_kinds": [],
+  "declared_kinds": ["process_image_flagged"],
   "notify_kinds": ["webhook_failed"]
 }

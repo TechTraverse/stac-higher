@@ -7,9 +7,11 @@
 # app/src/lib/extractors/registry.ts, so it must be at the path that import
 # resolves to before `npm run build`) and the `hardware` named context that
 # carries the deployment's hardware-profile set (K-1 — the repo-root
-# .dockerignore excludes infra/ too):
+# .dockerignore excludes infra/ too), and the `imagepolicy` named context that
+# carries the deployment's image policy (C-1, the same reason):
 #   docker build -f app/Dockerfile --build-context fixtures=tests/contract-fixtures \
-#     --build-context hardware=infra/hardware-profiles .
+#     --build-context hardware=infra/hardware-profiles \
+#     --build-context imagepolicy=infra/image-policy .
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /srv
@@ -30,7 +32,8 @@ FROM node:22-bookworm-slim
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4321 \
-    PROCESS_HARDWARE_PROFILES_FILE=/app/share/hardware-profiles/local.json
+    PROCESS_HARDWARE_PROFILES_FILE=/app/share/hardware-profiles/local.json \
+    PROCESS_IMAGE_POLICY_FILE=/app/share/image-policy/default.json
 WORKDIR /srv
 COPY --from=build /srv/package.json ./package.json
 COPY --from=build /srv/node_modules ./node_modules
@@ -46,6 +49,9 @@ COPY --from=build /srv/app/dist ./app/dist
 # is not in this image at all, so the runtime image needs both this file AND
 # the env var above, not just the pipeline image.
 COPY --from=hardware local.json /app/share/hardware-profiles/local.json
+# The deployment's image policy (C-1, container-images spec §7) — same
+# reason as the hardware set: the checkout fallback is not in this image.
+COPY --from=imagepolicy default.json /app/share/image-policy/default.json
 USER node
 EXPOSE 4321
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

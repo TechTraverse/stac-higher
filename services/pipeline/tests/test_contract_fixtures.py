@@ -6,6 +6,7 @@ drifting on either side fails one of the suites. Fixture format and the
 accept/reject semantics: ``tests/contract-fixtures/README.md`` (repo root).
 """
 
+import datetime as dt
 import json
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,11 @@ S3_CONFIG = _load("s3-connection-config.json")
 PROCESS_INPUT_MANIFEST = _load("process-input-manifest.json")
 BUILTIN_EXTRACTORS = _load("builtin-extractors.json")
 HARDWARE_PROFILES = _load("hardware-profiles.json")
+IMAGE_STATUS = _load("image-status.json")
+IMAGE_REFERENCE = _load("image-reference.json")
+IMAGE_POLICY = _load("image-policy.json")
+IMAGE_SCAN_RESULT = _load("image-scan-result.json")
+REGISTRY_CONFIG = _load("registry-connection-config.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -204,10 +210,9 @@ def test_process_trigger_cases(case):
 
 @pytest.mark.parametrize("case", PROCESS_RUNTIME["cases"], ids=lambda c: c["name"])
 def test_process_runtime_cases(case):
-    """Note the deliberate asymmetry the fixture encodes: every `container`
-    case is `pipeline: accept` / `app: reject`. The contract carries the arm so
-    nothing is foreclosed; slice 1's refusal lives at the app's write gate
-    (design spec §4), NOT here."""
+    """Three kinds (C-1). Whether a snapshot's image may run is a DB check in
+    the app's revisions route and, from C-2, at launch, so it is never a
+    parse outcome."""
     _check(parse_process_runtime, case)
 
 
@@ -240,7 +245,21 @@ def test_process_runtime_defaults_match_golden():
         golden = variant["defaults"]
         runtime = parse_process_runtime(variant["minimal"])
         assert runtime.kind == arm == golden["kind"]
-        assert runtime.image == golden.get("image")
+        snapshot = golden.get("image")
+        if snapshot is None:
+            assert (runtime.image_id, runtime.image_reference, runtime.image_digest) == (
+                None,
+                None,
+                None,
+            )
+        else:
+            assert (runtime.image_id, runtime.image_reference, runtime.image_digest) == (
+                snapshot["id"],
+                snapshot["reference"],
+                snapshot["digest"],
+            )
+        command = golden.get("command")
+        assert runtime.command == (None if command is None else tuple(command))
         assert runtime.memory_mb == golden["memory_mb"]
         assert runtime.timeout_seconds == golden["timeout_seconds"]
         assert runtime.max_attempts == golden["retry"]["max_attempts"]
@@ -291,6 +310,16 @@ def test_process_alert_kinds_are_monitor_owned():
     for kind in ("process_stalled", "process_failed", "process_rate_limited"):
         assert kind in MONITOR_KINDS
         assert kind not in ALERT_KINDS["declared_kinds"]
+
+
+def test_process_image_flagged_is_declared_not_written():
+    """C-1 declares the kind (container-images spec §10); no pipeline writer
+    may claim it until C-4 lands pipeline/images/alerts.py."""
+    from pipeline.flow.monitor import MONITOR_KINDS
+
+    assert "process_image_flagged" in ALERT_KINDS["kinds"]
+    assert ALERT_KINDS["declared_kinds"] == ["process_image_flagged"]
+    assert "process_image_flagged" not in MONITOR_KINDS
 
 
 @pytest.mark.parametrize("case", S3_CONFIG["cases"], ids=lambda c: c["name"])
@@ -353,3 +382,112 @@ def test_hardware_profile_document_cases(case):
     else:
         with pytest.raises(HardwareProfileError):
             parse_hardware_profiles(document)
+
+
+# ---------------------------------------------------------------------------
+# C queue, C-1: the image vocabularies and the reference/digest grammar.
+# ---------------------------------------------------------------------------
+
+
+def test_image_status_vocabularies_match_golden():
+    from pipeline.images import status
+
+    assert IMAGE_STATUS["image_statuses"] == list(status.IMAGE_STATUSES)
+    assert IMAGE_STATUS["deploy_statuses"] == list(status.DEPLOY_STATUSES)
+    assert IMAGE_STATUS["launch_statuses"] == list(status.LAUNCH_STATUSES)
+    assert IMAGE_STATUS["scan_kinds"] == list(status.SCAN_KINDS)
+    assert IMAGE_STATUS["scan_statuses"] == list(status.SCAN_STATUSES)
+    assert IMAGE_STATUS["gate_reasons"] == list(status.GATE_REASONS)
+
+
+@pytest.mark.parametrize("case", IMAGE_REFERENCE["cases"], ids=lambda c: c["name"])
+def test_image_reference_grammar(case):
+    from pipeline.images.reference import is_image_reference
+
+    assert is_image_reference(case["value"]) is case["reference"]
+
+
+@pytest.mark.parametrize("case", IMAGE_REFERENCE["digest_cases"], ids=lambda c: c["name"])
+def test_image_digest_grammar(case):
+    from pipeline.images.reference import is_image_digest
+
+    assert is_image_digest(case["value"]) is case["digest"]
+
+
+def _policy_doc(document: dict, case: dict) -> dict:
+    """image-policy.json's case rule: patch, block_patch, then the removals."""
+    doc = {**document, **case.get("patch", {})}
+    block = {**document["block"], **case.get("block_patch", {})}
+    for key in case.get("block_remove", []):
+        block.pop(key, None)
+    doc["block"] = block
+    for key in case.get("remove", []):
+        doc.pop(key, None)
+    return doc
+
+
+@pytest.mark.parametrize("case", IMAGE_POLICY["cases"], ids=lambda c: c["name"])
+def test_image_policy_cases(case):
+    from pipeline.images.policy import ImagePolicyError, parse_image_policy
+
+    doc = _policy_doc(IMAGE_POLICY["document"], case)
+    if case["pipeline"] == "accept":
+        parse_image_policy(doc)
+    else:
+        with pytest.raises(ImagePolicyError):
+            parse_image_policy(doc)
+
+
+@pytest.mark.parametrize("case", IMAGE_POLICY["registry_cases"], ids=lambda c: c["name"])
+def test_image_policy_registry_cases(case):
+    from pipeline.images.policy import registry_allowed
+
+    patterns = IMAGE_POLICY["document"]["allowed_registries"]
+    assert registry_allowed(case["host"], patterns) is case["allowed"]
+
+
+def _scan_doc(case: dict) -> dict:
+    if "doc" in case:
+        return case["doc"]
+    doc = {**IMAGE_SCAN_RESULT["document"], **case.get("patch", {})}
+    for key in case.get("remove", []):
+        doc.pop(key, None)
+    return doc
+
+
+@pytest.mark.parametrize("case", IMAGE_SCAN_RESULT["cases"], ids=lambda c: c["name"])
+def test_image_scan_result_cases(case):
+    from pipeline.images.scan_result import ScanResultError, parse_scan_result
+
+    if case["pipeline"] == "accept":
+        parse_scan_result(_scan_doc(case))
+    else:
+        with pytest.raises(ScanResultError):
+            parse_scan_result(_scan_doc(case))
+
+
+@pytest.mark.parametrize("case", IMAGE_POLICY["evaluate_cases"], ids=lambda c: c["name"])
+def test_image_policy_evaluate_cases(case):
+    from pipeline.images.policy import evaluate, parse_image_policy
+    from pipeline.images.scan_result import parse_scan_result
+
+    policy = parse_image_policy(_policy_doc(IMAGE_POLICY["document"], case))
+    result = parse_scan_result({**IMAGE_POLICY["base_result"], **case.get("result_patch", {})})
+    now = dt.datetime.fromisoformat(IMAGE_POLICY["evaluate_now"])
+    verdict = evaluate(result, policy, now=now)
+    assert list(verdict.reasons) == case["reasons"]
+    assert verdict.passed is (case["reasons"] == [])
+
+
+@pytest.mark.parametrize("case", REGISTRY_CONFIG["cases"], ids=lambda c: c["name"])
+def test_registry_config_cases(case):
+    from pipeline.connections.registry import parse_registry_config
+
+    _check(parse_registry_config, case)
+
+
+def test_registry_config_minimal_parses_to_defaults():
+    from pipeline.connections.registry import parse_registry_config
+
+    parsed = parse_registry_config(REGISTRY_CONFIG["minimal"])
+    assert parsed.host == REGISTRY_CONFIG["defaults"]["host"]
