@@ -137,18 +137,20 @@ def build_sts_client(settings: Settings):  # pragma: no cover - thin boto3 wrapp
     )
 
 
-def mint_run_credentials(
+def mint_prefix_credentials(
     settings: Settings,
-    run_id: str,
-    timeout_seconds: int,
     *,
+    session_name: str,
+    prefix: str,
+    timeout_seconds: int,
     sts_client=None,
     read_prefixes: Sequence[str] = (),
 ) -> RunCredentials:
-    """Mint credentials good only for ``staging/runs/{run_id}/`` plus read
-    access to ``read_prefixes`` (the source collections' canonical prefixes).
+    """Mint credentials good only for ``prefix`` plus read access to
+    ``read_prefixes``. A process run's prefix is ``staging/runs/{run_id}/``;
+    an image scan's is ``scans/{image_id}/{scan_id}/`` (C-2, spec §6.2).
 
-    Raises :class:`RunCredentialsError` on any STS failure — the caller must
+    Raises :class:`RunCredentialsError` on any STS failure -- the caller must
     fail the run rather than start it with wider access.
     """
     if len(read_prefixes) > MAX_READ_PREFIXES:
@@ -156,7 +158,6 @@ def mint_run_credentials(
             f"run would need {len(read_prefixes)} read prefixes; the inline session "
             f"policy supports at most {MAX_READ_PREFIXES} source collections"
         )
-    prefix = run_staging_prefix(run_id)
     bucket = settings.staging_bucket
     duration = max(
         MIN_DURATION_SECONDS, timeout_seconds + settings.process_credential_grace_seconds
@@ -166,9 +167,9 @@ def mint_run_credentials(
     try:
         response = client.assume_role(
             RoleArn=settings.process_sts_role_arn,
-            # Session names are surfaced in access logs; the run id makes an
-            # S3 audit trail directly attributable to a run row.
-            RoleSessionName=f"stac-run-{run_id}"[:64],
+            # Session names are surfaced in access logs; the run or scan id
+            # makes an S3 audit trail directly attributable to its row.
+            RoleSessionName=session_name[:64],
             Policy=json.dumps(session_policy(bucket, prefix, read_prefixes)),
             DurationSeconds=duration,
         )
@@ -177,12 +178,12 @@ def mint_run_credentials(
     # unanticipated one (a transport error, a stubbed client, a
     # misconfiguration surfacing as AttributeError) escape as itself, and a
     # caller that expected RunCredentialsError would then handle it as
-    # something else — the one outcome this module exists to prevent.
+    # something else -- the one outcome this module exists to prevent.
     except Exception as err:
         raise RunCredentialsError(
             "could not mint run-scoped storage credentials via STS "
             f"({type(err).__name__}: {err}). The platform's own keys are NOT a "
-            "fallback — a deployment whose object store lacks STS cannot run "
+            "fallback -- a deployment whose object store lacks STS cannot run "
             "processes (spec §5)."
         ) from err
 
@@ -194,7 +195,7 @@ def mint_run_credentials(
     ]
     if missing:
         raise RunCredentialsError(
-            f"STS response is missing {', '.join(missing)} — refusing to start "
+            f"STS response is missing {', '.join(missing)} -- refusing to start "
             "a run with incomplete credentials"
         )
 
@@ -206,4 +207,24 @@ def mint_run_credentials(
         prefix=prefix,
         endpoint_url=settings.process_run_s3_endpoint or settings.staging_s3_endpoint,
         region=settings.staging_s3_region,
+    )
+
+
+def mint_run_credentials(
+    settings: Settings,
+    run_id: str,
+    timeout_seconds: int,
+    *,
+    sts_client=None,
+    read_prefixes: Sequence[str] = (),
+) -> RunCredentials:
+    """Mint credentials good only for ``staging/runs/{run_id}/`` plus read
+    access to ``read_prefixes`` (the source collections' canonical prefixes)."""
+    return mint_prefix_credentials(
+        settings,
+        session_name=f"stac-run-{run_id}",
+        prefix=run_staging_prefix(run_id),
+        timeout_seconds=timeout_seconds,
+        sts_client=sts_client,
+        read_prefixes=read_prefixes,
     )

@@ -56,6 +56,11 @@ S3 in cloud; distinct from per-connection endpoints):
 - ``PROCESS_HARDWARE_PROFILES_FILE`` — path of the hardware-profile document
   (K-1, spec §3). Unset means the repo checkout's
   ``infra/hardware-profiles/local.json``; the image sets it to its copy.
+- ``IMAGE_SCANNER_IMAGE`` / ``PROCESS_SCANNER_NETWORK`` / ``IMAGE_SCANNER_DB_UPDATE``
+  / ``GRYPE_DB_UPDATE_URL`` / ``IMAGE_SCAN_CONCURRENCY`` -- the image scanner
+  (C-2, container-images spec §6, §11); ``REGISTRY_DOCKERHUB_USER`` /
+  ``REGISTRY_DOCKERHUB_TOKEN`` -- the optional deployment Docker Hub
+  credential (spec §5, ISSUES I-125).
 """
 
 from __future__ import annotations
@@ -183,6 +188,15 @@ DEFAULT_PROCESS_NETWORK_MAX = "isolated"
 DEFAULT_PROCESS_HARDWARE_PROFILES_FILE: str | None = None
 #: GOES spec §3.4: remote input files staged concurrently per run.
 DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY = 4
+#: C-2 (spec §6.1): the platform-built scanner image (services/image-scanner).
+DEFAULT_IMAGE_SCANNER_IMAGE = "stac-higher-image-scanner:local"
+#: C-2 (spec §11): the scanner's network. `none` in code means a scan cannot
+#: reach a registry and fails, the right default for a deployment that has
+#: not decided on scanner egress; compose sets its `scanner-egress` network.
+DEFAULT_PROCESS_SCANNER_NETWORK = "none"
+#: C-2: scans running at once across the deployment. A scan holds a worker
+#: slot for up to the policy timeout until K-4 (ISSUES I-124).
+DEFAULT_IMAGE_SCAN_CONCURRENCY = 1
 #: How long the daily flow-stats history is kept (P9-E: ~400 days, so a
 #: year-over-year comparison always has a full prior year to compare against).
 #: A bounded DELETE — the row count is subjects x days.
@@ -286,6 +300,19 @@ def _parse_flush_seconds(raw: str | None) -> float:
     return value
 
 
+def _parse_scan_concurrency(raw: str | None) -> int:
+    value = int(raw) if raw not in (None, "") else DEFAULT_IMAGE_SCAN_CONCURRENCY
+    if value < 1:
+        raise ValueError(f"IMAGE_SCAN_CONCURRENCY must be >= 1, got {value}")
+    return value
+
+
+def _optional(raw: str | None) -> str | None:
+    """Blank means unset: compose passes `${VAR:-}` as an empty string."""
+    value = (raw or "").strip()
+    return value or None
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = DEFAULT_DATABASE_URL
@@ -353,6 +380,17 @@ class Settings:
     #: K-1: path of the hardware-profile document — see DEFAULT_PROCESS_HARDWARE_PROFILES_FILE.
     process_hardware_profiles_file: str | None = DEFAULT_PROCESS_HARDWARE_PROFILES_FILE
     process_input_stage_concurrency: int = DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY
+    #: C-2 image scanner (spec §6, §11) -- see the DEFAULT_IMAGE_SCANNER_* constants.
+    image_scanner_image: str = DEFAULT_IMAGE_SCANNER_IMAGE
+    process_scanner_network: str = DEFAULT_PROCESS_SCANNER_NETWORK
+    #: Refresh the Grype DB at scan start (spec §6.1); false for air-gap.
+    image_scanner_db_update: bool = True
+    #: Grype's DB listing URL; None = Anchore's. An air-gapped mirror goes here.
+    grype_db_update_url: str | None = None
+    #: The optional deployment Docker Hub credential (spec §5, I-125).
+    registry_dockerhub_user: str | None = None
+    registry_dockerhub_token: str | None = field(default=None, repr=False)
+    image_scan_concurrency: int = DEFAULT_IMAGE_SCAN_CONCURRENCY
     flow_stats_retention_days: int = DEFAULT_FLOW_STATS_RETENTION_DAYS
     #: Async repo connection pool (M3-B) — see the DEFAULT_DB_POOL_* constants.
     db_pool_min: int = DEFAULT_DB_POOL_MIN
@@ -503,6 +541,14 @@ class Settings:
                     str(DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY),
                 )
             ),
+            image_scanner_image=env.get("IMAGE_SCANNER_IMAGE", DEFAULT_IMAGE_SCANNER_IMAGE),
+            process_scanner_network=_optional(env.get("PROCESS_SCANNER_NETWORK"))
+            or DEFAULT_PROCESS_SCANNER_NETWORK,
+            image_scanner_db_update=_parse_bool(env.get("IMAGE_SCANNER_DB_UPDATE"), True),
+            grype_db_update_url=_optional(env.get("GRYPE_DB_UPDATE_URL")),
+            registry_dockerhub_user=_optional(env.get("REGISTRY_DOCKERHUB_USER")),
+            registry_dockerhub_token=_optional(env.get("REGISTRY_DOCKERHUB_TOKEN")),
+            image_scan_concurrency=_parse_scan_concurrency(env.get("IMAGE_SCAN_CONCURRENCY")),
             flow_stats_retention_days=int(
                 env.get(
                     "FLOW_STATS_RETENTION_DAYS",

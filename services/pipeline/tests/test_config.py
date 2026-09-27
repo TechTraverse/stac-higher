@@ -208,3 +208,58 @@ def test_sizing_warnings_flag_an_undersized_pool():
     assert len(warnings) == 1
     assert "DB_POOL_MAX" in warnings[0].message
     assert warnings[0].extra == {"db_pool_max": 10, "worker_concurrency": 12, "required": 16}
+
+
+# ---------------------------------------------------------------------------
+# C-2: the scanner, the scan drain and the Docker Hub credential
+# ---------------------------------------------------------------------------
+
+
+def test_c2_settings_defaults():
+    s = Settings.from_env({})
+    assert s.image_scanner_image == "stac-higher-image-scanner:local"
+    # No scanner network in code: a deployment that has not decided on
+    # scanner egress gets scans that fail, never scans on the default bridge.
+    assert s.process_scanner_network == "none"
+    assert s.image_scanner_db_update is True
+    assert s.grype_db_update_url is None
+    assert s.registry_dockerhub_user is None and s.registry_dockerhub_token is None
+    assert s.image_scan_concurrency == 1
+
+
+def test_c2_settings_parse_and_blank_means_unset():
+    s = Settings.from_env(
+        {
+            "IMAGE_SCANNER_IMAGE": "ghcr.io/org/scanner:20260927",
+            "PROCESS_SCANNER_NETWORK": "stac-higher_scanner-egress",
+            "IMAGE_SCANNER_DB_UPDATE": "false",
+            "GRYPE_DB_UPDATE_URL": " https://mirror.example/listing.json ",
+            "REGISTRY_DOCKERHUB_USER": "robot",
+            "REGISTRY_DOCKERHUB_TOKEN": "dckr_pat_x",
+            "IMAGE_SCAN_CONCURRENCY": "2",
+        }
+    )
+    assert s.image_scanner_image == "ghcr.io/org/scanner:20260927"
+    assert s.process_scanner_network == "stac-higher_scanner-egress"
+    assert s.image_scanner_db_update is False
+    assert s.grype_db_update_url == "https://mirror.example/listing.json"
+    assert (s.registry_dockerhub_user, s.registry_dockerhub_token) == ("robot", "dckr_pat_x")
+    assert s.image_scan_concurrency == 2
+    blank = Settings.from_env(
+        {"REGISTRY_DOCKERHUB_USER": "  ", "GRYPE_DB_UPDATE_URL": "", "PROCESS_SCANNER_NETWORK": ""}
+    )
+    assert blank.registry_dockerhub_user is None
+    assert blank.grype_db_update_url is None
+    assert blank.process_scanner_network == "none"
+
+
+def test_the_docker_hub_token_never_prints():
+    s = Settings.from_env(
+        {"REGISTRY_DOCKERHUB_USER": "robot", "REGISTRY_DOCKERHUB_TOKEN": "dckr_pat_x"}
+    )
+    assert "dckr_pat_x" not in repr(s)
+
+
+def test_image_scan_concurrency_must_be_positive():
+    with pytest.raises(ValueError, match="IMAGE_SCAN_CONCURRENCY"):
+        Settings.from_env({"IMAGE_SCAN_CONCURRENCY": "0"})

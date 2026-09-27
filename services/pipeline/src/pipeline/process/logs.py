@@ -19,6 +19,7 @@ The rules that make this more than "write a file", and why:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 from pipeline.storage.keys import run_log_key
 from pipeline.storage.platform import put_object
@@ -39,6 +40,30 @@ def cap(payload: bytes, max_bytes: int) -> bytes:
     return payload[:keep] + TRUNCATION_MARKER
 
 
+def store_log(
+    client,
+    bucket: str,
+    key: str,
+    payload: bytes,
+    max_bytes: int,
+    *,
+    context: Mapping[str, str],
+) -> str | None:
+    """Write a capped log object and return its key, or ``None`` when the
+    write fails: a lost log must never lose the verdict, which is already
+    known by the time this is called. ``context`` names the run or scan in
+    the platform's own warning (ids only, never the content)."""
+    try:
+        put_object(client, bucket, key, cap(payload, max_bytes), content_type="text/plain")
+    except Exception as err:  # any store failure is non-fatal here (see above)
+        logger.warning(
+            "run log could not be stored",
+            extra={**context, "key": key, "error": str(err)},
+        )
+        return None
+    return key
+
+
 def store_run_log(
     client,
     bucket: str,
@@ -47,19 +72,12 @@ def store_run_log(
     payload: bytes,
     max_bytes: int,
 ) -> str | None:
-    """Write the capped log and return its key for ``process_runs.log_ref``.
-
-    Returns ``None`` when the write fails: a lost log must never lose the
-    run's verdict, which is already known by the time this is called. The
-    failure is logged as a platform event (the run id, not the content).
-    """
-    key = run_log_key(process_id, run_id)
-    try:
-        put_object(client, bucket, key, cap(payload, max_bytes), content_type="text/plain")
-    except Exception as err:  # any store failure is non-fatal here (see below)
-        logger.warning(
-            "process run log could not be stored",
-            extra={"run_id": run_id, "process_id": process_id, "error": str(err)},
-        )
-        return None
-    return key
+    """Write the capped log and return its key for ``process_runs.log_ref``."""
+    return store_log(
+        client,
+        bucket,
+        run_log_key(process_id, run_id),
+        payload,
+        max_bytes,
+        context={"run_id": run_id, "process_id": process_id},
+    )
