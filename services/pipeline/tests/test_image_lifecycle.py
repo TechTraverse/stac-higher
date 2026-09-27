@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,10 @@ class Img:
     digest: str | None = "sha256:" + "a" * 64
     last_scanned_at: dt.datetime | None = None
     open_scan: bool = False
+    #: The most recent `rescan` row's `requested_at`, any status (item 1's
+    #: backoff): a rescan requested inside the interval blocks another one
+    #: even when it failed and never moved `last_scanned_at`.
+    last_rescan_requested_at: dt.datetime | None = None
 
 
 @dataclass
@@ -72,10 +77,21 @@ class FakeLifecycleRepo(ImageLifecycleRepo):
         ]
 
     async def get_scan_result(self, scan_id):
-        return self.results.get(scan_id)
+        result = self.results.get(scan_id)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     async def expire_exception(
-        self, image_id, *, expected_status, expected_expires_at, status, verdict, audit_detail
+        self,
+        image_id,
+        *,
+        expected_status,
+        expected_expires_at,
+        expected_last_scan_id,
+        status,
+        verdict,
+        audit_detail,
     ):
         if self.before_write is not None:
             self.before_write(self.images[image_id])
@@ -84,6 +100,7 @@ class FakeLifecycleRepo(ImageLifecycleRepo):
             img.status != expected_status
             or img.status == "revoked"
             or img.exception_expires_at != expected_expires_at
+            or img.last_scan_id != expected_last_scan_id
         ):
             return False
         img.status = status
@@ -111,6 +128,10 @@ class FakeLifecycleRepo(ImageLifecycleRepo):
                 and img.digest
                 and (img.last_scanned_at is None or img.last_scanned_at <= scanned_before)
                 and not img.open_scan
+                and (
+                    img.last_rescan_requested_at is None
+                    or img.last_rescan_requested_at <= scanned_before
+                )
             ):
                 img.open_scan = True
                 self.requested.append(i)
@@ -200,6 +221,30 @@ async def test_an_admin_acting_between_the_ticks_read_and_write_wins():
     assert repo.audit == [] and result.exceptions_expired == 0
 
 
+async def test_a_rescan_landing_between_the_ticks_read_and_write_wins():
+    """Important 2: the drain records rescan B (a passing verdict) between
+    this tick's read of A and its write. The CAS also keys on last_scan_id,
+    so the tick's re-evaluation of the older scan A must not overwrite B."""
+
+    def rescan_lands(img):
+        img.last_scan_id = "scan-2"
+        img.verdict = {"pass": True, "reasons": []}
+
+    repo = FakeLifecycleRepo(
+        images={"i1": expired()},
+        results={"scan-1": FAILING, "scan-2": PASSING},
+        before_write=rescan_lands,
+    )
+    result = await tick(repo)
+    img = repo.images["i1"]
+    assert img.last_scan_id == "scan-2"
+    assert img.verdict == {"pass": True, "reasons": []}
+    # The exception columns are exactly what the drain left them: the tick's
+    # write missed, so it never cleared them.
+    assert img.exception_expires_at == NOW - dt.timedelta(minutes=5)
+    assert repo.audit == [] and result.exceptions_expired == 0
+
+
 async def test_a_live_exception_is_left_alone():
     img = expired()
     img.exception_expires_at = NOW + dt.timedelta(seconds=1)
@@ -226,6 +271,66 @@ async def test_rescans_are_requested_once_for_due_approved_and_flagged_images():
     assert (await tick(repo)).rescans_requested == 0  # one open scan per image
 
 
+async def test_a_failed_rescan_is_retried_only_after_the_interval():
+    """Important 1: a failed rescan never moves last_scanned_at, so without
+    the backoff it would be re-requested every hourly tick. A rescan row
+    (any status) requested inside the interval blocks another request; one
+    requested before the interval does not."""
+    cutoff = NOW - dt.timedelta(hours=POLICY.rescan_interval_hours)
+    repo = FakeLifecycleRepo(
+        images={
+            "recently-failed": Img(
+                "approved",
+                last_scanned_at=cutoff,
+                last_rescan_requested_at=NOW - dt.timedelta(hours=2),
+            ),
+            "failed-long-ago": Img(
+                "approved",
+                last_scanned_at=cutoff,
+                last_rescan_requested_at=cutoff - dt.timedelta(hours=1),
+            ),
+        }
+    )
+    result = await tick(repo)
+    assert repo.requested == ["failed-long-ago"]
+    assert result.rescans_requested == 1
+
+
+async def test_one_bad_expiry_row_does_not_abort_the_tick_or_skip_rescans(caplog):
+    """Item 6: a per-row failure (here, get_scan_result raising) is logged
+    and skipped; the other expired row and the rescan requests still run."""
+    due = NOW - dt.timedelta(hours=POLICY.rescan_interval_hours)
+    repo = FakeLifecycleRepo(
+        images={
+            "bad": replace(expired(), last_scan_id="boom"),
+            "good": expired(),
+            "due-rescan": Img("approved", last_scanned_at=due),
+        },
+        results={"boom": RuntimeError("db exploded"), "scan-1": PASSING},
+    )
+    with caplog.at_level(logging.WARNING, logger="pipeline.images.lifecycle"):
+        result = await tick(repo)
+    assert repo.images["good"].status == "approved"
+    assert repo.images["bad"].exception_expires_at == NOW - dt.timedelta(minutes=5)
+    assert result.exceptions_expired == 1
+    assert result.rescans_requested == 1
+    assert "due-rescan" in repo.requested
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].image_id == "bad" and warnings[0].error_type == "RuntimeError"
+    assert "db exploded" not in warnings[0].getMessage()
+
+
+async def test_an_expired_row_with_no_last_scan_id_fails_closed():
+    """Item 6: a row with no stored scan to re-evaluate (last_scan_id is
+    None) must still fail closed, never crash the tick."""
+    repo = FakeLifecycleRepo(images={"i1": replace(expired(), last_scan_id=None)})
+    result = await tick(repo)
+    assert repo.images["i1"].status == "flagged"
+    assert result.flagged_on_expiry == 1
+    assert repo.audit[0]["detail"]["verdict_pass"] is None
+
+
 async def test_expiry_runs_before_the_rescan_requests():
     """An image flagged by its expiry is still rescanned in the same tick."""
     img = expired()
@@ -250,6 +355,7 @@ def test_the_sql_keeps_the_boundaries_and_the_guards():
     for fragment in (
         "AND status = %s AND status <> 'revoked'",
         "AND exception_expires_at = %s",
+        "last_scan_id IS NOT DISTINCT FROM %s::uuid",
         "exception_reason = NULL, exception_by = NULL",
         "exception_at = NULL, exception_expires_at = NULL",
         "INSERT INTO stac_higher.audit_log",
@@ -261,6 +367,7 @@ def test_the_sql_keeps_the_boundaries_and_the_guards():
         "i.sbom_ref IS NOT NULL AND i.digest IS NOT NULL",
         "i.last_scanned_at <= %s",
         "s.status IN ('pending', 'running')",
+        "s.kind = 'rescan' AND s.requested_at > %s",
         "FOR UPDATE OF i SKIP LOCKED",
     ):
         assert fragment in DUE_RESCANS_SQL, fragment

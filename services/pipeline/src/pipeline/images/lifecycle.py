@@ -14,21 +14,30 @@ things, in this order:
    after the exception lapsed) only has the columns cleared. The update and
    its ``audit_log`` row (actor ``pipeline``, action ``exception_expired`` on
    ``container_image``) are ONE statement, a compare-and-set on
-   ``(status, exception_expires_at)``: an admin who re-grants or revokes in
-   between wins, and nothing is audited for a write that did not happen.
+   ``(status, exception_expires_at, last_scan_id)``: an admin who re-grants
+   or revokes in between wins, and so does a rescan the drain records in
+   between (the tick's stale verdict on an older scan is never written over
+   a fresher one), and nothing is audited for a write that did not happen.
    After this, the deploy gate's ``exceptionLapsed`` rule (C-3) is defence
    in depth. The pipeline actor has no groups, so these audit rows carry an
    empty ``actor_groups`` (accepted: there is no group to attribute a
-   scheduled tick to).
+   scheduled tick to). One row's failure (a DB error reading its scan
+   result, say) is logged and skipped; it never aborts the tick or the
+   rescan requests that follow.
 2. **Rescan requests.** Every ``approved`` or ``flagged`` image with a stored
-   SBOM and digest, last scanned at least ``rescan_interval_hours`` ago and
-   with no scan pending or running, gets ONE ``rescan`` row
-   (``requested_by = 'pipeline'``). The drain does the work (spec §4.2: a
-   row, never a call). The image rows are locked ``FOR UPDATE SKIP LOCKED``,
-   which serializes with the app's "Rescan now" (it locks the same row); a
-   narrow snapshot race (the ``NOT EXISTS`` subquery reads the same statement
-   snapshot as the lock) can still add one redundant rescan, which is
-   harmless.
+   SBOM and digest, last scanned at least ``rescan_interval_hours`` ago,
+   with no scan pending or running, AND with no ``rescan`` row of any status
+   requested within the interval, gets ONE ``rescan`` row
+   (``requested_by = 'pipeline'``). The last condition is the backoff: a
+   scan that FAILS never moves ``last_scanned_at``, so without it a
+   systemic fault (a missing scanner image, a dead egress sidecar) would be
+   re-requested every hour forever; measuring from the last rescan REQUEST
+   instead retries at most once per interval. The drain does the work (spec
+   §4.2: a row, never a call). The image rows are locked ``FOR UPDATE SKIP
+   LOCKED``, which serializes with the app's "Rescan now" (it locks the same
+   row); a narrow snapshot race (the ``NOT EXISTS`` subquery reads the same
+   statement snapshot as the lock) can still add one redundant rescan, which
+   is harmless.
 
 Hourly with an interval check, rather than spec §8.2's daily ``15 3 * * *``:
 a daily tick with a 24-hour interval skips every image whose previous rescan
@@ -97,14 +106,18 @@ class ImageLifecycleRepo(abc.ABC):
         *,
         expected_status: str,
         expected_expires_at: dt.datetime,
+        expected_last_scan_id: str | None,
         status: str,
         verdict: dict[str, Any] | None,
         audit_detail: dict[str, Any],
     ) -> bool:
-        """Compare-and-set on ``(status, exception_expires_at)``, never onto a
-        revoked row: write ``status`` (and ``verdict`` when given), clear the
-        four ``exception_*`` columns, and append the audit row in the same
-        statement. Returns whether the row changed."""
+        """Compare-and-set on ``(status, exception_expires_at, last_scan_id)``,
+        never onto a revoked row: write ``status`` (and ``verdict`` when
+        given), clear the four ``exception_*`` columns, and append the audit
+        row in the same statement. ``expected_last_scan_id`` catches a rescan
+        the drain records between this tick's read and its write: without it
+        the tick's re-evaluation of the OLDER scan would overwrite the
+        drain's fresher verdict. Returns whether the row changed."""
 
     @abc.abstractmethod
     async def request_due_rescans(self, *, scanned_before: dt.datetime) -> int:
@@ -127,6 +140,7 @@ EXPIRE_EXCEPTION_SQL = (
     "         exception_at = NULL, exception_expires_at = NULL, updated_at = now()"
     "   WHERE id = %s::uuid AND status = %s AND status <> 'revoked'"
     "     AND exception_expires_at = %s"
+    "     AND last_scan_id IS NOT DISTINCT FROM %s::uuid"
     "  RETURNING id"
     ")"
     " INSERT INTO stac_higher.audit_log (actor, action, resource_type, resource_id, detail)"
@@ -134,6 +148,10 @@ EXPIRE_EXCEPTION_SQL = (
     " RETURNING 1"
 )
 
+#: The backoff bound (item 1): a rescan row of ANY status requested within
+#: the interval blocks another request, so a failing rescan (which never
+#: moves ``last_scanned_at``) is retried at most once per interval instead
+#: of every hourly tick.
 DUE_RESCANS_SQL = (
     "WITH due AS ("
     "  SELECT i.id FROM stac_higher.container_images i"
@@ -142,7 +160,9 @@ DUE_RESCANS_SQL = (
     "     AND (i.last_scanned_at IS NULL OR i.last_scanned_at <= %s)"
     "     AND NOT EXISTS ("
     "       SELECT 1 FROM stac_higher.image_scans s"
-    "        WHERE s.image_id = i.id AND s.status IN ('pending', 'running'))"
+    "        WHERE s.image_id = i.id"
+    "          AND (s.status IN ('pending', 'running')"
+    "               OR (s.kind = 'rescan' AND s.requested_at > %s)))"
     "   FOR UPDATE OF i SKIP LOCKED"
     ")"
     " INSERT INTO stac_higher.image_scans (image_id, kind, requested_by)"
@@ -182,6 +202,7 @@ class PgImageLifecycleRepo(ImageLifecycleRepo):
         *,
         expected_status: str,
         expected_expires_at: dt.datetime,
+        expected_last_scan_id: str | None,
         status: str,
         verdict: dict[str, Any] | None,
         audit_detail: dict[str, Any],
@@ -197,6 +218,7 @@ class PgImageLifecycleRepo(ImageLifecycleRepo):
                     image_id,
                     expected_status,
                     expected_expires_at,
+                    expected_last_scan_id,
                     PIPELINE_ACTOR,
                     EXPIRY_AUDIT_ACTION,
                     AUDIT_RESOURCE_TYPE,
@@ -211,7 +233,9 @@ class PgImageLifecycleRepo(ImageLifecycleRepo):
         self, *, scanned_before: dt.datetime
     ) -> int:
         async with await self._connect() as conn:
-            cur = await conn.execute(DUE_RESCANS_SQL, (scanned_before, PIPELINE_ACTOR))
+            cur = await conn.execute(
+                DUE_RESCANS_SQL, (scanned_before, scanned_before, PIPELINE_ACTOR)
+            )
             rows = await cur.fetchall()
             await conn.commit()
         return len(rows)
@@ -256,21 +280,37 @@ def decide_expiry(
     )
 
 
+#: Logged when one row's expiry raises (final-review fix wave item 6): the
+#: tick logs, skips that image, and moves on -- one bad row must not abort
+#: the whole tick, nor the rescan requests that follow it. Ids and the
+#: exception's type name only, never its text (ruling M4's rule applied here
+#: too: the exception could in principle wrap untrusted data).
+LIFECYCLE_ROW_FAILED_MSG = "exception expiry row failed: skipping this image, the tick continues"
+
+
 async def lifecycle_tick(
     repo: ImageLifecycleRepo, *, policy: ImagePolicy, now: dt.datetime
 ) -> LifecycleResult:
     expired = flagged = 0
     for row in await repo.list_expired_exceptions(now=now):
-        doc = await repo.get_scan_result(row.last_scan_id) if row.last_scan_id else None
-        decision = decide_expiry(row, doc, policy, now)
-        changed = await repo.expire_exception(
-            row.image_id,
-            expected_status=row.status,
-            expected_expires_at=row.exception_expires_at,
-            status=decision.status,
-            verdict=decision.verdict,
-            audit_detail=decision.detail,
-        )
+        try:
+            doc = await repo.get_scan_result(row.last_scan_id) if row.last_scan_id else None
+            decision = decide_expiry(row, doc, policy, now)
+            changed = await repo.expire_exception(
+                row.image_id,
+                expected_status=row.status,
+                expected_expires_at=row.exception_expires_at,
+                expected_last_scan_id=row.last_scan_id,
+                status=decision.status,
+                verdict=decision.verdict,
+                audit_detail=decision.detail,
+            )
+        except Exception as err:  # one row's fault must not abort the tick or the rescans after it
+            logger.warning(
+                LIFECYCLE_ROW_FAILED_MSG,
+                extra={"image_id": row.image_id, "error_type": type(err).__name__},
+            )
+            continue
         if not changed:
             logger.info(
                 "exception expiry skipped: the image changed meanwhile",
