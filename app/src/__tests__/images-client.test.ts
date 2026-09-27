@@ -8,9 +8,14 @@ import {
   listImages,
   requestRescan,
 } from "@/lib/images/api";
-import { hasScanInFlight, isScanTerminal } from "@/lib/images/queries";
+import {
+  hasScanInFlight,
+  isScanTerminal,
+  listRefetchInterval,
+  scanRefetchInterval,
+} from "@/lib/images/queries";
 import { imageKeys } from "@/lib/query/keys";
-import type { Image } from "@/lib/images/types";
+import type { Image, ImageScan } from "@/lib/images/types";
 
 const fetchMock = vi.fn();
 
@@ -56,6 +61,22 @@ describe("images client", () => {
     expect(init.credentials).toBe("same-origin");
   });
 
+  it("omits tag from the wire body when the caller left it blank", async () => {
+    fetchMock.mockResolvedValue(
+      reply(202, {
+        id: "img-2",
+        image_id: "img-2",
+        scan_id: "scan-2",
+        deduplicated: false,
+        reference: "docker.io/library/python",
+        tag: "latest",
+      }),
+    );
+    await addImage({ reference: "x", tag: "" });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ reference: "x" });
+  });
+
   it("surfaces the server's error and code", async () => {
     fetchMock.mockResolvedValue(
       reply(422, { error: "quay.io is not an allowed registry", code: "registry_not_allowed" }),
@@ -96,6 +117,37 @@ describe("image query helpers and keys", () => {
     expect(hasScanInFlight([row("approved"), row("scanning")])).toBe(true);
     expect(hasScanInFlight([row("approved"), row("rejected")])).toBe(false);
     expect(hasScanInFlight(undefined)).toBe(false);
+  });
+
+  it("stops polling a scan on a persistent error, even with stale data left over", () => {
+    const scan = (status: ImageScan["status"]) => ({ scan: { status } as ImageScan, image: null });
+    expect(scanRefetchInterval({ status: "error", data: undefined })).toBe(false);
+    // A prior success cached `scan`, then the poll started erroring: still stop.
+    expect(scanRefetchInterval({ status: "error", data: scan("running") })).toBe(false);
+    expect(scanRefetchInterval({ status: "success", data: scan("running") })).toBe(2_000);
+    expect(scanRefetchInterval({ status: "success", data: scan("done") })).toBe(false);
+  });
+
+  it("stops polling the list on a persistent error, even with a stale scan-in-flight row", () => {
+    expect(listRefetchInterval({ status: "error", data: undefined })).toBe(false);
+    expect(
+      listRefetchInterval({
+        status: "error",
+        data: { images: [{ status: "pending" } as Image], scan_window_days: 30 },
+      }),
+    ).toBe(false);
+    expect(
+      listRefetchInterval({
+        status: "success",
+        data: { images: [{ status: "pending" } as Image], scan_window_days: 30 },
+      }),
+    ).toBe(10_000);
+    expect(
+      listRefetchInterval({
+        status: "success",
+        data: { images: [{ status: "approved" } as Image], scan_window_days: 30 },
+      }),
+    ).toBe(false);
   });
 
   it("keys every image query under one prefix, catalog-agnostic", () => {

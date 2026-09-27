@@ -12,7 +12,9 @@ import {
   getImageScan,
   listImages,
   requestRescan,
+  type ImageList,
   type ImageListQuery,
+  type ImageScanPoll,
 } from "./api";
 import type { ImageAdd } from "./schemas";
 import type { Image, ImageScan } from "./types";
@@ -28,11 +30,33 @@ export function hasScanInFlight(images: readonly Image[] | undefined): boolean {
   return (images ?? []).some((image) => image.status === "pending" || image.status === "scanning");
 }
 
+/** The bit of `Query.state` a `refetchInterval` callback needs, factored out
+ * so the polling decision is a plain function `useImages`/`useImageScan` can
+ * both use and this file's tests can call directly. */
+interface PollState<TData> {
+  status: string;
+  data: TData | undefined;
+}
+
+/** Stop polling on a persistent error (query.state.status === "error"): the
+ * global `retry` already bounded retries within one fetch, but a failed
+ * fetch leaves `data` at its last (possibly `undefined`, possibly stale)
+ * value, and `hasScanInFlight`/`isScanTerminal` alone would poll it forever. */
+export function listRefetchInterval(state: PollState<ImageList>): number | false {
+  if (state.status === "error") return false;
+  return hasScanInFlight(state.data?.images) ? LIST_POLL_MS : false;
+}
+
+export function scanRefetchInterval(state: PollState<ImageScanPoll>): number | false {
+  if (state.status === "error") return false;
+  return isScanTerminal(state.data?.scan.status) ? false : SCAN_POLL_MS;
+}
+
 export function useImages(filters: ImageListQuery = {}) {
   return useQuery({
     queryKey: imageKeys.list(filters),
     queryFn: () => listImages(filters),
-    refetchInterval: (query) => (hasScanInFlight(query.state.data?.images) ? LIST_POLL_MS : false),
+    refetchInterval: (query) => listRefetchInterval(query.state),
   });
 }
 
@@ -50,7 +74,7 @@ export function useImageScan(imageId: string | null, scanId: string | null) {
     queryKey: imageKeys.scan(imageId ?? "none", scanId ?? "none"),
     queryFn: () => getImageScan(imageId as string, scanId as string),
     enabled: !!imageId && !!scanId,
-    refetchInterval: (query) => (isScanTerminal(query.state.data?.scan.status) ? false : SCAN_POLL_MS),
+    refetchInterval: (query) => scanRefetchInterval(query.state),
   });
 }
 
