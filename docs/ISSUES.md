@@ -1498,7 +1498,11 @@ from the daemon needs a reference count across in-flight runs and every
 revision still pinning the digest, which is C-4's retention territory (spec
 §8.3) and K-4's reconcile loop in cloud (the kubelet's own image GC applies
 on Kubernetes). Deployment-checklist item for compose hosts: `docker image
-prune` on a schedule, never while a run is starting.
+prune` on a schedule, never while a run is starting. C-4 considered and deferred it: a
+safe daemon delete needs a reference count across in-flight launches and
+every revision still pinning the digest, and a delete racing a launch's
+`_ensure_image` would fail that run. K-4's reconcile loop (and the kubelet's
+own image GC on Kubernetes) is the right home.
 - Found in: the C-2 plan (2026-09-27).
 
 ### I-138 · The launch-time image check has two TOCTOU gaps 🟡
@@ -1535,6 +1539,28 @@ whichever platform manifest the index and the local daemon agree on, which
 was never scanned or evaluated. Compose dev hosts on Apple Silicon are the
 practical case today; production stays on the policy's declared platform.
 - Found in: the C-2 plan (2026-09-27).
+
+### I-140 · The rescan diff compares summaries, not full findings 🟡
+`image_scans.result.diff` (C-4, spec §8.2) is computed over the two stored
+summaries (`top`, the ≤ 25 findings chosen policy-first, plus the complete
+`kev` list). A finding that drops below the top-25 cut reads as `resolved`,
+and one that rises into it as `new`, although the scanner saw it both
+times. `counts_delta` comes from the complete counts and is exact. The
+alert's message quotes `new`/`new_kev` counts, so on a very noisy image it
+can overstate churn; the verdict (which drives `flagged`) is unaffected.
+Exact diffs need both full Grype JSON files (large, untrusted,
+object-stored).
+- Tracked in: `services/pipeline/src/pipeline/images/diff.py`.
+
+### I-141 · A flagged image that gets worse does not re-notify 🟡
+`process_image_flagged` is a state-observed condition (C-4): it fires once
+when the image goes flagged (or revoked, or stale) and stays open. A later
+rescan that adds CRITICALs or a KEV to an image that is already flagged
+updates the open alert's message (`last_seen` bump), but ADR 0010 notifies
+only on a new alert row, so webhooks hear nothing. The dashboard's scan
+history shows each rescan's diff. A resolve-and-re-raise on a worsening
+diff would re-notify, at the cost of alert churn.
+- Tracked in: `services/pipeline/src/pipeline/images/alerts.py`.
 
 ## Resolved — archived
 

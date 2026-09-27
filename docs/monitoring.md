@@ -133,7 +133,7 @@ attach-don't-copy; `runMigrations()` reconciles partitions two months ahead);
 `delivery_log`/`ingest_files`/`connection_checks` are deliberately not (their
 UNIQUE keys are the upsert model) — the hourly `history_retention` sweep
 prunes them conservatively. Audit rows die only by partition DETACH+DROP; no
-automated partition-drop policy yet (I-11).
+automated partition-drop policy yet (I-11). Since C-4 it also runs the scan retention leg (`pipeline/images/retention.py`): each image's current SBOM pair and its ten newest scans' objects stay, every other object under `scans/` older than 24 h goes (dedup orphans included), older rows' refs are nulled, and `image_scans` rows past `HISTORY_RETENTION_DAYS` are pruned, never an image's `last_scan_id`.
 
 `GET :8083/metrics` (`pipeline/metrics.py`, Prometheus exposition): per-job
 runs/duration/outcome wrapped centrally at Procrastinate registration, ingest

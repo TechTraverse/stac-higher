@@ -220,6 +220,24 @@ refreshed at scan start where the deployment allows). A passing scan
 approves the image; a failing one rejects it with the policy's reasons; a
 scan that cannot finish leaves the image `scan_failed`.
 
+Approvals are kept honest over time (C-4). Every approved or flagged image
+is rescanned against a fresh vulnerability database once its
+`rescan_interval_hours` (24 by default) are up. A rescan reads the stored
+SBOM and pulls nothing. Each rescan records what changed since the
+previous one ("+2 high, −1 medium since …") and whether the tag you added
+now points at another digest. A moved tag is informational: your runs keep
+the digest that was scanned, and adding the reference again scans the new
+one. If a rescan newly fails an image, it goes **flagged**: new deploys are
+refused, triggered runs keep launching, and each process whose current
+revision uses it gets a `process_image_flagged` alert (degraded, not
+failing). An image not scanned for `scan_window_days` (30) is **stale**,
+and its runs are refused until a rescan passes. An admin exception (a
+reason and at most `exception_max_days`, 90) approves a rejected or flagged
+image. A new grant replaces a live exception, and revoking the image ends
+it. When an exception expires, the latest scan is re-checked against the
+current policy: the image stays approved if it passes and goes flagged if
+not. Every grant and every expiry is in the audit log.
+
 ### Private registries
 
 Pull credentials are a group-owned `registry` connection (`{host}` plus

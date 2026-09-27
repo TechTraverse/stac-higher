@@ -387,6 +387,25 @@ a scan the stall sweep later fails -- the image keeps its transitioned
 status, but its `last_scan_id` then names a `failed` scan rather than the
 `done` one that actually produced it.
 
+**C-4.** `pipeline.image_rescan_tick` (`15 * * * *`, `jobs/image_scans.py`,
+`images/lifecycle.py`) first expires admin exceptions: it re-evaluates the
+latest stored scan against the current policy, clears the four
+`exception_*` columns, and on a fail goes `flagged`. The UPDATE and its
+`audit_log` row (`exception_expired`, actor `pipeline`, empty `actor_groups`
+— visible in admin audit views only) are one statement, compare-and-set on
+`(status, exception_expires_at)`. It then inserts one `rescan` row
+(`requested_by = pipeline`) per approved/flagged image older than
+`rescan_interval_hours` with no open scan (`FOR UPDATE SKIP LOCKED`); the
+tick and the app's "Rescan now" serialize on that lock, though a narrow
+snapshot race can still add one redundant rescan. On a rescan the drain
+stores the diff against the image's previous scan (`images/diff.py`) and
+HEADs the tag itself (`images/drift.py`: `resolve_pinned`, the image's pull
+credential, HTTPS only, never fatal), writing
+`tag_current_digest`/`tag_checked_at` when the registry answered. Before
+each drain tick, `images/alerts.py` reconciles `process_image_flagged`.
+`history_retention` runs the scan retention leg (`images/retention.py`).
+Pulled user images are still never removed from the daemon (I-137).
+
 ## Develop
 
 Requires [uv](https://docs.astral.sh/uv/) (falls back to `python3 -m venv` +
