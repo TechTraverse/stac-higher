@@ -783,6 +783,40 @@ async def test_a_rescan_without_a_readable_previous_scan_stores_a_null_diff():
     assert repo.scans[SCAN]["result"]["diff"] is None
 
 
+async def test_a_rescan_with_an_unreadable_previous_result_stores_a_null_diff():
+    """Item 10: last_scan_id IS set, but the previous scan's stored result
+    is unreadable (None, e.g. pruned) or itself a failure doc -- distinct
+    from `test_a_rescan_without_a_readable_previous_scan_stores_a_null_diff`
+    above, which has no last_scan_id at all."""
+    repo = repo_with(
+        status="approved",
+        scan_kind="rescan",
+        digest=DIGEST,
+        sbom_ref=f"scans/{IMG}/{OLD}/sbom.syft.json",
+        last_scan_id=OLD,
+    )
+    repo.add_scan(OLD, IMG, kind="admission", status="done", result=None)
+    await drain_with(repo, Scanner(rescan_doc()), None)
+    assert repo.scans[SCAN]["result"]["diff"] is None
+
+    repo2 = repo_with(
+        status="approved",
+        scan_kind="rescan",
+        digest=DIGEST,
+        sbom_ref=f"scans/{IMG}/{OLD}/sbom.syft.json",
+        last_scan_id=OLD,
+    )
+    repo2.add_scan(
+        OLD, IMG, kind="admission", status="failed",
+        result={
+            "version": 1, "kind": "admission", "reference": REF, "tag": "3.12-slim",
+            "error": "the scan stalled",
+        },
+    )
+    await drain_with(repo2, Scanner(rescan_doc()), None)
+    assert repo2.scans[SCAN]["result"]["diff"] is None
+
+
 async def test_an_admission_stores_a_null_diff_and_never_heads_the_tag():
     repo = repo_with()
     drift = Drift({"current_digest": MOVED, "drifted": True})

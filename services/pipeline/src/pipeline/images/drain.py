@@ -462,6 +462,20 @@ async def drain_one(
             reason="identity_mismatch",
         )
 
+    if not await _still_running(repo, scan.id):
+        # Task 7 fix round 1, moved above the drift HEAD (final-review fix
+        # wave item 10): checked BEFORE any image write, not just at the
+        # final `finish_scan` call below -- a scan a stall sweep already
+        # resolved must not have its result overwritten, and the image must
+        # not be transitioned on its behalf. Checking it here too, before
+        # the drift HEAD and the diff computation, means a scan already
+        # resolved never wastes a HEAD against the registry.
+        logger.info(
+            "image scan already resolved: skipping the image transition",
+            extra={"scan_id": scan.id, "image_id": image.id},
+        )
+        return DrainOutcome(scan.id, image.id, ALREADY_RESOLVED, None)
+
     drift: dict[str, Any] | None = None
     if (
         kind == "rescan"
@@ -494,17 +508,6 @@ async def drain_one(
             previous_scan_id=image.last_scan_id,
         )
         diff = found.as_json() if found is not None else None
-
-    if not await _still_running(repo, scan.id):
-        # Task 7 fix round 1: checked BEFORE any image write, not just at
-        # the final `finish_scan` call below -- a scan a stall sweep already
-        # resolved must not have its result overwritten, and the image must
-        # not be transitioned on its behalf.
-        logger.info(
-            "image scan already resolved: skipping the image transition",
-            extra={"scan_id": scan.id, "image_id": image.id},
-        )
-        return DrainOutcome(scan.id, image.id, ALREADY_RESOLVED, None)
 
     image_id = image.id
     final_status: str | None
