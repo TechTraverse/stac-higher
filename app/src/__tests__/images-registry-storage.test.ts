@@ -402,4 +402,11 @@ describe("isDigestLaunchable (the K-6 admission probe)", () => {
     expect(sql).toContain("last_scanned_at >= now() - make_interval(days => $2::int)");
     expect(params).toEqual([DIGEST, 30]);
   });
+
+  it("excludes a row whose approval exception has expired (controller ruling)", async () => {
+    mockQuery.mockResolvedValue({ rows: [{ ok: false }] } as never);
+    expect(await isDigestLaunchable(DIGEST, 30)).toBe(false);
+    const [sql] = mockQuery.mock.calls[0];
+    expect(sql).toContain("(exception_expires_at IS NULL OR exception_expires_at > now())");
+  });
 });

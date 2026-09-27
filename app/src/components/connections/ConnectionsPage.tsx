@@ -460,6 +460,14 @@ function ConnectionsInner() {
                       this connection's source.
                     </p>
                   ))}
+                  {deleteImpact.data.images > 0 && (
+                    <p className="text-destructive">
+                      {deleteImpact.data.images} container image(s) pull with
+                      this credential. They stay in the image registry, but no
+                      process can deploy them until they are added again with a
+                      live credential.
+                    </p>
+                  )}
                   <p className="text-muted-foreground">
                     Ingest and delivery history is retained (
                     {deleteImpact.data.history.ingest_files} file records,{" "}

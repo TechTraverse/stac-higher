@@ -344,6 +344,7 @@ const IMPACT = {
   associations: { ingest: 1, deliver: 0 },
   reference_items: [{ collection_id: "goes-west", items: 3 }],
   history: { ingest_files: 12, delivery_log: 4, connection_checks: 2 },
+  images: 0,
 };
 
 describe("DELETE /api/connections/[id] (ADR 0009 soft delete)", () => {

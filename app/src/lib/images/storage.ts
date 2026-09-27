@@ -617,7 +617,10 @@ export async function revokeImage(imageId: string): Promise<RevokeOutcome> {
 
 /** Could a run on this digest LAUNCH (spec §4.3: approved or flagged, and
  * scanned inside the window)? The same boundary as the gate: exactly the
- * window ago is fresh. */
+ * window ago is fresh. A row approved via an exception that has since
+ * expired does not count (controller ruling, C-3): the exception grant is
+ * time-boxed, and an expired one must fall back to "not approved" here just
+ * as it does everywhere else the policy is enforced. */
 export async function isDigestLaunchable(digest: string, scanWindowDays: number): Promise<boolean> {
   await runMigrations();
   const result = await query<{ ok: boolean }>(
@@ -626,6 +629,7 @@ export async function isDigestLaunchable(digest: string, scanWindowDays: number)
         WHERE digest = $1
           AND status IN ('approved','flagged')
           AND last_scanned_at >= now() - make_interval(days => $2::int)
+          AND (exception_expires_at IS NULL OR exception_expires_at > now())
      ) AS ok`,
     [digest, scanWindowDays],
   );

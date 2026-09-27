@@ -87,6 +87,8 @@ export interface ConnectionDeleteImpact {
     delivery_log: number;
     connection_checks: number;
   };
+  /** Container images pulled with this credential (C-3). */
+  images: number;
 }
 
 export async function getConnectionDeleteImpact(

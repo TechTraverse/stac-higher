@@ -51,7 +51,9 @@ describe("connectionDeleteImpact", () => {
         } as never;
       }
       return {
-        rows: [{ ingest_files: "12", delivery_log: "4", connection_checks: "2" }],
+        rows: [
+          { ingest_files: "12", delivery_log: "4", connection_checks: "2", container_images: "0" },
+        ],
         rowCount: 1,
       } as never;
     });
@@ -60,7 +62,30 @@ describe("connectionDeleteImpact", () => {
       associations: { ingest: 2, deliver: 0 },
       reference_items: [{ collection_id: "goes-west", items: 3 }],
       history: { ingest_files: 12, delivery_log: 4, connection_checks: 2 },
+      images: 0,
     });
+  });
+
+  it("counts the container images pulled with this credential (C-3)", async () => {
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("GROUP BY direction") || sql.includes("GROUP BY cc.collection_id")) {
+        return { rows: [], rowCount: 0 } as never;
+      }
+      return {
+        rows: [
+          { ingest_files: "0", delivery_log: "0", connection_checks: "1", container_images: "3" },
+        ],
+        rowCount: 1,
+      } as never;
+    });
+    const impact = await connectionDeleteImpact(CONN_ID);
+    expect(impact.images).toBe(3);
+    const historySql = mockQuery.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes("connection_checks"));
+    expect(historySql).toContain(
+      "FROM stac_higher.container_images WHERE registry_connection_id = $1",
+    );
   });
 });
 
