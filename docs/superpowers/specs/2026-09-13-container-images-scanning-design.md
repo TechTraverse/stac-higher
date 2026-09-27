@@ -1,11 +1,10 @@
 # Bring-your-own container images + image scanning — design
 
 **Date:** 2026-09-13
-**Status:** **draft, pending lead review.** Written in a planning session
-with the lead (no dev work); the decisions in §2 are the lead's answers,
-the decisions in §14 were taken by the agent and stand unless overturned.
-The C queue in `TODO.md` is copied from §15; nothing may start until the
-lead approves this spec and ADR 0021.
+**Status:** **approved 2026-09-27** by the lead (PR #23). Written in a
+planning session with the lead (no dev work); the decisions in §2 are the
+lead's answers, and the agent's decisions in §14 are approved as written.
+**Tracking:** epic #56.
 **Scope source:** ADR 0013 "Slice-1 scope" (the deferred `container`
 runtime kind), Phase 9 spec §4 ("user-image supply-chain review stays out
 of the first accreditation surface"), ADR 0019 §Consequences ("user-supplied
@@ -138,7 +137,7 @@ limit) (a tmpfs the executor adds for kinds 2–3) and the run's output prefix.
 
 ## 4. Data model — migration 030
 
-029 is reserved for K-3 (`TODO.md`); C-1 takes **030**. Two tables, both
+029 is reserved for K-3 (#11); C-1 takes **030**. Two tables, both
 `stac_higher.*`, DDL app-owned (ADR 0001); the pipeline reads and writes
 rows.
 

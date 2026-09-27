@@ -1414,7 +1414,7 @@ which is not populated on `schedule` runs.
 - Tracked in: `.github/workflows/codeql.yml`, `.github/workflows/security.yml`.
 - Found in: CI repair (2026-09-15).
 
-## Container images + scanning (C queue, planned 2026-09-13)
+## Container images + scanning (C queue, epic #56)
 
 ### I-122 · UI test runs are inserted and never drained 🔴
 `POST /api/processes/[id]/test` INSERTs a `process_checks` row (the ADR
@@ -1428,8 +1428,7 @@ check_drain` leg on the run tick that claims the row, calls
 `process_trigger(is_test=True, revision_id=…)`, attaches the run and
 finishes the check when the run finalizes — independent of the C queue
 and small enough for any loop to pick up.
-- Tracked in: `services/pipeline/src/pipeline/jobs/process.py`,
-  `process/repo.py:787-830`.
+- Tracked in: GitHub #55.
 - Found in: the 2026-09-13 planning session.
 
 ### I-123 · The scanner's egress network cannot filter by registry host 🟡

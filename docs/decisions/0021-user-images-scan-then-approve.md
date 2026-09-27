@@ -1,8 +1,8 @@
 # ADR 0021 — User-supplied process images: scan, approve by policy, run by digest
 
-- **Status:** proposed (2026-09-13 — awaiting the lead's approval of the
+- **Status:** accepted — PR #23 (2026-09-27; proposed 2026-09-13 with the
   design spec `docs/superpowers/specs/2026-09-13-container-images-scanning-design.md`;
-  implemented by the C queue in `TODO.md` once approved)
+  implemented by the C queue, epic #56)
 - **Amends:** ADR 0013 "Slice-1 scope" (the `container` runtime kind was
   deferred, not refused forever) and ADR 0019 §Consequences ("user-supplied
   images remain refused"). Every isolation invariant in ADR 0013 and every
