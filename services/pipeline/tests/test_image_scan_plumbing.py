@@ -8,7 +8,11 @@ import json
 import pytest
 
 from pipeline.config import Settings
-from pipeline.process.credentials import mint_prefix_credentials, mint_run_credentials
+from pipeline.process.credentials import (
+    RunCredentialsError,
+    mint_prefix_credentials,
+    mint_run_credentials,
+)
 from pipeline.process.logs import TRUNCATION_MARKER, store_log
 from pipeline.storage.keys import (
     InvalidKeySegment,
@@ -71,6 +75,53 @@ def test_prefix_credentials_bound_the_session_to_the_scan_prefix():
     read = policy["Statement"][2]["Resource"]
     assert read == [f"arn:aws:s3:::stac-higher/scans/{IMAGE}/older-scan/*"]
     assert creds.as_env()["STAC_HIGHER_OUTPUT_PREFIX"] == f"scans/{IMAGE}/{SCAN}/"
+
+
+@pytest.mark.parametrize("bad", ["", "scans/x", "scans/*/"])
+def test_a_malformed_prefix_refuses_to_mint(bad):
+    sts = FakeSts()
+    with pytest.raises(RunCredentialsError):
+        mint_prefix_credentials(
+            Settings.from_env({}),
+            session_name="stac-scan-x",
+            prefix=bad,
+            timeout_seconds=900,
+            sts_client=sts,
+        )
+    assert sts.kwargs is None
+
+
+@pytest.mark.parametrize("bad", ["", "scans/x", "scans/*/"])
+def test_a_malformed_read_prefix_refuses_to_mint(bad):
+    sts = FakeSts()
+    with pytest.raises(RunCredentialsError):
+        mint_prefix_credentials(
+            Settings.from_env({}),
+            session_name="stac-scan-x",
+            prefix=image_scan_prefix(IMAGE, SCAN),
+            timeout_seconds=900,
+            sts_client=sts,
+            read_prefixes=[bad],
+        )
+    assert sts.kwargs is None
+
+
+def test_valid_prefixes_still_mint_run_scan_and_rescan_credentials():
+    """The three real shapes callers pass (spec §5/§6.2): a run's own
+    staging prefix, a scan's own prefix, and a rescan's stored-SBOM read
+    prefix -- none of them must be refused by the new validation."""
+    sts = FakeSts()
+    mint_run_credentials(
+        Settings.from_env({}), "run-1", 60, sts_client=sts, read_prefixes=["assets/goes/"]
+    )
+    mint_prefix_credentials(
+        Settings.from_env({}),
+        session_name=f"stac-scan-{SCAN}",
+        prefix=image_scan_prefix(IMAGE, SCAN),
+        timeout_seconds=900,
+        sts_client=sts,
+        read_prefixes=[f"scans/{IMAGE}/older-scan/"],
+    )
 
 
 def test_run_credentials_are_unchanged_by_the_refactor():

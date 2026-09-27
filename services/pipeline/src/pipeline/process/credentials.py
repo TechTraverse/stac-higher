@@ -49,6 +49,20 @@ class RunCredentialsError(Exception):
     """Run-scoped credentials could not be minted — the run must not start."""
 
 
+def _validate_scoped_prefix(prefix: str, *, what: str) -> None:
+    """A prefix bound into an STS inline session policy (``session_policy``)
+    must name exactly one sub-tree: non-empty, trailing-slash-terminated, and
+    free of the glob characters ``session_policy`` itself appends (``*``) or
+    that S3's ``StringLike`` condition would otherwise interpret (``?``).
+    Anything else would widen -- or, for an empty string, ELIMINATE -- the
+    boundary the policy exists to hold (final-review fix wave item 1)."""
+    if not prefix or not prefix.endswith("/") or "*" in prefix or "?" in prefix:
+        raise RunCredentialsError(
+            f"{what} is not a safe STS session-policy prefix -- it must be a "
+            "non-empty string ending with '/' and containing neither '*' nor '?'"
+        )
+
+
 @dataclass(frozen=True)
 class RunCredentials:
     access_key_id: str
@@ -153,6 +167,9 @@ def mint_prefix_credentials(
     Raises :class:`RunCredentialsError` on any STS failure -- the caller must
     fail the run rather than start it with wider access.
     """
+    _validate_scoped_prefix(prefix, what="prefix")
+    for read_prefix in read_prefixes:
+        _validate_scoped_prefix(read_prefix, what="a read prefix")
     if len(read_prefixes) > MAX_READ_PREFIXES:
         raise RunCredentialsError(
             f"run would need {len(read_prefixes)} read prefixes; the inline session "
