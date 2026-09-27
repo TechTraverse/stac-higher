@@ -15,6 +15,7 @@ from pipeline.connections.envelope import load_master_key, seal
 from pipeline.connections.registry import (
     HttpResponse,
     RegistryConfig,
+    _https_get,
     check_registry,
     parse_bearer_challenge,
     registry_api_host,
@@ -111,6 +112,59 @@ def test_egress_is_checked_before_any_request():
     assert http.calls == []
 
 
+def test_a_bearer_realm_pointing_at_the_cloud_metadata_address_is_blocked():
+    """A hostile registry's own challenge cannot be used to reach the cloud
+    metadata endpoint, even with an empty allow-list: the host is an IP
+    literal, so resolve_pinned blocks it on range alone, no DNS involved, and
+    the token request that would follow is never made."""
+    http = FakeHttp(_ok(401, {"www-authenticate": 'Bearer realm="https://169.254.169.254/token"'}))
+    # A public IP literal for the registry itself so resolving IT also needs
+    # no DNS (the point under test is the SECOND host, the token realm).
+    result = check_registry(RegistryConfig("8.8.8.8"), CREDS, frozenset(), http_get=http)
+    assert result["ok"] is False
+    assert len(http.calls) == 1
+
+
+def test_a_malformed_ipv6_realm_url_is_a_failure_not_a_crash():
+    """realm="https://[bad/token" makes urlsplit itself raise ValueError
+    ("Invalid IPv6 URL"); the hostile response must not crash the probe."""
+    http = FakeHttp(_ok(401, {"www-authenticate": 'Bearer realm="https://[bad/token"'}))
+    result = check_registry(RegistryConfig("ghcr.io"), CREDS, ALLOW, http_get=http)
+    assert result["ok"] is False
+    assert CREDS["password"] not in json.dumps(result)
+
+
+def test_a_realm_with_an_out_of_range_port_is_a_failure_not_a_crash():
+    """realm="https://ghcr.io:99999/token": the URL parses, but the real
+    transport raises ValueError ("Port out of range") the moment it reads
+    ``.port``, purely locally, no socket is ever opened, so this exercises
+    the production _https_get rather than a fake."""
+
+    def http_get(url, headers):
+        if url.endswith("/v2/"):
+            return _ok(401, {"www-authenticate": 'Bearer realm="https://ghcr.io:99999/token"'})
+        return _https_get(url, headers)
+
+    result = check_registry(RegistryConfig("ghcr.io"), CREDS, ALLOW, http_get=http_get)
+    assert result["ok"] is False
+    assert CREDS["password"] not in json.dumps(result)
+
+
+def test_a_realm_with_a_non_ascii_path_is_a_failure_not_a_crash():
+    """realm="https://ghcr.io/tök": the URL parses, but the real
+    transport raises UnicodeEncodeError building the request line, before
+    ever connecting a socket. It is a ValueError subclass, caught the same way."""
+
+    def http_get(url, headers):
+        if url.endswith("/v2/"):
+            return _ok(401, {"www-authenticate": 'Bearer realm="https://ghcr.io/tök"'})
+        return _https_get(url, headers)
+
+    result = check_registry(RegistryConfig("ghcr.io"), CREDS, ALLOW, http_get=http_get)
+    assert result["ok"] is False
+    assert CREDS["password"] not in json.dumps(result)
+
+
 def test_missing_credentials_fail_without_a_request():
     http = FakeHttp()
     result = check_registry(RegistryConfig("ghcr.io"), {"username": "bot"}, ALLOW, http_get=http)
@@ -126,16 +180,37 @@ def test_a_transport_error_is_a_failure_not_a_crash():
     assert result["ok"] is False and "unreachable" in result["message"]
 
 
+def _boom(url, headers):
+    raise OSError("connection refused")
+
+
 @pytest.mark.parametrize(
-    "responses",
+    "http_get",
     [
-        (_ok(401, {"www-authenticate": 'Basic realm="x"'}),),
-        (_ok(401, {"www-authenticate": 'Bearer realm="https://ghcr.io/token"'}), _ok(403)),
-        (_ok(500),),
+        FakeHttp(_ok(401, {"www-authenticate": 'Basic realm="x"'})),
+        FakeHttp(
+            _ok(401, {"www-authenticate": 'Bearer realm="https://ghcr.io/token"'}), _ok(403)
+        ),
+        FakeHttp(_ok(500)),
+        FakeHttp(
+            _ok(401, {"www-authenticate": 'Bearer realm="https://ghcr.io/token"'}), _ok(500)
+        ),
+        FakeHttp(_ok(401, {"www-authenticate": 'Bearer realm="http://ghcr.io/token"'})),
+        FakeHttp(_ok(401, {"www-authenticate": 'Bearer realm="https://[bad/token"'})),
+        _boom,
+    ],
+    ids=[
+        "non_bearer_challenge",
+        "rejected_token",
+        "unexpected_v2_status",
+        "unexpected_token_status",
+        "non_https_realm",
+        "malformed_realm_url",
+        "transport_error",
     ],
 )
-def test_no_probe_message_ever_carries_the_secret(responses):
-    result = check_registry(RegistryConfig("ghcr.io"), CREDS, ALLOW, http_get=FakeHttp(*responses))
+def test_no_probe_message_ever_carries_the_secret(http_get):
+    result = check_registry(RegistryConfig("ghcr.io"), CREDS, ALLOW, http_get=http_get)
     assert CREDS["password"] not in json.dumps(result)
     blocked = check_registry(RegistryConfig("10.0.0.1"), CREDS, frozenset(), http_get=FakeHttp())
     assert CREDS["password"] not in json.dumps(blocked)

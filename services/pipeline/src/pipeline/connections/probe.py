@@ -58,8 +58,19 @@ async def run_adapter_test(
     the message or the logs.
     """
     if connection.protocol == REGISTRY_PROTOCOL:
-        # C-1: a registry is not a storage adapter; its check is the v2 handshake.
-        return await test_registry_connection(connection, master_key, allow_hosts)
+        # C-1: a registry is not a storage adapter; its check is the v2
+        # handshake. check_registry is defensive about a hostile registry's
+        # responses, but this catch-all is the same belt-and-suspenders the
+        # adapter path below gets, so an unforeseen exception still cannot
+        # escape run_adapter_test's "never raises" promise.
+        try:
+            return await test_registry_connection(connection, master_key, allow_hosts)
+        except Exception as exc:
+            logger.warning(
+                "registry probe raised",
+                extra={"protocol": connection.protocol, "error_type": type(exc).__name__},
+            )
+            return {"ok": False, "message": f"test error: {type(exc).__name__}"}
 
     try:
         adapter = build_adapter(connection, master_key, allow_hosts)

@@ -135,16 +135,36 @@ def check_registry(
     started = time.monotonic()
     basic = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
     rejected: TestResult = {"ok": False, "message": f"{config.host} rejected the credentials"}
+
+    # The /v2/ request. A hostile or misconfigured host can make urlsplit/the
+    # transport raise ValueError (an invalid URL) as well as the expected
+    # egress/network failures; none of those may escape as an exception, and
+    # none of the messages below ever carry the credentials.
     try:
         resolve_pinned(_host_only(api_host), allow_hosts)
         first = http_get(f"https://{api_host}/v2/", {"Authorization": basic})
-        if first.status == 200:
-            return _ok(config, started)
-        if first.status != 401:
-            return {"ok": False, "message": f"GET /v2/ on {api_host} returned {first.status}"}
-        challenge = parse_bearer_challenge(first.headers.get("www-authenticate"))
-        if not challenge or not challenge.get("realm"):
-            return rejected
+    except EgressBlocked as exc:
+        return {"ok": False, "message": str(exc)}
+    except (OSError, http.client.HTTPException) as exc:
+        return {"ok": False, "message": f"{config.host} unreachable: {type(exc).__name__}"}
+    except ValueError:
+        return {"ok": False, "message": f"{api_host} sent a malformed response"}
+
+    if first.status == 200:
+        return _ok(config, started)
+    if first.status != 401:
+        return {"ok": False, "message": f"GET /v2/ on {api_host} returned {first.status}"}
+    challenge = parse_bearer_challenge(first.headers.get("www-authenticate"))
+    if not challenge or not challenge.get("realm"):
+        return rejected
+
+    # The bearer challenge names its own token endpoint, so it is untrusted
+    # input: a hostile registry can hand back a realm that is not a valid URL
+    # at all (bad IPv6 host, an out-of-range port, a non-ASCII path); each of
+    # those raises ValueError, either from urlsplit here or from the
+    # transport when it turns the realm into a request. Caught the same way
+    # as above, with a message naming no secret.
+    try:
         realm = urlsplit(challenge["realm"])
         if realm.scheme != "https" or not realm.hostname:
             return {
@@ -157,18 +177,21 @@ def check_registry(
         if query:
             token_url = f"{token_url}{'&' if realm.query else '?'}{urlencode(query)}"
         token = http_get(token_url, {"Authorization": basic})
-        if token.status == 200:
-            return _ok(config, started)
-        if token.status in (401, 403):
-            return rejected
-        return {
-            "ok": False,
-            "message": f"the token endpoint of {config.host} returned {token.status}",
-        }
     except EgressBlocked as exc:
         return {"ok": False, "message": str(exc)}
     except (OSError, http.client.HTTPException) as exc:
         return {"ok": False, "message": f"{config.host} unreachable: {type(exc).__name__}"}
+    except ValueError:
+        return {"ok": False, "message": f"{config.host} sent a malformed token challenge"}
+
+    if token.status == 200:
+        return _ok(config, started)
+    if token.status in (401, 403):
+        return rejected
+    return {
+        "ok": False,
+        "message": f"the token endpoint of {config.host} returned {token.status}",
+    }
 
 
 def _ok(config: RegistryConfig, started: float) -> TestResult:
