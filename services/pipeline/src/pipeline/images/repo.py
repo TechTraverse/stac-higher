@@ -216,6 +216,16 @@ _IMAGE_COLUMNS = (
     " exception_expires_at, last_scan_id::text"
 )
 
+#: Item 9 (final-review fix wave, Minor 1): admissions claim ahead of
+#: rescans at equal age -- `kind = 'rescan'` is false (0) for an admission
+#: and true (1) for a rescan, so an hourly batch of tick-requested rescans
+#: never makes a user's "Add image" wait behind all of them.
+CLAIM_PENDING_SCAN_SQL = (
+    "SELECT id::text, image_id::text, kind, requested_by"
+    " FROM stac_higher.image_scans WHERE status = 'pending'"
+    " ORDER BY (kind = 'rescan'), requested_at FOR UPDATE SKIP LOCKED LIMIT 1"
+)
+
 
 def _to_image(row: Sequence[Any]) -> ImageRow:
     return ImageRow(
@@ -280,11 +290,7 @@ class PgImagesRepo(ImagesRepo):
                 if running >= max_running:
                     await conn.commit()
                     return None
-                await cur.execute(
-                    "SELECT id::text, image_id::text, kind, requested_by"
-                    " FROM stac_higher.image_scans WHERE status = 'pending'"
-                    " ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1"
-                )
+                await cur.execute(CLAIM_PENDING_SCAN_SQL)
                 claimed = await cur.fetchone()
                 if claimed is None:
                     await conn.commit()

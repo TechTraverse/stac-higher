@@ -102,7 +102,11 @@ class FakeImagesRepo(ImagesRepo):
             return None
         pending = sorted(
             (s for s in self.scans.values() if s["status"] == "pending"),
-            key=lambda s: s["requested_at"],
+            # Item 9: admissions claim ahead of rescans at equal age (the
+            # Pg `ORDER BY (kind = 'rescan'), requested_at` behavioural
+            # contract), so a batch of tick-requested rescans never starves
+            # a user's "Add image".
+            key=lambda s: (s["kind"] == "rescan", s["requested_at"]),
         )
         if not pending:
             return None
