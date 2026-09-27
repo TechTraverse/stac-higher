@@ -9,7 +9,16 @@ import { z } from "zod";
 export const imageAddSchema = z
   .object({
     reference: z.string().trim().min(1, "reference is required").max(512),
-    tag: z.string().trim().min(1).max(128).optional(),
+    // A blank or whitespace-only tag is "no tag", not a validation error:
+    // `normalizeImageInput` already treats it that way (falls back to
+    // `latest`), so the schema folds it to `undefined` here rather than
+    // 400ing a body the route would otherwise accept.
+    tag: z
+      .string()
+      .trim()
+      .max(128)
+      .transform((value) => (value.length > 0 ? value : undefined))
+      .optional(),
     registry_connection_id: z.string().uuid().nullable().optional(),
   })
   .strict();
