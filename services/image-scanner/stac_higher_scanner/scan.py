@@ -4,7 +4,9 @@ Admission: refuse a registry outside the policy, resolve tag -> digest ->
 platform manifest (refusing an oversized image before any layer is read),
 ``syft`` the platform digest into syft-json + CycloneDX, ``grype`` the SBOM,
 write the objects, then ``result.json``. Rescan: ``grype`` the stored SBOM
-only (nothing is pulled). Drift (spec §8.2) is C-4's.
+only (nothing is pulled). Drift (spec §8.2) is the pipeline's own HEAD
+(C-4), so a rescan needs no registry credential and ``tag_drift`` stays null
+here.
 
 Exit codes: 0 a result was written; 1 an error result was written; 2 no
 result could be written (the drain records that as a failed scan itself).

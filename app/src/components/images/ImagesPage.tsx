@@ -24,17 +24,18 @@ import { timeAgo } from "@/components/monitoring/shared";
 import { useAuthMe } from "@/lib/query/auth";
 import { useImages } from "@/lib/images/queries";
 import { IMAGE_STATUSES, IMAGE_STATUS_LABEL, type ImageStatus } from "@/lib/images/status";
-import { exceptionLapsed, readVerdict } from "@/lib/images/verdict";
+import { readVerdict } from "@/lib/images/verdict";
 import { AddImageDialog } from "./AddImageDialog";
 import { ImageDetailSheet } from "./ImageDetailSheet";
 import { ImageStatusBadge } from "./ImageStatusBadge";
 import { SeverityStack } from "./SeverityStack";
-import { dbAgeDays, shortDigest } from "./format";
+import { dbAgeDays, isExceptionExpired, shortDigest } from "./format";
 
 function ImagesContent() {
   const { data: me } = useAuthMe();
   const roles = me?.identity?.roles ?? [];
   const canOperate = roles.includes("operator") || roles.includes("admin");
+  const canAdmin = roles.includes("admin");
 
   const [status, setStatus] = useState<ImageStatus | "">("");
   const [inUse, setInUse] = useState(false);
@@ -166,12 +167,10 @@ function ImagesContent() {
             <TableBody>
               {images.map((image) => {
                 const dbAge = dbAgeDays(image.db_built_at, now);
+                // C-4: the word follows the DATE alone; whether new deploys
+                // are refused (verdict-aware) is the detail sheet's warning.
                 const exceptionExpired =
-                  image.exception !== null &&
-                  exceptionLapsed(
-                    { status: image.status, exceptionExpiresAt: image.exception.expires_at, verdict: image.verdict },
-                    now,
-                  );
+                  image.exception !== null && isExceptionExpired(image.exception.expires_at, now);
                 return (
                   <TableRow key={image.id}>
                     <TableCell>
@@ -234,7 +233,12 @@ function ImagesContent() {
       )}
 
       {adding && <AddImageDialog open onOpenChange={(open) => !open && setAdding(false)} />}
-      <ImageDetailSheet imageId={selected} onClose={() => setSelected(null)} canOperate={canOperate} />
+      <ImageDetailSheet
+        imageId={selected}
+        onClose={() => setSelected(null)}
+        canOperate={canOperate}
+        canAdmin={canAdmin}
+      />
     </div>
   );
 }

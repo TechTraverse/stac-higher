@@ -26,7 +26,13 @@ import type { Image } from "@/lib/images/types";
 import type { Alert } from "@/lib/monitoring/api";
 import type { DailyStats, PipelineGraph } from "@/lib/monitoring/graph-api";
 import { collectionNode } from "@/lib/graph/edges";
-import { alertKindLabel, isLate, readFlowStats } from "@/components/monitoring/shared";
+import {
+  DEGRADED_ALERT_KINDS,
+  alertKindLabel,
+  isLate,
+  openAlertHealth,
+  readFlowStats,
+} from "@/components/monitoring/shared";
 
 export interface ConnectionChip {
   id: string;
@@ -61,9 +67,9 @@ function worse(a: LineageHealth, b: LineageHealth): LineageHealth {
   return HEALTH_RANK[a] >= HEALTH_RANK[b] ? a : b;
 }
 
-/** A firing alert is an error; an acknowledged one is a warning we still show. */
+/** An open alert's health (C-4: a kind that only degrades is a warning even while firing). */
 function alertHealth(alert: Alert): LineageHealth {
-  return alert.state === "firing" ? "error" : "warn";
+  return openAlertHealth(alert);
 }
 
 function connectionHealth(status: unknown): LineageHealth {
@@ -203,7 +209,10 @@ export function buildProductRows({
       : "unknown";
     let reason: string | null = null;
 
-    const firing = own.find((a) => a.state === "firing");
+    const firing = own.find((a) => openAlertHealth(a) === "error");
+    const degraded = own.find(
+      (a) => a.state === "firing" && DEGRADED_ALERT_KINDS.has(a.kind),
+    );
     const acknowledged = own.find((a) => a.state === "acknowledged");
     const lateFlow = collectionFlows.find((f) =>
       isLate(f.direction, f.id, alerts),
@@ -212,6 +221,9 @@ export function buildProductRows({
     if (firing) {
       health = "error";
       reason = alertKindLabel(firing.kind);
+    } else if (degraded) {
+      health = "warn";
+      reason = alertKindLabel(degraded.kind);
     } else if (acknowledged) {
       health = "warn";
       reason = `${alertKindLabel(acknowledged.kind)} (acknowledged)`;
@@ -263,8 +275,12 @@ export function buildProductRows({
           const processId = id.replace(/^proc:/, "");
           const undeployed = node?.meta.deployed === false;
           // The monitor's open alert IS the verdict (ADR 0010); deployment
-          // state is the graph's own signal beneath it.
+          // state is the graph's own signal beneath it. A failing alert wins
+          // over a merely-degraded one even when the degraded alert is
+          // listed first (C-4, lead ruling F1): prefer an error-grade alert,
+          // then any firing alert, then any open alert.
           const alert =
+            alerts.find((a) => a.process_id === processId && openAlertHealth(a) === "error") ??
             alerts.find((a) => a.process_id === processId && a.state === "firing") ??
             alerts.find((a) => a.process_id === processId);
           const health: LineageHealth = alert

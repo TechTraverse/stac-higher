@@ -221,3 +221,48 @@ def test_build_payload_is_stable_json():
     assert payload["alert"]["group_id"] == EO
     assert payload["alert"]["first_seen"] == "2026-08-18T00:00:00+00:00"
     assert payload["alert"]["collection_id"] is None
+
+
+def test_the_payload_names_the_process_of_a_process_anchored_alert():
+    body = build_payload(
+        alert(kind="process_image_flagged", connection_id=None, process_id="p-1")
+    )
+    payload = json.loads(body)
+    assert payload["alert"]["process_id"] == "p-1"
+    assert json.loads(build_payload(alert()))["alert"]["process_id"] is None
+
+
+def test_process_anchored_alerts_derive_their_group_from_the_process():
+    """C-4: process_id (or a source's parent process) is the fourth group
+    leg, after connection, channel and collection; a deleted process routes
+    nowhere."""
+    from pipeline.notify.repo import PgNotifyRepo
+
+    join = PgNotifyRepo._ALERT_JOIN
+    assert "LEFT JOIN stac_higher.process_sources ps ON ps.id = a.source_id" in join
+    assert "pr.id = COALESCE(a.process_id, ps.process_id) AND pr.deleted_at IS NULL" in join
+    assert "COALESCE(c.group_id, nch.group_id, cs.group_id, pr.group_id)" in (
+        PgNotifyRepo._ALERT_COLUMNS
+    )
+
+
+async def test_a_row_derived_process_group_id_fans_out_to_that_groups_webhooks():
+    """F12: the alert here is not handed a group_id directly -- it comes from
+    PgNotifyRepo._alert_from_row parsing a raw joined row (the last column is
+    pr.id, per _ALERT_COLUMNS), so this fails if that mapping (added for C-4)
+    is removed, not just if fan-out itself breaks."""
+    from pipeline.notify.repo import PgNotifyRepo
+
+    row = (
+        "a1", "health", "process_image_flagged", "flagged",
+        "earth-observation",  # COALESCE(..., pr.group_id) result of the join
+        None, None, None, None, None,
+        None, None, "p-1",  # pr.id, mapped to NotifiableAlert.process_id
+    )
+    process_alert = PgNotifyRepo._alert_from_row(row)
+    assert process_alert.group_id == "earth-observation"
+    assert process_alert.process_id == "p-1"
+
+    repo = FakeNotifyRepo(alerts=[process_alert], channels=[channel("ch1")])
+    result = await tick(repo)
+    assert result.deliveries_created == 1

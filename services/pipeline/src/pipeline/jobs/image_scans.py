@@ -10,6 +10,14 @@ until K-4 (ISSUES I-124), never the event loop.
 A missing or invalid image policy skips the tick (fail closed, spec §7.2):
 pending scans stay pending and nothing is scanned against a policy nobody
 can read.
+
+Before the drain, the same tick reconciles the ``process_image_flagged``
+alerts (C-4, ``pipeline/images/alerts.py``): one per process whose current
+revision uses a flagged, revoked, gone or stale image.
+
+``pipeline.image_rescan_tick`` (``15 * * * *``, C-4) expires admin
+exceptions (re-evaluating the latest scan, audited) and inserts one
+``rescan`` row per image due for its periodic rescan; this drain runs them.
 """
 
 from __future__ import annotations
@@ -17,12 +25,22 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+from typing import Any
 
+from pipeline import metrics
 from pipeline.config import Settings
+from pipeline.flow.repo import PgFlowMonitorRepo
+from pipeline.images.alerts import PgImageAlertsRepo, sync_image_alerts
 from pipeline.images.drain import STALL_GRACE_SECONDS, drain_one
+from pipeline.images.drift import tag_drift
+from pipeline.images.lifecycle import PgImageLifecycleRepo, lifecycle_tick
 from pipeline.images.policy import ImagePolicyError, load_image_policy
-from pipeline.images.registry_auth import resolve_registry_auth
-from pipeline.images.repo import ClaimedScan, PgImagesRepo
+from pipeline.images.registry_auth import (
+    RegistryAuthUnavailable,
+    RegistryCredentialGone,
+    resolve_registry_auth,
+)
+from pipeline.images.repo import ClaimedScan, ImageRow, PgImagesRepo
 from pipeline.images.scan_launch import ScanRun, execute_scan, read_scan_result
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.process.docker_executor import DockerExecutor
@@ -33,6 +51,10 @@ logger = logging.getLogger(__name__)
 
 JOB_NAME = "pipeline.image_scan_drain"
 CRON = "* * * * *"
+
+#: C-4 (spec §8.2): hourly, each image rescanned once its interval is up.
+RESCAN_JOB_NAME = "pipeline.image_rescan_tick"
+RESCAN_CRON = "15 * * * *"
 
 
 def register(queue: QueueBackend, settings: Settings) -> None:
@@ -45,6 +67,28 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 extra={"job": JOB_NAME, "error": str(err)},
             )
             return
+        # C-4 (spec §10): reconcile process_image_flagged BEFORE the drain,
+        # so a 15-minute scan never delays it. A failure here must not stop
+        # the drain.
+        try:
+            raised, resolved = await sync_image_alerts(
+                PgImageAlertsRepo(settings.database_url),
+                PgFlowMonitorRepo(settings.database_url).sync_alerts,
+                scan_window_days=policy.scan_window_days,
+                now=dt.datetime.now(dt.UTC),
+            )
+        except Exception:
+            logger.exception("image alert sync failed", extra={"job": JOB_NAME})
+        else:
+            if raised:
+                metrics.ALERTS.labels(event="raised").inc(raised)
+            if resolved:
+                metrics.ALERTS.labels(event="auto_resolved").inc(resolved)
+            if raised or resolved:
+                logger.info(
+                    "image alerts reconciled",
+                    extra={"raised": raised, "auto_resolved": resolved},
+                )
         repo = PgImagesRepo(settings.database_url)
         started_before = dt.datetime.now(dt.UTC) - dt.timedelta(
             seconds=policy.scan_timeout_seconds + STALL_GRACE_SECONDS
@@ -85,6 +129,22 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 read_scan_result, storage_client, settings.staging_bucket, key
             )
 
+        async def check_drift(image: ImageRow) -> dict[str, Any]:
+            # The pull credential the daemon would use, so a private tag can
+            # be HEADed. If it cannot be resolved, the HEAD goes anonymous and
+            # a private tag reads as unchecked (current_digest null), never a
+            # failed scan.
+            key = (
+                load_key_or_skip(settings, JOB_NAME) if image.registry_connection_id else None
+            )
+            try:
+                auth = await resolve_registry_auth(
+                    image, repo=repo, settings=settings, master_key=key
+                )
+            except (RegistryCredentialGone, RegistryAuthUnavailable):
+                auth = None
+            return await asyncio.to_thread(tag_drift, image, auth, settings.egress_allow_hosts)
+
         outcome = await drain_one(
             repo,
             policy=policy,
@@ -92,6 +152,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             run_scan=run_scan,
             read_result=read_result,
             clock=lambda: dt.datetime.now(dt.UTC),
+            check_drift=check_drift,
         )
         if outcome is not None:
             logger.info(
@@ -106,3 +167,30 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             )
 
     queue.register_periodic(image_scan_drain, name=JOB_NAME, cron=CRON)
+
+    async def image_rescan_tick(timestamp: int) -> None:  # pragma: no cover - needs a DB
+        try:
+            policy = load_image_policy()
+        except ImagePolicyError as err:
+            logger.error(
+                "image rescan tick skipped: the image policy is unavailable",
+                extra={"job": RESCAN_JOB_NAME, "error": str(err)},
+            )
+            return
+        result = await lifecycle_tick(
+            PgImageLifecycleRepo(settings.database_url),
+            policy=policy,
+            now=dt.datetime.now(dt.UTC),
+        )
+        if result.exceptions_expired or result.rescans_requested:
+            logger.info(
+                "image rescan tick",
+                extra={
+                    "exceptions_expired": result.exceptions_expired,
+                    "flagged_on_expiry": result.flagged_on_expiry,
+                    "rescans_requested": result.rescans_requested,
+                    "scheduled_timestamp": timestamp,
+                },
+            )
+
+    queue.register_periodic(image_rescan_tick, name=RESCAN_JOB_NAME, cron=RESCAN_CRON)

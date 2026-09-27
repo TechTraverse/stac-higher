@@ -45,15 +45,17 @@ over open rows (the `collection_id` anchor joined in Phase 7's migration 021).
 | `health` | A connection sits in `status='error'` (state-observed per tick; deleted connections filtered) | `connection_error` |
 | `job_failure` | Dead deliveries, retry-cap ingest failures, latest-backfill-failed | per failure class |
 | `job_failure` (Phase 7) | Recent `rejected` `staged_uploads` rows for a collection (`PUSH_ALERT_LOOKBACK_SECONDS`, default 24 h; a resolved-at floor keeps a manual resolve stuck until a NEW rejection) — collection-anchored; group via `collection_settings.group_id` (unowned → admin-only) | `push_rejected` |
+| `health` (C-4) | A live, enabled process's CURRENT revision snapshots a user image that is `flagged`, `revoked`, gone or stale (not scanned inside the image policy's `scan_window_days`) — process-anchored; written by `pipeline/images/alerts.py` every minute from `pipeline.image_scan_drain` (before the drain), outside `MONITOR_KINDS` (`alert-kinds.json` `image_kinds`) | `process_image_flagged` (auto-resolved when the image is approved and fresh again or the process deploys off it) |
 | (notify) | A channel's webhook dead-letters — written by the notify sweep, outside `MONITOR_KINDS`, so the monitor never clobbers it | `webhook_failed` (channel-anchored; auto-resolved by the next successful delivery) |
 
-Declared, no writer yet (`alert-kinds.json` `declared_kinds`): `process_image_flagged` (C-1, container-images spec §10). It will be one open alert per process whose current revision references a user image that is `flagged`, `revoked` or stale, anchored on `process_id` and auto-resolved when the image is approved again or the process moves off it. C-4 lands its writer. Routing will treat it like `process_failed`, and the process health verdict will treat it as degraded, not failing.
+`process_image_flagged` (C-4, container-images spec §10) routes like `process_failed`: to the process's group channels (the notify fan-out derives a process-anchored alert's group from `processes.group_id`). The process health verdict reads it as **degraded, not failing**, because a flagged image blocks new deploys while its runs continue. Only a new alert row notifies: a later rescan that adds findings to an image that is already flagged updates the open alert's message and does not re-notify (ISSUES I-141). `declared_kinds` is empty again.
 
 Lifecycle: `firing → acknowledged → resolved`. **Ack suppresses notification,
 not detection** — the monitor keeps bumping `last_seen`. A manual resolve with
 the condition still true re-fires as a NEW row, which is what re-notifies.
-Group scoping is derived (alert → connection | channel | collection →
-group, coalesced in that order since Phase 7), never stored.
+Group scoping is derived (alert → connection | channel | collection | process
+→ group, coalesced in that order; the process leg since C-4), never stored.
+Webhook payloads carry `process_id` for process-anchored alerts.
 
 Routes: `GET /api/alerts` (member+, own groups; admin all;
 `?state=firing|acknowledged|resolved|open`, `?limit`); operator+ audited
@@ -131,7 +133,7 @@ attach-don't-copy; `runMigrations()` reconciles partitions two months ahead);
 `delivery_log`/`ingest_files`/`connection_checks` are deliberately not (their
 UNIQUE keys are the upsert model) — the hourly `history_retention` sweep
 prunes them conservatively. Audit rows die only by partition DETACH+DROP; no
-automated partition-drop policy yet (I-11).
+automated partition-drop policy yet (I-11). Since C-4 it also runs the scan retention leg (`pipeline/images/retention.py`): each image's current SBOM pair and its ten newest scans' objects stay, every other object under `scans/` older than 24 h goes (dedup orphans included), older rows' refs are nulled, and `image_scans` rows past `HISTORY_RETENTION_DAYS` are pruned, never an image's `last_scan_id`.
 
 `GET :8083/metrics` (`pipeline/metrics.py`, Prometheus exposition): per-job
 runs/duration/outcome wrapped centrally at Procrastinate registration, ingest

@@ -3,8 +3,8 @@
  * §9.2): what would stop a deploy (credential deleted, stale, the config
  * warning, the policy reasons verbatim), the top findings (KEV first, then
  * risk), the scan history, who uses it, and "Rescan now" for operators.
- * Scan-history diffs and the admin exception form are C-4; a live exception
- * is shown read-only here.
+ * C-4 adds each rescan's diff and tag drift to the history, and the admin
+ * verbs.
  */
 import { Badge, Button, LoadingState } from "@stac-higher/shared";
 import {
@@ -20,9 +20,19 @@ import { toast } from "sonner";
 import { timeAgo } from "@/components/monitoring/shared";
 import { useImage, useRescanImage } from "@/lib/images/queries";
 import { exceptionLapsed, readVerdict } from "@/lib/images/verdict";
+import { ImageAdminActions } from "./ImageAdminActions";
 import { ImageStatusBadge } from "./ImageStatusBadge";
 import { SeverityStack } from "./SeverityStack";
-import { configWarning, latestScanResult, scanError, shortDigest, sortFindings } from "./format";
+import {
+  configWarning,
+  isExceptionExpired,
+  latestScanResult,
+  scanDiffSummary,
+  scanError,
+  scanTagDrift,
+  shortDigest,
+  sortFindings,
+} from "./format";
 
 const TOP_FINDINGS = 10;
 
@@ -30,10 +40,12 @@ export function ImageDetailSheet({
   imageId,
   onClose,
   canOperate,
+  canAdmin,
 }: {
   imageId: string | null;
   onClose: () => void;
   canOperate: boolean;
+  canAdmin: boolean;
 }) {
   const { data, isLoading, error } = useImage(imageId);
   const rescan = useRescanImage();
@@ -129,7 +141,7 @@ export function ImageDetailSheet({
                 <p>{image.exception.reason}</p>
                 <p className="text-muted-foreground">
                   Granted by {image.exception.by},{" "}
-                  {lapsed ? "expired" : "expires"}{" "}
+                  {isExceptionExpired(image.exception.expires_at, now) ? "expired" : "expires"}{" "}
                   {new Date(image.exception.expires_at).toLocaleDateString()}
                 </p>
                 {lapsed && (
@@ -193,19 +205,41 @@ export function ImageDetailSheet({
               {data.scans.length === 0 ? (
                 <p className="text-muted-foreground">No scans yet.</p>
               ) : (
-                <ul className="grid gap-1">
-                  {data.scans.map((s) => (
-                    <li key={s.id} className="flex flex-wrap items-center gap-2">
-                      <Badge variant={s.status === "failed" ? "destructive" : "secondary"}>
-                        {s.status}
-                      </Badge>
-                      <span>{s.kind}</span>
-                      <span className="text-muted-foreground">
-                        requested {timeAgo(s.requested_at)}
-                        {s.finished_at ? `, finished ${timeAgo(s.finished_at)}` : ""}
-                      </span>
-                    </li>
-                  ))}
+                <ul className="grid gap-2">
+                  {data.scans.map((s) => {
+                    const summary = scanDiffSummary(s, data.scans);
+                    const drift = scanTagDrift(s);
+                    const failure = s.status === "failed" ? scanError(s) : null;
+                    return (
+                      <li key={s.id} className="grid gap-0.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={s.status === "failed" ? "destructive" : "secondary"}>
+                            {s.status}
+                          </Badge>
+                          <span>{s.kind}</span>
+                          <span className="text-muted-foreground">
+                            requested {timeAgo(s.requested_at)}
+                            {s.finished_at ? `, finished ${timeAgo(s.finished_at)}` : ""}
+                          </span>
+                          {s.findings_ref && (
+                            <a
+                              className="text-primary hover:underline"
+                              href={`/api/images/${image.id}/scans/${s.id}/findings`}
+                            >
+                              findings
+                            </a>
+                          )}
+                        </div>
+                        {summary && (
+                          <p className="text-xs" data-testid="scan-diff">
+                            {summary}
+                          </p>
+                        )}
+                        {drift && <p className="text-xs text-muted-foreground">{drift}</p>}
+                        {failure && <p className="text-xs text-destructive">{failure}</p>}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </section>
@@ -245,6 +279,8 @@ export function ImageDetailSheet({
                 </Button>
               </div>
             )}
+
+            {canAdmin && <ImageAdminActions image={image} />}
           </div>
         )}
       </SheetContent>

@@ -8,7 +8,7 @@
  * request row and returns ids to poll (ADR 0004); the pipeline makes the
  * scan real (C-2).
  */
-import type { ImageAdd } from "./schemas";
+import type { ImageAdd, ImageException } from "./schemas";
 import type { ImageScanKind, ImageStatus } from "./status";
 import type { Image, ImageScan, ImageUser, PublicImagePolicy } from "./types";
 
@@ -117,4 +117,22 @@ export async function requestRescan(id: string): Promise<RescanRequested> {
 
 export async function getImagePolicy(): Promise<PublicImagePolicy> {
   return apiFetch<PublicImagePolicy>("/api/processes/image-policy");
+}
+
+/** Admin (spec §4.4): grant an expiring exception, or replace the one an
+ * approved image carries. The route re-checks the role and the policy's
+ * `exception_max_days`. */
+export async function grantImageException(
+  id: string,
+  body: ImageException,
+): Promise<{ image: Image }> {
+  return apiFetch<{ image: Image }>(`/api/images/${enc(id)}/exception`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Admin (spec §4.3): any status -> `revoked`, terminal. */
+export async function revokeImage(id: string): Promise<{ image: Image }> {
+  return apiFetch<{ image: Image }>(`/api/images/${enc(id)}/revoke`, { method: "POST" });
 }

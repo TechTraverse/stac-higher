@@ -5,8 +5,9 @@
  * `container_image`, carrying the reason and expiry via `locals.auditDetail`).
  *
  * `{reason, expires_at}`: `expires_at` must be in the future and at most the
- * policy's `exception_max_days` away. Only a `rejected` or `flagged` image
- * takes an exception (-> `approved`). An exception never covers staleness
+ * policy's `exception_max_days` away. A `rejected` or `flagged` image takes
+ * an exception (-> `approved`); on an `approved` image that carries one, the
+ * grant replaces it (C-4, spec §4.4). An exception never covers staleness
  * (spec §4.3); the gate still refuses a stale image.
  */
 import type { APIRoute } from "astro";
@@ -63,10 +64,14 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     });
     if (outcome.outcome === "not_found") return imageNotFound();
     if (outcome.outcome === "wrong_status") {
-      return jsonResponse(409, {
-        error: `An exception applies to a rejected or flagged image, or an approved image whose exception has expired; this one is ${outcome.status}`,
-        code: "image_not_exceptionable",
-      });
+      // storage.ts's UPDATE already covers approved-with-a-live-or-expired
+      // exception as a grant (replace); status === "approved" here can
+      // therefore only mean the image has no exception to replace.
+      const error =
+        outcome.status === "approved"
+          ? "this image is approved with no exception to replace"
+          : `An exception applies to a rejected or flagged image, or replaces the exception on an approved image that carries one; this one is ${outcome.status}`;
+      return jsonResponse(409, { error, code: "image_not_exceptionable" });
     }
     locals.auditDetail = { reason: parsed.data.reason, expires_at: expiresAt.toISOString() };
     const image = await getImage(id, { now, scanWindowDays: policy.scan_window_days });

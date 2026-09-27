@@ -59,6 +59,7 @@ import {
 import { isImageDigest, isImageReference } from "@/lib/images/reference";
 import { imagePolicySchema, registryAllowed } from "@/lib/images/policy";
 import { imageScanResultSchema } from "@/lib/images/scan-result";
+import { imageScanDiffSchema, readScanDiff } from "@/lib/images/scan-diff";
 
 interface FixtureCase {
   name: string;
@@ -300,6 +301,7 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
   ) as {
     kinds: string[];
     monitor_kinds: string[];
+    image_kinds: string[];
     notify_kinds: string[];
     declared_kinds: string[];
   };
@@ -307,6 +309,7 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
   it("the writer lists partition the full enum exactly", () => {
     expect([
       ...fixture.monitor_kinds,
+      ...fixture.image_kinds,
       ...fixture.declared_kinds,
       ...fixture.notify_kinds,
     ]).toEqual(fixture.kinds);
@@ -345,9 +348,9 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
     }
   });
 
-  it("process_image_flagged waits in declared_kinds until C-4 names its writer", () => {
-    expect(fixture.kinds).toContain("process_image_flagged");
-    expect(fixture.declared_kinds).toEqual(["process_image_flagged"]);
+  it("process_image_flagged is written by the image alerts module (C-4)", () => {
+    expect(fixture.image_kinds).toEqual(["process_image_flagged"]);
+    expect(fixture.declared_kinds).toEqual([]);
     expect(fixture.monitor_kinds).not.toContain("process_image_flagged");
   });
 });
@@ -520,5 +523,36 @@ describe("image scan result contract (tests/contract-fixtures/image-scan-result.
 
   it.each(fixture.cases)("$app: $name", (c) => {
     expect(imageScanResultSchema.safeParse(scanDoc(c)).success).toBe(c.app === "accept");
+  });
+});
+
+describe("image scan diff contract (tests/contract-fixtures/image-scan-diff.json)", () => {
+  const fixture = loadFixture("image-scan-diff.json") as unknown as {
+    document: Record<string, unknown>;
+    cases: {
+      name: string;
+      patch?: Record<string, unknown>;
+      remove?: string[];
+      app: "accept" | "reject";
+    }[];
+  };
+
+  function diffDoc(c: (typeof fixture.cases)[number]): unknown {
+    const doc: Record<string, unknown> = { ...fixture.document, ...(c.patch ?? {}) };
+    for (const key of c.remove ?? []) delete doc[key];
+    return doc;
+  }
+
+  it.each(fixture.cases)("$app: $name", (c) => {
+    expect(imageScanDiffSchema.safeParse(diffDoc(c)).success).toBe(c.app === "accept");
+  });
+
+  it("readScanDiff reads the diff stored beside the §6.4 document", () => {
+    expect(readScanDiff({ verdict: { pass: false }, diff: fixture.document })?.new).toEqual([
+      "CVE-2026-0003",
+    ]);
+    expect(readScanDiff({ diff: null })).toBeNull();
+    expect(readScanDiff(null)).toBeNull();
+    expect(readScanDiff({ diff: { new: "x" } })).toBeNull();
   });
 });

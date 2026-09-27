@@ -1,15 +1,24 @@
-"""History retention job wiring (M2-G, ADR 0012; P7-H adds staged_uploads):
+"""History retention job wiring (M2-G, ADR 0012; P7-H adds staged_uploads);
+C-4 adds the scan-object and image_scans leg (pipeline/images/retention.py):
 the hourly hygiene sweep for the unpartitioned history tables (see
 pipeline/history/sweep.py for the exact — deliberately conservative —
 rules)."""
 
 from __future__ import annotations
 
+import asyncio
+import datetime as dt
 import logging
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 from pipeline.config import Settings
+from pipeline.connections.egress import EgressBlocked
 from pipeline.history.sweep import PgHistoryRepo, history_tick
+from pipeline.images.retention import PgScanRetentionRepo, scan_retention_tick
 from pipeline.queue.interface import QueueBackend
+from pipeline.storage.keys import SCANS_PREFIX
+from pipeline.storage.platform import build_platform_client, delete_keys, list_objects
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +52,44 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     "scheduled_timestamp": timestamp,
                 },
             )
+
+        # C-4 (spec §8.3): scan objects, then scan rows. Storage faults skip
+        # this leg (next hour retries); the table legs above already ran.
+        try:
+            client = build_platform_client(settings)
+
+            async def list_scan_objects():
+                return await asyncio.to_thread(
+                    list_objects, client, settings.staging_bucket, f"{SCANS_PREFIX}/"
+                )
+
+            async def delete_scan_keys(found: list[str]) -> int:
+                return await asyncio.to_thread(
+                    delete_keys, client, settings.staging_bucket, found
+                )
+
+            scans = await scan_retention_tick(
+                PgScanRetentionRepo(settings.database_url),
+                list_objects=list_scan_objects,
+                delete_keys=delete_scan_keys,
+                history_days=settings.history_retention_days,
+                now=dt.datetime.fromtimestamp(timestamp, dt.UTC),
+            )
+        except (EgressBlocked, ClientError, BotoCoreError, OSError) as exc:
+            logger.error(
+                "scan retention skipped",
+                extra={"job": JOB_NAME, "error_type": type(exc).__name__},
+            )
+        else:
+            if scans.objects_deleted or scans.rows_deleted:
+                logger.info(
+                    "scan retention sweep",
+                    extra={
+                        "objects_deleted": scans.objects_deleted,
+                        "rows_deleted": scans.rows_deleted,
+                        "scheduled_timestamp": timestamp,
+                    },
+                )
 
     queue.register_periodic(history_retention, name=JOB_NAME, cron=CRON)
     # M5-E: the daily flow-stats history the lineage strip reads (P9-E).

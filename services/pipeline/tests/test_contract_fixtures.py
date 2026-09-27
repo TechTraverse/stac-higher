@@ -58,6 +58,7 @@ IMAGE_STATUS = _load("image-status.json")
 IMAGE_REFERENCE = _load("image-reference.json")
 IMAGE_POLICY = _load("image-policy.json")
 IMAGE_SCAN_RESULT = _load("image-scan-result.json")
+IMAGE_SCAN_DIFF = _load("image-scan-diff.json")
 REGISTRY_CONFIG = _load("registry-connection-config.json")
 
 
@@ -155,15 +156,18 @@ def test_push_status_enums_match_golden():
 
 def test_alert_kinds_match_golden():
     """The pinned-enum fixture (P7-H): each writer-side constant equals its
-    fixture list VERBATIM (order included — the fixture is canonical), and
+    fixture list VERBATIM (order included - the fixture is canonical), and
     the writer lists partition the full enum exactly."""
     from pipeline.flow.monitor import MONITOR_KINDS
+    from pipeline.images.alerts import IMAGE_ALERT_KINDS
     from pipeline.notify.repo import WEBHOOK_FAILED_KIND
 
     assert ALERT_KINDS["monitor_kinds"] == list(MONITOR_KINDS)
+    assert ALERT_KINDS["image_kinds"] == list(IMAGE_ALERT_KINDS)
     assert ALERT_KINDS["notify_kinds"] == [WEBHOOK_FAILED_KIND]
     assert ALERT_KINDS["kinds"] == (
         ALERT_KINDS["monitor_kinds"]
+        + ALERT_KINDS["image_kinds"]
         + ALERT_KINDS["declared_kinds"]
         + ALERT_KINDS["notify_kinds"]
     )
@@ -312,13 +316,14 @@ def test_process_alert_kinds_are_monitor_owned():
         assert kind not in ALERT_KINDS["declared_kinds"]
 
 
-def test_process_image_flagged_is_declared_not_written():
-    """C-1 declares the kind (container-images spec §10); no pipeline writer
-    may claim it until C-4 lands pipeline/images/alerts.py."""
+def test_process_image_flagged_is_written_by_the_image_alerts_module():
+    """C-4 moved the kind out of declared_kinds (container-images spec §10):
+    pipeline/images/alerts.py is its single writer, and the flow monitor must
+    never own it (monitor ownership would let the monitor auto-resolve it)."""
     from pipeline.flow.monitor import MONITOR_KINDS
 
-    assert "process_image_flagged" in ALERT_KINDS["kinds"]
-    assert ALERT_KINDS["declared_kinds"] == ["process_image_flagged"]
+    assert ALERT_KINDS["image_kinds"] == ["process_image_flagged"]
+    assert ALERT_KINDS["declared_kinds"] == []
     assert "process_image_flagged" not in MONITOR_KINDS
 
 
@@ -491,3 +496,40 @@ def test_registry_config_minimal_parses_to_defaults():
 
     parsed = parse_registry_config(REGISTRY_CONFIG["minimal"])
     assert parsed.host == REGISTRY_CONFIG["defaults"]["host"]
+
+
+def test_image_scan_diff_producer_matches_golden():
+    """The drain's diff writer reproduces the golden document (C-4, spec §8.2)."""
+    from pipeline.images.diff import scan_diff
+    from pipeline.images.scan_result import parse_scan_result
+
+    given = IMAGE_SCAN_DIFF["given"]
+    base = IMAGE_SCAN_RESULT["document"]
+    previous = {**base, **given["previous_patch"]}
+    current = parse_scan_result({**base, **given["current_patch"]})
+    diff = scan_diff(
+        previous,
+        current,
+        current_pass=given["current_pass"],
+        previous_scan_id=given["previous_scan_id"],
+    )
+    assert diff is not None
+    assert diff.as_json() == IMAGE_SCAN_DIFF["document"]
+
+
+def _diff_doc(case: dict[str, Any]) -> dict[str, Any]:
+    doc = {**IMAGE_SCAN_DIFF["document"], **case.get("patch", {})}
+    for key in case.get("remove", []):
+        doc.pop(key, None)
+    return doc
+
+
+@pytest.mark.parametrize("case", IMAGE_SCAN_DIFF["cases"], ids=lambda c: c["name"])
+def test_image_scan_diff_cases(case):
+    from pipeline.images.diff import ScanDiffError, parse_scan_diff
+
+    if case["pipeline"] == "accept":
+        parse_scan_diff(_diff_doc(case))
+    else:
+        with pytest.raises(ScanDiffError):
+            parse_scan_diff(_diff_doc(case))

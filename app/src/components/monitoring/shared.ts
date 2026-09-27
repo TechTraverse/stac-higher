@@ -66,6 +66,17 @@ export function alertKindLabel(kind: string): string {
   return ALERT_KIND_LABEL[kind] ?? kind;
 }
 
+/** Alert kinds whose FIRING state reads as degraded, not failing (C-4,
+ * container-images spec §10): a flagged image blocks new deploys, but the
+ * process keeps running on it. */
+export const DEGRADED_ALERT_KINDS: ReadonlySet<string> = new Set(["process_image_flagged"]);
+
+/** The health an OPEN alert implies: firing is an error unless its kind only
+ * degrades; acknowledged is a warning we still show. */
+export function openAlertHealth(alert: { state: string; kind: string }): "error" | "warn" {
+  return alert.state === "firing" && !DEGRADED_ALERT_KINDS.has(alert.kind) ? "error" : "warn";
+}
+
 /** Best-effort read of the pipeline-written flow_stats jsonb. */
 export interface FlowStatsView {
   files: number;

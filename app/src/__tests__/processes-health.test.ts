@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { processVerdict } from "@/components/processes/health";
-import { alertKindLabel } from "@/components/monitoring/shared";
+import { alertKindLabel, openAlertHealth } from "@/components/monitoring/shared";
 import type { Alert } from "@/lib/monitoring/api";
 import type { Process, ProcessRun } from "@/lib/processes/types";
 
@@ -62,5 +62,31 @@ describe("processVerdict with alerts (I-84)", () => {
   it("deployment state still comes first — a disabled process is unknown even when alerting", () => {
     const disabled = { ...process, enabled: false } as Process;
     expect(processVerdict(disabled, [run()], 1, [alert()]).health).toBe("unknown");
+  });
+});
+
+describe("process_image_flagged is degraded, not failing (C-4, spec §10)", () => {
+  it("a firing image alert is a warning labelled by its kind", () => {
+    const v = processVerdict(process, [run()], 1, [alert({ kind: "process_image_flagged" })]);
+    expect(v).toEqual({
+      health: "warn",
+      label: "Degraded",
+      reason: alertKindLabel("process_image_flagged"),
+    });
+  });
+
+  it("a failing alert on the same process still wins", () => {
+    const v = processVerdict(process, [run()], 1, [
+      alert({ id: "img", kind: "process_image_flagged" }),
+      alert({ id: "dead", kind: "process_failed" }),
+    ]);
+    expect(v.health).toBe("error");
+    expect(v.reason).toBe(alertKindLabel("process_failed"));
+  });
+
+  it("openAlertHealth: firing is an error unless the kind only degrades; acknowledged is a warning", () => {
+    expect(openAlertHealth({ state: "firing", kind: "process_failed" })).toBe("error");
+    expect(openAlertHealth({ state: "firing", kind: "process_image_flagged" })).toBe("warn");
+    expect(openAlertHealth({ state: "acknowledged", kind: "process_failed" })).toBe("warn");
   });
 });

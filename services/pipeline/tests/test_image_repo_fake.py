@@ -55,6 +55,24 @@ async def test_claim_takes_the_oldest_pending_and_marks_an_admission_scanning():
 
 
 @pytest.mark.asyncio
+async def test_claim_takes_an_admission_ahead_of_an_older_pending_rescan():
+    """Item 9: a batch of tick-requested rescans must not starve a user's
+    "Add image" -- an admission claims first even when a rescan has been
+    pending longer."""
+    repo = repo_with()
+    repo.add_scan("r1", IMG, kind="rescan", requested_at=NOW - dt.timedelta(hours=1))
+    repo.add_scan("a1", IMG, kind="admission", requested_at=NOW)
+    claimed = await repo.claim_pending_scan(max_running=1)
+    assert claimed is not None and claimed.id == "a1"
+
+
+def test_the_claim_sql_orders_admissions_before_rescans_at_equal_age():
+    from pipeline.images.repo import CLAIM_PENDING_SCAN_SQL
+
+    assert "ORDER BY (kind = 'rescan'), requested_at" in CLAIM_PENDING_SCAN_SQL
+
+
+@pytest.mark.asyncio
 async def test_claim_respects_the_deployment_wide_cap():
     repo = repo_with()
     repo.add_scan("s0", IMG, status="running", started_at=NOW)

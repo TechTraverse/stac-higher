@@ -79,11 +79,12 @@ the alert `kind` enum since the fixture was deferred in M2). The file pins:
   branches on or displays a kind must recognize all of them (the vitest
   consumer asserts the monitoring UI's label map covers the whole enum, so a
   new kind cannot land unlabeled).
-- one list per **writer** (`monitor_kinds`, `notify_kinds`) plus
+- one list per **writer** (`monitor_kinds`, `image_kinds` since C-4,
+  `notify_kinds`) plus
   `declared_kinds`, the waiting room for kinds that exist in the enum but have
   no writer yet — the single-writer ownership partition. Each writer-side
   constant
-  (`MONITOR_KINDS`, `WEBHOOK_FAILED_KIND`) is asserted equal to its list, and
+  (`MONITOR_KINDS`, `IMAGE_ALERT_KINDS`, `WEBHOOK_FAILED_KIND`) is asserted equal to its list, and
   the lists must partition `kinds` exactly: adding a kind on either side
   without updating the fixture (or claiming a kind in two writers) fails a
   suite. Growing the enum means appending here and to a list in the same
@@ -261,4 +262,5 @@ that would otherwise become silently dead flows or a stalled dispatcher.
 - `image-reference.json` is style `grammar-cases`, like `staged-asset-href.json`. It pins the grammar of a STORED image reference (normalized, lowercase, with an explicit registry host and no tag or digest) and of a manifest digest (sha256 only). Both sides must agree on each `reference`/`digest` boolean. Consumers: `app/src/lib/images/reference.ts` and `pipeline/images/reference.py`.
 - `image-policy.json` is style `document`. `document` must equal `infra/image-policy/default.json`. `cases[]` apply `patch` / `block_patch` / `remove` / `block_remove` to it and are run through `imagePolicySchema` (strict) and `parse_image_policy` (unknown keys ignored, otherwise strict). `registry_cases[]` pin the host-pattern rule on both sides: `*` is one DNS label, the host is case-folded, and a port matches literally. `evaluate_cases[]` are pytest-only (the pipeline is the only evaluator).
 - `image-scan-result.json` is style `document`. It is the scanner's `result.json` (spec §6.4). A case is `doc` (used as-is), or `patch` merged onto `document` minus the `remove` keys. The pipeline parser is the STRICT side (untrusted input: `version == 1`, `top` ≤ 25, digests and the reference grammar). The app reader is lenient (a newer `version` and unknown keys pass). A failed scan is `{version, kind, reference, tag, error}`.
+- `image-scan-diff.json` is style `producer-golden` (C-4). It is the diff the scan drain stores beside the verdict in `image_scans.result.diff` for a rescan (spec §8.2): `{previous_scan_id, new, resolved, newly_fixed, new_kev, verdict_changed, counts_delta}`. `given` holds patches over `image-scan-result.json`'s `document` for the previous and current scans, and pytest asserts `scan_diff(given)` equals `document`. `cases[]` (`patch`/`remove` over `document`) run through `parse_scan_diff` and the app's `imageScanDiffSchema`. Both ignore unknown keys. The comparison is over the summaries (`top` plus the complete `kev`), which is why `counts_delta` exists.
 - `registry-connection-config.json` uses the ordinary `minimal`/`defaults`/`cases[]` format. It is the `registry` connection's `{host}`: strict and lowercase-only in `registryConfigSchema`, stripped and case-folded in `parse_registry_config`. Both validators reuse the image reference grammar's host fragment (`IMAGE_HOST_RE` in `reference.ts`/`reference.py`) rather than a separate host regex, so a single-label host such as `myregistry:5000` (no dot, not `localhost`) is rejected on both sides just as it would be as an image reference's registry host.

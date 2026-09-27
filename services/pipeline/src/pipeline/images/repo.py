@@ -54,6 +54,8 @@ class ImageRow:
     last_scanned_at: dt.datetime | None = None
     registry_connection_id: str | None = None
     exception_expires_at: dt.datetime | None = None
+    #: The latest scan (C-4: the rescan diff's "previous scan"). No FK.
+    last_scan_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,11 @@ class ImagesRepo(abc.ABC):
         ``merge_admission``: its ``status`` and ``exception_expires_at`` are
         enough to recompute what happened between claim and write and retry
         once."""
+
+    @abc.abstractmethod
+    async def get_scan_result(self, scan_id: str) -> dict[str, Any] | None:
+        """The stored ``image_scans.result`` of one scan, or None (C-4: the
+        previous scan a rescan's diff is computed against)."""
 
     @abc.abstractmethod
     async def claim_pending_scan(self, *, max_running: int) -> ClaimedScan | None:
@@ -153,9 +160,12 @@ class ImagesRepo(abc.ABC):
         expected_status: str,
         expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
+        tag_current_digest: str | None = None,
     ) -> bool:
         """Spec §8.1: only verdict, status, last_scan_id, last_scanned_at --
-        the same compare-and-set as :meth:`record_admission`."""
+        plus, when the pipeline's drift HEAD answered (C-4, spec §8.2),
+        ``tag_current_digest`` and ``tag_checked_at = at``. The same
+        compare-and-set as :meth:`record_admission`."""
 
     @abc.abstractmethod
     async def find_image_by_digest(
@@ -203,7 +213,17 @@ class ImagesRepo(abc.ABC):
 _IMAGE_COLUMNS = (
     "id::text, reference, tag_at_add, status, digest, platform_digest, platform,"
     " size_bytes, config, sbom_ref, last_scanned_at, registry_connection_id::text,"
-    " exception_expires_at"
+    " exception_expires_at, last_scan_id::text"
+)
+
+#: Item 9 (final-review fix wave, Minor 1): admissions claim ahead of
+#: rescans at equal age -- `kind = 'rescan'` is false (0) for an admission
+#: and true (1) for a rescan, so an hourly batch of tick-requested rescans
+#: never makes a user's "Add image" wait behind all of them.
+CLAIM_PENDING_SCAN_SQL = (
+    "SELECT id::text, image_id::text, kind, requested_by"
+    " FROM stac_higher.image_scans WHERE status = 'pending'"
+    " ORDER BY (kind = 'rescan'), requested_at FOR UPDATE SKIP LOCKED LIMIT 1"
 )
 
 
@@ -222,6 +242,7 @@ def _to_image(row: Sequence[Any]) -> ImageRow:
         last_scanned_at=row[10],
         registry_connection_id=row[11],
         exception_expires_at=row[12],
+        last_scan_id=row[13],
     )
 
 
@@ -246,6 +267,14 @@ class PgImagesRepo(ImagesRepo):
             row = await cur.fetchone()
         return _to_image(row) if row else None
 
+    async def get_scan_result(self, scan_id: str) -> dict[str, Any] | None:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT result FROM stac_higher.image_scans WHERE id = %s::uuid", (scan_id,)
+            )
+            row = await cur.fetchone()
+        return row[0] if row and isinstance(row[0], dict) else None
+
     async def claim_pending_scan(  # pragma: no cover
         self, *, max_running: int
     ) -> ClaimedScan | None:
@@ -261,11 +290,7 @@ class PgImagesRepo(ImagesRepo):
                 if running >= max_running:
                     await conn.commit()
                     return None
-                await cur.execute(
-                    "SELECT id::text, image_id::text, kind, requested_by"
-                    " FROM stac_higher.image_scans WHERE status = 'pending'"
-                    " ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1"
-                )
+                await cur.execute(CLAIM_PENDING_SCAN_SQL)
                 claimed = await cur.fetchone()
                 if claimed is None:
                     await conn.commit()
@@ -397,13 +422,17 @@ class PgImagesRepo(ImagesRepo):
         expected_status: str,
         expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
+        tag_current_digest: str | None = None,
     ) -> bool:
         from psycopg.types.json import Json
 
+        checked_at = at if tag_current_digest is not None else None
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "UPDATE stac_higher.container_images SET verdict = %s, status = %s,"
-                " last_scan_id = %s::uuid, last_scanned_at = %s, updated_at = now()"
+                " last_scan_id = %s::uuid, last_scanned_at = %s,"
+                " tag_current_digest = COALESCE(%s, tag_current_digest),"
+                " tag_checked_at = COALESCE(%s, tag_checked_at), updated_at = now()"
                 " WHERE id = %s::uuid AND status = %s AND status <> 'revoked'"
                 " AND exception_expires_at IS NOT DISTINCT FROM %s RETURNING id",
                 (
@@ -411,6 +440,8 @@ class PgImagesRepo(ImagesRepo):
                     status,
                     scan_id,
                     at,
+                    tag_current_digest,
+                    checked_at,
                     image_id,
                     expected_status,
                     expected_exception_expires_at,

@@ -68,9 +68,30 @@ test.describe("Images (C-3)", () => {
     await page.getByRole("button", { name: "Add image" }).first().click();
     await expect(page.getByRole("heading", { name: "Add image" })).toBeVisible();
     await page.getByLabel("Image reference").fill("python:3.12-slim");
-    await expect(page.getByText("docker.io/library/python:3.12-slim")).toBeVisible();
+    // Scoped to the dialog: a registry that already holds this image lists it too.
+    await expect(
+      page.getByRole("dialog", { name: "Add image" }).getByText("docker.io/library/python:3.12-slim"),
+    ).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByRole("heading", { name: "Add image" })).toHaveCount(0);
+  });
+});
+
+test.describe("Images (C-4)", () => {
+  test("an image's detail sheet shows its scan history, and no admin verbs to an operator", async ({
+    page,
+  }) => {
+    await page.goto("/images");
+    await expect(
+      page.getByText(/No images yet|\d+ images? in the registry/).first(),
+    ).toBeVisible();
+    const first = page.getByRole("row").nth(1).getByRole("button").first();
+    // A bare database has no image to open: a legal state for this suite.
+    if ((await first.count()) === 0) return;
+    await first.click();
+    await expect(page.getByRole("heading", { name: "Scan history" })).toBeVisible();
+    // The dev-bypass identity is an operator: exception and revoke are admin.
+    await expect(page.getByTestId("image-admin-actions")).toHaveCount(0);
   });
 });
 

@@ -10,13 +10,15 @@ import {
   getImage,
   getImagePolicy,
   getImageScan,
+  grantImageException,
   listImages,
   requestRescan,
+  revokeImage,
   type ImageList,
   type ImageListQuery,
   type ImageScanPoll,
 } from "./api";
-import type { ImageAdd } from "./schemas";
+import type { ImageAdd, ImageException } from "./schemas";
 import type { Image, ImageScan } from "./types";
 
 const SCAN_POLL_MS = 2_000;
@@ -108,4 +110,14 @@ export function useAddImage() {
 
 export function useRescanImage() {
   return useImageMutation((id: string) => requestRescan(id));
+}
+
+export function useGrantImageException() {
+  return useImageMutation(({ id, body }: { id: string; body: ImageException }) =>
+    grantImageException(id, body),
+  );
+}
+
+export function useRevokeImage() {
+  return useImageMutation((id: string) => revokeImage(id));
 }

@@ -4,13 +4,15 @@
  * and the detail sheet's warnings.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { Image, ImageScan } from "@/lib/images/types";
 
-const { useImagesMock, useImageMock, rescanMutate, roles } = vi.hoisted(() => ({
+const { useImagesMock, useImageMock, rescanMutate, grantMutate, revokeMutate, roles } = vi.hoisted(() => ({
   useImagesMock: vi.fn(),
   useImageMock: vi.fn(),
   rescanMutate: vi.fn(),
+  grantMutate: vi.fn(),
+  revokeMutate: vi.fn(),
   roles: { value: ["operator"] as string[] },
 }));
 
@@ -36,6 +38,8 @@ vi.mock("@/lib/images/queries", () => ({
   useAddImage: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useImageScan: () => ({ data: undefined }),
   useImagePolicy: () => ({ data: undefined }),
+  useGrantImageException: () => ({ mutateAsync: grantMutate, isPending: false }),
+  useRevokeImage: () => ({ mutateAsync: revokeMutate, isPending: false }),
 }));
 vi.mock("@/lib/connections/queries", () => ({ useConnections: () => ({ data: [] }) }));
 // F1 (controller ruling): the mocked "sonner" module replaces the whole
@@ -118,6 +122,8 @@ beforeEach(() => {
   useImageMock.mockReset();
   useImageMock.mockReturnValue({ data: undefined, isLoading: false, error: null });
   rescanMutate.mockReset();
+  grantMutate.mockReset();
+  revokeMutate.mockReset();
   roles.value = ["operator"];
 });
 
@@ -285,5 +291,154 @@ describe("ImagesPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "ghcr.io/org/satpy-runtime:1.4.2" }));
     expect(await screen.findByText("Scan history")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Rescan now/ })).toBeNull();
+  });
+
+  it("keys 'expired' on the date alone, even when the latest verdict passes (C-4 fix)", async () => {
+    const past = "2026-08-01T00:00:00.000Z";
+    const detail = image({
+      exception: { reason: "vendor fix pending", by: "admin-1", at: past, expires_at: past },
+      verdict: { pass: true, reasons: [] },
+    });
+    list([detail]);
+    useImageMock.mockImplementation((id: string | null) => ({
+      data: id ? { image: detail, scans: [], in_use_by: [], in_use_elsewhere: 0 } : undefined,
+      isLoading: false,
+      error: null,
+    }));
+    render(<ImagesPage />);
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(within(rows[0]).getByText(/^expired /)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "ghcr.io/org/satpy-runtime:1.4.2" }));
+    expect(await screen.findByText(/Granted by admin-1, expired/)).toBeInTheDocument();
+    // The verdict passes on its own: no "deploys are refused" warning.
+    expect(screen.queryByText(/new deploys are refused until a rescan passes/)).toBeNull();
+  });
+
+  it("shows each rescan's diff, its drift and a findings link in the scan history", async () => {
+    const detail = image();
+    list([detail]);
+    useImageMock.mockImplementation((id: string | null) => ({
+      data: id
+        ? {
+            image: detail,
+            scans: [
+              scan({
+                id: "s-2",
+                kind: "rescan",
+                finished_at: "2026-09-27T03:20:00.000Z",
+                findings_ref: "scans/img-1/s-2/findings.grype.json",
+                result: {
+                  tag_drift: { current_digest: "sha256:" + "b".repeat(64), drifted: true },
+                  diff: {
+                    previous_scan_id: "s-1",
+                    new: ["CVE-2026-0003"],
+                    resolved: [],
+                    newly_fixed: [],
+                    new_kev: ["CVE-2026-0003"],
+                    verdict_changed: true,
+                    counts_delta: { critical: 0, high: 2, medium: -1, low: 0, negligible: 0, unknown: 0 },
+                  },
+                },
+              }),
+              scan({ id: "s-1", finished_at: "2026-09-26T00:05:00.000Z" }),
+            ],
+            in_use_by: [],
+            in_use_elsewhere: 0,
+          }
+        : undefined,
+      isLoading: false,
+      error: null,
+    }));
+    render(<ImagesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "ghcr.io/org/satpy-runtime:1.4.2" }));
+    expect(await screen.findByTestId("scan-diff")).toHaveTextContent(
+      "+2 high, −1 medium since 2026-09-26 · 1 new KEV, verdict changed",
+    );
+    expect(screen.getByText("tag moved to sha256:bbbbbbbbbbbb")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "findings" })).toHaveAttribute(
+      "href",
+      "/api/images/img-1/scans/s-2/findings",
+    );
+  });
+
+  function openDetail(detail: Image) {
+    list([detail]);
+    useImageMock.mockImplementation((id: string | null) => ({
+      data: id ? { image: detail, scans: [], in_use_by: [], in_use_elsewhere: 0 } : undefined,
+      isLoading: false,
+      error: null,
+    }));
+    render(<ImagesPage />);
+    fireEvent.click(screen.getByRole("button", { name: `${detail.reference}:${detail.tag_at_add}` }));
+  }
+
+  it("lets an admin grant an exception on a rejected image, with a reason and a bounded expiry", async () => {
+    roles.value = ["admin"];
+    grantMutate.mockResolvedValue({ image: image() });
+    openDetail(image({ status: "rejected", verdict: { pass: false, reasons: ["kev:CVE-2026-9"] } }));
+    fireEvent.click(await screen.findByRole("button", { name: /Grant exception/ }));
+    fireEvent.change(screen.getByLabelText("Reason"), {
+      target: { value: "vendor fix lands next sprint" },
+    });
+    fireEvent.change(screen.getByLabelText("Lasts (days)"), { target: { value: "10" } });
+    const before = Date.now();
+    fireEvent.click(screen.getByRole("button", { name: "Save exception" }));
+    await waitFor(() => expect(grantMutate).toHaveBeenCalledTimes(1));
+    const [{ id, body }] = grantMutate.mock.calls[0];
+    expect(id).toBe("img-1");
+    expect(body.reason).toBe("vendor fix lands next sprint");
+    const expires = Date.parse(body.expires_at);
+    expect(expires).toBeGreaterThanOrEqual(before + 10 * 86_400_000);
+    expect(expires).toBeLessThanOrEqual(Date.now() + 10 * 86_400_000);
+  });
+
+  it("refuses a thin reason before anything is sent", async () => {
+    roles.value = ["admin"];
+    openDetail(image({ status: "flagged" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Grant exception/ }));
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "ok" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save exception" }));
+    expect(await screen.findByText(/At least 10 characters/)).toBeInTheDocument();
+    expect(grantMutate).not.toHaveBeenCalled();
+  });
+
+  it("offers to replace the exception an approved image carries, and none when it carries none", async () => {
+    roles.value = ["admin"];
+    const live = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    openDetail(
+      image({ exception: { reason: "vendor fix pending", by: "admin-1", at: live, expires_at: live } }),
+    );
+    expect(await screen.findByRole("button", { name: /Replace exception/ })).toBeInTheDocument();
+  });
+
+  it("an approved image without an exception offers revoke only", async () => {
+    roles.value = ["admin"];
+    openDetail(image());
+    expect(await screen.findByRole("button", { name: /Revoke image/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Grant exception|Replace exception/ })).toBeNull();
+  });
+
+  it("revokes only after the confirmation", async () => {
+    roles.value = ["admin"];
+    revokeMutate.mockResolvedValue({ image: image({ status: "revoked" }) });
+    openDetail(image());
+    fireEvent.click(await screen.findByRole("button", { name: /Revoke image/ }));
+    expect(screen.getByText(/Revoking is final/)).toHaveTextContent(/2 processes use it/);
+    expect(revokeMutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    await waitFor(() => expect(revokeMutate).toHaveBeenCalledWith("img-1"));
+  });
+
+  it("shows no admin verbs to an operator", async () => {
+    openDetail(image({ status: "rejected" }));
+    expect(await screen.findByText("Scan history")).toBeInTheDocument();
+    expect(screen.queryByTestId("image-admin-actions")).toBeNull();
+  });
+
+  it("shows no admin verbs on a revoked image, even to an admin", async () => {
+    roles.value = ["admin"];
+    openDetail(image({ status: "revoked" }));
+    expect(await screen.findByText("Scan history")).toBeInTheDocument();
+    expect(screen.queryByTestId("image-admin-actions")).toBeNull();
   });
 });

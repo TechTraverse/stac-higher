@@ -4,9 +4,11 @@ import {
   addImage,
   getImagePolicy,
   getImageScan,
+  grantImageException,
   imageListSearch,
   listImages,
   requestRescan,
+  revokeImage,
 } from "@/lib/images/api";
 import {
   hasScanInFlight,
@@ -99,6 +101,30 @@ describe("images client", () => {
     fetchMock.mockResolvedValue(reply(200, {}));
     await getImagePolicy();
     expect(fetchMock.mock.calls[2][0]).toBe("/api/processes/image-policy");
+  });
+
+  it("POSTs the admin verbs and surfaces a refusal's code", async () => {
+    // A Response body reads once: a fresh reply per call.
+    fetchMock.mockImplementation(async () => reply(200, { image: { id: "img-1" } }));
+    const body = { reason: "vendor fix lands next sprint", expires_at: "2026-10-27T12:00:00.000Z" };
+    await grantImageException("img-1", body);
+    let [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/images/img-1/exception");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual(body);
+
+    await revokeImage("img-1");
+    [url, init] = fetchMock.mock.calls[1];
+    expect(url).toBe("/api/images/img-1/revoke");
+    expect(init.method).toBe("POST");
+
+    fetchMock.mockImplementation(async () =>
+      reply(409, { error: "This image is already revoked", code: "image_already_revoked" }),
+    );
+    await expect(revokeImage("img-1")).rejects.toMatchObject({
+      status: 409,
+      code: "image_already_revoked",
+    });
   });
 });
 
