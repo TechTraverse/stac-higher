@@ -1436,10 +1436,19 @@ and small enough for any loop to pick up.
 restrict it to `allowed_registries`. The list is enforced in software
 twice (app on add, pipeline before launch) and the scanner is the only
 container on the network, but a compromised scanner could reach any host.
-On Kubernetes the equivalent is a NetworkPolicy with FQDN egress, which
-is CNI-dependent (K8s spec §12). Accept for compose; revisit with the
-egress proxy that ADR 0018's higher network levels will need anyway.
-- Tracked in: ADR 0021 Consequences; `docker-compose.yml` (C-2).
+Being non-internal and a plain bridge also means it is not egress-isolated
+from the host: on a dev host the scanner can reach every port this compose
+file publishes — Postgres 5433, the auth proxy 8081, the API 8082, the
+pipeline 8083, titiler 8084, tipg 8085, Keycloak 8180, and MinIO 9000/9001.
+The scanner's own registry client (`services/image-scanner/.../registry.py`)
+follows a registry's `WWW-Authenticate: Bearer realm=...` challenge and a
+blob redirect to any https host (stripping `Authorization` on a host
+change) — that client has no allow-list of its own, so the network is the
+only boundary. On Kubernetes the equivalent is a NetworkPolicy with FQDN
+egress, which is CNI-dependent (K8s spec §12). Accept for compose; revisit
+with the egress proxy that ADR 0018's higher network levels will need
+anyway.
+- Tracked in: ADR 0021 Consequences; `docker-compose.yml` `scanner-egress` (built in C-2).
 
 ### I-124 · A scan holds a worker slot until K-4 🟡
 The drain launches the scanner through the executor and blocks in
@@ -1447,18 +1456,25 @@ The drain launches the scanner through the executor and blocks in
 concurrency 1 that stalls ingest and delivery for the scan's duration;
 M3-D's concurrency (12) turns it into one occupied slot, and K-4's
 submit-then-reconcile executor removes the block entirely. Not a reason
-to build a second executor shape (ADR 0021 option A).
+to build a second executor shape (ADR 0021 option A). A large image's
+first pull adds to the same held slot — `_ensure_image` blocks the worker
+for however long the daemon takes to pull it, and that time is not counted
+against the run's own timeout, so a big cold image can occupy a slot well
+past the policy's stated bound. C-2 caps scans at `IMAGE_SCAN_CONCURRENCY`
+(default 1) deployment-wide, so at most that many slots are held, and runs
+each scan in a thread so the event loop is never blocked.
 - Tracked in: `jobs/image_scans.py` (C-2); closes with K-4.
 
 ### I-125 · Anonymous Docker Hub pulls share a 100-per-6-hour budget per IP 🟡
-Scans and launches of `docker.io` references without a group credential
-pull anonymously unless `REGISTRY_DOCKERHUB_USER/_TOKEN` is set (spec
-§5). Docker's enforced limit is 100 pulls / 6 h per IPv4 (200 with a
+Scans (the scanner's own registry reads, Syft's layer pulls included) and
+launch pulls (the daemon's) of `docker.io` references without a group
+credential pull anonymously unless `REGISTRY_DOCKERHUB_USER/_TOKEN` is set
+(spec §5). Docker's enforced limit is 100 pulls / 6 h per IPv4 (200 with a
 Personal account, unlimited for paid orgs); a NAT'd cluster shares one
 budget. HEAD requests (tag→digest, drift) are free. Deployment checklist
 item, not a code change; in GovCloud the ECR pull-through cache (spec
 §12) removes it.
-- Tracked in: `docs/backend.md` env table (C-2).
+- Tracked in: `services/pipeline/README.md` env table (C-2).
 
 ### I-136 · The registry check's Bearer token realm is untrusted 🟡
 `check_registry` (`pipeline/connections/registry.py`) reads the token
@@ -1472,6 +1488,46 @@ comes back to the caller — no body, no header is relayed. Same posture as
 every other adapter in this codebase: the egress allow-list is the trust
 boundary, not the far end's identity. Possible hardening: accept a realm
 host on the allow-list only when it equals the registry's own host.
+
+### I-137 · Pulled user images are never removed from the Docker daemon 🟡
+C-2 pulls a user image by digest the first time a run needs it
+(`DockerExecutor._ensure_image`) and nothing removes it afterwards: a
+revoked or superseded image's layers stay on the host until an operator
+prunes them. The socket proxy's `IMAGES=1` would allow a delete, but deleting
+from the daemon needs a reference count across in-flight runs and every
+revision still pinning the digest, which is C-4's retention territory (spec
+§8.3) and K-4's reconcile loop in cloud (the kubelet's own image GC applies
+on Kubernetes). Deployment-checklist item for compose hosts: `docker image
+prune` on a schedule, never while a run is starting.
+- Found in: the C-2 plan (2026-09-27).
+
+### I-138 · The launch-time image check has two TOCTOU gaps 🟡
+`resolve_run_image` (§8.4) re-checks the `container_images` row at launch,
+but the check and the pull/create are not atomic. (a) `_ensure_image`
+inspects the daemon by digest first and skips the registry entirely when
+that digest is already present (§8.4's designed fast path) — a credential
+revoked after the first pull does not stop a second run from launching a
+cached digest, because the registry is never contacted again. (b) even on a
+cold pull, a revoke landing between `resolve_run_image`'s DB read and the
+executor's `POST /containers/create` still launches: nothing re-reads the
+row between them. Both are ordinary TOCTOU gaps between a read and a later
+effect, not a missing check — the deploy-time write gate and the launch
+re-check are deliberately two separate points in time (§3, "the pipeline
+re-checks at launch"). Accept for C-2; a tighter bound needs either a
+launch-time row lock or a short-TTL re-check immediately before create.
+- Found in: the C-2 plan (2026-09-27).
+
+### I-139 · A launch pulls the multi-arch index digest, not the platform manifest that was scanned 🟡
+`container_images.digest` is the manifest **or index** digest the tag
+resolved to at add time (§4.1); the scanner always scans one platform's
+manifest (`platform_digest`, from the policy's `platform`, default
+`linux/amd64`) and that is what the verdict covers. The launch path pulls
+`{reference}@{digest}` (§8.4) — the index digest for a multi-arch image —
+so a non-`amd64` daemon (an arm64 dev machine, say) resolves and runs
+whichever platform manifest the index and the local daemon agree on, which
+was never scanned or evaluated. Compose dev hosts on Apple Silicon are the
+practical case today; production stays on the policy's declared platform.
+- Found in: the C-2 plan (2026-09-27).
 
 ## Resolved — archived
 

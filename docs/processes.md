@@ -154,9 +154,28 @@ The platform's hardening applies, not the image's: all capabilities dropped,
 profile, and **user `10001:10001`** whatever the image's `USER` says. An
 image whose files that uid cannot read fails at run time. Writable scratch is
 `/tmp` (a tmpfs sized with the memory limit) plus the run's output prefix.
-The executor enforces these once a user image can launch at all (C-2);
-today every kind 2/3 revision is refused before launch, so no user image
-runs yet.
+`HOME` is `/tmp` unless the revision's env sets it (uid 10001 has no home
+directory). The executor enforces all of it (C-2): the image runs only as
+`{reference}@{digest}`, pulled by digest when the daemon lacks it, and a
+kind-2 image's entrypoint is replaced by the platform's one-line bootstrap
+(`python3 -c ...`), which decodes the platform runner and your code from the
+environment. A kind-3 image keeps its own `ENTRYPOINT`; `command` replaces
+its `CMD`.
+
+At **launch** the pipeline re-checks the registry row, independently of the
+deploy gate: a run dies with `image_not_approved` (the row is missing or not
+`approved`/`flagged`), `image_digest_mismatch`, `image_stale` (not scanned
+within the policy window; an exception does not cover this), or
+`image_group_mismatch` (the registry credential it is pulled with was
+deleted or no longer matches the registry). A `flagged` image still
+launches: a rescan that newly fails blocks new deploys, not running
+pipelines. A pull the registry refuses spends one of the run's attempts. A
+missing image policy or master key requeues the run without spending one.
+
+`ReadonlyRootfs` is **not** forced for kinds 2-3 (nor for kind 1): a user
+image's own `VOLUME`s still mount as anonymous volumes, reaped with the
+container (the executor removes with `v=1`), so nothing outlives the run,
+but the image's declared scratch space is writable for its lifetime.
 
 ### When a deploy is refused
 
@@ -193,8 +212,13 @@ form's **Runtime** choice picks the kind: *Platform image* (kind 1, with the
 `default`/`stactools` variant), *Custom image + your code* (kind 2) or
 *Container image* (kind 3, code editor hidden, optional command shown as the
 array it becomes). The picker offers only approved, fresh images your
-process's group may use; others are listed disabled with the reason. Until
-the scanner is deployed (C-2) every added image stays "Waiting for scan".
+process's group may use; others are listed disabled with the reason.
+
+The scanner runs as a platform container per scan (Syft for the SBOM, Grype
+for the match, its vulnerability DB baked into the scanner image and
+refreshed at scan start where the deployment allows). A passing scan
+approves the image; a failing one rejects it with the policy's reasons; a
+scan that cannot finish leaves the image `scan_failed`.
 
 ### Private registries
 
