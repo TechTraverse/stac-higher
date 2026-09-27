@@ -417,6 +417,11 @@ async def _requeue_infrastructure(
     logger.warning(
         "process run could not start: deployment configuration unavailable; requeued "
         "without spending an attempt",
-        extra={"run_id": run.id, "process_id": run.process_id, "error": str(err)},
+        extra={
+            "run_id": run.id,
+            "process_id": run.process_id,
+            "error": str(err),
+            "cause": type(err).__name__,
+        },
     )
     return RunResult(run.id, transition.status, error=str(err))

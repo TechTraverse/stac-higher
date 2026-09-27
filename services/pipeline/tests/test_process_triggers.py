@@ -527,6 +527,24 @@ async def test_a_flagged_image_still_launches():
 
 
 @pytest.mark.asyncio
+async def test_an_expired_exception_does_not_block_a_launch():
+    """Spec §4.3 and decision 4 make ONLY staleness launch-blocking; the
+    exception's own expiry is the app's deploy gate (and, once C-4 lands, the
+    daily tick's). record_rescan also leaves `exception_expires_at` set on an
+    image whose later rescan passed, so treating a merely-past expiry as
+    unlaunchable here would wrongly kill runs of an already-clean image."""
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        executor,
+        FakeProcessRepo(),
+        images_repo=images_with(exception_expires_at=NOW - dt.timedelta(days=1)),
+    )
+    assert result.status == "succeeded"
+    assert len(executor.launched) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
@@ -537,7 +555,6 @@ async def test_a_flagged_image_still_launches():
         ({"reference": "ghcr.io/example/other"}, "image_digest_mismatch"),
         ({"last_scanned_at": NOW - dt.timedelta(days=30, seconds=1)}, "image_stale"),
         ({"last_scanned_at": None}, "image_stale"),
-        ({"exception_expires_at": NOW - dt.timedelta(seconds=1)}, "image_not_approved"),
     ],
     ids=[
         "revoked",
@@ -547,7 +564,6 @@ async def test_a_flagged_image_still_launches():
         "reference",
         "stale",
         "never-scanned",
-        "expired-exception",
     ],
 )
 async def test_an_unusable_image_kills_the_run_before_anything_launches(overrides, reason):
@@ -615,6 +631,36 @@ async def test_a_deleted_registry_credential_dies_as_a_group_mismatch():
 
 
 @pytest.mark.asyncio
+async def test_a_registry_credential_with_no_master_key_requeues_without_dying():
+    """RegistryAuthUnavailable (no key to decrypt with) is OUR infrastructure
+    missing a secret, not a verdict on the credential -- unlike a gone
+    credential (image_group_mismatch, which dies), this goes back to `queued`
+    and spends no attempt."""
+    images = images_with(registry_connection_id="5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d")
+    images.add_credential(
+        RegistryCredentialRow(
+            connection_id="5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
+            protocol="registry",
+            config={"host": "ghcr.io"},
+            credentials=b"x",
+            deleted=False,
+        )
+    )
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        executor,
+        repo,
+        images_repo=images,
+        master_key=None,
+    )
+    assert result.status == "queued"
+    assert executor.launched == []
+    assert repo.finished[0]["status"] == "queued"
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_policy_requeues_a_user_image_run_without_spending_an_attempt(
     monkeypatch, tmp_path
 ):
@@ -652,6 +698,41 @@ async def test_a_failed_pull_spends_an_attempt():
     )
     assert result.status == "failed"
     assert "manifest unknown" in repo.finished[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pull_dies_once_attempts_are_exhausted():
+    """The same refused pull, on its last attempt, dies rather than failing
+    into a retry that will only pull the same missing manifest again."""
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor(launch_error=ImagePullFailed("pulling x failed: manifest unknown"))
+    result = await _run(
+        queued(
+            runtime=user_runtime("container", retry={"max_attempts": 1}),
+            code=None,
+            attempts=1,
+        ),
+        executor,
+        repo,
+        images_repo=images_with(),
+    )
+    assert result.status == "dead"
+    assert "manifest unknown" in repo.finished[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_user_image_run_with_no_images_repo_dies_not_approved():
+    """A worker with no ImagesRepo configured cannot check a kind 2/3 run's
+    image at all; it must die naming the reason, never launch unchecked or
+    hang requeuing forever."""
+    repo = FakeProcessRepo()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        MemoryExecutor(),
+        repo,
+    )
+    assert result.status == "dead"
+    assert repo.finished[0]["error"].startswith("image_not_approved")
 
 
 # ---------------------------------------------------------------------------

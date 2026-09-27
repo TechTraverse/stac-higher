@@ -100,11 +100,14 @@ def check_user_image_launchable(
 ) -> None:
     """Spec §8.4, the launch-time half of the dual enforcement (the app's
     deploy gate is the other). Same order as the gate: exists -> status ->
-    admin exception still live -> reference/digest -> fresh. ``flagged``
-    launches (spec decision 4); staleness blocks even an exception (spec
-    §4.3). An expired admin exception fails closed here too: the daily
-    re-evaluation tick (C-4) has not landed yet, so a row left ``approved``
-    past its own ``exception_expires_at`` must not be read as still granted."""
+    reference/digest -> fresh. ``flagged`` launches (spec decision 4);
+    staleness blocks even an exception (spec §4.3). An expired admin
+    exception does NOT block a launch: spec §4.3 and decision 4 only make
+    staleness launch-blocking, and the exception's own expiry is the app's
+    deploy-gate concern (and, once C-4 lands, the daily re-evaluation tick's
+    -- record_rescan leaves ``exception_expires_at`` set on an image that
+    later re-passes, so treating a merely-past expiry as unlaunchable here
+    would kill runs of an image whose rescan already came back clean)."""
     pinned = f"{runtime.image_reference}@{runtime.image_digest}"
     if row is None:
         raise ImageUnusable(
@@ -114,15 +117,6 @@ def check_user_image_launchable(
         raise ImageUnusable(
             f"image_not_approved: {pinned} is {row.status}; a run launches only on an "
             "approved or flagged image"
-        )
-    if (
-        row.status == "approved"
-        and row.exception_expires_at is not None
-        and row.exception_expires_at <= now
-    ):
-        raise ImageUnusable(
-            f"image_not_approved: {pinned}'s admin exception expired at "
-            f"{row.exception_expires_at.isoformat()}"
         )
     if row.reference != runtime.image_reference or row.digest != runtime.image_digest:
         raise ImageUnusable(
