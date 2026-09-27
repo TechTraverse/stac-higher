@@ -6,17 +6,22 @@
  * the same reference and digest that is usable by the process's group, and
  * the pipeline re-checks at launch (C-2, spec §8.4).
  *
- * Order: exists -> approved -> reference/digest -> fresh -> group. A pending
- * image therefore says "not approved" rather than "digest mismatch" (its
- * digest is still NULL). The policy is read only for a user image, so a
- * broken policy file never blocks an inline deploy, and a user-image deploy
- * fails CLOSED (503) when the policy cannot be read.
+ * Order: exists -> approved -> LAPSED exception -> reference/digest -> fresh
+ * -> group. A pending image therefore says "not approved" rather than
+ * "digest mismatch" (its digest is still NULL). An approved row whose
+ * exception has expired without a passing rescan is likewise "not approved"
+ * (REVISED controller ruling, C-3: `exceptionLapsed`) — this only refuses
+ * NEW deploys; a revision already running keeps launching (spec §4.3 /
+ * decision 4, `isDigestLaunchable`). The policy is read only for a user
+ * image, so a broken policy file never blocks an inline deploy, and a
+ * user-image deploy fails CLOSED (503) when the policy cannot be read.
  */
 import { jsonResponse } from "@/lib/http/response";
 import { loadImagePolicy } from "./policy";
 import type { ImageSnapshot } from "./reference";
 import { getImageForGate, type ImageGateRow } from "./storage";
 import type { ImageGateReason } from "./status";
+import { exceptionLapsed } from "./verdict";
 
 const DAY_MS = 86_400_000;
 
@@ -45,6 +50,13 @@ export function evaluateImageGate(input: {
     return {
       reason: "image_not_approved",
       message: `image ${named} is ${row.status}; only an approved image can be deployed`,
+    };
+  }
+  if (exceptionLapsed({ status: row.status, exceptionExpiresAt: row.exception_expires_at, verdict: row.verdict }, now)) {
+    const expired = (row.exception_expires_at as Date).toISOString();
+    return {
+      reason: "image_not_approved",
+      message: `image ${named} was approved by an exception that expired ${expired}, and its latest scan does not pass the policy (exception expired); rescan it or ask an admin for a new exception`,
     };
   }
   if (row.reference !== snapshot.reference || row.digest !== snapshot.digest) {

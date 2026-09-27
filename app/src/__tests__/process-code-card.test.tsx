@@ -21,6 +21,14 @@ vi.mock("@/lib/connections/queries", () => ({
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+const { imagesState } = vi.hoisted(() => ({ imagesState: { images: [] as unknown[] } }));
+vi.mock("@/lib/images/queries", () => ({
+  useImages: () => ({ data: { images: imagesState.images, scan_window_days: 30 } }),
+  useAddImage: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useImageScan: () => ({ data: undefined }),
+  useImagePolicy: () => ({ data: undefined }),
+}));
+
 import { CodeCard } from "@/components/processes/ProcessDetailPage";
 
 const PROCESS_ID = "3a9f1c2e-0000-4000-8000-0000000000a1";
@@ -91,5 +99,122 @@ describe("CodeCard timeout default (G-6, GOES spec §6.5)", () => {
       input: { runtime: { timeout_seconds: number } };
     };
     expect(transformInput.input.runtime.timeout_seconds).toBe(900);
+  });
+});
+
+describe("CodeCard runtime chooser (C-3, container-images spec §9.3)", () => {
+  const DIGEST = "sha256:" + "a".repeat(64);
+  const APPROVED = {
+    id: "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
+    reference: "ghcr.io/org/satpy-runtime",
+    tag_at_add: "1.4.2",
+    digest: DIGEST,
+    status: "approved",
+    stale: false,
+    registry_connection: null,
+  };
+  const FLAGGED = { ...APPROVED, id: "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e71", reference: "ghcr.io/org/old", status: "flagged" };
+
+  beforeEach(() => {
+    imagesState.images = [APPROVED, FLAGGED];
+  });
+
+  function deployedInput() {
+    return mutateAsync.mock.calls[0][0] as unknown as {
+      input: { runtime: Record<string, unknown>; code: string | null };
+    };
+  }
+
+  it("offers the three runtimes with the platform image first and its alias select", () => {
+    setup();
+    expect(screen.getByRole("group", { name: "Runtime" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Platform image/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /Custom image \+ your code/ })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /Container image/ })).not.toBeChecked();
+    const alias = screen.getByLabelText("Image variant") as HTMLSelectElement;
+    expect(Array.from(alias.options).map((o) => o.value)).toEqual(["default", "stactools"]);
+  });
+
+  it("deploys inline code on the chosen platform alias", async () => {
+    setup();
+    fireEvent.change(screen.getByLabelText("Image variant"), { target: { value: "stactools" } });
+    fireEvent.click(screen.getByRole("button", { name: /Deploy revision/ }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(deployedInput().input.runtime).toMatchObject({
+      kind: "inline_python",
+      image: null,
+      runtime_image: "stactools",
+    });
+    expect(deployedInput().input.code).toBe("print(1)");
+  });
+
+  it("needs an approved image for your code on your image, and lists the flagged one disabled", async () => {
+    setup();
+    fireEvent.click(screen.getByRole("radio", { name: /Custom image \+ your code/ }));
+    expect(screen.getByRole("button", { name: /Deploy revision/ })).toBeDisabled();
+    expect(screen.getByText("Choose an approved image", { selector: "span" })).toBeInTheDocument();
+    const picker = screen.getByLabelText("Image") as HTMLSelectElement;
+    const flagged = Array.from(picker.options).find((o) => o.value === FLAGGED.id);
+    expect(flagged?.disabled).toBe(true);
+    expect(flagged?.textContent).toMatch(/\(Flagged\)$/);
+
+    fireEvent.change(picker, { target: { value: APPROVED.id } });
+    fireEvent.click(screen.getByRole("button", { name: /Deploy revision/ }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(deployedInput().input.runtime).toMatchObject({
+      kind: "inline_python_on_image",
+      image: { id: APPROVED.id, reference: APPROVED.reference, digest: DIGEST },
+      runtime_image: null,
+    });
+    expect(deployedInput().input.code).toBe("print(1)");
+  });
+
+  it("hides the editor for a container image and deploys its command with no code", async () => {
+    setup();
+    fireEvent.click(screen.getByRole("radio", { name: /Container image/ }));
+    expect(screen.queryByLabelText("Process code")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Image"), { target: { value: APPROVED.id } });
+    fireEvent.change(screen.getByLabelText("Command (optional)"), {
+      target: { value: "tool --run 'a b'" },
+    });
+    expect(screen.getByTestId("command-preview")).toHaveTextContent('["tool","--run","a b"]');
+    fireEvent.click(screen.getByRole("button", { name: /Deploy revision/ }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(deployedInput().input.runtime).toMatchObject({
+      kind: "container",
+      command: ["tool", "--run", "a b"],
+    });
+    expect(deployedInput().input.code).toBeNull();
+  });
+
+  it("explains a broken command and will not deploy it", () => {
+    setup();
+    fireEvent.click(screen.getByRole("radio", { name: /Container image/ }));
+    fireEvent.change(screen.getByLabelText("Image"), { target: { value: APPROVED.id } });
+    fireEvent.change(screen.getByLabelText("Command (optional)"), { target: { value: "tool 'x" } });
+    expect(screen.getByTestId("command-preview")).toHaveTextContent(/Unterminated single quote/);
+    expect(screen.getByRole("button", { name: /Deploy revision/ })).toBeDisabled();
+  });
+
+  it("starts from the current revision's kind, image and command", () => {
+    render(
+      <CodeCard
+        id={PROCESS_ID}
+        groupId="earth-observation"
+        currentCode={null}
+        currentEnv={[]}
+        currentRevision="3a9f1c2e-0000-4000-8000-0000000000b1"
+        currentRuntime={{
+          kind: "container",
+          image: { id: APPROVED.id, reference: APPROVED.reference, digest: DIGEST },
+          command: ["tool", "a b"],
+        }}
+        canMutate
+        kind="transform"
+      />,
+    );
+    expect(screen.getByRole("radio", { name: /Container image/ })).toBeChecked();
+    expect((screen.getByLabelText("Image") as HTMLSelectElement).value).toBe(APPROVED.id);
+    expect(screen.getByLabelText("Command (optional)")).toHaveValue("tool 'a b'");
   });
 });

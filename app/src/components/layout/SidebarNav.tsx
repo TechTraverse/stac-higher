@@ -16,6 +16,7 @@ import { useState } from "react";
 import { useStore } from "@nanostores/react";
 import {
   Activity,
+  Boxes,
   ChevronDown,
   Cpu,
   Database,
@@ -55,6 +56,7 @@ const OPERATE: NavItem[] = [
   { href: "/", label: "Products", icon: Layers, alsoMatches: ["/collections"] },
   { href: "/map", label: "Map", icon: MapIcon },
   { href: "/processes", label: "Processes", icon: Cpu },
+  { href: "/images", label: "Images", icon: Boxes },
   { href: "/connections", label: "Connections", icon: Plug },
   { href: "/graph", label: "Pipeline graph", icon: Share2 },
   { href: "/monitoring", label: "Monitoring", icon: Activity },

@@ -178,11 +178,23 @@ An image is approved by a **scan**: an SBOM (Syft) and a vulnerability match
 (Grype, with CISA KEV and EPSS) evaluated against the deployment's policy.
 The default policy blocks any KEV entry, a fixed CRITICAL, an unfixed
 CRITICAL published more than 30 days ago, and a fixed HIGH with EPSS ≥ 0.1. A
-failing image needs an admin's expiring, audited exception. The scanner, the
-image registry page and rescans are being built now. Until the scanner
-exists nothing is approved, so every kind 2/3 deploy is refused with
-`image_not_approved`, and a kind 2/3 run that reached the pipeline by any
-other route dies naming ADR 0021.
+failing image needs an admin's expiring, audited exception.
+When an exception expires and the image's latest scan still fails the
+policy, new deploys naming it are refused (`image_not_approved`, "exception
+expired") until a rescan passes or an admin grants a new exception; revisions
+already deployed keep launching.
+
+Images live on the **Images** page (`/images`): add one by reference
+(`python:3.12-slim` is stored as `docker.io/library/python`, tag
+`3.12-slim`; adding by digest is not supported, because the scan resolves
+the tag and pins the digest it scanned), watch its scan, see its findings,
+policy reasons, who uses it, and request a rescan. On a process, the deploy
+form's **Runtime** choice picks the kind: *Platform image* (kind 1, with the
+`default`/`stactools` variant), *Custom image + your code* (kind 2) or
+*Container image* (kind 3, code editor hidden, optional command shown as the
+array it becomes). The picker offers only approved, fresh images your
+process's group may use; others are listed disabled with the reason. Until
+the scanner is deployed (C-2) every added image stays "Waiting for scan".
 
 ### Private registries
 

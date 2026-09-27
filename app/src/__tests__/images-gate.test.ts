@@ -29,6 +29,8 @@ function row(overrides: Partial<ImageGateRow> = {}): ImageGateRow {
     last_scanned_at: new Date(NOW.getTime() - DAY),
     registry_connection_id: null,
     registry_connection_group_id: null,
+    exception_expires_at: null,
+    verdict: null,
     ...overrides,
   };
 }
@@ -100,6 +102,42 @@ describe("evaluateImageGate", () => {
     expect(
       gate(row({ registry_connection_id: "c-1", registry_connection_group_id: GROUP })),
     ).toBeNull();
+  });
+});
+
+describe("evaluateImageGate — expired exception (REVISED controller ruling, C-3)", () => {
+  const EXPIRED = new Date(NOW.getTime() - DAY);
+  const LIVE = new Date(NOW.getTime() + DAY);
+
+  it("refuses an approved image whose exception expired and whose latest scan still fails", () => {
+    const refusal = gate(row({ exception_expires_at: EXPIRED, verdict: { pass: false } }));
+    expect(refusal?.reason).toBe("image_not_approved");
+    expect(refusal?.message).toContain("exception expired");
+    expect(refusal?.message).toContain(EXPIRED.toISOString());
+  });
+
+  it("passes an approved image whose exception expired but whose latest scan now passes", () => {
+    expect(gate(row({ exception_expires_at: EXPIRED, verdict: { pass: true } }))).toBeNull();
+  });
+
+  it("refuses an expired exception with no readable verdict (fails closed)", () => {
+    expect(gate(row({ exception_expires_at: EXPIRED, verdict: null }))?.reason).toBe(
+      "image_not_approved",
+    );
+  });
+
+  it("treats an exception expiring at exactly now as expired (same boundary as staleness)", () => {
+    expect(gate(row({ exception_expires_at: NOW, verdict: null }))?.reason).toBe(
+      "image_not_approved",
+    );
+  });
+
+  it("passes an approved image with a still-live exception, whatever the verdict says", () => {
+    expect(gate(row({ exception_expires_at: LIVE, verdict: { pass: false } }))).toBeNull();
+  });
+
+  it("is unaffected for an image that never had an exception", () => {
+    expect(gate(row({ exception_expires_at: null, verdict: null }))).toBeNull();
   });
 });
 

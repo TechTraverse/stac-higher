@@ -12,12 +12,15 @@ import {
   buildConnectionChips,
   buildProductRows,
   buildStats,
+  countImagesAtRisk,
+  describeImagesAtRisk,
   successRate,
 } from "@/components/layout/overview";
 import { alertKindLabel } from "@/components/monitoring/shared";
 import type { Alert } from "@/lib/monitoring/api";
 import type { DailyStats, PipelineGraph } from "@/lib/monitoring/graph-api";
 import type { Association } from "@/lib/associations/types";
+import type { Image } from "@/lib/images/types";
 
 function alert(over: Partial<Alert> = {}): Alert {
   return {
@@ -446,5 +449,40 @@ describe("successRate", () => {
     expect(successRate("ingest", undefined)).toBeNull();
     expect(successRate("ingest", [])).toBeNull();
     expect(successRate("ingest", [day({})])).toBeNull();
+  });
+});
+
+describe("countImagesAtRisk (C-3, container-images spec §9.2)", () => {
+  const row = (over: Partial<Image>) =>
+    ({ status: "approved", stale: false, in_use_by: 1, ...over }) as Image;
+
+  it("counts in-use images that are flagged, revoked or stale", () => {
+    expect(
+      countImagesAtRisk([
+        row({ status: "flagged" }),
+        row({ status: "revoked" }),
+        row({ stale: true }),
+        row({}),
+      ]),
+    ).toBe(3);
+  });
+
+  it("ignores images nobody uses and unknown staleness", () => {
+    expect(countImagesAtRisk([row({ status: "flagged", in_use_by: 0 }), row({ stale: null })])).toBe(0);
+    expect(countImagesAtRisk(undefined)).toBe(0);
+  });
+});
+
+describe("describeImagesAtRisk (C-3, controller ruling F5 — reads as an image count)", () => {
+  it("uses the singular for exactly one image", () => {
+    expect(describeImagesAtRisk(1)).toBe("1 in-use image flagged, revoked or stale");
+  });
+
+  it("uses the plural for more than one image", () => {
+    expect(describeImagesAtRisk(3)).toBe("3 in-use images flagged, revoked or stale");
+  });
+
+  it("shows nothing at zero — the zero case has no line", () => {
+    expect(describeImagesAtRisk(0)).toBeNull();
   });
 });

@@ -29,7 +29,9 @@ import { canMutate, matchGatedRoute } from "./permissions";
 export interface GuardContext {
   request: Request;
   url: URL;
-  locals: { auth: AuthContext };
+  /** `auditDetail` is set by a gated ROUTE that has something worth recording
+   * beyond the request line (C-3: an image exception's reason). */
+  locals: { auth: AuthContext; auditDetail?: Record<string, unknown> };
 }
 
 /** Consistent JSON error shape for authz failures. */
@@ -114,13 +116,29 @@ export async function applyApiGuard(
     gate.resourceId ??
     (gate.action === "create" ? await extractCreatedId(response) : null);
 
+  // A route the guard let through (operator+) can still refuse in-route on a
+  // narrower check it alone knows (e.g. admin-only C-3 verbs): that is a
+  // denial, not a success, and must read that way in the audit trail (C-3).
+  const routeDenied = response.status === 403;
+
   await writeAudit({
     actor: identity.sub,
     actorGroups: identity.groups,
     action: gate.action,
     resourceType: gate.resourceType,
     resourceId,
-    detail: { ...requestDetail, outcome: "allowed", status: response.status },
+    // Route-supplied detail sits BENEATH the guard's own keys, so a route can
+    // never rewrite the request-derived method/path, or the outcome/status
+    // (or reason on a denial), of its own audit row (security: a route must
+    // not be able to spoof the audit trail of the very action it is
+    // performing).
+    detail: {
+      ...(context.locals.auditDetail ?? {}),
+      ...requestDetail,
+      outcome: routeDenied ? "denied" : "allowed",
+      ...(routeDenied ? { reason: "route_forbidden" } : {}),
+      status: response.status,
+    },
   });
 
   return response;

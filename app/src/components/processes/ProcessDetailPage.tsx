@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import {
   Badge,
@@ -18,6 +18,17 @@ import { FileText, Loader2, Package, Play, RotateCcw, Rocket, Trash2 } from "luc
 import { toast } from "sonner";
 import { EnvEditor } from "@/components/processes/EnvEditor";
 import { CodeEditor } from "@/components/processes/CodeEditor";
+import { AddImageDialog } from "@/components/images/AddImageDialog";
+import { ImagePicker } from "@/components/images/ImagePicker";
+import { shortDigest } from "@/components/images/format";
+import {
+  buildRuntimePayload,
+  revisionImageDigest,
+  runtimeFormFromRevision,
+  type RuntimeFormState,
+} from "@/components/processes/runtime-form";
+import { useImages } from "@/lib/images/queries";
+import { parseCommand } from "@/lib/processes/command";
 import { FlowStrip } from "@/components/monitoring/FlowStrip";
 import { useFlowHistory } from "@/lib/monitoring/graph-queries";
 import { useAlerts } from "@/lib/monitoring/queries";
@@ -44,9 +55,12 @@ import {
 } from "@/lib/processes/queries";
 import {
   PROCESS_NETWORK_LEVELS,
+  PROCESS_RUNTIME_IMAGE_ALIASES,
   type NetworkLevel,
   type ProcessEnv,
   type ProcessKind,
+  type ProcessRuntimeKind,
+  type RuntimeImageAlias,
 } from "@/lib/processes/schemas";
 import {
   DEFAULT_NETWORK_MAX,
@@ -56,6 +70,7 @@ import {
 import type {
   Process,
   ProcessCheck,
+  ProcessRevision,
   ProcessRun,
   ProcessSource,
 } from "@/lib/processes/types";
@@ -238,12 +253,37 @@ function readUiNetworkMax(): NetworkLevel {
   }
 }
 
+/** The Lambda-style choice (container-images spec §3, §9.3). */
+const RUNTIME_KIND_OPTIONS: { kind: ProcessRuntimeKind; label: string; hint: string }[] = [
+  {
+    kind: "inline_python",
+    label: "Platform image",
+    hint: "Your code on a platform-built image.",
+  },
+  {
+    kind: "inline_python_on_image",
+    label: "Custom image + your code",
+    hint: "Your image carries the libraries; the platform injects its runner and your code. The image needs python3 (3.10+) on PATH.",
+  },
+  {
+    kind: "container",
+    label: "Container image",
+    hint: "The image is the process: its own entrypoint speaks the run contract. Runs as uid 10001 whatever its USER says.",
+  },
+];
+
+const RUNTIME_IMAGE_LABELS: Record<RuntimeImageAlias, string> = {
+  default: "default (the platform runtime)",
+  stactools: "stactools (with the built-in extractor library)",
+};
+
 export function CodeCard({
   id,
   groupId,
   currentCode,
   currentEnv,
   currentRevision,
+  currentRuntime = null,
   canMutate,
   kind,
 }: {
@@ -252,11 +292,18 @@ export function CodeCard({
   currentCode: string | null;
   currentEnv: ProcessEnv;
   currentRevision: string | null;
+  /** The current revision's stored runtime: the chooser starts from it (C-3). */
+  currentRuntime?: Record<string, unknown> | null;
   canMutate: boolean;
   kind: ProcessKind;
 }) {
+  const uid = useId();
   const [code, setCode] = useState(currentCode ?? STARTER_CODE);
   const [env, setEnv] = useState<ProcessEnv>(currentEnv);
+  const [runtimeForm, setRuntimeForm] = useState<RuntimeFormState>(() =>
+    runtimeFormFromRevision(currentRuntime),
+  );
+  const [addingImage, setAddingImage] = useState(false);
   const [memoryMb, setMemoryMb] = useState(512);
   // GOES spec §6.5: an extractor runs against one ingested file rather than a
   // batch, so it defaults to a much shorter timeout than a transform.
@@ -269,6 +316,8 @@ export function CodeCard({
   // Every connection the caller can see; EnvEditor narrows to the PROCESS's
   // group, which is the scope a secret_ref may name.
   const { data: connections } = useConnections();
+  // The platform-wide registry; the picker narrows to what this group may use.
+  const { data: imageList } = useImages();
 
   useEffect(() => {
     if (currentCode !== null) setCode(currentCode);
@@ -282,34 +331,45 @@ export function CodeCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRevision]);
 
+  // C-3: the same for the runtime (kind, image, command). Also re-synced when
+  // the revision's runtime first arrives, because the revisions query can
+  // land after the process query.
+  const runtimeLoaded = currentRuntime !== null;
+  useEffect(() => {
+    setRuntimeForm(runtimeFormFromRevision(currentRuntime));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRevision, runtimeLoaded]);
+
+  const payload = buildRuntimePayload(runtimeForm, {
+    memory_mb: memoryMb,
+    timeout_seconds: timeoutSeconds,
+    // Slice 1: `hosts` is only meaningful at the `hosts` level, which the
+    // write gate does not accept yet.
+    network: { level: networkLevel, hosts: [] },
+  });
+  const command =
+    runtimeForm.kind === "container" ? parseCommand(runtimeForm.commandText) : null;
+
   const deploy = async () => {
+    if (!payload.ok) {
+      toast.error(payload.error);
+      return;
+    }
     try {
       await deployMutation.mutateAsync({
         id,
         input: {
-          runtime: {
-            kind: "inline_python",
-            image: null,
-            memory_mb: memoryMb,
-            timeout_seconds: timeoutSeconds,
-            retry: { max_attempts: 3, backoff: "exponential" },
-            // Slice 1: `hosts` is only meaningful at the `hosts` level, which
-            // the write gate does not accept yet.
-            network: { level: networkLevel, hosts: [] },
-            // Hand-written code runs on the base platform image; the
-            // `stactools` alias is what X-4's built-in template deploys
-            // (X-queue spec §8).
-            runtime_image: "default",
-            // K-1: no hardware picker in this form yet — deploys the
-            // schema's own default profile at its default cpu, no GPU.
-            hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
-          },
-          code,
+          runtime: payload.runtime,
+          // Kind 3 carries no code: the image is the process (spec §3).
+          code: payload.carriesCode ? code : null,
           env,
         },
       });
       toast.success("Deployed a new revision");
     } catch (err) {
+      // A user-image deploy the gate refuses answers 422 with the reason
+      // (image_not_approved / image_stale / image_group_mismatch /
+      // image_digest_mismatch); its message is the toast.
       toast.error(err instanceof Error ? err.message : "Deploy failed");
     }
   };
@@ -319,20 +379,108 @@ export function CodeCard({
       <CardHeader>
         <CardTitle>Code</CardTitle>
         <CardDescription>
-          Python, run on the platform executor image. Deploying creates an
-          immutable revision and makes it current; every run pins the revision
+          Choose what runs, then deploy. Deploying creates an immutable revision
+          and makes it current; every run pins the revision (and image digest)
           that executed it.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <CodeEditor
-          ariaLabel="Process code"
-          value={code}
-          onChange={setCode}
-          language="python"
+        <fieldset
+          className="grid gap-3 rounded-md border border-border p-3"
           disabled={!canMutate}
-          minHeight="26rem"
-        />
+        >
+          <legend className="px-1 text-sm font-medium">Runtime</legend>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {RUNTIME_KIND_OPTIONS.map((option) => (
+              <label
+                key={option.kind}
+                className="flex cursor-pointer items-start gap-2 rounded-md border border-border p-2 text-sm has-[:checked]:border-primary"
+              >
+                <input
+                  type="radio"
+                  className="mt-1"
+                  name={`${uid}-runtime-kind`}
+                  value={option.kind}
+                  checked={runtimeForm.kind === option.kind}
+                  onChange={() => setRuntimeForm((form) => ({ ...form, kind: option.kind }))}
+                />
+                <span>
+                  <span className="font-medium">{option.label}</span>
+                  <span className="block text-xs text-muted-foreground">{option.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {runtimeForm.kind === "inline_python" ? (
+            <div className="grid gap-2">
+              <Label htmlFor={`${uid}-runtime-image`}>Image variant</Label>
+              <select
+                id={`${uid}-runtime-image`}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-sm"
+                value={runtimeForm.runtimeImage}
+                onChange={(e) =>
+                  setRuntimeForm((form) => ({
+                    ...form,
+                    runtimeImage: e.target.value as RuntimeImageAlias,
+                  }))
+                }
+              >
+                {PROCESS_RUNTIME_IMAGE_ALIASES.map((alias) => (
+                  <option key={alias} value={alias}>
+                    {RUNTIME_IMAGE_LABELS[alias]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <ImagePicker
+              images={imageList?.images ?? []}
+              groupId={groupId}
+              value={runtimeForm.image}
+              onChange={(image) => setRuntimeForm((form) => ({ ...form, image }))}
+              onAdd={() => setAddingImage(true)}
+              disabled={!canMutate}
+            />
+          )}
+
+          {runtimeForm.kind === "container" && (
+            <div className="grid gap-2">
+              <Label htmlFor={`${uid}-command`}>Command (optional)</Label>
+              <Input
+                id={`${uid}-command`}
+                placeholder="tool --run"
+                value={runtimeForm.commandText}
+                onChange={(e) =>
+                  setRuntimeForm((form) => ({ ...form, commandText: e.target.value }))
+                }
+              />
+              <p className="text-xs text-muted-foreground" data-testid="command-preview">
+                {command?.error ? (
+                  <span className="text-destructive">{command.error}</span>
+                ) : command?.command ? (
+                  <>
+                    Runs as <code className="tech">{JSON.stringify(command.command)}</code>.
+                    Replaces the image&apos;s CMD, never its ENTRYPOINT or USER.
+                  </>
+                ) : (
+                  "Empty: the image's own CMD runs."
+                )}
+              </p>
+            </div>
+          )}
+        </fieldset>
+
+        {runtimeForm.kind !== "container" && (
+          <CodeEditor
+            ariaLabel="Process code"
+            value={code}
+            onChange={setCode}
+            language="python"
+            disabled={!canMutate}
+            minHeight="26rem"
+          />
+        )}
         <EnvEditor
           value={env}
           onChange={setEnv}
@@ -397,8 +545,8 @@ export function CodeCard({
           </p>
         </div>
         {canMutate && (
-          <div className="flex items-center gap-3">
-            <Button onClick={deploy} disabled={deployMutation.isPending}>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={deploy} disabled={deployMutation.isPending || !payload.ok}>
               {deployMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -406,6 +554,9 @@ export function CodeCard({
               )}
               Deploy revision
             </Button>
+            {!payload.ok && (
+              <span className="text-sm text-muted-foreground">{payload.error}</span>
+            )}
             {currentRevision && (
               <span className="text-sm text-muted-foreground">
                 Current: {currentRevision.slice(0, 8)}
@@ -414,6 +565,22 @@ export function CodeCard({
           </div>
         )}
       </CardContent>
+      {addingImage && (
+        <AddImageDialog
+          open
+          onOpenChange={(open) => !open && setAddingImage(false)}
+          groupId={groupId}
+          onUse={(image) => {
+            if (image.digest) {
+              setRuntimeForm((form) => ({
+                ...form,
+                image: { id: image.id, reference: image.reference, digest: image.digest as string },
+              }));
+            }
+            setAddingImage(false);
+          }}
+        />
+      )}
     </Card>
   );
 }
@@ -747,11 +914,14 @@ function RunRow({
   processId,
   canMutate,
   isExtractor,
+  imageDigest,
 }: {
   run: ProcessRun;
   processId: string;
   canMutate: boolean;
   isExtractor: boolean;
+  /** The user-image digest the run's revision pins (C-3), or null. */
+  imageDigest: string | null;
 }) {
   const rerunMutation = useRerunRun();
 
@@ -770,6 +940,11 @@ function RunRow({
         <div className="flex items-center gap-2">
           <Badge variant={RUN_STATUS_VARIANT[run.status]}>{run.status}</Badge>
           {run.is_test && <Badge variant="outline">test</Badge>}
+          {imageDigest && (
+            <Badge variant="outline" className="tech" title={imageDigest}>
+              {shortDigest(imageDigest)}
+            </Badge>
+          )}
           {run.rate_deferred_until && (
             // The §7 ceiling is holding this run back. Saying so beats a
             // run that silently sits in `queued` looking stuck.
@@ -831,12 +1006,18 @@ function RunsCard({
   id,
   canMutate,
   isExtractor,
+  revisions,
 }: {
   id: string;
   canMutate: boolean;
   isExtractor: boolean;
+  /** The process's revisions: each run pins one, and its image digest shows on the row. */
+  revisions: ProcessRevision[] | undefined;
 }) {
   const { data: runs, isLoading } = useRuns(id);
+  const digestByRevision = new Map(
+    (revisions ?? []).map((revision) => [revision.id, revisionImageDigest(revision.runtime)]),
+  );
 
   return (
     <Card>
@@ -863,6 +1044,7 @@ function RunsCard({
             processId={id}
             canMutate={canMutate}
             isExtractor={isExtractor}
+            imageDigest={digestByRevision.get(run.revision_id) ?? null}
           />
         ))}
       </CardContent>
@@ -1141,6 +1323,7 @@ function ProcessDetailContent({ id }: { id: string }) {
               currentCode={current?.code ?? null}
               currentEnv={(current?.env ?? []) as ProcessEnv}
               currentRevision={process.current_revision}
+              currentRuntime={current?.runtime ?? null}
               canMutate={canMutate}
               kind={process.kind}
             />
@@ -1158,6 +1341,7 @@ function ProcessDetailContent({ id }: { id: string }) {
         id={process.id}
         canMutate={canMutate}
         isExtractor={process.kind === "extractor"}
+        revisions={revisions}
       />
     </main>
   );

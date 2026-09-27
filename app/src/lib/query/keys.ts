@@ -1,3 +1,4 @@
+import type { ImageListQuery } from "@/lib/images/api";
 import type { StacSearchBody } from "@/lib/stac-api/types";
 
 export const authKeys = {
@@ -81,6 +82,17 @@ export const processKeys = {
   sources: (id: string) => [...processKeys.detail(id), "sources"] as const,
   outputs: (id: string) => [...processKeys.detail(id), "outputs"] as const,
   runs: (id: string) => [...processKeys.detail(id), "runs"] as const,
+} as const;
+
+/** The platform-wide image registry (C-3). Catalog-agnostic like every
+ * platform factory; mutations invalidate by the `all()` prefix. */
+export const imageKeys = {
+  all: () => ["images"] as const,
+  list: (filters: ImageListQuery) => [...imageKeys.all(), "list", filters] as const,
+  detail: (id: string) => [...imageKeys.all(), "detail", id] as const,
+  scan: (imageId: string, scanId: string) =>
+    [...imageKeys.all(), "scan", imageId, scanId] as const,
+  policy: () => [...imageKeys.all(), "policy"] as const,
 } as const;
 
 export const graphKeys = {

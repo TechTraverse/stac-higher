@@ -39,6 +39,10 @@ export interface ConnectionDeleteImpact {
     delivery_log: number;
     connection_checks: number;
   };
+  /** C-3: container images pulled with this credential. They stay in the
+   * registry, but once the connection is deleted the deploy gate refuses
+   * them (`image_group_mismatch`, "was deleted"). */
+  images: number;
 }
 
 /** Filter shared by the impact count and the removal pass. */
@@ -70,7 +74,12 @@ export async function connectionDeleteImpact(
         ORDER BY cc.collection_id`,
       [connectionId],
     ),
-    query<{ ingest_files: string; delivery_log: string; connection_checks: string }>(
+    query<{
+      ingest_files: string;
+      delivery_log: string;
+      connection_checks: string;
+      container_images: string;
+    }>(
       `SELECT
          (SELECT count(*) FROM stac_higher.ingest_files f
             JOIN stac_higher.collection_connections cc ON cc.id = f.association_id
@@ -79,7 +88,8 @@ export async function connectionDeleteImpact(
             JOIN stac_higher.collection_connections cc ON cc.id = d.association_id
            WHERE cc.connection_id = $1)::text AS delivery_log,
          (SELECT count(*) FROM stac_higher.connection_checks
-           WHERE connection_id = $1)::text AS connection_checks`,
+           WHERE connection_id = $1)::text AS connection_checks,
+         (SELECT count(*) FROM stac_higher.container_images WHERE registry_connection_id = $1)::text AS container_images`,
       [connectionId],
     ),
   ]);
@@ -100,6 +110,7 @@ export async function connectionDeleteImpact(
       delivery_log: Number(historyRow?.delivery_log ?? 0),
       connection_checks: Number(historyRow?.connection_checks ?? 0),
     },
+    images: Number(historyRow?.container_images ?? 0),
   };
 }
 
