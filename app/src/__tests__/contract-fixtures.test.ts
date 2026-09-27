@@ -58,6 +58,7 @@ import {
 } from "@/lib/images/status";
 import { isImageDigest, isImageReference } from "@/lib/images/reference";
 import { imagePolicySchema, registryAllowed } from "@/lib/images/policy";
+import { imageScanResultSchema } from "@/lib/images/scan-result";
 
 interface FixtureCase {
   name: string;
@@ -485,5 +486,29 @@ describe("image policy contract (tests/contract-fixtures/image-policy.json)", ()
 
   it.each(fixture.registry_cases)("registry — $name", ({ host, allowed }) => {
     expect(registryAllowed(host, fixture.document.allowed_registries)).toBe(allowed);
+  });
+});
+
+describe("image scan result contract (tests/contract-fixtures/image-scan-result.json)", () => {
+  const fixture = loadFixture("image-scan-result.json") as unknown as {
+    document: Record<string, unknown>;
+    cases: {
+      name: string;
+      doc?: unknown;
+      patch?: Record<string, unknown>;
+      remove?: string[];
+      app: "accept" | "reject";
+    }[];
+  };
+
+  function scanDoc(c: (typeof fixture.cases)[number]): unknown {
+    if (c.doc !== undefined) return c.doc;
+    const doc: Record<string, unknown> = { ...fixture.document, ...(c.patch ?? {}) };
+    for (const key of c.remove ?? []) delete doc[key];
+    return doc;
+  }
+
+  it.each(fixture.cases)("$app: $name", (c) => {
+    expect(imageScanResultSchema.safeParse(scanDoc(c)).success).toBe(c.app === "accept");
   });
 });

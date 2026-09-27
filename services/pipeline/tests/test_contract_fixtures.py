@@ -6,6 +6,7 @@ drifting on either side fails one of the suites. Fixture format and the
 accept/reject semantics: ``tests/contract-fixtures/README.md`` (repo root).
 """
 
+import datetime as dt
 import json
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,7 @@ HARDWARE_PROFILES = _load("hardware-profiles.json")
 IMAGE_STATUS = _load("image-status.json")
 IMAGE_REFERENCE = _load("image-reference.json")
 IMAGE_POLICY = _load("image-policy.json")
+IMAGE_SCAN_RESULT = _load("image-scan-result.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -418,3 +420,36 @@ def test_image_policy_registry_cases(case):
 
     patterns = IMAGE_POLICY["document"]["allowed_registries"]
     assert registry_allowed(case["host"], patterns) is case["allowed"]
+
+
+def _scan_doc(case: dict) -> dict:
+    if "doc" in case:
+        return case["doc"]
+    doc = {**IMAGE_SCAN_RESULT["document"], **case.get("patch", {})}
+    for key in case.get("remove", []):
+        doc.pop(key, None)
+    return doc
+
+
+@pytest.mark.parametrize("case", IMAGE_SCAN_RESULT["cases"], ids=lambda c: c["name"])
+def test_image_scan_result_cases(case):
+    from pipeline.images.scan_result import ScanResultError, parse_scan_result
+
+    if case["pipeline"] == "accept":
+        parse_scan_result(_scan_doc(case))
+    else:
+        with pytest.raises(ScanResultError):
+            parse_scan_result(_scan_doc(case))
+
+
+@pytest.mark.parametrize("case", IMAGE_POLICY["evaluate_cases"], ids=lambda c: c["name"])
+def test_image_policy_evaluate_cases(case):
+    from pipeline.images.policy import evaluate, parse_image_policy
+    from pipeline.images.scan_result import parse_scan_result
+
+    policy = parse_image_policy(_policy_doc(IMAGE_POLICY["document"], case))
+    result = parse_scan_result({**IMAGE_POLICY["base_result"], **case.get("result_patch", {})})
+    now = dt.datetime.fromisoformat(IMAGE_POLICY["evaluate_now"])
+    verdict = evaluate(result, policy, now=now)
+    assert list(verdict.reasons) == case["reasons"]
+    assert verdict.passed is (case["reasons"] == [])

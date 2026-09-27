@@ -18,12 +18,16 @@ Pinned by ``tests/contract-fixtures/image-policy.json`` against
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from pipeline.images.reference import registry_host
+from pipeline.images.scan_result import ScanResult, ScanResultError
 
 POLICY_ENV_VAR = "PROCESS_IMAGE_POLICY_FILE"
 
@@ -199,3 +203,108 @@ def registry_allowed(host: str, patterns: tuple[str, ...] | list[str]) -> bool:
         ):
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# evaluate (spec section 7.3) - pure; reasons are stable strings the dashboard
+# shows verbatim. It works over `kev` (complete), `top` (<= 25 by risk) and
+# `fixed_counts`: a fixed CRITICAL that fell outside `top` still blocks, as
+# `critical_fixed:*`.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Verdict:
+    passed: bool
+    reasons: tuple[str, ...]
+    counts: dict[str, int]
+    fixed_counts: dict[str, int]
+    kev: tuple[str, ...]
+    max_risk: float
+    evaluated_at: dt.datetime
+    policy_version: int
+
+    def as_json(self) -> dict[str, Any]:
+        """The spec section 4.1 ``verdict`` jsonb (``container_images.verdict``
+        and ``image_scans.result.verdict``)."""
+        return {
+            "pass": self.passed,
+            "reasons": list(self.reasons),
+            "counts": dict(self.counts),
+            "fixed_counts": dict(self.fixed_counts),
+            "kev": list(self.kev),
+            "max_risk": self.max_risk,
+            "evaluated_at": self.evaluated_at.isoformat(),
+            "policy_version": self.policy_version,
+        }
+
+
+def _age_days(published_at: str | None, now: dt.datetime) -> int | None:
+    if not published_at:
+        return None
+    try:
+        published = dt.date.fromisoformat(published_at[:10])
+    except ValueError:
+        return None
+    return (now.date() - published).days
+
+
+def evaluate(result: ScanResult, policy: ImagePolicy, *, now: dt.datetime) -> Verdict:
+    """Pure: the same result and policy always give the same verdict. Rule
+    order (and so reason order): registry, size, KEV, fixed CRITICAL,
+    unfixed-CRITICAL age, fixed-HIGH EPSS, unfixed HIGH."""
+    if result.error is not None or result.size_bytes is None:
+        raise ScanResultError("a failed scan has no verdict")
+    reasons: list[str] = []
+
+    def add(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if not registry_allowed(registry_host(result.reference), policy.allowed_registries):
+        add("registry_not_allowed")
+    if result.size_bytes > policy.max_image_bytes:
+        add("image_too_large")
+    block = policy.block
+    if block.kev:
+        for cve in result.kev:
+            add(f"kev:{cve}")
+    if block.critical_fixed:
+        named = False
+        for f in result.top:
+            if f.severity == "critical" and f.fixed_in:
+                add(f"critical_fixed:{f.package}")
+                named = True
+        if not named and result.fixed_counts.get("critical", 0) > 0:
+            add("critical_fixed:*")
+    if block.critical_unfixed_older_than_days is not None:
+        for f in result.top:
+            if f.severity == "critical" and not f.fixed_in:
+                age = _age_days(f.published_at, now)
+                if age is None:
+                    add(f"critical_unfixed_age:{f.id}:unknown")
+                elif age > block.critical_unfixed_older_than_days:
+                    add(f"critical_unfixed_age:{f.id}:{age}d")
+    if block.high_fixed_epss_at_least is not None:
+        for f in result.top:
+            if (
+                f.severity == "high"
+                and f.fixed_in
+                and f.epss is not None
+                and f.epss >= block.high_fixed_epss_at_least
+            ):
+                add(f"high_fixed_epss:{f.id}:{format(f.epss, 'g')}")
+    if block.high_unfixed:
+        for f in result.top:
+            if f.severity == "high" and not f.fixed_in:
+                add(f"high_unfixed:{f.id}")
+    return Verdict(
+        passed=not reasons,
+        reasons=tuple(reasons),
+        counts=dict(result.counts),
+        fixed_counts=dict(result.fixed_counts),
+        kev=result.kev,
+        max_risk=result.max_risk,
+        evaluated_at=now,
+        policy_version=policy.version,
+    )
