@@ -11,6 +11,7 @@ the platform's own bucket rather than a user connection.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Protocol
 from urllib.parse import urlparse
@@ -305,6 +306,28 @@ def list_keys(client: S3Like, bucket: str, prefix: str) -> list[str]:
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         keys.extend(obj["Key"] for obj in page.get("Contents", []))
     return keys
+
+
+def list_objects(client: S3Like, bucket: str, prefix: str) -> list[tuple[str, dt.datetime]]:
+    """Every ``(key, LastModified)`` under ``prefix``, paginated (C-4: the
+    scan retention leg judges objects by key AND age). Pure over an injected
+    client; synchronous boto3, so wrap it in ``asyncio.to_thread``."""
+    found: list[tuple[str, dt.datetime]] = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        found.extend((obj["Key"], obj["LastModified"]) for obj in page.get("Contents", []))
+    return found
+
+
+def delete_keys(client: S3Like, bucket: str, keys: Sequence[str]) -> int:
+    """Delete exactly these keys, 1000 per ``DeleteObjects`` call (its cap).
+    Deleting a key that is already gone is not an error. Returns the number
+    of keys sent."""
+    pending = list(keys)
+    for start in range(0, len(pending), 1000):
+        batch = [{"Key": key} for key in pending[start : start + 1000]]
+        client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+    return len(pending)
 
 
 def cleanup_expired(
