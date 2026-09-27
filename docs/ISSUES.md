@@ -1550,7 +1550,7 @@ alert's message quotes `new`/`new_kev` counts, so on a very noisy image it
 can overstate churn; the verdict (which drives `flagged`) is unaffected.
 Exact diffs need both full Grype JSON files (large, untrusted,
 object-stored).
-- Tracked in: `services/pipeline/src/pipeline/images/diff.py`.
+- Found in: the C-4 plan (2026-09-27).
 
 ### I-141 · A flagged image that gets worse does not re-notify 🟡
 `process_image_flagged` is a state-observed condition (C-4): it fires once
@@ -1560,7 +1560,7 @@ updates the open alert's message (`last_seen` bump), but ADR 0010 notifies
 only on a new alert row, so webhooks hear nothing. The dashboard's scan
 history shows each rescan's diff. A resolve-and-re-raise on a worsening
 diff would re-notify, at the cost of alert churn.
-- Tracked in: `services/pipeline/src/pipeline/images/alerts.py`.
+- Found in: the C-4 plan (2026-09-27).
 
 ## Resolved — archived
 
