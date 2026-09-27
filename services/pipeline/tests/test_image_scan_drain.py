@@ -650,3 +650,59 @@ async def test_ruling3_a_stall_swept_scan_during_a_would_be_failure_is_not_overw
     assert outcome.scan_status == "already_resolved"
     assert repo.scans[SCAN]["result"]["error"] == "the scan stalled"
     assert repo.images[IMG].status == "scan_failed"
+
+
+# ---------------------------------------------------------------------------
+# Final-review fix wave item 5: the terminal `finish_scan` write can itself
+# race a concurrent stall sweep -- AFTER the `_still_running` pre-check
+# passed but before this write lands (a narrower window than ruling 3's,
+# which is the pre-check itself missing). The return value must not be
+# discarded: a miss here must not be reported as "done" or "failed".
+# ---------------------------------------------------------------------------
+
+
+class _RaceOnFinish(FakeImagesRepo):
+    """A stall sweep (or another worker) flips the scan to `failed` in the
+    instant between the drain's `_still_running` pre-check and its own
+    `finish_scan` write -- so `finish_scan`'s own `status = 'running'` guard
+    (mirrored by the fake) is the thing that catches it, not the pre-check."""
+
+    async def finish_scan(self, scan_id, **kwargs):
+        self.scans[scan_id]["status"] = "failed"
+        return await super().finish_scan(scan_id, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_finish_scan_race_on_the_success_path_is_reported_as_already_resolved(caplog):
+    repo = _RaceOnFinish(clock=NOW)
+    repo.add_image(id=IMG, reference=REF, tag_at_add="3.12-slim", status="pending")
+    repo.add_scan(SCAN, IMG, kind="admission")
+    with caplog.at_level(logging.WARNING, logger="pipeline.images.drain"):
+        outcome = await drain(repo, Scanner(result_doc()))
+    assert outcome.scan_status == "already_resolved"
+    assert outcome.image_status is None
+    # The scan row is exactly what the race left it as -- not overwritten
+    # to "done" by a write that lost the guard.
+    assert repo.scans[SCAN]["status"] == "failed"
+    assert repo.scans[SCAN]["result"] is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].scan_id == SCAN and warnings[0].image_id == IMG
+
+
+@pytest.mark.asyncio
+async def test_a_finish_scan_race_inside_fail_is_reported_as_already_resolved(caplog):
+    repo = _RaceOnFinish(clock=NOW)
+    repo.add_image(id=IMG, reference=REF, tag_at_add="3.12-slim", status="revoked")
+    repo.add_scan(SCAN, IMG, kind="admission")
+    with caplog.at_level(logging.WARNING, logger="pipeline.images.drain"):
+        outcome = await drain(repo, Scanner())
+    assert outcome.scan_status == "already_resolved"
+    assert outcome.image_status is None
+    assert repo.scans[SCAN]["status"] == "failed"
+    # The race left no result on the row; `_fail`'s own write lost its guard
+    # too, so it must not have landed either.
+    assert repo.scans[SCAN]["result"] is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].scan_id == SCAN and warnings[0].image_id == IMG

@@ -92,6 +92,14 @@ REGISTRY_NOT_ALLOWED_REASON = "registry_not_allowed"
 #: it before this drain's own write landed (Task 7 fix round 1).
 ALREADY_RESOLVED = "already_resolved"
 
+#: Logged when the terminal `finish_scan` write itself misses its `status =
+#: 'running'` guard -- a narrower race than ruling 3's (which the
+#: `_still_running` pre-check catches): the row was still `running` at the
+#: pre-check but a stall sweep (or another worker) resolved it in the
+#: instant before this write landed (final-review fix wave item 5). Ids
+#: only, never the scanner's own text (ruling M4).
+FINISH_SCAN_RACED_MSG = "image scan finish raced: leaving the scan row and the image as-is"
+
 #: A merge may only keep or worsen the EXISTING row's status, never raise it
 #: (Task 7 fix round 1 ruling): folding in a fresh, unrelated admission's
 #: clean verdict must not un-reject or un-flag an image whose own history
@@ -196,7 +204,7 @@ async def _fail(
         )
         return DrainOutcome(scan.id, image.id, ALREADY_RESOLVED, None, error)
     await repo.mark_image_scan_failed(image.id)
-    await repo.finish_scan(
+    finished = await repo.finish_scan(
         scan.id,
         status="failed",
         result=failure_result(kind, image.reference, image.tag_at_add, error),
@@ -204,6 +212,15 @@ async def _fail(
         log_ref=run.log_ref if run else None,
         executor_handle=run.handle_id if run else None,
     )
+    if not finished:
+        # Item 5: the write itself missed its guard -- a narrower race than
+        # the pre-check above catches. The scan row is whatever the
+        # concurrent resolver left it as; this call must not be reported as
+        # the "failed" outcome it asked for.
+        logger.warning(
+            FINISH_SCAN_RACED_MSG, extra={"scan_id": scan.id, "image_id": image.id}
+        )
+        return DrainOutcome(scan.id, image.id, ALREADY_RESOLVED, None, error)
     # M4: the classification is a fixed, caller-chosen code -- never the
     # scanner's own text, which `error` may carry.
     logger.warning(
@@ -532,7 +549,7 @@ async def drain_one(
                 extra={"scan_id": scan.id, "image_id": image.id},
             )
 
-    await repo.finish_scan(
+    finished = await repo.finish_scan(
         scan.id,
         status="done",
         result={**scan_result_to_json(result), "verdict": verdict_json, "diff": None},
@@ -540,4 +557,13 @@ async def drain_one(
         log_ref=run.log_ref,
         executor_handle=run.handle_id,
     )
+    if not finished:
+        # Item 5: same race as in `_fail`, on the success tail -- the image
+        # may already have been transitioned above (a separate write, spec
+        # gap I-138-adjacent), but the scan row itself must not be reported
+        # as "done" when this write lost its guard.
+        logger.warning(
+            FINISH_SCAN_RACED_MSG, extra={"scan_id": scan.id, "image_id": image_id}
+        )
+        return DrainOutcome(scan.id, image_id, ALREADY_RESOLVED, None)
     return DrainOutcome(scan.id, image_id, "done", final_status)
