@@ -29,6 +29,12 @@ from typing import Any
 
 SEVERITIES = ("critical", "high", "medium", "low", "negligible", "unknown")
 MAX_TOP = 25
+#: Grype's JSON is untrusted (module docstring); an id, package name, version
+#: or fixed-in string (or a KEV entry) has no length limit in the wild.
+#: Truncated, not rejected, so an oversized field cannot inflate the stored
+#: result without losing the finding altogether (final-review fix wave item
+#: 6b).
+MAX_FIELD_CHARS = 256
 
 
 @dataclass(frozen=True)
@@ -59,8 +65,8 @@ def _kev_ids(vuln: dict[str, Any]) -> list[str]:
     if not isinstance(records, list) or not records:
         return []
     ids = [r.get("cve") for r in records if isinstance(r, dict) and isinstance(r.get("cve"), str)]
-    ids = [i.strip() for i in ids if i and i.strip()]
-    return ids or [str(vuln.get("id") or "").strip()]
+    ids = [i.strip()[:MAX_FIELD_CHARS] for i in ids if i and i.strip()]
+    return ids or [str(vuln.get("id") or "").strip()[:MAX_FIELD_CHARS]]
 
 
 def findings_from_grype(doc: dict[str, Any]) -> list[Finding]:
@@ -92,11 +98,11 @@ def findings_from_grype(doc: dict[str, Any]) -> list[Finding]:
         epss_known = [e for e in epss_values if e is not None]
         findings.append(
             Finding(
-                id=vid,
+                id=vid[:MAX_FIELD_CHARS],
                 severity=severity,
-                package=package,
-                version=version,
-                fixed_in=fixed_in,
+                package=package[:MAX_FIELD_CHARS],
+                version=version[:MAX_FIELD_CHARS],
+                fixed_in=fixed_in[:MAX_FIELD_CHARS] if fixed_in else None,
                 kev=bool(_kev_ids(vuln)),
                 epss=max(epss_known) if epss_known else None,
                 risk=_finite(vuln.get("risk")) or 0.0,

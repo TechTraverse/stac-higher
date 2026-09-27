@@ -57,8 +57,9 @@ RUN set -eu; \
     rm -rf /var/lib/apt/lists/*
 
 # boto3 is the runtime image's pin (a test holds them equal). The DB is
-# baked here; `IMAGE_SCANNER_DB_UPDATE` refreshes it at scan start where the
-# deployment allows egress (spec §6.1).
+# baked here; `STAC_HIGHER_DB_UPDATE` (set from the pipeline's
+# `IMAGE_SCANNER_DB_UPDATE`) refreshes it at scan start where the deployment
+# allows egress (spec §6.1).
 RUN pip install --no-cache-dir "boto3==1.43.49" \
  && useradd --create-home --uid 10001 scanner \
  && mkdir -p /opt/grype-db \

@@ -59,6 +59,58 @@ def match(vid, severity="High", *, package="libxml2", version="2.12.7", fixed=No
 # ---------------------------------------------------------------------------
 
 
+def test_id_package_version_fixed_in_and_kev_entries_are_capped_at_256_chars():
+    """Item 6b: an untrusted (spec §6.3 docstring) Grype document could name
+    an oversized id/package/version/fixed_in -- or an oversized KEV CVE id --
+    that would otherwise inflate the stored result well past what the
+    pipeline's own C-1 parser (`scan_result.parse_scan_result`) reasonably
+    expects. Each is truncated, not rejected: the scanner still writes a
+    usable result."""
+    long_id = "CVE-" + "9" * 300
+    long_pkg = "p" * 300
+    long_version = "v" * 300
+    long_fixed = "f" * 300
+    doc = {
+        "matches": [
+            {
+                "vulnerability": {
+                    "id": long_id,
+                    "severity": "High",
+                    "fix": {"versions": [long_fixed], "state": "fixed"},
+                    "risk": 0.1,
+                    "knownExploited": [{"cve": long_id}],
+                },
+                "artifact": {"name": long_pkg, "version": long_version},
+            }
+        ]
+    }
+    [finding] = findings_from_grype(doc)
+    assert len(finding.id) == 256 and finding.id == long_id[:256]
+    assert len(finding.package) == 256 and finding.package == long_pkg[:256]
+    assert len(finding.version) == 256 and finding.version == long_version[:256]
+    assert len(finding.fixed_in) == 256 and finding.fixed_in == long_fixed[:256]
+    summary = build_summary(doc)
+    assert all(len(k) <= 256 for k in summary["kev"])
+    assert summary["kev"] == [long_id[:256]]
+    # The decisive property: the pipeline's own reader still accepts it.
+    result_doc = {
+        "version": 1,
+        "kind": "admission",
+        "reference": "docker.io/library/python",
+        "tag": "3.12-slim",
+        "digest": "sha256:" + "a" * 64,
+        "platform_digest": "sha256:" + "a" * 64,
+        "platform": {"os": "linux", "architecture": "amd64"},
+        "size_bytes": 812,
+        "config": {"user": "", "entrypoint": None, "cmd": None},
+        "scanner": {"syft": "1.52.0", "grype": "0.119.0", "db_built_at": "2026-09-20T06:00:00Z"},
+        "sbom_ref": f"{PREFIX}sbom.syft.json",
+        "findings_ref": f"{PREFIX}findings.grype.json",
+        **summary,
+    }
+    parse_scan_result(result_doc)
+
+
 def test_duplicate_matches_count_once_and_severities_are_normalized():
     doc = {
         "matches": [match("CVE-1", "Critical"), match("CVE-1", "Critical"), match("CVE-2", "Weird")]

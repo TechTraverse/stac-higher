@@ -180,6 +180,18 @@ def test_a_redirect_to_http_is_refused():
         _redirect("http://cdn.example/blob")
 
 
+def test_a_non_string_media_type_is_refused_cleanly_not_a_type_error():
+    """Item 6a: `top.get("mediaType") in INDEX_TYPES` hashes the value --
+    an untrusted registry answering with an unhashable `mediaType` (a list
+    or an object) must not crash the scanner with a TypeError; it is simply
+    not an index, and the ordinary manifest validation refuses it with a
+    clear message."""
+    bogus_body, bogus_digest = _doc({"mediaType": ["not", "a", "string"]})
+    docs = {bogus_digest: bogus_body}
+    with pytest.raises(RegistryError, match="lists no layers"):
+        client(Registry(bogus_digest, docs)).resolve("1.0", "linux/amd64", 10_000)
+
+
 def test_registry_patterns_match_the_pipeline_rule():
     from pipeline.images.policy import registry_allowed as pipeline_rule
 

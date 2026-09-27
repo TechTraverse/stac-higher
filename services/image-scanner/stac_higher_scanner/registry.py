@@ -294,7 +294,15 @@ class RegistryClient:
         want_os, want_arch, want_variant = parse_platform(platform)
         digest = self.head_tag(tag)
         top = self._document("manifests", digest, ACCEPT)
-        if top.get("mediaType") in INDEX_TYPES or isinstance(top.get("manifests"), list):
+        media_type = top.get("mediaType")
+        # A registry is untrusted (module docstring): `in INDEX_TYPES` hashes
+        # the value, so an unhashable `mediaType` (a list, an object) would
+        # otherwise crash with a TypeError instead of the ordinary refusal
+        # below. isinstance guards that; anything not a string is simply not
+        # an index (final-review fix wave item 6a).
+        if (isinstance(media_type, str) and media_type in INDEX_TYPES) or isinstance(
+            top.get("manifests"), list
+        ):
             platform_digest = pick_platform(top, want_os, want_arch, want_variant)
             manifest = self._document("manifests", platform_digest, ACCEPT)
         else:
