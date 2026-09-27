@@ -4,6 +4,7 @@
  */
 import { imageScanResultSchema, type ImageScanResult } from "@/lib/images/scan-result";
 import type { ImageScan } from "@/lib/images/types";
+import { readScanDiff, type ImageScanDiff } from "@/lib/images/scan-diff";
 
 /** "sha256:" + 12 hex characters: enough to tell digests apart (the gate's
  * own message uses the same cut). */
@@ -78,4 +79,62 @@ export function dbAgeDays(dbBuiltAt: string | null | undefined, now: Date): numb
   const built = Date.parse(dbBuiltAt);
   if (!Number.isFinite(built)) return null;
   return Math.max(0, Math.floor((now.getTime() - built) / 86_400_000));
+}
+
+/**
+ * Has an exception's expiry date passed (C-4)? The DATE alone decides the
+ * word "expired"; whether new deploys are refused is `exceptionLapsed`'s
+ * (verdict-aware) question, asked separately. Expiry exactly `now` counts
+ * as expired (the gate's boundary), and an unparseable date never reads as
+ * live.
+ */
+export function isExceptionExpired(expiresAt: string, now: Date): boolean {
+  const t = Date.parse(expiresAt);
+  return !Number.isFinite(t) || t <= now.getTime();
+}
+
+const SEVERITY_ORDER = ["critical", "high", "medium", "low", "negligible", "unknown"] as const;
+
+/** "+2 high, −1 medium" (U+2212, spec §9.2): only the severities that moved. */
+export function formatCountsDelta(delta: ImageScanDiff["counts_delta"]): string {
+  const parts = SEVERITY_ORDER.filter((s) => delta[s] !== 0).map(
+    (s) => `${delta[s] > 0 ? "+" : "−"}${Math.abs(delta[s])} ${s}`,
+  );
+  return parts.length > 0 ? parts.join(", ") : "no change in counts";
+}
+
+/**
+ * One history line (spec §9.2): the count change since the previous scan,
+ * dated by that scan when it is listed, then new KEVs, newly fixed findings
+ * and a verdict flip. Null for an admission or a scan without a diff.
+ */
+export function scanDiffSummary(scan: ImageScan, scans: readonly ImageScan[]): string | null {
+  const diff = readScanDiff(scan.result);
+  if (!diff) return null;
+  const previous = diff.previous_scan_id
+    ? scans.find((s) => s.id === diff.previous_scan_id)
+    : undefined;
+  const since = previous?.finished_at
+    ? ` since ${previous.finished_at.slice(0, 10)}`
+    : diff.previous_scan_id
+      ? " since the previous scan"
+      : "";
+  const extras: string[] = [];
+  if (diff.new_kev.length > 0) extras.push(`${diff.new_kev.length} new KEV`);
+  if (diff.newly_fixed.length > 0) extras.push(`${diff.newly_fixed.length} newly fixed`);
+  if (diff.verdict_changed) extras.push("verdict changed");
+  return `${formatCountsDelta(diff.counts_delta)}${since}${extras.length > 0 ? ` · ${extras.join(", ")}` : ""}`;
+}
+
+/** A rescan's drift note (spec §8.2, informational): where the tag points
+ * now when it moved, or that the registry did not answer the HEAD. */
+export function scanTagDrift(scan: ImageScan): string | null {
+  const raw = scan.result?.tag_drift;
+  if (raw === null || typeof raw !== "object") return null;
+  const drift = raw as { current_digest?: unknown; drifted?: unknown };
+  if (drift.current_digest === null) return "tag not checked: the registry did not answer";
+  if (drift.drifted === true && typeof drift.current_digest === "string") {
+    return `tag moved to ${shortDigest(drift.current_digest)}`;
+  }
+  return null;
 }

@@ -33,7 +33,11 @@ export function readVerdict(raw: unknown): ImageVerdict | null {
  * grant, not a permanent override: once it expires, "still approved" only
  * holds if the last verdict actually passes on its own. A missing or
  * unparseable verdict counts as NOT passing (fails closed). The boundary
- * matches the gate's: expiry exactly `now` counts as expired.
+ * matches the gate's: expiry exactly `now` counts as expired. Since C-4 the
+ * pipeline's hourly tick clears an expired exception (and flags a failing
+ * image), so at the deploy gate this rule is defence in depth; the UI no
+ * longer uses it to pick the word "expired" (`isExceptionExpired` in
+ * components/images/format.ts does).
  */
 export function exceptionLapsed(
   i: { status: ImageStatus; exceptionExpiresAt: Date | string | null | undefined; verdict: unknown },

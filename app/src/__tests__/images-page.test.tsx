@@ -286,4 +286,72 @@ describe("ImagesPage", () => {
     expect(await screen.findByText("Scan history")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Rescan now/ })).toBeNull();
   });
+
+  it("keys 'expired' on the date alone, even when the latest verdict passes (C-4 fix)", async () => {
+    const past = "2026-08-01T00:00:00.000Z";
+    const detail = image({
+      exception: { reason: "vendor fix pending", by: "admin-1", at: past, expires_at: past },
+      verdict: { pass: true, reasons: [] },
+    });
+    list([detail]);
+    useImageMock.mockImplementation((id: string | null) => ({
+      data: id ? { image: detail, scans: [], in_use_by: [], in_use_elsewhere: 0 } : undefined,
+      isLoading: false,
+      error: null,
+    }));
+    render(<ImagesPage />);
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(within(rows[0]).getByText(/^expired /)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "ghcr.io/org/satpy-runtime:1.4.2" }));
+    expect(await screen.findByText(/Granted by admin-1, expired/)).toBeInTheDocument();
+    // The verdict passes on its own: no "deploys are refused" warning.
+    expect(screen.queryByText(/new deploys are refused until a rescan passes/)).toBeNull();
+  });
+
+  it("shows each rescan's diff, its drift and a findings link in the scan history", async () => {
+    const detail = image();
+    list([detail]);
+    useImageMock.mockImplementation((id: string | null) => ({
+      data: id
+        ? {
+            image: detail,
+            scans: [
+              scan({
+                id: "s-2",
+                kind: "rescan",
+                finished_at: "2026-09-27T03:20:00.000Z",
+                findings_ref: "scans/img-1/s-2/findings.grype.json",
+                result: {
+                  tag_drift: { current_digest: "sha256:" + "b".repeat(64), drifted: true },
+                  diff: {
+                    previous_scan_id: "s-1",
+                    new: ["CVE-2026-0003"],
+                    resolved: [],
+                    newly_fixed: [],
+                    new_kev: ["CVE-2026-0003"],
+                    verdict_changed: true,
+                    counts_delta: { critical: 0, high: 2, medium: -1, low: 0, negligible: 0, unknown: 0 },
+                  },
+                },
+              }),
+              scan({ id: "s-1", finished_at: "2026-09-26T00:05:00.000Z" }),
+            ],
+            in_use_by: [],
+            in_use_elsewhere: 0,
+          }
+        : undefined,
+      isLoading: false,
+      error: null,
+    }));
+    render(<ImagesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "ghcr.io/org/satpy-runtime:1.4.2" }));
+    expect(await screen.findByTestId("scan-diff")).toHaveTextContent(
+      "+2 high, −1 medium since 2026-09-26 · 1 new KEV, verdict changed",
+    );
+    expect(screen.getByText("tag moved to sha256:bbbbbbbbbbbb")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "findings" })).toHaveAttribute(
+      "href",
+      "/api/images/img-1/scans/s-2/findings",
+    );
+  });
 });
