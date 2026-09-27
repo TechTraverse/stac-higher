@@ -79,11 +79,12 @@ the alert `kind` enum since the fixture was deferred in M2). The file pins:
   branches on or displays a kind must recognize all of them (the vitest
   consumer asserts the monitoring UI's label map covers the whole enum, so a
   new kind cannot land unlabeled).
-- one list per **writer** (`monitor_kinds`, `notify_kinds`) plus
+- one list per **writer** (`monitor_kinds`, `image_kinds` since C-4,
+  `notify_kinds`) plus
   `declared_kinds`, the waiting room for kinds that exist in the enum but have
   no writer yet — the single-writer ownership partition. Each writer-side
   constant
-  (`MONITOR_KINDS`, `WEBHOOK_FAILED_KIND`) is asserted equal to its list, and
+  (`MONITOR_KINDS`, `IMAGE_ALERT_KINDS`, `WEBHOOK_FAILED_KIND`) is asserted equal to its list, and
   the lists must partition `kinds` exactly: adding a kind on either side
   without updating the fixture (or claiming a kind in two writers) fails a
   suite. Growing the enum means appending here and to a list in the same

@@ -156,15 +156,18 @@ def test_push_status_enums_match_golden():
 
 def test_alert_kinds_match_golden():
     """The pinned-enum fixture (P7-H): each writer-side constant equals its
-    fixture list VERBATIM (order included — the fixture is canonical), and
+    fixture list VERBATIM (order included - the fixture is canonical), and
     the writer lists partition the full enum exactly."""
     from pipeline.flow.monitor import MONITOR_KINDS
+    from pipeline.images.alerts import IMAGE_ALERT_KINDS
     from pipeline.notify.repo import WEBHOOK_FAILED_KIND
 
     assert ALERT_KINDS["monitor_kinds"] == list(MONITOR_KINDS)
+    assert ALERT_KINDS["image_kinds"] == list(IMAGE_ALERT_KINDS)
     assert ALERT_KINDS["notify_kinds"] == [WEBHOOK_FAILED_KIND]
     assert ALERT_KINDS["kinds"] == (
         ALERT_KINDS["monitor_kinds"]
+        + ALERT_KINDS["image_kinds"]
         + ALERT_KINDS["declared_kinds"]
         + ALERT_KINDS["notify_kinds"]
     )
@@ -313,13 +316,14 @@ def test_process_alert_kinds_are_monitor_owned():
         assert kind not in ALERT_KINDS["declared_kinds"]
 
 
-def test_process_image_flagged_is_declared_not_written():
-    """C-1 declares the kind (container-images spec §10); no pipeline writer
-    may claim it until C-4 lands pipeline/images/alerts.py."""
+def test_process_image_flagged_is_written_by_the_image_alerts_module():
+    """C-4 moved the kind out of declared_kinds (container-images spec §10):
+    pipeline/images/alerts.py is its single writer, and the flow monitor must
+    never own it (monitor ownership would let the monitor auto-resolve it)."""
     from pipeline.flow.monitor import MONITOR_KINDS
 
-    assert "process_image_flagged" in ALERT_KINDS["kinds"]
-    assert ALERT_KINDS["declared_kinds"] == ["process_image_flagged"]
+    assert ALERT_KINDS["image_kinds"] == ["process_image_flagged"]
+    assert ALERT_KINDS["declared_kinds"] == []
     assert "process_image_flagged" not in MONITOR_KINDS
 
 

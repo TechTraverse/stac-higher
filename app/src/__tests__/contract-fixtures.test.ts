@@ -301,6 +301,7 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
   ) as {
     kinds: string[];
     monitor_kinds: string[];
+    image_kinds: string[];
     notify_kinds: string[];
     declared_kinds: string[];
   };
@@ -308,6 +309,7 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
   it("the writer lists partition the full enum exactly", () => {
     expect([
       ...fixture.monitor_kinds,
+      ...fixture.image_kinds,
       ...fixture.declared_kinds,
       ...fixture.notify_kinds,
     ]).toEqual(fixture.kinds);
@@ -346,9 +348,9 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
     }
   });
 
-  it("process_image_flagged waits in declared_kinds until C-4 names its writer", () => {
-    expect(fixture.kinds).toContain("process_image_flagged");
-    expect(fixture.declared_kinds).toEqual(["process_image_flagged"]);
+  it("process_image_flagged is written by the image alerts module (C-4)", () => {
+    expect(fixture.image_kinds).toEqual(["process_image_flagged"]);
+    expect(fixture.declared_kinds).toEqual([]);
     expect(fixture.monitor_kinds).not.toContain("process_image_flagged");
   });
 });

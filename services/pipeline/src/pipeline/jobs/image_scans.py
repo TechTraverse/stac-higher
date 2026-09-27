@@ -10,6 +10,10 @@ until K-4 (ISSUES I-124), never the event loop.
 A missing or invalid image policy skips the tick (fail closed, spec §7.2):
 pending scans stay pending and nothing is scanned against a policy nobody
 can read.
+
+Before the drain, the same tick reconciles the ``process_image_flagged``
+alerts (C-4, ``pipeline/images/alerts.py``): one per process whose current
+revision uses a flagged, revoked, gone or stale image.
 """
 
 from __future__ import annotations
@@ -19,7 +23,10 @@ import datetime as dt
 import logging
 from typing import Any
 
+from pipeline import metrics
 from pipeline.config import Settings
+from pipeline.flow.repo import PgFlowMonitorRepo
+from pipeline.images.alerts import PgImageAlertsRepo, sync_image_alerts
 from pipeline.images.drain import STALL_GRACE_SECONDS, drain_one
 from pipeline.images.drift import tag_drift
 from pipeline.images.policy import ImagePolicyError, load_image_policy
@@ -51,6 +58,28 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 extra={"job": JOB_NAME, "error": str(err)},
             )
             return
+        # C-4 (spec §10): reconcile process_image_flagged BEFORE the drain,
+        # so a 15-minute scan never delays it. A failure here must not stop
+        # the drain.
+        try:
+            raised, resolved = await sync_image_alerts(
+                PgImageAlertsRepo(settings.database_url),
+                PgFlowMonitorRepo(settings.database_url).sync_alerts,
+                scan_window_days=policy.scan_window_days,
+                now=dt.datetime.now(dt.UTC),
+            )
+        except Exception:
+            logger.exception("image alert sync failed", extra={"job": JOB_NAME})
+        else:
+            if raised:
+                metrics.ALERTS.labels(event="raised").inc(raised)
+            if resolved:
+                metrics.ALERTS.labels(event="auto_resolved").inc(resolved)
+            if raised or resolved:
+                logger.info(
+                    "image alerts reconciled",
+                    extra={"raised": raised, "auto_resolved": resolved},
+                )
         repo = PgImagesRepo(settings.database_url)
         started_before = dt.datetime.now(dt.UTC) - dt.timedelta(
             seconds=policy.scan_timeout_seconds + STALL_GRACE_SECONDS
