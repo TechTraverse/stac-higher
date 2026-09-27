@@ -164,7 +164,7 @@ describe("POST /api/images/[id]/exception", () => {
     expect(res.status).toBe(400);
   });
 
-  it("says why the image cannot take an exception, including the re-grant remedy (Fix A)", async () => {
+  it("says why the image cannot take an exception, including the re-grant remedy (C-4 §4.4)", async () => {
     vi.mocked(grantImageException).mockResolvedValue({ outcome: "wrong_status", status: "pending" });
     const { res } = await call(exceptionRoute, admin, { reason: REASON, expires_at: inDays(5) });
     expect(res.status).toBe(409);
@@ -175,6 +175,15 @@ describe("POST /api/images/[id]/exception", () => {
 
     vi.mocked(grantImageException).mockResolvedValue({ outcome: "not_found" });
     expect((await call(exceptionRoute, admin, { reason: REASON, expires_at: inDays(5) })).res.status).toBe(404);
+  });
+
+  it("names the specific remedy for an approved image with no exception to replace (final-review fix wave item 11)", async () => {
+    vi.mocked(grantImageException).mockResolvedValue({ outcome: "wrong_status", status: "approved" });
+    const { res } = await call(exceptionRoute, admin, { reason: REASON, expires_at: inDays(5) });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("image_not_exceptionable");
+    expect(body.error).toBe("this image is approved with no exception to replace");
   });
 
   it("re-grants over an approved image whose own exception already expired (storage decides; the route just forwards)", async () => {

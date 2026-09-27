@@ -8,15 +8,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Image, ImageScan } from "@/lib/images/types";
 
-const { addMutate, scanState } = vi.hoisted(() => ({
+const { addMutate, scanState, grantMutate, revokeMutate } = vi.hoisted(() => ({
   addMutate: vi.fn(),
   scanState: { data: undefined as unknown },
+  grantMutate: vi.fn(),
+  revokeMutate: vi.fn(),
 }));
 
 vi.mock("@/lib/images/queries", () => ({
   useAddImage: () => ({ mutateAsync: addMutate, isPending: false }),
   useImageScan: (imageId: string | null) => ({ data: imageId ? scanState.data : undefined }),
-  useImagePolicy: () => ({ data: { allowed_registries: ["docker.io", "ghcr.io"] } }),
+  useImagePolicy: () => ({
+    data: { allowed_registries: ["docker.io", "ghcr.io"], exception_max_days: 90 },
+  }),
+  useGrantImageException: () => ({ mutateAsync: grantMutate, isPending: false }),
+  useRevokeImage: () => ({ mutateAsync: revokeMutate, isPending: false }),
 }));
 vi.mock("@/lib/connections/queries", () => ({
   useConnections: () => ({
@@ -39,6 +45,7 @@ import {
 import { imagePickerOptions, imageUsableReason } from "@/components/images/picker";
 import { ImageStatusBadge } from "@/components/images/ImageStatusBadge";
 import { AddImageDialog } from "@/components/images/AddImageDialog";
+import { ImageAdminActions } from "@/components/images/ImageAdminActions";
 import { ImagePicker } from "@/components/images/ImagePicker";
 import { SeverityStack } from "@/components/images/SeverityStack";
 
@@ -118,6 +125,8 @@ function scan(overrides: Partial<ImageScan> = {}): ImageScan {
 beforeEach(() => {
   addMutate.mockReset();
   scanState.data = undefined;
+  grantMutate.mockReset();
+  revokeMutate.mockReset();
 });
 
 describe("format helpers", () => {
@@ -423,5 +432,29 @@ describe("ImagePicker (the current revision's image stays visible when it drops 
       />,
     );
     expect(screen.getByText(/no longer listed; not selectable/)).toBeInTheDocument();
+  });
+});
+
+describe("ImageAdminActions (final-review fix wave item 11)", () => {
+  it("submits days = maxDays with the F7 5-minute margin off the raw maxDays expiry", async () => {
+    grantMutate.mockResolvedValue({ outcome: "granted" });
+    render(<ImageAdminActions image={image({ status: "flagged" })} />);
+    fireEvent.click(screen.getByRole("button", { name: /Grant exception/ }));
+    fireEvent.change(screen.getByLabelText("Reason"), {
+      target: { value: "vendor fix pending upstream release" },
+    });
+    fireEvent.change(screen.getByLabelText("Lasts (days)"), { target: { value: "90" } });
+    const before = Date.now();
+    fireEvent.click(screen.getByRole("button", { name: "Save exception" }));
+    await waitFor(() => expect(grantMutate).toHaveBeenCalled());
+    const { body } = grantMutate.mock.calls[0][0];
+    const rawMaxDaysExpiry = before + 90 * 86_400_000;
+    const margin = rawMaxDaysExpiry - new Date(body.expires_at).getTime();
+    // 5-minute margin (F7): the component measures its own "now" a little
+    // after `before`, so the observed margin is 5 minutes minus that small
+    // gap -- allow a couple of seconds' slack for how long the test itself
+    // takes to run between `before` and the submit.
+    expect(margin).toBeGreaterThan(5 * 60_000 - 5_000);
+    expect(margin).toBeLessThanOrEqual(5 * 60_000);
   });
 });
