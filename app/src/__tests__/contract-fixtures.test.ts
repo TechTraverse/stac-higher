@@ -59,6 +59,7 @@ import {
 import { isImageDigest, isImageReference } from "@/lib/images/reference";
 import { imagePolicySchema, registryAllowed } from "@/lib/images/policy";
 import { imageScanResultSchema } from "@/lib/images/scan-result";
+import { imageScanDiffSchema, readScanDiff } from "@/lib/images/scan-diff";
 
 interface FixtureCase {
   name: string;
@@ -520,5 +521,36 @@ describe("image scan result contract (tests/contract-fixtures/image-scan-result.
 
   it.each(fixture.cases)("$app: $name", (c) => {
     expect(imageScanResultSchema.safeParse(scanDoc(c)).success).toBe(c.app === "accept");
+  });
+});
+
+describe("image scan diff contract (tests/contract-fixtures/image-scan-diff.json)", () => {
+  const fixture = loadFixture("image-scan-diff.json") as unknown as {
+    document: Record<string, unknown>;
+    cases: {
+      name: string;
+      patch?: Record<string, unknown>;
+      remove?: string[];
+      app: "accept" | "reject";
+    }[];
+  };
+
+  function diffDoc(c: (typeof fixture.cases)[number]): unknown {
+    const doc: Record<string, unknown> = { ...fixture.document, ...(c.patch ?? {}) };
+    for (const key of c.remove ?? []) delete doc[key];
+    return doc;
+  }
+
+  it.each(fixture.cases)("$app: $name", (c) => {
+    expect(imageScanDiffSchema.safeParse(diffDoc(c)).success).toBe(c.app === "accept");
+  });
+
+  it("readScanDiff reads the diff stored beside the §6.4 document", () => {
+    expect(readScanDiff({ verdict: { pass: false }, diff: fixture.document })?.new).toEqual([
+      "CVE-2026-0003",
+    ]);
+    expect(readScanDiff({ diff: null })).toBeNull();
+    expect(readScanDiff(null)).toBeNull();
+    expect(readScanDiff({ diff: { new: "x" } })).toBeNull();
   });
 });

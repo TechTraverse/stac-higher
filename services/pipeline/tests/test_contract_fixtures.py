@@ -58,6 +58,7 @@ IMAGE_STATUS = _load("image-status.json")
 IMAGE_REFERENCE = _load("image-reference.json")
 IMAGE_POLICY = _load("image-policy.json")
 IMAGE_SCAN_RESULT = _load("image-scan-result.json")
+IMAGE_SCAN_DIFF = _load("image-scan-diff.json")
 REGISTRY_CONFIG = _load("registry-connection-config.json")
 
 
@@ -491,3 +492,40 @@ def test_registry_config_minimal_parses_to_defaults():
 
     parsed = parse_registry_config(REGISTRY_CONFIG["minimal"])
     assert parsed.host == REGISTRY_CONFIG["defaults"]["host"]
+
+
+def test_image_scan_diff_producer_matches_golden():
+    """The drain's diff writer reproduces the golden document (C-4, spec §8.2)."""
+    from pipeline.images.diff import scan_diff
+    from pipeline.images.scan_result import parse_scan_result
+
+    given = IMAGE_SCAN_DIFF["given"]
+    base = IMAGE_SCAN_RESULT["document"]
+    previous = {**base, **given["previous_patch"]}
+    current = parse_scan_result({**base, **given["current_patch"]})
+    diff = scan_diff(
+        previous,
+        current,
+        current_pass=given["current_pass"],
+        previous_scan_id=given["previous_scan_id"],
+    )
+    assert diff is not None
+    assert diff.as_json() == IMAGE_SCAN_DIFF["document"]
+
+
+def _diff_doc(case: dict[str, Any]) -> dict[str, Any]:
+    doc = {**IMAGE_SCAN_DIFF["document"], **case.get("patch", {})}
+    for key in case.get("remove", []):
+        doc.pop(key, None)
+    return doc
+
+
+@pytest.mark.parametrize("case", IMAGE_SCAN_DIFF["cases"], ids=lambda c: c["name"])
+def test_image_scan_diff_cases(case):
+    from pipeline.images.diff import ScanDiffError, parse_scan_diff
+
+    if case["pipeline"] == "accept":
+        parse_scan_diff(_diff_doc(case))
+    else:
+        with pytest.raises(ScanDiffError):
+            parse_scan_diff(_diff_doc(case))
