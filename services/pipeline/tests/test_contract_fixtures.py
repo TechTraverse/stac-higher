@@ -53,6 +53,8 @@ S3_CONFIG = _load("s3-connection-config.json")
 PROCESS_INPUT_MANIFEST = _load("process-input-manifest.json")
 BUILTIN_EXTRACTORS = _load("builtin-extractors.json")
 HARDWARE_PROFILES = _load("hardware-profiles.json")
+IMAGE_STATUS = _load("image-status.json")
+IMAGE_REFERENCE = _load("image-reference.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -353,3 +355,33 @@ def test_hardware_profile_document_cases(case):
     else:
         with pytest.raises(HardwareProfileError):
             parse_hardware_profiles(document)
+
+
+# ---------------------------------------------------------------------------
+# C queue, C-1: the image vocabularies and the reference/digest grammar.
+# ---------------------------------------------------------------------------
+
+
+def test_image_status_vocabularies_match_golden():
+    from pipeline.images import status
+
+    assert IMAGE_STATUS["image_statuses"] == list(status.IMAGE_STATUSES)
+    assert IMAGE_STATUS["deploy_statuses"] == list(status.DEPLOY_STATUSES)
+    assert IMAGE_STATUS["launch_statuses"] == list(status.LAUNCH_STATUSES)
+    assert IMAGE_STATUS["scan_kinds"] == list(status.SCAN_KINDS)
+    assert IMAGE_STATUS["scan_statuses"] == list(status.SCAN_STATUSES)
+    assert IMAGE_STATUS["gate_reasons"] == list(status.GATE_REASONS)
+
+
+@pytest.mark.parametrize("case", IMAGE_REFERENCE["cases"], ids=lambda c: c["name"])
+def test_image_reference_grammar(case):
+    from pipeline.images.reference import is_image_reference
+
+    assert is_image_reference(case["value"]) is case["reference"]
+
+
+@pytest.mark.parametrize("case", IMAGE_REFERENCE["digest_cases"], ids=lambda c: c["name"])
+def test_image_digest_grammar(case):
+    from pipeline.images.reference import is_image_digest
+
+    assert is_image_digest(case["value"]) is case["digest"]

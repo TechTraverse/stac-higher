@@ -46,6 +46,17 @@ import {
   processTriggerSchema,
 } from "@/lib/processes/schemas";
 import { hardwareProfileSetSchema } from "@/lib/processes/hardware";
+import {
+  DEPLOY_IMAGE_STATUSES,
+  IMAGE_GATE_REASONS,
+  IMAGE_SCAN_KINDS,
+  IMAGE_SCAN_STATUSES,
+  IMAGE_STATUSES,
+  IMAGE_STATUS_LABEL,
+  LAUNCH_IMAGE_STATUSES,
+  type ImageStatus,
+} from "@/lib/images/status";
+import { isImageDigest, isImageReference } from "@/lib/images/reference";
 
 interface FixtureCase {
   name: string;
@@ -374,5 +385,56 @@ describe("built-in extractor registry (tests/contract-fixtures/builtin-extractor
     expect(() =>
       parseBuiltinExtractors({ ...fixture, extractors: [one, one] }),
     ).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C queue, C-1 (container-images spec §3/§4): the image vocabularies and the
+// reference/digest grammar.
+// ---------------------------------------------------------------------------
+
+describe("image status vocabularies (tests/contract-fixtures/image-status.json)", () => {
+  const fixture = loadFixture("image-status.json") as unknown as {
+    image_statuses: string[];
+    deploy_statuses: string[];
+    launch_statuses: string[];
+    scan_kinds: string[];
+    scan_statuses: string[];
+    gate_reasons: string[];
+  };
+
+  it("pins every vocabulary verbatim, order included", () => {
+    expect(fixture.image_statuses).toEqual([...IMAGE_STATUSES]);
+    expect(fixture.deploy_statuses).toEqual([...DEPLOY_IMAGE_STATUSES]);
+    expect(fixture.launch_statuses).toEqual([...LAUNCH_IMAGE_STATUSES]);
+    expect(fixture.scan_kinds).toEqual([...IMAGE_SCAN_KINDS]);
+    expect(fixture.scan_statuses).toEqual([...IMAGE_SCAN_STATUSES]);
+    expect(fixture.gate_reasons).toEqual([...IMAGE_GATE_REASONS]);
+  });
+
+  it("deploy ⊆ launch ⊆ statuses: flagged launches but does not deploy", () => {
+    for (const s of fixture.deploy_statuses) expect(fixture.launch_statuses).toContain(s);
+    for (const s of fixture.launch_statuses) expect(fixture.image_statuses).toContain(s);
+    expect(fixture.launch_statuses).toContain("flagged");
+    expect(fixture.deploy_statuses).not.toContain("flagged");
+  });
+
+  it("labels every status, so a status cannot land unlabelled (the ALERT_KIND_LABEL rule)", () => {
+    for (const status of fixture.image_statuses) {
+      expect(IMAGE_STATUS_LABEL[status as ImageStatus], status).toBeTruthy();
+    }
+  });
+});
+
+describe("image reference grammar (tests/contract-fixtures/image-reference.json)", () => {
+  const fixture = loadFixture("image-reference.json") as unknown as {
+    cases: { name: string; value: string; reference: boolean }[];
+    digest_cases: { name: string; value: string; digest: boolean }[];
+  };
+  it.each(fixture.cases)("reference — $name", ({ value, reference }) => {
+    expect(isImageReference(value)).toBe(reference);
+  });
+  it.each(fixture.digest_cases)("digest — $name", ({ value, digest }) => {
+    expect(isImageDigest(value)).toBe(digest);
   });
 });

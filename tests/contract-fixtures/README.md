@@ -263,3 +263,8 @@ the reader tolerates are annotated `"app": "reject", "pipeline": "accept"`.
 Anything both sides must reject (missing/blank required fields, unknown enum
 values, wrong container types) is `reject`/`reject` — those are the documents
 that would otherwise become silently dead flows or a stalled dispatcher.
+
+## Additional fixture styles (C queue, C-1)
+
+- `image-status.json` is style `pinned-enum`. It holds the `container_images.status`, `image_scans.kind`/`.status` vocabularies, the statuses a new revision may snapshot (`deploy_statuses`) or a run may launch on (`launch_statuses`), and the deploy gate's four 422 reasons. Three things consume it: `app/src/lib/images/status.ts` (whose `IMAGE_STATUS_LABEL` must cover every status), `pipeline/images/status.py`, and migration 030's CHECK constraints (`images-migration.test.ts`).
+- `image-reference.json` is style `grammar-cases`, like `staged-asset-href.json`. It pins the grammar of a STORED image reference (normalized, lowercase, with an explicit registry host and no tag or digest) and of a manifest digest (sha256 only). Both sides must agree on each `reference`/`digest` boolean. Consumers: `app/src/lib/images/reference.ts` and `pipeline/images/reference.py`.

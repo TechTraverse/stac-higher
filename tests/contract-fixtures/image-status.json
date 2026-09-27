@@ -1,0 +1,10 @@
+{
+  "style": "pinned-enum",
+  "$comment": "C-1 (container-images spec §4.3, ADR 0021): the closed vocabularies of stac_higher.container_images.status, image_scans.kind and image_scans.status, plus the four reasons the deploy gate refuses a user image with (HTTP 422, body {error, code}). Consumed by app/src/__tests__/contract-fixtures.test.ts (app/src/lib/images/status.ts, whose IMAGE_STATUS_LABEL must cover every status) and by services/pipeline/tests/test_contract_fixtures.py (pipeline/images/status.py); app/src/__tests__/images-migration.test.ts pins migration 030's CHECK lists against the same arrays. `deploy_statuses` are the statuses a NEW revision may snapshot. `launch_statuses` are the statuses a triggered run may still launch on: flagged blocks deploys, never runs (spec decision 4). Stale is computed from last_scanned_at and the policy's scan_window_days, never stored, so it is not a status.",
+  "image_statuses": ["pending", "scanning", "approved", "rejected", "flagged", "revoked", "scan_failed"],
+  "deploy_statuses": ["approved"],
+  "launch_statuses": ["approved", "flagged"],
+  "scan_kinds": ["admission", "rescan"],
+  "scan_statuses": ["pending", "running", "done", "failed"],
+  "gate_reasons": ["image_not_approved", "image_stale", "image_group_mismatch", "image_digest_mismatch"]
+}
