@@ -312,6 +312,16 @@ def test_process_alert_kinds_are_monitor_owned():
         assert kind not in ALERT_KINDS["declared_kinds"]
 
 
+def test_process_image_flagged_is_declared_not_written():
+    """C-1 declares the kind (container-images spec §10); no pipeline writer
+    may claim it until C-4 lands pipeline/images/alerts.py."""
+    from pipeline.flow.monitor import MONITOR_KINDS
+
+    assert "process_image_flagged" in ALERT_KINDS["kinds"]
+    assert ALERT_KINDS["declared_kinds"] == ["process_image_flagged"]
+    assert "process_image_flagged" not in MONITOR_KINDS
+
+
 @pytest.mark.parametrize("case", S3_CONFIG["cases"], ids=lambda c: c["name"])
 def test_s3_config_cases(case):
     _check(parse_s3_config, case)

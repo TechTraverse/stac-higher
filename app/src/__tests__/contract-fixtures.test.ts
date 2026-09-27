@@ -344,6 +344,12 @@ describe("alert kind enum (tests/contract-fixtures/alert-kinds.json)", () => {
       expect(ALERT_KIND_LABEL[kind], `label for ${kind}`).toBeTruthy();
     }
   });
+
+  it("process_image_flagged waits in declared_kinds until C-4 names its writer", () => {
+    expect(fixture.kinds).toContain("process_image_flagged");
+    expect(fixture.declared_kinds).toEqual(["process_image_flagged"]);
+    expect(fixture.monitor_kinds).not.toContain("process_image_flagged");
+  });
 });
 
 // ---------------------------------------------------------------------------
