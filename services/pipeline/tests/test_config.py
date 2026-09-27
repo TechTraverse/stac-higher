@@ -246,11 +246,20 @@ def test_c2_settings_parse_and_blank_means_unset():
     assert (s.registry_dockerhub_user, s.registry_dockerhub_token) == ("robot", "dckr_pat_x")
     assert s.image_scan_concurrency == 2
     blank = Settings.from_env(
-        {"REGISTRY_DOCKERHUB_USER": "  ", "GRYPE_DB_UPDATE_URL": "", "PROCESS_SCANNER_NETWORK": ""}
+        {
+            "REGISTRY_DOCKERHUB_USER": "  ",
+            "GRYPE_DB_UPDATE_URL": "",
+            "PROCESS_SCANNER_NETWORK": "",
+            "IMAGE_SCANNER_IMAGE": "",
+        }
     )
     assert blank.registry_dockerhub_user is None
     assert blank.grype_db_update_url is None
     assert blank.process_scanner_network == "none"
+    # Item 4: blank means unset, same as its siblings above -- a deployment
+    # passing `${IMAGE_SCANNER_IMAGE:-}` must get the default image, not an
+    # empty reference the executor would then refuse to launch.
+    assert blank.image_scanner_image == "stac-higher-image-scanner:local"
 
 
 def test_the_docker_hub_token_never_prints():

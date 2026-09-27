@@ -541,7 +541,8 @@ class Settings:
                     str(DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY),
                 )
             ),
-            image_scanner_image=env.get("IMAGE_SCANNER_IMAGE", DEFAULT_IMAGE_SCANNER_IMAGE),
+            image_scanner_image=_optional(env.get("IMAGE_SCANNER_IMAGE"))
+            or DEFAULT_IMAGE_SCANNER_IMAGE,
             process_scanner_network=_optional(env.get("PROCESS_SCANNER_NETWORK"))
             or DEFAULT_PROCESS_SCANNER_NETWORK,
             image_scanner_db_update=_parse_bool(env.get("IMAGE_SCANNER_DB_UPDATE"), True),
