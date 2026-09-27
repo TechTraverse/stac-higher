@@ -29,6 +29,7 @@ import { normalizeImageInput } from "@/lib/images/normalize";
 import { useAddImage, useImagePolicy, useImageScan } from "@/lib/images/queries";
 import type { Image } from "@/lib/images/types";
 import { readVerdict } from "@/lib/images/verdict";
+import { imageUsableReason } from "./picker";
 import { ImageStatusBadge } from "./ImageStatusBadge";
 import { scanError, shortDigest } from "./format";
 
@@ -89,6 +90,11 @@ export function AddImageDialog({
   const image = polled?.image ?? null;
   const scan = polled?.scan ?? null;
   const reasons = readVerdict(image?.verdict)?.reasons ?? [];
+  // Approved is necessary but not sufficient: an expired exception (or, once
+  // scanned, a deleted/foreign-group credential) can still make the image
+  // unusable by this group. Only checked when we know the group (the deploy
+  // form passes it); the dashboard's own dialog has no group to check.
+  const unusableReason = image && groupId ? imageUsableReason(image, groupId) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -165,7 +171,12 @@ export function AddImageDialog({
             </DialogFooter>
           </form>
         ) : (
-          <div className="grid gap-3 text-sm" data-testid="add-image-progress">
+          <div
+            className="grid gap-3 text-sm"
+            data-testid="add-image-progress"
+            aria-live="polite"
+            role="status"
+          >
             {image ? (
               <div className="flex flex-wrap items-center gap-2">
                 <code className="tech">{`${image.reference}:${image.tag_at_add}`}</code>
@@ -209,7 +220,11 @@ export function AddImageDialog({
             )}
             <DialogFooter>
               {image?.status === "approved" && onUse && (
-                <Button onClick={() => onUse(image)}>Use this image</Button>
+                unusableReason === null ? (
+                  <Button onClick={() => onUse(image)}>Use this image</Button>
+                ) : (
+                  <p className="text-sm text-muted-foreground">{unusableReason}</p>
+                )
               )}
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Close

@@ -7,6 +7,7 @@
  * only).
  */
 import { z } from "zod";
+import type { ImageStatus } from "./status";
 
 export const imageVerdictSchema = z.object({
   pass: z.boolean(),
@@ -24,4 +25,22 @@ export type ImageVerdict = z.infer<typeof imageVerdictSchema>;
 export function readVerdict(raw: unknown): ImageVerdict | null {
   const parsed = imageVerdictSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Has an approved image's exception lapsed without its latest scan now
+ * passing the policy (controller ruling, C-3)? An exception is a time-boxed
+ * grant, not a permanent override: once it expires, "still approved" only
+ * holds if the last verdict actually passes on its own. A missing or
+ * unparseable verdict counts as NOT passing (fails closed). The boundary
+ * matches the gate's: expiry exactly `now` counts as expired.
+ */
+export function exceptionLapsed(
+  i: { status: ImageStatus; exceptionExpiresAt: Date | string | null | undefined; verdict: unknown },
+  now: Date,
+): boolean {
+  if (i.status !== "approved" || i.exceptionExpiresAt == null) return false;
+  const t = new Date(i.exceptionExpiresAt).getTime();
+  if (Number.isFinite(t) && t > now.getTime()) return false;
+  return readVerdict(i.verdict)?.pass !== true;
 }

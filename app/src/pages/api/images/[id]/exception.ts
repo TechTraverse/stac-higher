@@ -64,7 +64,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     if (outcome.outcome === "not_found") return imageNotFound();
     if (outcome.outcome === "wrong_status") {
       return jsonResponse(409, {
-        error: `An exception applies to a rejected or flagged image; this one is ${outcome.status}`,
+        error: `An exception applies to a rejected or flagged image, or an approved image whose exception has expired; this one is ${outcome.status}`,
         code: "image_not_exceptionable",
       });
     }

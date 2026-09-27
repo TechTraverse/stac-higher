@@ -166,6 +166,8 @@ function approvedImage(overrides: Record<string, unknown> = {}) {
     last_scanned_at: new Date(Date.now() - 86_400_000),
     registry_connection_id: null,
     registry_connection_group_id: null,
+    exception_expires_at: null,
+    verdict: null,
     ...overrides,
   } as never;
 }

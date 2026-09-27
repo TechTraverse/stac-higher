@@ -39,6 +39,8 @@ import {
 import { imagePickerOptions, imageUsableReason } from "@/components/images/picker";
 import { ImageStatusBadge } from "@/components/images/ImageStatusBadge";
 import { AddImageDialog } from "@/components/images/AddImageDialog";
+import { ImagePicker } from "@/components/images/ImagePicker";
+import { SeverityStack } from "@/components/images/SeverityStack";
 
 const GROUP = "earth-observation";
 const DIGEST = "sha256:" + "a".repeat(64);
@@ -137,14 +139,36 @@ describe("format helpers", () => {
     expect(sortFindings(SCAN_DOC.top as never).map((f) => f.id)).toEqual(["CVE-2026-2", "CVE-2026-1"]);
   });
 
-  it("reads the latest DONE scan's §6.4 document and skips failed or unreadable ones", () => {
-    const result = latestScanResult([
-      scan({ id: "s-3", status: "pending", result: null }),
-      scan({ id: "s-2", status: "failed", result: { error: "pull denied" } }),
-      scan({ id: "s-1" }),
-    ]);
-    expect(result?.top).toHaveLength(2);
-    expect(latestScanResult([scan({ result: { nonsense: true } })])).toBeNull();
+  it("reads the target scan's §6.4 document: by last_scan_id, else the newest done one", () => {
+    const byId = latestScanResult(
+      [
+        scan({ id: "s-3", status: "pending", result: null }),
+        scan({ id: "s-2", status: "failed", result: { error: "pull denied" } }),
+        scan({ id: "s-1" }),
+      ],
+      "s-1",
+    );
+    expect(byId.status).toBe("ok");
+    expect(byId.status === "ok" && byId.result.top).toHaveLength(2);
+
+    const byNewestDone = latestScanResult(
+      [scan({ id: "s-2", status: "failed", result: null }), scan({ id: "s-1" })],
+      null,
+    );
+    expect(byNewestDone.status).toBe("ok");
+
+    expect(latestScanResult([], null)).toEqual({ status: "none" });
+  });
+
+  it("never falls back to an older scan when the target one is unreadable (bug fix)", () => {
+    // The NEWEST done scan (s-2, named by last_scan_id) is malformed; an
+    // OLDER done scan (s-1) parses fine. The reader must still say
+    // "unreadable", never silently show s-1's findings.
+    const result = latestScanResult(
+      [scan({ id: "s-2", result: { nonsense: true } }), scan({ id: "s-1" })],
+      "s-2",
+    );
+    expect(result).toEqual({ status: "unreadable" });
   });
 
   it("computes the scanner DB's age in whole days", () => {
@@ -177,6 +201,42 @@ describe("picker options", () => {
         GROUP,
       ),
     ).toBe("Registry credential was deleted");
+  });
+
+  it("says an expired exception without a passing verdict is not usable (controller ruling C-3)", () => {
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const expired = new Date(now.getTime() - 86_400_000).toISOString();
+    const live = new Date(now.getTime() + 86_400_000).toISOString();
+    expect(
+      imageUsableReason(
+        image({
+          exception: { reason: "r", by: "admin-1", at: expired, expires_at: expired },
+          verdict: { pass: false, reasons: [] },
+        }),
+        GROUP,
+        now,
+      ),
+    ).toBe("Exception expired");
+    expect(
+      imageUsableReason(
+        image({
+          exception: { reason: "r", by: "admin-1", at: expired, expires_at: expired },
+          verdict: { pass: true, reasons: [] },
+        }),
+        GROUP,
+        now,
+      ),
+    ).toBeNull();
+    expect(
+      imageUsableReason(
+        image({
+          exception: { reason: "r", by: "admin-1", at: expired, expires_at: live },
+          verdict: { pass: false, reasons: [] },
+        }),
+        GROUP,
+        now,
+      ),
+    ).toBeNull();
   });
 
   it("hides revoked images, filters by search, and lists usable ones first", () => {
@@ -296,5 +356,72 @@ describe("AddImageDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add and scan/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Use this image" }));
     expect(onUse).toHaveBeenCalledWith(expect.objectContaining({ id: "img-1", digest: DIGEST }));
+  });
+
+  it("withholds 'Use this image' for an approved image the group cannot actually use, and shows why (§4 Fix)", async () => {
+    const onUse = vi.fn();
+    addMutate.mockResolvedValue({ image_id: "img-1", scan_id: "s-1" });
+    scanState.data = {
+      scan: scan(),
+      image: image({
+        exception: {
+          reason: "vendor fix pending",
+          by: "admin-1",
+          at: "2026-08-01T00:00:00.000Z",
+          expires_at: "2026-08-01T00:00:00.000Z",
+        },
+        verdict: { pass: false, reasons: [] },
+      }),
+    };
+    open({ onUse, groupId: GROUP });
+    fireEvent.change(screen.getByLabelText("Image reference"), { target: { value: "ghcr.io/org/img" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add and scan/ }));
+    expect(await screen.findByText("Exception expired")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use this image" })).toBeNull();
+  });
+});
+
+describe("SeverityStack (a11y)", () => {
+  it("gives each severity count an accessible label", () => {
+    render(
+      <SeverityStack
+        verdict={{ pass: false, reasons: [], counts: { critical: 1, high: 2, medium: 0, low: 0 }, kev: ["CVE-2026-1"] }}
+      />,
+    );
+    expect(screen.getByLabelText("Critical: 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("High: 2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Medium: 0")).toBeInTheDocument();
+    expect(screen.getByLabelText("Low: 0")).toBeInTheDocument();
+  });
+});
+
+describe("ImagePicker (the current revision's image stays visible when it drops off the list)", () => {
+  const SELECTED = { id: "img-1", reference: image().reference, digest: DIGEST };
+
+  it("labels the current selection 'hidden by the filter' when a search hides it but it is still listed", () => {
+    render(
+      <ImagePicker
+        images={[image()]}
+        groupId={GROUP}
+        value={SELECTED}
+        onChange={() => {}}
+        onAdd={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Find an image"), { target: { value: "no-such-match" } });
+    expect(screen.getByText(/selected; hidden by the filter/)).toBeInTheDocument();
+  });
+
+  it("labels the current selection 'no longer listed' when it has genuinely dropped out (e.g. revoked)", () => {
+    render(
+      <ImagePicker
+        images={[image({ status: "revoked" })]}
+        groupId={GROUP}
+        value={SELECTED}
+        onChange={() => {}}
+        onAdd={() => {}}
+      />,
+    );
+    expect(screen.getByText(/no longer listed; not selectable/)).toBeInTheDocument();
   });
 });

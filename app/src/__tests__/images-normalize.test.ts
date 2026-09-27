@@ -5,7 +5,7 @@ import {
   normalizeImageInput,
 } from "@/lib/images/normalize";
 import { isImageStale } from "@/lib/images/stale";
-import { readVerdict } from "@/lib/images/verdict";
+import { exceptionLapsed, readVerdict } from "@/lib/images/verdict";
 import { imageAddSchema, imageExceptionSchema } from "@/lib/images/schemas";
 import { isImageReference } from "@/lib/images/reference";
 
@@ -91,6 +91,10 @@ describe("isImageStale (spec §4.3: computed, never stored)", () => {
   it("is unknown (null) when the policy window is unknown", () => {
     expect(isImageStale("approved", now, null, now)).toBeNull();
   });
+
+  it("fails closed on an unparseable scan time (never reads NaN as fresh)", () => {
+    expect(isImageStale("approved", "not-a-date", 30, now)).toBe(true);
+  });
 });
 
 describe("readVerdict (lenient: the pipeline owns the shape)", () => {
@@ -104,6 +108,38 @@ describe("readVerdict (lenient: the pipeline owns the shape)", () => {
     expect(readVerdict(null)).toBeNull();
     expect(readVerdict({ reasons: [] })).toBeNull();
     expect(readVerdict("pass")).toBeNull();
+  });
+});
+
+describe("exceptionLapsed (controller ruling, C-3: an expired exception needs a passing verdict)", () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const DAY = 86_400_000;
+  const past = new Date(now.getTime() - DAY);
+  const future = new Date(now.getTime() + DAY);
+
+  it("is false for anything that is not an approved image with an exception", () => {
+    expect(exceptionLapsed({ status: "flagged", exceptionExpiresAt: past, verdict: null }, now)).toBe(false);
+    expect(exceptionLapsed({ status: "approved", exceptionExpiresAt: null, verdict: null }, now)).toBe(false);
+  });
+
+  it("is false for a live exception, whatever the verdict says", () => {
+    expect(
+      exceptionLapsed({ status: "approved", exceptionExpiresAt: future, verdict: { pass: false } }, now),
+    ).toBe(false);
+  });
+
+  it("expiry exactly now counts as expired (same boundary as the gate)", () => {
+    expect(exceptionLapsed({ status: "approved", exceptionExpiresAt: now, verdict: null }, now)).toBe(true);
+  });
+
+  it("an expired exception only lapses when the latest verdict does not pass", () => {
+    expect(
+      exceptionLapsed({ status: "approved", exceptionExpiresAt: past, verdict: { pass: true } }, now),
+    ).toBe(false);
+    expect(
+      exceptionLapsed({ status: "approved", exceptionExpiresAt: past, verdict: { pass: false } }, now),
+    ).toBe(true);
+    expect(exceptionLapsed({ status: "approved", exceptionExpiresAt: past, verdict: null }, now)).toBe(true);
   });
 });
 

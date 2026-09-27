@@ -17,17 +17,23 @@ export interface ImageGateRow {
   registry_connection_id: string | null;
   /** NULL when the row carries no credential OR its connection is soft-deleted. */
   registry_connection_group_id: string | null;
+  /** Set only on an `approved` row that carries a human exception (spec §4.4). */
+  exception_expires_at: Date | null;
+  /** The latest policy evaluation as the pipeline stored it (`verdict.ts` reads it). */
+  verdict: unknown;
 }
 
-interface GateQueryRow extends Omit<ImageGateRow, "last_scanned_at"> {
+interface GateQueryRow extends Omit<ImageGateRow, "last_scanned_at" | "exception_expires_at"> {
   last_scanned_at: Date | string | null;
+  exception_expires_at: Date | string | null;
 }
 
 export async function getImageForGate(id: string): Promise<ImageGateRow | null> {
   await runMigrations();
   const result = await query<GateQueryRow>(
     `SELECT i.id, i.reference, i.digest, i.status, i.last_scanned_at,
-            i.registry_connection_id, c.group_id AS registry_connection_group_id
+            i.registry_connection_id, c.group_id AS registry_connection_group_id,
+            i.exception_expires_at, i.verdict
        FROM stac_higher.container_images i
        LEFT JOIN stac_higher.connections c
          ON c.id = i.registry_connection_id AND c.deleted_at IS NULL
@@ -39,6 +45,8 @@ export async function getImageForGate(id: string): Promise<ImageGateRow | null> 
   return {
     ...row,
     last_scanned_at: row.last_scanned_at === null ? null : new Date(row.last_scanned_at),
+    exception_expires_at:
+      row.exception_expires_at === null ? null : new Date(row.exception_expires_at),
   };
 }
 
@@ -552,8 +560,11 @@ export type ExceptionOutcome =
   | { outcome: "wrong_status"; status: ImageStatus };
 
 /** `rejected`/`flagged` -> `approved` with the one live exception (spec §4.4).
- * Conditional UPDATE, so a concurrent drain transition cannot be overwritten
- * by a stale read. */
+ * Also re-grants over an `approved` row whose OWN exception has already
+ * expired (Fix A, C-3): an expired exception is not a wrong status to escape
+ * from, it is the exact situation an admin re-grant exists for. Conditional
+ * UPDATE, so a concurrent drain transition cannot be overwritten by a stale
+ * read. */
 export async function grantImageException(input: {
   imageId: string;
   reason: string;
@@ -569,7 +580,9 @@ export async function grantImageException(input: {
             exception_at = now(),
             exception_expires_at = $4,
             updated_at = now()
-      WHERE id = $1 AND status IN ('rejected','flagged')
+      WHERE id = $1
+        AND (status IN ('rejected','flagged')
+             OR (status = 'approved' AND exception_expires_at IS NOT NULL AND exception_expires_at <= now()))
       RETURNING id`,
     [input.imageId, input.reason, input.by, input.expiresAt.toISOString()],
   );
@@ -617,10 +630,11 @@ export async function revokeImage(imageId: string): Promise<RevokeOutcome> {
 
 /** Could a run on this digest LAUNCH (spec §4.3: approved or flagged, and
  * scanned inside the window)? The same boundary as the gate: exactly the
- * window ago is fresh. A row approved via an exception that has since
- * expired does not count (controller ruling, C-3): the exception grant is
- * time-boxed, and an expired one must fall back to "not approved" here just
- * as it does everywhere else the policy is enforced. */
+ * window ago is fresh. Launches never block on an expired exception (spec
+ * §4.3 / decision 4, controller ruling C-3): the exception grant is
+ * time-boxed for DEPLOYS, but a revision already running keeps launching —
+ * the gate (`evaluateImageGate`/`exceptionLapsed`) is where an expired
+ * exception is enforced. */
 export async function isDigestLaunchable(digest: string, scanWindowDays: number): Promise<boolean> {
   await runMigrations();
   const result = await query<{ ok: boolean }>(
@@ -629,7 +643,6 @@ export async function isDigestLaunchable(digest: string, scanWindowDays: number)
         WHERE digest = $1
           AND status IN ('approved','flagged')
           AND last_scanned_at >= now() - make_interval(days => $2::int)
-          AND (exception_expires_at IS NULL OR exception_expires_at > now())
      ) AS ok`,
     [digest, scanWindowDays],
   );

@@ -24,7 +24,7 @@ import { timeAgo } from "@/components/monitoring/shared";
 import { useAuthMe } from "@/lib/query/auth";
 import { useImages } from "@/lib/images/queries";
 import { IMAGE_STATUSES, IMAGE_STATUS_LABEL, type ImageStatus } from "@/lib/images/status";
-import { readVerdict } from "@/lib/images/verdict";
+import { exceptionLapsed, readVerdict } from "@/lib/images/verdict";
 import { AddImageDialog } from "./AddImageDialog";
 import { ImageDetailSheet } from "./ImageDetailSheet";
 import { ImageStatusBadge } from "./ImageStatusBadge";
@@ -117,7 +117,7 @@ function ImagesContent() {
       </div>
 
       {data && data.scan_window_days === null && (
-        <Card className="border-warning-border bg-warning-subtle">
+        <Card className="border-warning-border bg-warning-subtle" aria-live="polite" role="status">
           <CardContent className="flex items-center gap-3 px-5 py-3 text-sm">
             <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
             The image policy could not be read (PROCESS_IMAGE_POLICY_FILE): staleness is unknown,
@@ -166,6 +166,12 @@ function ImagesContent() {
             <TableBody>
               {images.map((image) => {
                 const dbAge = dbAgeDays(image.db_built_at, now);
+                const exceptionExpired =
+                  image.exception !== null &&
+                  exceptionLapsed(
+                    { status: image.status, exceptionExpiresAt: image.exception.expires_at, verdict: image.verdict },
+                    now,
+                  );
                 return (
                   <TableRow key={image.id}>
                     <TableCell>
@@ -216,7 +222,7 @@ function ImagesContent() {
                     <TableCell className="tabular-nums">{image.in_use_by}</TableCell>
                     <TableCell className="text-sm">
                       {image.exception
-                        ? `until ${new Date(image.exception.expires_at).toLocaleDateString()}`
+                        ? `${exceptionExpired ? "expired" : "until"} ${new Date(image.exception.expires_at).toLocaleDateString()}`
                         : "—"}
                     </TableCell>
                   </TableRow>

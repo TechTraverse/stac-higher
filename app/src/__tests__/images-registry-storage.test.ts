@@ -346,7 +346,7 @@ describe("requestImageScan", () => {
 describe("human verdicts", () => {
   const EXPIRES = new Date("2026-10-27T00:00:00.000Z");
 
-  it("grants an exception only from rejected or flagged", async () => {
+  it("grants an exception only from rejected or flagged, or an approved image whose OWN exception already expired (Fix A)", async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ id: IMG }] } as never);
     expect(
       await grantImageException({ imageId: IMG, reason: "vendor fix pending", by: "admin-1", expiresAt: EXPIRES }),
@@ -354,6 +354,9 @@ describe("human verdicts", () => {
     const [sql, params] = mockQuery.mock.calls[0];
     expect(sql).toContain("status = 'approved'");
     expect(sql).toContain("status IN ('rejected','flagged')");
+    expect(sql).toContain(
+      "(status = 'approved' AND exception_expires_at IS NOT NULL AND exception_expires_at <= now())",
+    );
     expect(params).toEqual([IMG, "vendor fix pending", "admin-1", EXPIRES.toISOString()]);
   });
 
@@ -403,10 +406,10 @@ describe("isDigestLaunchable (the K-6 admission probe)", () => {
     expect(params).toEqual([DIGEST, 30]);
   });
 
-  it("excludes a row whose approval exception has expired (controller ruling)", async () => {
-    mockQuery.mockResolvedValue({ rows: [{ ok: false }] } as never);
-    expect(await isDigestLaunchable(DIGEST, 30)).toBe(false);
+  it("never excludes a row for an expired exception: launches are not gated on it (controller ruling C-3)", async () => {
+    mockQuery.mockResolvedValue({ rows: [{ ok: true }] } as never);
+    expect(await isDigestLaunchable(DIGEST, 30)).toBe(true);
     const [sql] = mockQuery.mock.calls[0];
-    expect(sql).toContain("(exception_expires_at IS NULL OR exception_expires_at > now())");
+    expect(sql).not.toContain("exception_expires_at");
   });
 });

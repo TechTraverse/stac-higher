@@ -179,6 +179,10 @@ An image is approved by a **scan**: an SBOM (Syft) and a vulnerability match
 The default policy blocks any KEV entry, a fixed CRITICAL, an unfixed
 CRITICAL published more than 30 days ago, and a fixed HIGH with EPSS ≥ 0.1. A
 failing image needs an admin's expiring, audited exception.
+When an exception expires and the image's latest scan still fails the
+policy, new deploys naming it are refused (`image_not_approved`, "exception
+expired") until a rescan passes or an admin grants a new exception; revisions
+already deployed keep launching.
 
 Images live on the **Images** page (`/images`): add one by reference
 (`python:3.12-slim` is stored as `docker.io/library/python`, tag

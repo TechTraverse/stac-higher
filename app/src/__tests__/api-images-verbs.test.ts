@@ -164,16 +164,27 @@ describe("POST /api/images/[id]/exception", () => {
     expect(res.status).toBe(400);
   });
 
-  it("says why the image cannot take an exception", async () => {
+  it("says why the image cannot take an exception, including the re-grant remedy (Fix A)", async () => {
     vi.mocked(grantImageException).mockResolvedValue({ outcome: "wrong_status", status: "pending" });
     const { res } = await call(exceptionRoute, admin, { reason: REASON, expires_at: inDays(5) });
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe("image_not_exceptionable");
     expect(body.error).toMatch(/pending/);
+    expect(body.error).toMatch(/approved image whose exception has expired/);
 
     vi.mocked(grantImageException).mockResolvedValue({ outcome: "not_found" });
     expect((await call(exceptionRoute, admin, { reason: REASON, expires_at: inDays(5) })).res.status).toBe(404);
+  });
+
+  it("re-grants over an approved image whose own exception already expired (storage decides; the route just forwards)", async () => {
+    vi.mocked(grantImageException).mockResolvedValue({ outcome: "granted" });
+    vi.mocked(getImage).mockResolvedValue({ id: IMG, status: "approved" } as never);
+    const { res } = await call(exceptionRoute, admin, { reason: REASON, expires_at: inDays(30) });
+    expect(res.status).toBe(200);
+    expect(grantImageException).toHaveBeenCalledWith(
+      expect.objectContaining({ imageId: IMG, reason: REASON }),
+    );
   });
 
   it("fails closed when the policy is unreadable", async () => {

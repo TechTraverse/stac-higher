@@ -5,9 +5,10 @@
  * pipeline's launch check.
  *
  * "Approved" here means "could LAUNCH": a row with that digest is `approved`
- * or `flagged`, was scanned inside the policy window, and — if it carries an
- * exception — that exception has not expired (spec §4.3, §4.4). Flagged
- * blocks deploys, not runs, and the admission policy guards runs.
+ * or `flagged` and was scanned inside the policy window. An expired
+ * exception does NOT block a launch (spec §4.3, decision 4): deploys are
+ * refused by the gate instead, a revision already running keeps launching.
+ * Flagged blocks deploys, not runs, and the admission policy guards runs.
  *
  * No session: the caller is the cluster, not a person. FAILS CLOSED
  * (controller ruling F3): when `INTERNAL_API_TOKEN` is unset or empty, this
@@ -50,7 +51,7 @@ export const GET: APIRoute = async ({ url, request }) => {
     });
   } catch (err) {
     if (err instanceof ImagePolicyUnavailable) return imagePolicyUnavailable(err);
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return jsonResponse(500, { error: message });
+    console.error(err instanceof Error ? err.message : "Unknown error");
+    return jsonResponse(500, { error: "internal error" });
   }
 };

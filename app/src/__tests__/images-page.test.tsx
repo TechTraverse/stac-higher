@@ -176,10 +176,36 @@ describe("ImagesPage", () => {
     expect(useImagesMock).toHaveBeenLastCalledWith({ status: "flagged", q: "satpy", in_use: true });
   });
 
-  it("says why staleness is unknown when the policy cannot be read", () => {
+  it("says why staleness is unknown when the policy cannot be read (announced via role=status)", () => {
     list([image({ stale: null })], null);
     render(<ImagesPage />);
-    expect(screen.getByText(/image policy could not be read/)).toBeInTheDocument();
+    const banner = screen.getByText(/image policy could not be read/);
+    expect(banner.closest('[role="status"]')).not.toBeNull();
+  });
+
+  it("shows an expired exception as 'expired <date>', a live one as 'until <date>'", () => {
+    const expires = "2026-08-01T00:00:00.000Z";
+    list([
+      image({
+        id: "img-expired",
+        exception: { reason: "r", by: "admin-1", at: expires, expires_at: expires },
+        verdict: { pass: false, reasons: [] },
+      }),
+      image({
+        id: "img-live",
+        reference: "docker.io/library/python",
+        exception: {
+          reason: "r",
+          by: "admin-1",
+          at: expires,
+          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        },
+      }),
+    ]);
+    render(<ImagesPage />);
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(within(rows[0]).getByText(/^expired /)).toBeInTheDocument();
+    expect(within(rows[1]).getByText(/^until /)).toBeInTheDocument();
   });
 
   it("opens the detail sheet with the credential, config and reason warnings, and Rescan now", async () => {
@@ -213,8 +239,38 @@ describe("ImagesPage", () => {
     expect(screen.getByText("critical_fixed:libxml2")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "geocolor" })).toHaveAttribute("href", "/processes/p-1");
     expect(screen.getByText(/1 more in other groups/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Rescan now/ }).closest('[role="status"]')).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Rescan now/ }));
     expect(rescanMutate).toHaveBeenCalledWith("img-1");
+  });
+
+  it("shows the expired-exception warning and never falls back to an older scan's findings", async () => {
+    const expires = "2026-08-01T00:00:00.000Z";
+    const detail = image({
+      last_scan_id: "s-2",
+      exception: { reason: "vendor fix pending", by: "admin-1", at: expires, expires_at: expires },
+      verdict: { pass: false, reasons: [] },
+    });
+    list([detail]);
+    useImageMock.mockImplementation((id: string | null) => ({
+      data: id
+        ? {
+            image: detail,
+            scans: [
+              scan({ id: "s-2", result: { nonsense: true } }),
+              scan({ id: "s-1", result: null }),
+            ],
+            in_use_by: [],
+            in_use_elsewhere: 0,
+          }
+        : undefined,
+      isLoading: false,
+      error: null,
+    }));
+    render(<ImagesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "ghcr.io/org/satpy-runtime:1.4.2" }));
+    expect(await screen.findByText(/new deploys are refused until a rescan passes/)).toBeInTheDocument();
+    expect(screen.getByText("Findings for the latest scan could not be read")).toBeInTheDocument();
   });
 
   it("hides Rescan now from a member", async () => {

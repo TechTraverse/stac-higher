@@ -15,21 +15,39 @@ describe("getImageForGate", () => {
     expect(await getImageForGate("img-1")).toBeNull();
     const [sql, params] = vi.mocked(query).mock.calls[0];
     expect(sql).toContain("FROM stac_higher.container_images i");
+    expect(sql).toContain("i.exception_expires_at, i.verdict");
     expect(sql).toMatch(/LEFT JOIN stac_higher\.connections c\s+ON c\.id = i\.registry_connection_id AND c\.deleted_at IS NULL/);
     expect(params).toEqual(["img-1"]);
   });
 
-  it("normalizes last_scanned_at to a Date", async () => {
+  it("normalizes last_scanned_at and exception_expires_at to Dates", async () => {
     vi.mocked(query).mockResolvedValue({
       rows: [
         {
           id: "img-1", reference: "ghcr.io/x/y", digest: null, status: "pending",
           last_scanned_at: "2026-09-01T00:00:00.000Z", registry_connection_id: null,
           registry_connection_group_id: null,
+          exception_expires_at: "2026-10-01T00:00:00.000Z", verdict: null,
         },
       ],
     } as never);
     const row = await getImageForGate("img-1");
     expect(row?.last_scanned_at).toEqual(new Date("2026-09-01T00:00:00.000Z"));
+    expect(row?.exception_expires_at).toEqual(new Date("2026-10-01T00:00:00.000Z"));
+  });
+
+  it("passes a null exception_expires_at through as null", async () => {
+    vi.mocked(query).mockResolvedValue({
+      rows: [
+        {
+          id: "img-1", reference: "ghcr.io/x/y", digest: null, status: "pending",
+          last_scanned_at: null, registry_connection_id: null,
+          registry_connection_group_id: null,
+          exception_expires_at: null, verdict: null,
+        },
+      ],
+    } as never);
+    const row = await getImageForGate("img-1");
+    expect(row?.exception_expires_at).toBeNull();
   });
 });

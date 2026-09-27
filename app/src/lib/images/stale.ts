@@ -21,5 +21,6 @@ export function isImageStale(
   if (scanWindowDays === null) return null;
   if (lastScannedAt === null) return true;
   const scanned = new Date(lastScannedAt).getTime();
+  if (!Number.isFinite(scanned)) return true;
   return scanned < now.getTime() - scanWindowDays * DAY_MS;
 }

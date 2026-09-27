@@ -20,10 +20,12 @@ export function SeverityStack({ verdict }: { verdict: ImageVerdict | null }) {
       {verdict.kev.length > 0 && <Badge variant="destructive">KEV {verdict.kev.length}</Badge>}
       {SEVERITIES.map(([key, short]) => {
         const n = counts[key] ?? 0;
+        const label = key.charAt(0).toUpperCase() + key.slice(1);
         return (
           <span
             key={key}
             title={key}
+            aria-label={`${label}: ${n}`}
             className={n > 0 && key === "critical" ? "font-semibold text-danger" : undefined}
           >
             {short} {n}

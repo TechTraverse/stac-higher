@@ -37,16 +37,31 @@ export function sortFindings(findings: readonly Finding[]): Finding[] {
   );
 }
 
-/** The newest DONE scan whose `result` reads as the §6.4 document (C-2
- * stores it with `verdict`/`diff` beside it; the lenient reader drops
- * those). `scans` is newest first, as the detail route returns it. */
-export function latestScanResult(scans: readonly ImageScan[]): ImageScanResult | null {
-  for (const scan of scans) {
-    if (scan.status !== "done" || !scan.result) continue;
-    const parsed = imageScanResultSchema.safeParse(scan.result);
-    if (parsed.success && parsed.data.error === null) return parsed.data;
-  }
-  return null;
+/**
+ * The ONE scan whose findings the detail sheet shows: `image.last_scan_id`
+ * when it names a scan in the list, else the newest `done` one (`scans` is
+ * newest first, as the detail route returns it). If that scan's `result`
+ * does not read as the §6.4 document (C-2 stores it with `verdict`/`diff`
+ * beside it; the lenient reader drops those), the caller must say so — it
+ * must NEVER silently fall back to an older scan's findings, which would
+ * show findings for a digest that is not the one the image last resolved.
+ */
+export type LatestScanResult =
+  | { status: "ok"; result: ImageScanResult }
+  | { status: "unreadable" }
+  | { status: "none" };
+
+export function latestScanResult(
+  scans: readonly ImageScan[],
+  lastScanId: string | null,
+): LatestScanResult {
+  const target =
+    (lastScanId !== null ? scans.find((s) => s.id === lastScanId) : undefined) ??
+    scans.find((s) => s.status === "done");
+  if (!target || target.status !== "done" || !target.result) return { status: "none" };
+  const parsed = imageScanResultSchema.safeParse(target.result);
+  if (parsed.success && parsed.data.error === null) return { status: "ok", result: parsed.data };
+  return { status: "unreadable" };
 }
 
 /** A failed scan's message (`result.error`, spec §6.3 step 5). */

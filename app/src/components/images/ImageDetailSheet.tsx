@@ -19,7 +19,7 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { timeAgo } from "@/components/monitoring/shared";
 import { useImage, useRescanImage } from "@/lib/images/queries";
-import { readVerdict } from "@/lib/images/verdict";
+import { exceptionLapsed, readVerdict } from "@/lib/images/verdict";
 import { ImageStatusBadge } from "./ImageStatusBadge";
 import { SeverityStack } from "./SeverityStack";
 import { configWarning, latestScanResult, scanError, shortDigest, sortFindings } from "./format";
@@ -39,9 +39,16 @@ export function ImageDetailSheet({
   const rescan = useRescanImage();
   const image = data?.image ?? null;
   const verdict = readVerdict(image?.verdict);
-  const latest = latestScanResult(data?.scans ?? []);
-  const findings = sortFindings(latest?.top ?? []).slice(0, TOP_FINDINGS);
+  const latest = latestScanResult(data?.scans ?? [], image?.last_scan_id ?? null);
+  const findings = latest.status === "ok" ? sortFindings(latest.result.top ?? []).slice(0, TOP_FINDINGS) : [];
   const warning = configWarning(image?.config);
+  const now = new Date();
+  const lapsed =
+    image !== null &&
+    exceptionLapsed(
+      { status: image.status, exceptionExpiresAt: image.exception?.expires_at ?? null, verdict: image.verdict },
+      now,
+    );
 
   const requestRescan = async () => {
     if (!image) return;
@@ -121,9 +128,16 @@ export function ImageDetailSheet({
                 <h3 className="font-semibold">Exception</h3>
                 <p>{image.exception.reason}</p>
                 <p className="text-muted-foreground">
-                  Granted by {image.exception.by}, expires{" "}
+                  Granted by {image.exception.by},{" "}
+                  {lapsed ? "expired" : "expires"}{" "}
                   {new Date(image.exception.expires_at).toLocaleDateString()}
                 </p>
+                {lapsed && (
+                  <p className="text-warning">
+                    The exception expired and the latest scan still fails the policy: new deploys
+                    are refused until a rescan passes.
+                  </p>
+                )}
               </section>
             )}
 
@@ -138,6 +152,10 @@ export function ImageDetailSheet({
                   ))}
                 </ul>
               </section>
+            )}
+
+            {latest.status === "unreadable" && (
+              <p className="text-warning">Findings for the latest scan could not be read</p>
             )}
 
             {findings.length > 0 && (
@@ -216,7 +234,7 @@ export function ImageDetailSheet({
             </section>
 
             {canOperate && image.status !== "revoked" && (
-              <div>
+              <div aria-live="polite" role="status">
                 <Button onClick={requestRescan} disabled={rescan.isPending}>
                   {rescan.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />

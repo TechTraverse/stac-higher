@@ -33,7 +33,15 @@ export function ImagePicker({
   const uid = useId();
   const [search, setSearch] = useState("");
   const options = imagePickerOptions(images, groupId, search);
+  // Whether the CURRENTLY DEPLOYED image dropped off the filtered list
+  // because the search text hides it (still selectable, just filtered) or
+  // because it is genuinely gone (revoked, or no longer returned at all):
+  // those need different messages, so the check re-runs the picker with NO
+  // search to tell them apart.
+  const unfilteredOptions = imagePickerOptions(images, groupId);
   const missing = value !== null && !options.some((option) => option.id === value.id);
+  const hiddenByFilter =
+    missing && unfilteredOptions.some((option) => option.id === value?.id);
   const anyListed = images.some((image) => image.status !== "revoked");
 
   return (
@@ -53,7 +61,9 @@ export function ImagePicker({
             <option value="">Choose an approved image</option>
             {missing && value && (
               <option value={value.id} disabled>
-                {`${value.reference} · ${shortDigest(value.digest)} (deployed now; not selectable)`}
+                {`${value.reference} · ${shortDigest(value.digest)} (${
+                  hiddenByFilter ? "selected; hidden by the filter" : "no longer listed; not selectable"
+                })`}
               </option>
             )}
             {options.map((option) => (
