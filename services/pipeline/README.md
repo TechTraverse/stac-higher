@@ -357,13 +357,20 @@ image: pass -> `approved`, fail -> `rejected` (admission) or `flagged`
 `scan_failed` — there is no automatic retry; the operator re-requests a
 rescan. A second add of an already-known digest folds into the existing row
 (the folded scan is recorded with kind `admission`, even though spec §9.1
-calls it a rescan) and deletes the provisional row's own scan rows, so a
-poll already holding that provisional scan id can see a 404. The scanner's
-registry credential (the group's, or the deployment Docker Hub one) is
-resolved into the scanner container's own environment at launch and stays
-there until the container is reaped, the same posture as any run's
-`secret_ref` injection (spec §6.2). The orphan reaper judges scanner
-containers (`stac-higher.run-kind=image_scan`) against `image_scans`, never
+calls it a rescan): the triggering scan row is re-pointed at the existing
+image (`image_scans.image_id` updated in place — the scan row itself is
+kept, not deleted), and only then is the now scan-less provisional
+`container_images` row deleted. The scan id from the original 202 still
+resolves, under the existing image's id, matching spec §9.1 ("the client
+follows the scan id from the 202, whose `image_id` is authoritative once the
+scan is `done`") — but a caller that instead polls scoped by the
+*provisional* image id (the one the 202 first returned) can no longer find
+the scan there once the fold lands. The scanner's registry credential (the
+group's, or the deployment Docker Hub one) is resolved into the scanner
+container's own environment at launch and stays there until the container
+is reaped, the same posture as any run's `secret_ref` injection (spec
+§6.2). The orphan reaper judges scanner containers
+(`stac-higher.run-kind=image_scan`) against `image_scans`, never
 `process_runs`.
 
 ## Develop
