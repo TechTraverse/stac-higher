@@ -53,6 +53,7 @@ and [`decisions/0015-proxy-write-policy.md`](decisions/0015-proxy-write-policy.m
 | Auth (`AUTH_MODE`, OIDC issuer/client, claims mapping) | Full reference: [`auth.md`](auth.md). Dev-bypass is the default in dev — a static operator identity, so unit tests and e2e need no IdP. |
 | `STAGING_*` | Pipeline-side TTL sweep of abandoned `staging/` uploads. |
 | `PROCESS_HARDWARE_PROFILES_FILE` | Path to the deployment's hardware-profile document (K-1); validated strictly at deploy time and served (minus `backend`) on `GET /api/processes/hardware-profiles`. Unset means the repo checkout's `infra/hardware-profiles/local.json`. |
+| `PROCESS_IMAGE_POLICY_FILE` | Path to the deployment's image policy (C-1, container-images spec §7): allowed registries, size cap, block rules, scan window. It is read only when a revision names a user image (`inline_python_on_image` / `container`). A missing or invalid file makes those deploys fail closed (503 `image_policy_unavailable`), and inline deploys never read it. Unset means the repo checkout's `infra/image-policy/default.json`. |
 
 ## Astro server routes
 

@@ -55,6 +55,7 @@ BUILTIN_EXTRACTORS = _load("builtin-extractors.json")
 HARDWARE_PROFILES = _load("hardware-profiles.json")
 IMAGE_STATUS = _load("image-status.json")
 IMAGE_REFERENCE = _load("image-reference.json")
+IMAGE_POLICY = _load("image-policy.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -385,3 +386,35 @@ def test_image_digest_grammar(case):
     from pipeline.images.reference import is_image_digest
 
     assert is_image_digest(case["value"]) is case["digest"]
+
+
+def _policy_doc(document: dict, case: dict) -> dict:
+    """image-policy.json's case rule: patch, block_patch, then the removals."""
+    doc = {**document, **case.get("patch", {})}
+    block = {**document["block"], **case.get("block_patch", {})}
+    for key in case.get("block_remove", []):
+        block.pop(key, None)
+    doc["block"] = block
+    for key in case.get("remove", []):
+        doc.pop(key, None)
+    return doc
+
+
+@pytest.mark.parametrize("case", IMAGE_POLICY["cases"], ids=lambda c: c["name"])
+def test_image_policy_cases(case):
+    from pipeline.images.policy import ImagePolicyError, parse_image_policy
+
+    doc = _policy_doc(IMAGE_POLICY["document"], case)
+    if case["pipeline"] == "accept":
+        parse_image_policy(doc)
+    else:
+        with pytest.raises(ImagePolicyError):
+            parse_image_policy(doc)
+
+
+@pytest.mark.parametrize("case", IMAGE_POLICY["registry_cases"], ids=lambda c: c["name"])
+def test_image_policy_registry_cases(case):
+    from pipeline.images.policy import registry_allowed
+
+    patterns = IMAGE_POLICY["document"]["allowed_registries"]
+    assert registry_allowed(case["host"], patterns) is case["allowed"]

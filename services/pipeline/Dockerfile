@@ -1,10 +1,12 @@
 # services/pipeline — worker + scheduler + /health in one process (Phase 0).
 # Build context: services/pipeline/, plus named contexts `fixtures` (pointing
-# at tests/contract-fixtures) and `hardware` (pointing at
-# infra/hardware-profiles) — see the COPY --from=fixtures/--from=hardware below:
+# at tests/contract-fixtures), `hardware` (pointing at
+# infra/hardware-profiles) and `imagepolicy` (pointing at infra/image-policy)
+# — see the COPY --from=fixtures/--from=hardware/--from=imagepolicy below:
 #   docker compose build pipeline            (additional_contexts in compose)
 #   docker build --build-context fixtures=tests/contract-fixtures \
-#     --build-context hardware=infra/hardware-profiles services/pipeline
+#     --build-context hardware=infra/hardware-profiles \
+#     --build-context imagepolicy=infra/image-policy services/pipeline
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
@@ -42,11 +44,16 @@ COPY --from=fixtures builtin-extractors.json /app/share/builtin-extractors.json
 # repo-root .dockerignore excludes infra/. Same env var the app image
 # publishes, so pipeline.process.hardware.load_hardware_profiles finds it.
 COPY --from=hardware local.json /app/share/hardware-profiles/local.json
+# The deployment's image policy (C-1, container-images spec §7) — same reason
+# as the hardware set: reached through the `imagepolicy` named build context
+# because the repo-root .dockerignore excludes infra/.
+COPY --from=imagepolicy default.json /app/share/image-policy/default.json
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     HEALTH_PORT=8083 \
     STAC_HIGHER_BUILTIN_REGISTRY=/app/share/builtin-extractors.json \
-    PROCESS_HARDWARE_PROFILES_FILE=/app/share/hardware-profiles/local.json
+    PROCESS_HARDWARE_PROFILES_FILE=/app/share/hardware-profiles/local.json \
+    PROCESS_IMAGE_POLICY_FILE=/app/share/image-policy/default.json
 USER pipeline
 EXPOSE 8083
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \

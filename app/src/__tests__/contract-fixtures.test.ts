@@ -57,6 +57,7 @@ import {
   type ImageStatus,
 } from "@/lib/images/status";
 import { isImageDigest, isImageReference } from "@/lib/images/reference";
+import { imagePolicySchema, registryAllowed } from "@/lib/images/policy";
 
 interface FixtureCase {
   name: string;
@@ -436,5 +437,53 @@ describe("image reference grammar (tests/contract-fixtures/image-reference.json)
   });
   it.each(fixture.digest_cases)("digest — $name", ({ value, digest }) => {
     expect(isImageDigest(value)).toBe(digest);
+  });
+});
+
+interface PolicyCaseShape {
+  patch?: Record<string, unknown>;
+  block_patch?: Record<string, unknown>;
+  remove?: string[];
+  block_remove?: string[];
+}
+
+/** image-policy.json's case rule: patch, block_patch, then the removals. */
+function policyDoc(document: Record<string, unknown>, c: PolicyCaseShape): Record<string, unknown> {
+  const doc: Record<string, unknown> = { ...document, ...(c.patch ?? {}) };
+  const block: Record<string, unknown> = {
+    ...(document.block as Record<string, unknown>),
+    ...(c.block_patch ?? {}),
+  };
+  for (const key of c.block_remove ?? []) delete block[key];
+  doc.block = block;
+  for (const key of c.remove ?? []) delete doc[key];
+  return doc;
+}
+
+describe("image policy contract (tests/contract-fixtures/image-policy.json)", () => {
+  const fixture = loadFixture("image-policy.json") as unknown as {
+    document: Record<string, unknown> & { allowed_registries: string[] };
+    cases: (PolicyCaseShape & { name: string; app: "accept" | "reject" })[];
+    registry_cases: { name: string; host: string; allowed: boolean }[];
+  };
+
+  it("the in-repo default policy IS the fixture document", () => {
+    const shipped = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("../../../infra/image-policy/default.json", import.meta.url)),
+        "utf8",
+      ),
+    );
+    expect(shipped).toEqual(fixture.document);
+  });
+
+  it.each(fixture.cases)("$app: $name", (c) => {
+    expect(imagePolicySchema.safeParse(policyDoc(fixture.document, c)).success).toBe(
+      c.app === "accept",
+    );
+  });
+
+  it.each(fixture.registry_cases)("registry — $name", ({ host, allowed }) => {
+    expect(registryAllowed(host, fixture.document.allowed_registries)).toBe(allowed);
   });
 });

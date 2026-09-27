@@ -1,0 +1,58 @@
+{
+  "style": "document",
+  "$comment": "C-1 (container-images spec §7): the image policy, a per-deployment document both runtimes read through PROCESS_IMAGE_POLICY_FILE (in-repo default infra/image-policy/default.json, which must equal `document`). The app validates it STRICTLY (app/src/lib/images/policy.ts). The pipeline reader (pipeline/images/policy.py) ignores unknown keys but is otherwise strict, because a policy is a security document and both loaders fail closed. A case applies `patch` (top-level shallow merge), `block_patch` (merged into block), then deletes `remove` / `block_remove` keys. `registry_cases` run registryAllowed()/registry_allowed() against document.allowed_registries: `*` is exactly one DNS label, hosts are case-folded, and a port must match literally. `evaluate_cases` are consumed by pytest only (the pipeline is the only evaluator).",
+  "document": {
+    "version": 1,
+    "allowed_registries": ["docker.io", "ghcr.io", "public.ecr.aws", "*.dkr.ecr.*.amazonaws.com"],
+    "platform": "linux/amd64",
+    "max_image_size_mb": 4096,
+    "block": {
+      "kev": true,
+      "critical_fixed": true,
+      "critical_unfixed_older_than_days": 30,
+      "high_fixed_epss_at_least": 0.1,
+      "high_unfixed": false
+    },
+    "scan_window_days": 30,
+    "rescan_interval_hours": 24,
+    "exception_max_days": 90,
+    "scan_limits": { "memory_mb": 4096, "timeout_seconds": 900 }
+  },
+  "cases": [
+    { "name": "the default policy", "app": "accept", "pipeline": "accept" },
+    { "name": "version 2", "patch": { "version": 2 }, "app": "reject", "pipeline": "reject" },
+    { "name": "no allowed registries (nothing could ever be added)", "patch": { "allowed_registries": [] }, "app": "reject", "pipeline": "reject" },
+    { "name": "a registry pattern with a scheme", "patch": { "allowed_registries": ["https://ghcr.io"] }, "app": "reject", "pipeline": "reject" },
+    { "name": "an uppercase registry pattern", "patch": { "allowed_registries": ["GHCR.IO"] }, "app": "reject", "pipeline": "reject" },
+    { "name": "a platform without an architecture", "patch": { "platform": "amd64" }, "app": "reject", "pipeline": "reject" },
+    { "name": "a zero size cap", "patch": { "max_image_size_mb": 0 }, "app": "reject", "pipeline": "reject" },
+    { "name": "a boolean size cap", "patch": { "max_image_size_mb": true }, "app": "reject", "pipeline": "reject" },
+    { "name": "block without kev", "block_remove": ["kev"], "app": "reject", "pipeline": "reject" },
+    { "name": "block without the unfixed-critical key (null is how a rule is turned off, absence is a typo)", "block_remove": ["critical_unfixed_older_than_days"], "app": "reject", "pipeline": "reject" },
+    { "name": "unfixed-critical rule off", "block_patch": { "critical_unfixed_older_than_days": null }, "app": "accept", "pipeline": "accept" },
+    { "name": "EPSS rule off", "block_patch": { "high_fixed_epss_at_least": null }, "app": "accept", "pipeline": "accept" },
+    { "name": "an EPSS threshold above 1", "block_patch": { "high_fixed_epss_at_least": 1.5 }, "app": "reject", "pipeline": "reject" },
+    { "name": "a negative unfixed-critical age", "block_patch": { "critical_unfixed_older_than_days": -1 }, "app": "reject", "pipeline": "reject" },
+    { "name": "a zero scan window", "patch": { "scan_window_days": 0 }, "app": "reject", "pipeline": "reject" },
+    { "name": "a rescan interval longer than the scan window (every image would go stale between rescans)", "patch": { "rescan_interval_hours": 721 }, "app": "reject", "pipeline": "reject" },
+    { "name": "a rescan interval exactly the scan window", "patch": { "rescan_interval_hours": 720 }, "app": "accept", "pipeline": "accept" },
+    { "name": "a zero exception cap", "patch": { "exception_max_days": 0 }, "app": "reject", "pipeline": "reject" },
+    { "name": "scanner memory below the floor", "patch": { "scan_limits": { "memory_mb": 64, "timeout_seconds": 900 } }, "app": "reject", "pipeline": "reject" },
+    { "name": "no scan_limits", "remove": ["scan_limits"], "app": "reject", "pipeline": "reject" },
+    { "name": "an unknown top-level key", "patch": { "cosign": true }, "app": "reject", "pipeline": "accept" },
+    { "name": "an unknown block key", "block_patch": { "secrets": true }, "app": "reject", "pipeline": "accept" }
+  ],
+  "registry_cases": [
+    { "name": "Docker Hub", "host": "docker.io", "allowed": true },
+    { "name": "GHCR", "host": "ghcr.io", "allowed": true },
+    { "name": "ECR public", "host": "public.ecr.aws", "allowed": true },
+    { "name": "a private ECR host matches the two-wildcard pattern", "host": "123456789012.dkr.ecr.us-gov-west-1.amazonaws.com", "allowed": true },
+    { "name": "case is folded", "host": "GHCR.IO", "allowed": true },
+    { "name": "a registry the policy does not name", "host": "quay.io", "allowed": false },
+    { "name": "a wildcard matches exactly one label, not zero", "host": "dkr.ecr.us-east-1.amazonaws.com", "allowed": false },
+    { "name": "a wildcard matches exactly one label, not two", "host": "evil.com.dkr.ecr.us-east-1.amazonaws.com", "allowed": false },
+    { "name": "anchored at the end", "host": "123456789012.dkr.ecr.us-east-1.amazonaws.com.evil.com", "allowed": false },
+    { "name": "a suffix is not a match", "host": "ghcr.io.evil.com", "allowed": false },
+    { "name": "a port must match literally", "host": "ghcr.io:443", "allowed": false }
+  ]
+}
