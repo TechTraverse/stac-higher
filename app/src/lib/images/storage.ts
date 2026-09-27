@@ -560,11 +560,12 @@ export type ExceptionOutcome =
   | { outcome: "wrong_status"; status: ImageStatus };
 
 /** `rejected`/`flagged` -> `approved` with the one live exception (spec §4.4).
- * Also re-grants over an `approved` row whose OWN exception has already
- * expired (Fix A, C-3): an expired exception is not a wrong status to escape
- * from, it is the exact situation an admin re-grant exists for. Conditional
- * UPDATE, so a concurrent drain transition cannot be overwritten by a stale
- * read. */
+ * On an `approved` image that already carries an exception, live or
+ * expired, the grant REPLACES it (C-4; spec §4.4: "revoking an exception
+ * early = image.revoke or a new grant"). The new reason and expiry
+ * overwrite the old; each grant stays in the audit log. An approved image
+ * with no exception passed on its own and takes none. Conditional UPDATE,
+ * so a concurrent drain transition cannot be overwritten by a stale read. */
 export async function grantImageException(input: {
   imageId: string;
   reason: string;
@@ -582,7 +583,7 @@ export async function grantImageException(input: {
             updated_at = now()
       WHERE id = $1
         AND (status IN ('rejected','flagged')
-             OR (status = 'approved' AND exception_expires_at IS NOT NULL AND exception_expires_at <= now()))
+             OR (status = 'approved' AND exception_expires_at IS NOT NULL))
       RETURNING id`,
     [input.imageId, input.reason, input.by, input.expiresAt.toISOString()],
   );

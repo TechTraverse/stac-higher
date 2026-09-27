@@ -171,7 +171,7 @@ describe("POST /api/images/[id]/exception", () => {
     const body = await res.json();
     expect(body.code).toBe("image_not_exceptionable");
     expect(body.error).toMatch(/pending/);
-    expect(body.error).toMatch(/approved image whose exception has expired/);
+    expect(body.error).toMatch(/replaces the exception on an approved image that carries one/);
 
     vi.mocked(grantImageException).mockResolvedValue({ outcome: "not_found" });
     expect((await call(exceptionRoute, admin, { reason: REASON, expires_at: inDays(5) })).res.status).toBe(404);

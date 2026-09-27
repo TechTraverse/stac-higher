@@ -346,7 +346,7 @@ describe("requestImageScan", () => {
 describe("human verdicts", () => {
   const EXPIRES = new Date("2026-10-27T00:00:00.000Z");
 
-  it("grants an exception only from rejected or flagged, or an approved image whose OWN exception already expired (Fix A)", async () => {
+  it("grants from rejected or flagged, and REPLACES the exception of an approved image that carries one, live or expired (C-4, spec §4.4)", async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ id: IMG }] } as never);
     expect(
       await grantImageException({ imageId: IMG, reason: "vendor fix pending", by: "admin-1", expiresAt: EXPIRES }),
@@ -354,9 +354,9 @@ describe("human verdicts", () => {
     const [sql, params] = mockQuery.mock.calls[0];
     expect(sql).toContain("status = 'approved'");
     expect(sql).toContain("status IN ('rejected','flagged')");
-    expect(sql).toContain(
-      "(status = 'approved' AND exception_expires_at IS NOT NULL AND exception_expires_at <= now())",
-    );
+    expect(sql).toContain("(status = 'approved' AND exception_expires_at IS NOT NULL))");
+    // C-3 allowed only an EXPIRED exception to be re-granted; C-4 drops that.
+    expect(sql).not.toContain("exception_expires_at <= now()");
     expect(params).toEqual([IMG, "vendor fix pending", "admin-1", EXPIRES.toISOString()]);
   });
 

@@ -5,8 +5,9 @@
  * `container_image`, carrying the reason and expiry via `locals.auditDetail`).
  *
  * `{reason, expires_at}`: `expires_at` must be in the future and at most the
- * policy's `exception_max_days` away. Only a `rejected` or `flagged` image
- * takes an exception (-> `approved`). An exception never covers staleness
+ * policy's `exception_max_days` away. A `rejected` or `flagged` image takes
+ * an exception (-> `approved`); on an `approved` image that carries one, the
+ * grant replaces it (C-4, spec §4.4). An exception never covers staleness
  * (spec §4.3); the gate still refuses a stale image.
  */
 import type { APIRoute } from "astro";
@@ -64,7 +65,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     if (outcome.outcome === "not_found") return imageNotFound();
     if (outcome.outcome === "wrong_status") {
       return jsonResponse(409, {
-        error: `An exception applies to a rejected or flagged image, or an approved image whose exception has expired; this one is ${outcome.status}`,
+        error: `An exception applies to a rejected or flagged image, or replaces the exception on an approved image that carries one; this one is ${outcome.status}`,
         code: "image_not_exceptionable",
       });
     }
