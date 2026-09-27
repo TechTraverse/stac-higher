@@ -14,6 +14,10 @@ can read.
 Before the drain, the same tick reconciles the ``process_image_flagged``
 alerts (C-4, ``pipeline/images/alerts.py``): one per process whose current
 revision uses a flagged, revoked, gone or stale image.
+
+``pipeline.image_rescan_tick`` (``15 * * * *``, C-4) expires admin
+exceptions (re-evaluating the latest scan, audited) and inserts one
+``rescan`` row per image due for its periodic rescan; this drain runs them.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from pipeline.flow.repo import PgFlowMonitorRepo
 from pipeline.images.alerts import PgImageAlertsRepo, sync_image_alerts
 from pipeline.images.drain import STALL_GRACE_SECONDS, drain_one
 from pipeline.images.drift import tag_drift
+from pipeline.images.lifecycle import PgImageLifecycleRepo, lifecycle_tick
 from pipeline.images.policy import ImagePolicyError, load_image_policy
 from pipeline.images.registry_auth import (
     RegistryAuthUnavailable,
@@ -46,6 +51,10 @@ logger = logging.getLogger(__name__)
 
 JOB_NAME = "pipeline.image_scan_drain"
 CRON = "* * * * *"
+
+#: C-4 (spec §8.2): hourly, each image rescanned once its interval is up.
+RESCAN_JOB_NAME = "pipeline.image_rescan_tick"
+RESCAN_CRON = "15 * * * *"
 
 
 def register(queue: QueueBackend, settings: Settings) -> None:
@@ -158,3 +167,30 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             )
 
     queue.register_periodic(image_scan_drain, name=JOB_NAME, cron=CRON)
+
+    async def image_rescan_tick(timestamp: int) -> None:  # pragma: no cover - needs a DB
+        try:
+            policy = load_image_policy()
+        except ImagePolicyError as err:
+            logger.error(
+                "image rescan tick skipped: the image policy is unavailable",
+                extra={"job": RESCAN_JOB_NAME, "error": str(err)},
+            )
+            return
+        result = await lifecycle_tick(
+            PgImageLifecycleRepo(settings.database_url),
+            policy=policy,
+            now=dt.datetime.now(dt.UTC),
+        )
+        if result.exceptions_expired or result.rescans_requested:
+            logger.info(
+                "image rescan tick",
+                extra={
+                    "exceptions_expired": result.exceptions_expired,
+                    "flagged_on_expiry": result.flagged_on_expiry,
+                    "rescans_requested": result.rescans_requested,
+                    "scheduled_timestamp": timestamp,
+                },
+            )
+
+    queue.register_periodic(image_rescan_tick, name=RESCAN_JOB_NAME, cron=RESCAN_CRON)
