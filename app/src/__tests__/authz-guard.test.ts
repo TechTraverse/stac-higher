@@ -262,6 +262,42 @@ describe("route-supplied audit detail (C-3)", () => {
     });
   });
 
+  it("an in-route 403 becomes a denied audit row with reason route_forbidden (controller ruling)", async () => {
+    const next = okNext(403, { error: "not exceptionable" });
+    const res = await applyApiGuard(
+      makeContext("POST", "/api/images/img-1/exception", authed(["operator"])),
+      next,
+    );
+    expect(res.status).toBe(403);
+    expect(mockWriteAudit).toHaveBeenCalledTimes(1);
+    const entry = mockWriteAudit.mock.calls[0][0];
+    expect(entry.detail).toMatchObject({
+      outcome: "denied",
+      reason: "route_forbidden",
+      status: 403,
+    });
+  });
+
+  it("a route cannot spoof outcome or reason on an in-route 403", async () => {
+    const ctx = makeContext("POST", "/api/images/img-1/exception", authed(["operator"]));
+    const next = vi.fn(async () => {
+      (ctx.locals as { auditDetail?: Record<string, unknown> }).auditDetail = {
+        outcome: "allowed",
+        reason: "x",
+      };
+      return new Response(JSON.stringify({ error: "not exceptionable" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await applyApiGuard(ctx, next);
+
+    expect(mockWriteAudit).toHaveBeenCalledTimes(1);
+    const entry = mockWriteAudit.mock.calls[0][0];
+    expect(entry.detail).toMatchObject({ outcome: "denied", reason: "route_forbidden", status: 403 });
+  });
+
   it("cannot spoof path/method/outcome/status but a route-specific field like reason survives (controller ruling F4)", async () => {
     const ctx = makeContext("POST", "/api/images", authed(["operator"]));
     const next = vi.fn(async () => {

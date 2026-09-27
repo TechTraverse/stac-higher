@@ -116,6 +116,11 @@ export async function applyApiGuard(
     gate.resourceId ??
     (gate.action === "create" ? await extractCreatedId(response) : null);
 
+  // A route the guard let through (operator+) can still refuse in-route on a
+  // narrower check it alone knows (e.g. admin-only C-3 verbs): that is a
+  // denial, not a success, and must read that way in the audit trail (C-3).
+  const routeDenied = response.status === 403;
+
   await writeAudit({
     actor: identity.sub,
     actorGroups: identity.groups,
@@ -123,13 +128,15 @@ export async function applyApiGuard(
     resourceType: gate.resourceType,
     resourceId,
     // Route-supplied detail sits BENEATH the guard's own keys, so a route can
-    // never rewrite the request-derived method/path, or the outcome/status,
-    // of its own audit row (security: a route must not be able to spoof the
-    // audit trail of the very action it is performing).
+    // never rewrite the request-derived method/path, or the outcome/status
+    // (or reason on a denial), of its own audit row (security: a route must
+    // not be able to spoof the audit trail of the very action it is
+    // performing).
     detail: {
       ...(context.locals.auditDetail ?? {}),
       ...requestDetail,
-      outcome: "allowed",
+      outcome: routeDenied ? "denied" : "allowed",
+      ...(routeDenied ? { reason: "route_forbidden" } : {}),
       status: response.status,
     },
   });
