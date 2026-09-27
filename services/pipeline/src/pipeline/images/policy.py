@@ -207,9 +207,15 @@ def registry_allowed(host: str, patterns: tuple[str, ...] | list[str]) -> bool:
 
 # ---------------------------------------------------------------------------
 # evaluate (spec section 7.3) - pure; reasons are stable strings the dashboard
-# shows verbatim. It works over `kev` (complete), `top` (<= 25 by risk) and
-# `fixed_counts`: a fixed CRITICAL that fell outside `top` still blocks, as
-# `critical_fixed:*`.
+# shows verbatim. It works over `kev` (complete) and `top` (<= 25 findings by
+# RISK, not severity, so a page of high-risk HIGHs can push a lower-risk
+# CRITICAL out of `top` entirely). `counts`/`fixed_counts` are the fallback
+# for what fell out of `top`: a fixed CRITICAL, an unfixed CRITICAL (whose age
+# is then unknowable), or an unfixed HIGH (when the policy blocks on it) that
+# `top` does not carry is still counted and blocks, unnamed (`critical_fixed:
+# *`, `critical_unfixed_age:*:unknown`, `high_unfixed:*`). A fixed HIGH
+# outside `top` does NOT block: its EPSS is unknowable, the same as a finding
+# with a null EPSS.
 # ---------------------------------------------------------------------------
 
 
@@ -278,14 +284,23 @@ def evaluate(result: ScanResult, policy: ImagePolicy, *, now: dt.datetime) -> Ve
         if not named and result.fixed_counts.get("critical", 0) > 0:
             add("critical_fixed:*")
     if block.critical_unfixed_older_than_days is not None:
+        unfixed_critical_in_top = 0
         for f in result.top:
             if f.severity == "critical" and not f.fixed_in:
+                unfixed_critical_in_top += 1
                 age = _age_days(f.published_at, now)
                 if age is None:
                     add(f"critical_unfixed_age:{f.id}:unknown")
                 elif age > block.critical_unfixed_older_than_days:
                     add(f"critical_unfixed_age:{f.id}:{age}d")
+        unfixed_critical_total = result.counts.get("critical", 0) - result.fixed_counts.get(
+            "critical", 0
+        )
+        if unfixed_critical_total > unfixed_critical_in_top:
+            add("critical_unfixed_age:*:unknown")
     if block.high_fixed_epss_at_least is not None:
+        # A fixed HIGH outside `top` has no EPSS to check, so it never blocks
+        # here, the same as a finding whose EPSS is explicitly null.
         for f in result.top:
             if (
                 f.severity == "high"
@@ -295,9 +310,14 @@ def evaluate(result: ScanResult, policy: ImagePolicy, *, now: dt.datetime) -> Ve
             ):
                 add(f"high_fixed_epss:{f.id}:{format(f.epss, 'g')}")
     if block.high_unfixed:
+        unfixed_high_in_top = 0
         for f in result.top:
             if f.severity == "high" and not f.fixed_in:
+                unfixed_high_in_top += 1
                 add(f"high_unfixed:{f.id}")
+        unfixed_high_total = result.counts.get("high", 0) - result.fixed_counts.get("high", 0)
+        if unfixed_high_total > unfixed_high_in_top:
+            add("high_unfixed:*")
     return Verdict(
         passed=not reasons,
         reasons=tuple(reasons),
