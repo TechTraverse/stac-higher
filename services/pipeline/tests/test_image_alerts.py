@@ -56,6 +56,17 @@ def test_a_flagged_image_in_use_raises_one_process_anchored_alert():
     assert "runs continue" in c.message
 
 
+def test_new_findings_are_singular_or_plural():
+    one = replace(ROW, status="flagged", diff={"new": ["CVE-2026-0001"]})
+    (c,) = conditions(one)
+    assert "1 new finding;" in c.message
+    assert "1 new findings" not in c.message
+
+    two = replace(ROW, status="flagged", diff={"new": ["CVE-2026-0001", "CVE-2026-0002"]})
+    (c,) = conditions(two)
+    assert "2 new findings" in c.message
+
+
 def test_many_reasons_are_named_up_to_five():
     reasons = [f"kev:CVE-2026-000{i}" for i in range(7)]
     (c,) = conditions(replace(ROW, status="flagged", verdict={"pass": False, "reasons": reasons}))
@@ -91,6 +102,14 @@ def test_only_live_enabled_processes_on_their_current_revision_are_considered():
 
     assert "p.deleted_at IS NULL AND p.enabled" in IMAGES_IN_USE_SQL
     assert "r.id = p.current_revision" in IMAGES_IN_USE_SQL
+
+
+def test_the_image_join_is_case_insensitive_on_the_snapshot_id():
+    """Item 8 (Minor 2): an upper-case snapshot image id must still match
+    the registry row (registry uuids render lower-case)."""
+    from pipeline.images.alerts import IMAGES_IN_USE_SQL
+
+    assert "i.id::text = lower(r.runtime->'image'->>'id')" in IMAGES_IN_USE_SQL
 
 
 def test_one_condition_per_process():

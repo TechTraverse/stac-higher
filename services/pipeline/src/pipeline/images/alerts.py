@@ -72,7 +72,11 @@ IMAGES_IN_USE_SQL = (
     " FROM stac_higher.processes p"
     " JOIN stac_higher.process_revisions r ON r.id = p.current_revision"
     " LEFT JOIN stac_higher.container_images i"
-    "   ON i.id::text = r.runtime->'image'->>'id'"
+    # Item 8 (Minor 2): the snapshot's image id is case-insensitive here --
+    # a revision POSTed with an upper-case uuid still passes zod .uuid() and
+    # resolves in the deploy gate (a uuid cast), so this join must not miss
+    # it and raise a false "no longer in the image registry" alert.
+    "   ON i.id::text = lower(r.runtime->'image'->>'id')"
     " LEFT JOIN stac_higher.image_scans s ON s.id = i.last_scan_id"
     " WHERE p.deleted_at IS NULL AND p.enabled"
     " AND r.runtime->'image'->>'id' IS NOT NULL"
@@ -133,7 +137,7 @@ def _diff(diff: dict[str, Any] | None) -> str:
     new = diff.get("new")
     new_kev = diff.get("new_kev")
     if isinstance(new, list) and new:
-        parts.append(f"{len(new)} new findings")
+        parts.append(f"{len(new)} new finding" + ("" if len(new) == 1 else "s"))
     if isinstance(new_kev, list) and new_kev:
         parts.append(f"{len(new_kev)} new KEV")
     if diff.get("verdict_changed") is True:

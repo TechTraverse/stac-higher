@@ -15,6 +15,14 @@ def counter_value(counter, **labels) -> float:
     return counter.labels(**labels)._value.get()
 
 
+def test_alerts_total_help_text_names_both_writers():
+    """Item 7 (final-review fix wave): pipeline_alerts_total is written by
+    both the flow monitor (jobs/monitor.py) and the image alert writer
+    (jobs/image_scans.py); the help text must not claim only the former."""
+    assert "flow monitor" in metrics.ALERTS._documentation
+    assert "image alert" in metrics.ALERTS._documentation
+
+
 class TestInstrumentHandler:
     async def test_counts_ok_runs_and_observes_duration(self):
         async def handler(timestamp: int) -> None:

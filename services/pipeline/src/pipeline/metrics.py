@@ -176,7 +176,7 @@ PROCESS_RATE_DEFERRALS = Counter(
 
 ALERTS = Counter(
     "pipeline_alerts_total",
-    "Alert lifecycle events written by the flow monitor",
+    "Alert lifecycle events, written by the flow monitor and the image alert writer",
     ["event"],  # raised | auto_resolved
     registry=REGISTRY,
 )
