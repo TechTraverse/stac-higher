@@ -6,17 +6,38 @@ is reachable; 503 otherwise. Suitable as a compose/K8s healthcheck target.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response
 
 from pipeline import __version__
 from pipeline.db.pool import pool_stats
+from pipeline.images.policy import ImagePolicyError, image_policy_path, load_image_policy
 from pipeline.jobs.heartbeat import STATE, HeartbeatState
 from pipeline.metrics import METRICS_CONTENT_TYPE, render_metrics
 from pipeline.queue.interface import QueueBackend, QueueConnectionError
 
 
-def create_health_app(queue: QueueBackend, heartbeat_state: HeartbeatState = STATE) -> FastAPI:
+def image_policy_status(path: Path | None = None) -> dict[str, Any]:
+    """C-2 (spec §7.2): the policy fails closed, so an operator must be able to
+    see WHY no image is scanned or launched. Informational: a broken policy
+    does not make the pipeline unhealthy (inline processes are unaffected)."""
+    where = path or image_policy_path()
+    try:
+        policy = load_image_policy(where)
+    except ImagePolicyError as err:
+        return {"file": str(where), "ok": False, "version": None, "error": str(err)}
+    return {"file": str(where), "ok": True, "version": policy.version, "error": None}
+
+
+def create_health_app(
+    queue: QueueBackend,
+    heartbeat_state: HeartbeatState = STATE,
+    *,
+    image_policy_file: Path | None = None,
+) -> FastAPI:
     app = FastAPI(title="stac-higher-pipeline", version=__version__, docs_url=None)
 
     @app.get("/health")
@@ -46,6 +67,8 @@ def create_health_app(queue: QueueBackend, heartbeat_state: HeartbeatState = STA
                 # that has not touched Postgres. Cumulative counters
                 # (connections_num, requests_num, …) appear only once non-zero.
                 "db_pool": pool_stats(),
+                # C-2: the image policy's file and whether it parses.
+                "image_policy": image_policy_status(image_policy_file),
             },
         )
 
