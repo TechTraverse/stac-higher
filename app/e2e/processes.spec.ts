@@ -46,6 +46,59 @@ test.describe("Processes", () => {
   });
 });
 
+test.describe("Images (C-3)", () => {
+  test("is reachable from the sidebar nav", async ({ page }) => {
+    await page.goto("/catalogs");
+    await page.getByRole("link", { name: "Images", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Images", level: 1 })).toBeVisible();
+  });
+
+  test("shows either images or the empty state, never an error", async ({ page }) => {
+    await page.goto("/images");
+    await expect(
+      page.getByText(/No images yet|\d+ images? in the registry/).first(),
+    ).toBeVisible();
+    await expect(page.getByText(/Failed to load/)).toHaveCount(0);
+  });
+
+  test("previews the stored reference in Add image without submitting", async ({ page }) => {
+    // Dev-bypass identity is an operator. The dialog is opened but NOT
+    // submitted: adding writes a durable row and queues a scan.
+    await page.goto("/images");
+    await page.getByRole("button", { name: "Add image" }).first().click();
+    await expect(page.getByRole("heading", { name: "Add image" })).toBeVisible();
+    await page.getByLabel("Image reference").fill("python:3.12-slim");
+    await expect(page.getByText("docker.io/library/python:3.12-slim")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByRole("heading", { name: "Add image" })).toHaveCount(0);
+  });
+});
+
+test.describe("Deploy form runtime chooser (C-3)", () => {
+  test("offers the three runtimes and hides the editor for a container image", async ({ page }) => {
+    await page.goto("/processes");
+    await expect(
+      page.getByText(/No processes yet|Ceiling \d+ runs\/hour/).first(),
+    ).toBeVisible();
+    const first = page.locator('a[href^="/processes/"]').first();
+    // A bare database has no process to open: a legal state for this suite.
+    if ((await first.count()) === 0) return;
+    await first.click();
+    const runtime = page.getByRole("group", { name: "Runtime" });
+    // A built-in process shows the read-only built-in card, not the code form.
+    if ((await runtime.count()) === 0) return;
+    await expect(runtime.getByRole("radio", { name: /Platform image/ })).toBeVisible();
+    await expect(runtime.getByRole("radio", { name: /Custom image \+ your code/ })).toBeVisible();
+    const container = runtime.getByRole("radio", { name: /Container image/ });
+    await expect(container).toBeVisible();
+    if (await container.isDisabled()) return; // a member sees the form read-only
+    await container.check();
+    await expect(page.getByLabel("Command (optional)")).toBeVisible();
+    await expect(page.getByLabel("Process code")).toHaveCount(0);
+    // Deliberately NOT deployed: nothing is approved without a scanner.
+  });
+});
+
 test.describe("Pipeline graph", () => {
   test("is reachable from the sidebar nav", async ({ page }) => {
     await page.goto("/catalogs");
