@@ -15,6 +15,7 @@
  */
 import { z } from "zod";
 import { nonBlank, retrySpecSchema } from "@/lib/schema-helpers";
+import { imageSnapshotSchema } from "@/lib/images/reference";
 
 // ---------------------------------------------------------------------------
 // trigger (process_sources.trigger — §5.6)
@@ -74,8 +75,16 @@ export type ProcessTrigger = z.infer<typeof processTriggerSchema>;
 // runtime (process_revisions.runtime — §5.6, ADR 0013)
 // ---------------------------------------------------------------------------
 
-export const PROCESS_RUNTIME_KINDS = ["inline_python", "container"] as const;
+export const PROCESS_RUNTIME_KINDS = [
+  "inline_python",
+  "inline_python_on_image",
+  "container",
+] as const;
 export type ProcessRuntimeKind = (typeof PROCESS_RUNTIME_KINDS)[number];
+/** The kinds that run on a scanned USER image (C-1, container-images spec §3). */
+export const USER_IMAGE_RUNTIME_KINDS = ["inline_python_on_image", "container"] as const;
+/** `command` (kind 3) maps to Docker `Cmd` / Kubernetes `args`, never `Entrypoint` or `User`. */
+export const MAX_COMMAND_ENTRIES = 64;
 
 /** `memory_mb` becomes the executor's `HostConfig.Memory`. The floor leaves
  * room for the interpreter itself — a smaller limit OOM-kills every run
@@ -129,8 +138,8 @@ export type ProcessNetwork = z.infer<typeof processNetworkSchema>;
 
 /**
  * Platform runtime image ALIASES (X-queue spec §8). An alias names one of the
- * platform-built images — never a user-supplied reference, which is what
- * `runtime.image` would be and what ADR 0013 refuses — and the pipeline
+ * platform-built images — never a user image (that is `runtime.image`, the
+ * scanned snapshot of kinds 2–3, ADR 0021) — and the pipeline
  * resolves it at launch through `PROCESS_RUNTIME_IMAGE` /
  * `PROCESS_RUNTIME_IMAGE_STACTOOLS`, dying with a reason when the alias is
  * unknown there (the `PROCESS_NETWORK_MAX` dual-enforcement pattern). Mirrors
@@ -164,9 +173,6 @@ const runtimeLimits = {
   // (applying the inner defaults) instead of stored as a bare `{}`.
   retry: processRetrySchema.default(() => processRetrySchema.parse({})),
   network: processNetworkSchema.default(() => processNetworkSchema.parse({})),
-  // Every stored revision predates this field: the Python reader treats an
-  // absent alias as `default`, and so does this default.
-  runtime_image: z.enum(PROCESS_RUNTIME_IMAGE_ALIASES).default("default"),
   // Every stored revision predates this block: absent means `standard` at its
   // default cpu (1 — the shipped sets pin it), no GPU. The pipeline reader
   // defaults the same way.
@@ -176,44 +182,60 @@ const runtimeLimits = {
 const inlinePythonRuntimeSchema = z
   .object({
     kind: z.literal("inline_python"),
-    // Present and null-only: the arm carries the field so the two runtime
-    // shapes stay one document, but inline code has nothing to run an image
-    // in, and a stray image would read as if it were honored.
+    // Present and null-only: inline code runs on a PLATFORM image picked by
+    // `runtime_image`; code on your own image is `inline_python_on_image`.
     image: z.null().default(null),
+    // Every stored revision predates the alias; absent reads as `default`
+    // here and in the Python reader.
+    runtime_image: z.enum(PROCESS_RUNTIME_IMAGE_ALIASES).default("default"),
     ...runtimeLimits,
   })
   .strict();
 
+/** Kinds 2–3 name a scanned image by snapshot; an alias beside it would
+ * name a second image, so it is null-only (spec §3). */
+const userImageFields = {
+  image: imageSnapshotSchema,
+  runtime_image: z.null().default(null),
+};
+
+const inlinePythonOnImageRuntimeSchema = z
+  .object({
+    kind: z.literal("inline_python_on_image"),
+    ...userImageFields,
+    ...runtimeLimits,
+  })
+  .strict();
+
+const commandSchema = z
+  .array(z.string().refine((s) => s.trim().length > 0, "command entries must be non-blank"))
+  .min(1, "command must be non-empty when present (omit it to use the image's own CMD)")
+  .max(MAX_COMMAND_ENTRIES, `command carries at most ${MAX_COMMAND_ENTRIES} entries`);
+
 const containerRuntimeSchema = z
   .object({
     kind: z.literal("container"),
-    image: nonBlank("container runtime requires an image reference"),
+    ...userImageFields,
+    // Overrides the image's Cmd, never its Entrypoint or User (spec §14.4).
+    command: commandSchema.nullable().default(null),
     ...runtimeLimits,
   })
   .strict();
 
 /**
- * The full §5.6 runtime shape, BOTH arms — for READING a stored runtime, since
- * a future revision may legitimately carry `container`.
- *
- * It deliberately does NOT get the short name: `processRuntimeSchema` below is
- * the write gate, so reaching for the obvious import cannot accidentally store
- * a runtime this slice refuses to run. (The sibling `connections/schemas.ts`
- * makes the same call in the strongest form — it exports no response-side
- * credential schema at all.)
+ * The full runtime shape, all three arms, for READING a stored runtime.
+ * `processRuntimeSchema` below is the write gate. The two differ only in the
+ * slice-1 network rule. Whether a kind 2/3 snapshot's image may be deployed
+ * is NOT a shape question: the revisions route runs the DB-backed
+ * `checkImageGate` (C-1, container-images spec §3).
  */
 export const processRuntimeReadSchema = z.discriminatedUnion("kind", [
   inlinePythonRuntimeSchema,
+  inlinePythonOnImageRuntimeSchema,
   containerRuntimeSchema,
 ]);
 
 export type ProcessRuntime = z.infer<typeof processRuntimeReadSchema>;
-
-/** The slice-1 refusal message, pinned so the route and its tests agree. */
-export const CONTAINER_RUNTIME_REFUSAL =
-  "container runtimes are not accepted yet — processes run on the platform " +
-  "executor image (inline_python). User-supplied images are a supply-chain " +
-  "review surface deferred past the first accreditation scope (ADR 0013).";
 
 /** The GOES slice-1 refusal for network levels above `isolated`. */
 export const NETWORK_LEVEL_NOT_YET_AVAILABLE =
@@ -222,23 +244,14 @@ export const NETWORK_LEVEL_NOT_YET_AVAILABLE =
   "the run.";
 
 /**
- * The WRITE gate (M5 slice 1, spec §4) — and the default name, so this is what
- * a route author gets by reaching for the obvious import. The contract carries
- * `container` so nothing is foreclosed and the pipeline reader accepts it, but
- * the app refuses to store one. The golden fixture pins every `container` case
- * as `app: reject` / `pipeline: accept` — that asymmetry is the decision, not
- * an oversight.
- *
- * The same asymmetry applies to `network.level` (GOES spec §4): the shape and
- * the pipeline reader carry every level, the write gate stores only
- * `isolated` until the egress proxy exists — so no revision written this
- * slice changes meaning when the higher levels become real.
+ * The WRITE gate and the default name. The shape carries every kind. The
+ * image check for kinds 2–3 lives in the revisions route (it needs the DB),
+ * and the pipeline re-checks at launch. The network asymmetry stays here
+ * (GOES spec §4): the reader carries every level, but the write gate stores
+ * only `isolated` until the egress proxy exists.
  */
 export const processRuntimeSchema = processRuntimeReadSchema.superRefine(
   (runtime, ctx) => {
-    if (runtime.kind === "container") {
-      ctx.addIssue({ code: "custom", path: ["kind"], message: CONTAINER_RUNTIME_REFUSAL });
-    }
     if (runtime.network.level !== "isolated") {
       ctx.addIssue({
         code: "custom",
@@ -399,9 +412,10 @@ export type ProcessUpdate = z.infer<typeof processUpdateSchema>;
 
 /**
  * A deploy: an immutable revision snapshot, which the route then makes
- * current. `code` is required for `inline_python` and refused for anything
- * else — the runtime kind decides where the code lives, so carrying both
- * would leave two sources of truth for what executes.
+ * current. `code` is required for `inline_python` and
+ * `inline_python_on_image` and refused for `container`, where the image is
+ * the process (spec §3). Carrying both would leave two sources of truth
+ * for what executes.
  */
 export const processRevisionCreateSchema = z
   .object({
@@ -411,19 +425,16 @@ export const processRevisionCreateSchema = z
   })
   .strict()
   .superRefine((revision, ctx) => {
-    const inline = revision.runtime.kind === "inline_python";
-    if (inline && (revision.code === null || revision.code.trim().length === 0)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["code"],
-        message: "inline_python revisions need code",
-      });
+    const kind = revision.runtime.kind;
+    const carriesCode = kind !== "container";
+    if (carriesCode && (revision.code === null || revision.code.trim().length === 0)) {
+      ctx.addIssue({ code: "custom", path: ["code"], message: `${kind} revisions need code` });
     }
-    if (!inline && revision.code !== null) {
+    if (!carriesCode && revision.code !== null) {
       ctx.addIssue({
         code: "custom",
         path: ["code"],
-        message: "only inline_python revisions carry code",
+        message: "container revisions carry no code: the image is the process",
       });
     }
   });

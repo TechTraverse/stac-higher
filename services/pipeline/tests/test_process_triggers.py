@@ -436,6 +436,31 @@ async def test_a_revision_with_no_code_dies_rather_than_running_nothing():
     assert result.status == "dead"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "code"), [("inline_python_on_image", "print(1)"), ("container", None)]
+)
+async def test_a_user_image_revision_dies_before_anything_launches(kind, code):
+    """C-1: the contract admits kinds 2-3 but this pipeline cannot launch them
+    yet (C-2 lands the digest-pinned path). The run dies naming ADR 0021; it
+    must never fall through to the platform image, and a kind-3 run must not
+    be reported as 'no code'."""
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor()
+    runtime = {
+        "kind": kind,
+        "image": {
+            "id": "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
+            "reference": "ghcr.io/example/tool",
+            "digest": "sha256:" + "a" * 64,
+        },
+    }
+    result = await _run(queued(runtime=runtime, code=code), executor, repo)
+    assert result.status == "dead"
+    assert "ADR 0021" in repo.finished[0]["error"]
+    assert executor.list_launched() == []
+
+
 # ---------------------------------------------------------------------------
 # inputs are planned, staged and granted BEFORE launch (GOES spec §3)
 # ---------------------------------------------------------------------------

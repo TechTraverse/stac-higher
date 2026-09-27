@@ -41,11 +41,13 @@ from pipeline.process.inputs import (
 )
 from pipeline.process.launch import (
     HardwareProfileRejected,
+    ImageUnusable,
     NetworkCapExceeded,
     RuntimeImageUnavailable,
     SecretResolutionError,
     check_hardware_bounds_for,
     check_network_cap,
+    check_user_image_launchable,
     execute_run,
     resolve_runtime_image,
 )
@@ -102,6 +104,15 @@ async def run_one(
         await _finish(
             repo, run, "dead", None, f"unusable revision: {err}", None, at, on_dead=on_dead
         )
+        return RunResult(run.id, "dead", error=str(err))
+
+    # C-1 (ADR 0021): the contract admits user-image kinds but nothing can
+    # launch one yet. This runs before the code check, so a kind-3 run
+    # (legitimately code-less) dies for the real reason.
+    try:
+        check_user_image_launchable(runtime)
+    except ImageUnusable as err:
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
     if run.code is None:

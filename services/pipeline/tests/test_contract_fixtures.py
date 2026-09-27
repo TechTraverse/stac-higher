@@ -209,10 +209,9 @@ def test_process_trigger_cases(case):
 
 @pytest.mark.parametrize("case", PROCESS_RUNTIME["cases"], ids=lambda c: c["name"])
 def test_process_runtime_cases(case):
-    """Note the deliberate asymmetry the fixture encodes: every `container`
-    case is `pipeline: accept` / `app: reject`. The contract carries the arm so
-    nothing is foreclosed; slice 1's refusal lives at the app's write gate
-    (design spec §4), NOT here."""
+    """Three kinds (C-1). Whether a snapshot's image may run is a DB check in
+    the app's revisions route and, from C-2, at launch, so it is never a
+    parse outcome."""
     _check(parse_process_runtime, case)
 
 
@@ -245,7 +244,21 @@ def test_process_runtime_defaults_match_golden():
         golden = variant["defaults"]
         runtime = parse_process_runtime(variant["minimal"])
         assert runtime.kind == arm == golden["kind"]
-        assert runtime.image == golden.get("image")
+        snapshot = golden.get("image")
+        if snapshot is None:
+            assert (runtime.image_id, runtime.image_reference, runtime.image_digest) == (
+                None,
+                None,
+                None,
+            )
+        else:
+            assert (runtime.image_id, runtime.image_reference, runtime.image_digest) == (
+                snapshot["id"],
+                snapshot["reference"],
+                snapshot["digest"],
+            )
+        command = golden.get("command")
+        assert runtime.command == (None if command is None else tuple(command))
         assert runtime.memory_mb == golden["memory_mb"]
         assert runtime.timeout_seconds == golden["timeout_seconds"]
         assert runtime.max_attempts == golden["retry"]["max_attempts"]

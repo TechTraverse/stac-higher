@@ -119,16 +119,7 @@ the set reject/reject — the pipeline resolves a known alias through
 `PROCESS_RUNTIME_IMAGE*` at launch and dies the run by name when the
 deployment has left that image empty.
 
-**`process-runtime.json` carries the M5 slice-1 asymmetry**, and it is a
-decision rather than an oversight: the `container` arm is part of the contract
-(the pipeline reader parses it, so nothing is foreclosed) while the app's
-**write gate** refuses it — user-supplied images are a supply-chain review
-surface deferred past the first accreditation scope (design spec §4, ADR 0013).
-Every `container` case is therefore `app: "reject"` / `pipeline: "accept"`,
-and the vitest consumer runs the `cases[]` through `processRuntimeWriteSchema`
-while asserting `defaults` against the read schema `processRuntimeSchema`. A
-`container` document that is *also* malformed (no image) stays `reject`/
-`reject` — broken is not the same as gated.
+**`process-runtime.json` carries three kinds since C-1** (container-images spec §3): `inline_python`, `inline_python_on_image` and `container`, one `{minimal, defaults}` pair each. The `container` arm is no longer refused by the shape. Whether a snapshot's image may be deployed is decided by the DB-backed check in the revisions route (422 with `image_not_approved` / `image_stale` / `image_group_mismatch` / `image_digest_mismatch`), which a fixture cannot express, so every well-formed kind 2/3 case is accept/accept. `image` is the snapshot `{id, reference, digest}` (grammar pinned by `image-reference.json`). `runtime_image` is null on kinds 2 and 3 and `command` exists only on kind 3. Both of those are reject/reject when violated, because a lenient reader silently ignoring them would run something other than what the revision says.
 
 ### `process-env.json` and `process-expectation.json`
 

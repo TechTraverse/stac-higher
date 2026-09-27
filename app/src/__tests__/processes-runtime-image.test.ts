@@ -7,8 +7,8 @@ import {
 
 /**
  * `runtime.runtime_image` (X-queue spec §8): an ALIAS of a platform-built
- * image, resolved by the pipeline at launch. It is not `runtime.image` — that
- * is a user-supplied reference the write gate refuses (ADR 0013) — and it
+ * image, resolved by the pipeline at launch. It is not `runtime.image`, which
+ * is the scanned user-image snapshot of kinds 2–3 (C-1, ADR 0021), and it
  * defaults to `default` because every stored revision predates it.
  */
 
@@ -36,9 +36,17 @@ describe("runtime.runtime_image", () => {
     }
   });
 
-  it("does not open the container arm: an alias beside a user image is still refused", () => {
-    const doc = { kind: "container", image: "ghcr.io/x/y:1", runtime_image: "stactools" };
-    expect(processRuntimeReadSchema.safeParse(doc).success).toBe(true);
-    expect(processRuntimeSchema.safeParse(doc).success).toBe(false);
+  it("an alias beside a user image is refused on both schemas (spec §3: runtime_image is null for kinds 2–3)", () => {
+    const image = {
+      id: "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
+      reference: "ghcr.io/x/y",
+      digest: "sha256:" + "a".repeat(64),
+    };
+    for (const kind of ["inline_python_on_image", "container"]) {
+      const doc = { kind, image, runtime_image: "stactools" };
+      expect(processRuntimeReadSchema.safeParse(doc).success, kind).toBe(false);
+      expect(processRuntimeSchema.safeParse(doc).success, kind).toBe(false);
+      expect(processRuntimeSchema.parse({ kind, image }).runtime_image, kind).toBeNull();
+    }
   });
 });

@@ -13,11 +13,13 @@
  * shape, and after this the reference is immutable and is next read by the
  * pipeline at run launch.
  *
- * `runtime` is validated by the WRITE gate (`processRuntimeSchema`), which
- * refuses the `container` arm this slice — the contract carries it and the
- * pipeline parses it, but user-supplied images stay out of the first
- * accreditation scope (spec §4, ADR 0013). The same gate accepts only
- * `network.level: isolated` this slice; the deployment cap
+ * `runtime` is validated by the WRITE gate (`processRuntimeSchema`). A
+ * kind 2/3 runtime (`inline_python_on_image`, `container`) names a scanned
+ * user image by snapshot. `checkImageGate` then requires that snapshot's
+ * `container_images` row to be approved, fresh, digest-equal and usable by
+ * the process's group, answering 422 with the reason otherwise and 503 when
+ * the image policy cannot be read (C-1, container-images spec §3, ADR 0021).
+ * The same gate accepts only `network.level: isolated` this slice; the deployment cap
  * (`PROCESS_NETWORK_MAX`, GOES spec §4) is checked here as well so that once
  * the gate opens, a level above the cap is still refused at the form.
  * `runtime.runtime_image` (X-queue spec §8) is an alias of a PLATFORM image,
@@ -53,6 +55,8 @@ import {
   processRevisionFromBuiltinSchema,
 } from "@/lib/processes/schemas";
 import { deployRevision, listRevisions } from "@/lib/processes/storage";
+import { checkImageGate, imageGateRefused, imagePolicyUnavailable } from "@/lib/images/gate";
+import { ImagePolicyUnavailable } from "@/lib/images/policy";
 
 export const GET: APIRoute = async ({ params, locals }) => {
   const loaded = await loadVisibleProcess(locals.auth, params.id, false);
@@ -142,6 +146,19 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       loaded.process.group_id,
     );
     if (unresolvable) return secretRefOutOfScope(unresolvable);
+
+    // C-1 (container-images spec §3): a user image must be an approved,
+    // fresh, digest-equal registry row this group may use. The pipeline
+    // re-checks at launch. Inline revisions skip it without reading the policy.
+    const snapshot = data.runtime.kind === "inline_python" ? null : data.runtime.image;
+    let imageRefusal;
+    try {
+      imageRefusal = await checkImageGate(snapshot, loaded.process.group_id);
+    } catch (err) {
+      if (err instanceof ImagePolicyUnavailable) return imagePolicyUnavailable(err);
+      throw err;
+    }
+    if (imageRefusal) return imageGateRefused(imageRefusal);
 
     const revision = await deployRevision({
       processId: loaded.process.id,

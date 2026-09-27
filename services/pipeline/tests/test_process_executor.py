@@ -275,19 +275,32 @@ def test_a_revision_cannot_shadow_its_own_credentials_or_code():
     assert spec.env[CODE_ENV_VAR] == encode_code("real")
 
 
-def test_slice_1_always_runs_the_platform_image():
-    """A `container` revision is refused at the app's write gate, so one
-    reaching here is a contract violation, not something to honour."""
-    spec = build_run_spec(
-        settings(),
-        run_id=RUN,
-        process_id=PROC,
-        runtime=ProcessRuntime(kind="container", image="ghcr.io/evil/x:1"),
-        code="print(1)",
-        env={},
-        credentials=RunCredentials("AK", "SK", "TOK", "b", run_staging_prefix(RUN), None, "r"),
+def test_a_user_image_is_never_resolved_by_alias():
+    """Kinds 2-3 run by digest (C-2), never through the platform alias map.
+    build_run_spec must refuse rather than quietly run the platform image."""
+    runtime = parse_process_runtime(
+        {
+            "kind": "container",
+            "image": {
+                "id": "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
+                "reference": "ghcr.io/example/tool",
+                "digest": "sha256:" + "a" * 64,
+            },
+        }
     )
-    assert spec.image == settings().process_runtime_image
+    assert runtime.runtime_image is None
+    with pytest.raises(RuntimeImageUnavailable, match="by digest"):
+        build_run_spec(
+            settings(),
+            run_id=RUN,
+            process_id=PROC,
+            runtime=runtime,
+            code="print(1)",
+            env={},
+            credentials=RunCredentials(
+                "AK", "SK", "TOK", "b", run_staging_prefix(RUN), None, "r"
+            ),
+        )
 
 
 def test_secret_refs_resolve_through_the_injected_resolver():
@@ -710,7 +723,7 @@ def test_runtime_image_alias_defaults_and_is_an_enum():
         {"kind": "inline_python", "runtime_image": None}
     ).runtime_image == ("default")
     stactools = parse_process_runtime({"kind": "inline_python", "runtime_image": "stactools"})
-    assert stactools.runtime_image == "stactools" and stactools.image is None
+    assert stactools.runtime_image == "stactools" and stactools.image_id is None
     with pytest.raises(ProcessConfigError, match=r"runtime\.runtime_image"):
         parse_process_runtime({"kind": "inline_python", "runtime_image": "cuda"})
     with pytest.raises(ProcessConfigError, match=r"runtime\.runtime_image"):
@@ -753,3 +766,31 @@ def test_run_spec_carries_the_alias_image():
         credentials=creds,
     )
     assert spec.image == "stac-higher-process-runtime-stactools:local"
+
+
+def test_three_runtime_kinds_parse_their_snapshot_and_command():
+    from pipeline.process.config import MAX_COMMAND_ENTRIES, RUNTIME_KINDS, USER_IMAGE_KINDS
+
+    assert RUNTIME_KINDS == ("inline_python", "inline_python_on_image", "container")
+    assert frozenset({"inline_python_on_image", "container"}) == USER_IMAGE_KINDS
+    assert MAX_COMMAND_ENTRIES == 64
+    snap = {
+        "id": "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
+        "reference": "ghcr.io/example/tool",
+        "digest": "sha256:" + "a" * 64,
+    }
+    rt = parse_process_runtime({"kind": "container", "image": snap, "command": ["tool", "--run"]})
+    assert (rt.image_id, rt.image_reference, rt.image_digest) == (
+        snap["id"],
+        snap["reference"],
+        snap["digest"],
+    )
+    assert rt.command == ("tool", "--run")
+    # command is kind-3 only: on kind 2 it is an unknown key, ignored.
+    assert parse_process_runtime(
+        {"kind": "inline_python_on_image", "image": snap, "command": ["x"]}
+    ).command is None
+    with pytest.raises(ProcessConfigError, match=r"runtime\.image must be null"):
+        parse_process_runtime({"kind": "inline_python", "image": snap})
+    with pytest.raises(ProcessConfigError, match=r"runtime\.runtime_image must be null"):
+        parse_process_runtime({"kind": "container", "image": snap, "runtime_image": "default"})

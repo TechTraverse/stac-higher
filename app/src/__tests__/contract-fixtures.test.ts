@@ -167,23 +167,23 @@ describe("process trigger contract (tests/contract-fixtures/process-trigger.json
 });
 
 describe("process runtime contract (tests/contract-fixtures/process-runtime.json)", () => {
-  // The fixture's `app` column is the WRITE gate: slice 1 refuses `container`
-  // (spec §4), so every container case is app: reject / pipeline: accept.
+  // The fixture's `app` column is the WRITE gate (network rule); defaults round-trip through the read schema.
   describeUnion(
     "process-runtime.json",
     processRuntimeSchema,
     processRuntimeReadSchema,
   );
 
-  it("the container arm is refused by the write gate, not by the shape", () => {
-    const container = (
-      loadFixture("process-runtime.json") as unknown as UnionFixture
-    ).variants.container.minimal;
-    // The asymmetry the fixture encodes: the contract carries `container` (so
-    // the pipeline reader and any future slice can parse it) while this
-    // slice's write path refuses it.
-    expect(processRuntimeReadSchema.safeParse(container).success).toBe(true);
-    expect(processRuntimeSchema.safeParse(container).success).toBe(false);
+  it("the write gate accepts every kind's minimal document (C-1: the image check is the route's)", () => {
+    const fixture = loadFixture("process-runtime.json") as unknown as UnionFixture;
+    for (const [kind, variant] of Object.entries(fixture.variants)) {
+      expect(processRuntimeSchema.safeParse(variant.minimal).success, kind).toBe(true);
+    }
+    expect(Object.keys(fixture.variants)).toEqual([
+      "inline_python",
+      "inline_python_on_image",
+      "container",
+    ]);
   });
 });
 
