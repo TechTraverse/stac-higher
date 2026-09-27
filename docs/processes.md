@@ -154,6 +154,9 @@ The platform's hardening applies, not the image's: all capabilities dropped,
 profile, and **user `10001:10001`** whatever the image's `USER` says. An
 image whose files that uid cannot read fails at run time. Writable scratch is
 `/tmp` (a tmpfs sized with the memory limit) plus the run's output prefix.
+The executor enforces these once a user image can launch at all (C-2);
+today every kind 2/3 revision is refused before launch, so no user image
+runs yet.
 
 ### When a deploy is refused
 
