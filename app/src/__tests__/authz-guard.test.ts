@@ -228,3 +228,37 @@ describe("applyApiGuard — permission matrix", () => {
     },
   );
 });
+
+describe("route-supplied audit detail (C-3)", () => {
+  it("merges locals.auditDetail into the allowed row, never over outcome or status", async () => {
+    const ctx = makeContext("POST", "/api/images", authed(["operator"]));
+    const next = vi.fn(async () => {
+      (ctx.locals as { auditDetail?: Record<string, unknown> }).auditDetail = {
+        reference: "docker.io/library/python",
+        outcome: "spoofed",
+        status: 999,
+      };
+      return new Response(JSON.stringify({ id: "img-1" }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await applyApiGuard(ctx, next);
+
+    expect(mockWriteAudit).toHaveBeenCalledTimes(1);
+    const entry = mockWriteAudit.mock.calls[0][0];
+    expect(entry).toMatchObject({
+      action: "create",
+      resourceType: "container_image",
+      resourceId: "img-1",
+    });
+    expect(entry.detail).toMatchObject({
+      method: "POST",
+      path: "/api/images",
+      reference: "docker.io/library/python",
+      outcome: "allowed",
+      status: 202,
+    });
+  });
+});

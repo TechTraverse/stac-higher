@@ -29,7 +29,9 @@ import { canMutate, matchGatedRoute } from "./permissions";
 export interface GuardContext {
   request: Request;
   url: URL;
-  locals: { auth: AuthContext };
+  /** `auditDetail` is set by a gated ROUTE that has something worth recording
+   * beyond the request line (C-3: an image exception's reason). */
+  locals: { auth: AuthContext; auditDetail?: Record<string, unknown> };
 }
 
 /** Consistent JSON error shape for authz failures. */
@@ -120,7 +122,14 @@ export async function applyApiGuard(
     action: gate.action,
     resourceType: gate.resourceType,
     resourceId,
-    detail: { ...requestDetail, outcome: "allowed", status: response.status },
+    // Route-supplied detail sits BENEATH the guard's own keys, so a route
+    // can never rewrite the outcome or status of its own audit row.
+    detail: {
+      ...requestDetail,
+      ...(context.locals.auditDetail ?? {}),
+      outcome: "allowed",
+      status: response.status,
+    },
   });
 
   return response;

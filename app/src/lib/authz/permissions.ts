@@ -34,7 +34,9 @@ export function isAdmin(identity: CanonicalIdentity): boolean {
 
 /** `test` = test-connection, `backfill` = deliver-association backfill,
  * `redeliver` = dead-letter recovery, `ack`/`resolve` = alert lifecycle
- * transitions (ROADMAP §5 audit action enum; M2-B adds `resolve`). */
+ * transitions (ROADMAP §5 audit action enum; M2-B adds `resolve`). C-3 adds
+ * the image verbs (container-images spec §9.1: `image.rescan`,
+ * `image.exception`, `image.revoke`; `image.add` is a `create`). */
 export type GatedAction =
   | "create"
   | "update"
@@ -45,7 +47,10 @@ export type GatedAction =
   | "ack"
   | "resolve"
   | "deploy"
-  | "rerun";
+  | "rerun"
+  | "rescan"
+  | "exception"
+  | "revoke";
 
 export interface GatedRouteMatch {
   action: GatedAction;
@@ -142,6 +147,24 @@ const SUB_ACTION_ROUTES: {
     action: "update",
     resourceType: "connection",
   },
+  // C-3 (container-images spec §9.1): the image verbs. Rescan is operator+
+  // (the guard's gate); exception and revoke are ADMIN, re-checked in-route
+  // because the guard gates by operator. Audited against the image id.
+  {
+    pattern: /^\/api\/images\/([^/]+)\/rescan$/,
+    action: "rescan",
+    resourceType: "container_image",
+  },
+  {
+    pattern: /^\/api\/images\/([^/]+)\/exception$/,
+    action: "exception",
+    resourceType: "container_image",
+  },
+  {
+    pattern: /^\/api\/images\/([^/]+)\/revoke$/,
+    action: "revoke",
+    resourceType: "container_image",
+  },
 ];
 
 /**
@@ -178,6 +201,13 @@ export function matchGatedRoute(
 
   if (m === "POST" && path === "/api/connections") {
     return { action: "create", resourceType: "connection", resourceId: null };
+  }
+
+  // C-3: adding an image to the platform-wide registry (container-images
+  // spec §9.1, `image.add`). The 202 body carries `id` (the new image), so
+  // the guard's created-id extraction audits it.
+  if (m === "POST" && path === "/api/images") {
+    return { action: "create", resourceType: "container_image", resourceId: null };
   }
 
   // Phase 9 (M5-A): processes are group-owned; member views, operator+
