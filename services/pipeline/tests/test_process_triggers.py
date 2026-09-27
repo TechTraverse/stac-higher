@@ -14,12 +14,14 @@ import json
 import pytest
 
 from _dispatch_fake import FakeDispatchRepo
+from _images_fake import FakeImagesRepo
 from _process_fake import FakeProcessRepo
 from pipeline.config import Settings
 from pipeline.dispatcher.loop import dispatch_once
 from pipeline.dispatcher.repo import ItemEvent
+from pipeline.images.repo import RegistryCredentialRow
 from pipeline.process.cron import is_due, matches_minute
-from pipeline.process.executor import ExecutorUnavailable, ExitStatus
+from pipeline.process.executor import ExecutorUnavailable, ExitStatus, ImagePullFailed
 from pipeline.process.hardware import PROFILES_ENV_VAR
 from pipeline.process.ledger import infrastructure_transition, outcome_transition
 from pipeline.process.matcher import ProcessSource, match_process_sources
@@ -27,6 +29,7 @@ from pipeline.process.memory_executor import MemoryExecutor
 from pipeline.process.rate import RateDecision, evaluate
 from pipeline.process.repo import QueuedRun, RateWindow
 from pipeline.process.runner import run_one
+from pipeline.process.runner_source import BOOTSTRAP_ENTRYPOINT, RUNNER_ENV_VAR
 from pipeline.process.sweep import process_sweep_tick
 from pipeline.process.trigger import trigger_run
 
@@ -378,7 +381,9 @@ class FakeSts:
         }
 
 
-async def _run(run, executor, repo, *, storage_client=None, fetch_remote=None, settings=None):
+async def _run(
+    run, executor, repo, *, storage_client=None, fetch_remote=None, settings=None, **kwargs
+):
     return await run_one(
         run,
         repo=repo,
@@ -389,6 +394,7 @@ async def _run(run, executor, repo, *, storage_client=None, fetch_remote=None, s
         now=NOW,
         sts_client=FakeSts(),
         fetch_remote=fetch_remote,
+        **kwargs,
     )
 
 
@@ -436,29 +442,297 @@ async def test_a_revision_with_no_code_dies_rather_than_running_nothing():
     assert result.status == "dead"
 
 
+# ---------------------------------------------------------------------------
+# C-2: the digest-pinned launch path (container-images spec §8.4)
+# ---------------------------------------------------------------------------
+
+IMG = "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f"
+IMG_DIGEST = "sha256:" + "a" * 64
+IMG_REF = "ghcr.io/example/tool"
+
+
+def user_runtime(kind: str, **extra) -> dict:
+    return {
+        "kind": kind,
+        "image": {"id": IMG, "reference": IMG_REF, "digest": IMG_DIGEST},
+        "retry": {"max_attempts": 3},
+        **extra,
+    }
+
+
+def images_with(**overrides) -> FakeImagesRepo:
+    fields = {
+        "id": IMG,
+        "reference": IMG_REF,
+        "tag_at_add": "1.0",
+        "status": "approved",
+        "digest": IMG_DIGEST,
+        "last_scanned_at": NOW - dt.timedelta(days=1),
+    }
+    fields.update(overrides)
+    images = FakeImagesRepo()
+    images.add_image(**fields)
+    return images
+
+
+@pytest.mark.asyncio
+async def test_a_kind_2_run_launches_its_pinned_digest_with_the_bootstrap():
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("inline_python_on_image"), code="print(1)"),
+        executor,
+        FakeProcessRepo(),
+        images_repo=images_with(),
+    )
+    assert result.status == "succeeded"
+    spec = executor.launched[0]
+    assert spec.image == f"{IMG_REF}@{IMG_DIGEST}"
+    assert spec.user_image is True
+    assert spec.entrypoint == BOOTSTRAP_ENTRYPOINT
+    assert RUNNER_ENV_VAR in spec.env and "STAC_HIGHER_PROCESS_CODE_B64" in spec.env
+    # The forced uid has no home: /tmp is the platform's default.
+    assert spec.env["HOME"] == "/tmp"
+    assert spec.registry_auth is None
+
+
+@pytest.mark.asyncio
+async def test_a_kind_3_run_carries_no_code_and_its_command_is_cmd():
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("container", command=["tool", "--run"]), code=None),
+        executor,
+        FakeProcessRepo(),
+        images_repo=images_with(),
+    )
+    assert result.status == "succeeded"
+    spec = executor.launched[0]
+    assert spec.cmd == ("tool", "--run")
+    assert spec.entrypoint == ()
+    assert "STAC_HIGHER_PROCESS_CODE_B64" not in spec.env
+    assert RUNNER_ENV_VAR not in spec.env
+
+
+@pytest.mark.asyncio
+async def test_a_flagged_image_still_launches():
+    """Spec decision 4: a rescan that newly fails blocks deploys, never runs."""
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        executor,
+        FakeProcessRepo(),
+        images_repo=images_with(status="flagged"),
+    )
+    assert result.status == "succeeded"
+    assert len(executor.launched) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_expired_exception_does_not_block_a_launch():
+    """Spec §4.3 and decision 4 make ONLY staleness launch-blocking; the
+    exception's own expiry is the app's deploy gate (and, once C-4 lands, the
+    daily tick's). record_rescan also leaves `exception_expires_at` set on an
+    image whose later rescan passed, so treating a merely-past expiry as
+    unlaunchable here would wrongly kill runs of an already-clean image."""
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        executor,
+        FakeProcessRepo(),
+        images_repo=images_with(exception_expires_at=NOW - dt.timedelta(days=1)),
+    )
+    assert result.status == "succeeded"
+    assert len(executor.launched) == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("kind", "code"), [("inline_python_on_image", "print(1)"), ("container", None)]
+    ("overrides", "reason"),
+    [
+        ({"status": "revoked"}, "image_not_approved"),
+        ({"status": "rejected"}, "image_not_approved"),
+        ({"status": "scanning", "digest": None}, "image_not_approved"),
+        ({"digest": "sha256:" + "b" * 64}, "image_digest_mismatch"),
+        ({"reference": "ghcr.io/example/other"}, "image_digest_mismatch"),
+        ({"last_scanned_at": NOW - dt.timedelta(days=30, seconds=1)}, "image_stale"),
+        ({"last_scanned_at": None}, "image_stale"),
+    ],
+    ids=[
+        "revoked",
+        "rejected",
+        "scanning",
+        "digest",
+        "reference",
+        "stale",
+        "never-scanned",
+    ],
 )
-async def test_a_user_image_revision_dies_before_anything_launches(kind, code):
-    """C-1: the contract admits kinds 2-3 but this pipeline cannot launch them
-    yet (C-2 lands the digest-pinned path). The run dies naming ADR 0021; it
-    must never fall through to the platform image, and a kind-3 run must not
-    be reported as 'no code'."""
+async def test_an_unusable_image_kills_the_run_before_anything_launches(overrides, reason):
     repo = FakeProcessRepo()
     executor = MemoryExecutor()
-    runtime = {
-        "kind": kind,
-        "image": {
-            "id": "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
-            "reference": "ghcr.io/example/tool",
-            "digest": "sha256:" + "a" * 64,
-        },
-    }
-    result = await _run(queued(runtime=runtime, code=code), executor, repo)
+    result = await _run(
+        queued(runtime=user_runtime("inline_python_on_image"), code="print(1)"),
+        executor,
+        repo,
+        images_repo=images_with(**overrides),
+    )
     assert result.status == "dead"
-    assert "ADR 0021" in repo.finished[0]["error"]
-    assert executor.list_launched() == []
+    assert repo.finished[0]["error"].startswith(reason)
+    assert executor.launched == []
+
+
+@pytest.mark.asyncio
+async def test_the_staleness_boundary_is_inclusive():
+    """Mirrors the app gate (C-1 Review Focus 3): exactly the window is fresh."""
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        executor,
+        FakeProcessRepo(),
+        images_repo=images_with(last_scanned_at=NOW - dt.timedelta(days=30)),
+    )
+    assert result.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_an_image_missing_from_the_registry_dies_not_approved():
+    repo = FakeProcessRepo()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        MemoryExecutor(),
+        repo,
+        images_repo=FakeImagesRepo(),
+    )
+    assert result.status == "dead"
+    assert repo.finished[0]["error"].startswith("image_not_approved")
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_registry_credential_dies_as_a_group_mismatch():
+    images = images_with(registry_connection_id="5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d")
+    images.add_credential(
+        RegistryCredentialRow(
+            connection_id="5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
+            protocol="registry",
+            config={"host": "ghcr.io"},
+            credentials=b"x",
+            deleted=True,
+        )
+    )
+    repo = FakeProcessRepo()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        MemoryExecutor(),
+        repo,
+        images_repo=images,
+        master_key=b"k" * 32,
+    )
+    assert result.status == "dead"
+    assert repo.finished[0]["error"].startswith("image_group_mismatch")
+
+
+@pytest.mark.asyncio
+async def test_a_registry_credential_with_no_master_key_requeues_without_dying():
+    """RegistryAuthUnavailable (no key to decrypt with) is OUR infrastructure
+    missing a secret, not a verdict on the credential -- unlike a gone
+    credential (image_group_mismatch, which dies), this goes back to `queued`
+    and spends no attempt."""
+    images = images_with(registry_connection_id="5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d")
+    images.add_credential(
+        RegistryCredentialRow(
+            connection_id="5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
+            protocol="registry",
+            config={"host": "ghcr.io"},
+            credentials=b"x",
+            deleted=False,
+        )
+    )
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        executor,
+        repo,
+        images_repo=images,
+        master_key=None,
+    )
+    assert result.status == "queued"
+    assert executor.launched == []
+    assert repo.finished[0]["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_policy_requeues_a_user_image_run_without_spending_an_attempt(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("PROCESS_IMAGE_POLICY_FILE", str(tmp_path / "missing.json"))
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        executor,
+        repo,
+        images_repo=images_with(),
+    )
+    assert result.status == "queued"
+    assert executor.launched == []
+
+
+@pytest.mark.asyncio
+async def test_an_inline_run_never_reads_the_image_policy(monkeypatch, tmp_path):
+    monkeypatch.setenv("PROCESS_IMAGE_POLICY_FILE", str(tmp_path / "missing.json"))
+    result = await _run(queued(), MemoryExecutor(), FakeProcessRepo())
+    assert result.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pull_spends_an_attempt():
+    """A registry that lost the manifest will not find it again on the next
+    tick: the run retries on its budget and then dies, never requeues forever."""
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor(launch_error=ImagePullFailed("pulling x failed: manifest unknown"))
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        executor,
+        repo,
+        images_repo=images_with(),
+    )
+    assert result.status == "failed"
+    assert "manifest unknown" in repo.finished[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pull_dies_once_attempts_are_exhausted():
+    """The same refused pull, on its last attempt, dies rather than failing
+    into a retry that will only pull the same missing manifest again."""
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor(launch_error=ImagePullFailed("pulling x failed: manifest unknown"))
+    result = await _run(
+        queued(
+            runtime=user_runtime("container", retry={"max_attempts": 1}),
+            code=None,
+            attempts=1,
+        ),
+        executor,
+        repo,
+        images_repo=images_with(),
+    )
+    assert result.status == "dead"
+    assert "manifest unknown" in repo.finished[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_user_image_run_with_no_images_repo_dies_not_approved():
+    """A worker with no ImagesRepo configured cannot check a kind 2/3 run's
+    image at all; it must die naming the reason, never launch unchecked or
+    hang requeuing forever."""
+    repo = FakeProcessRepo()
+    result = await _run(
+        queued(runtime=user_runtime("container"), code=None),
+        MemoryExecutor(),
+        repo,
+    )
+    assert result.status == "dead"
+    assert repo.finished[0]["error"].startswith("image_not_approved")
 
 
 # ---------------------------------------------------------------------------

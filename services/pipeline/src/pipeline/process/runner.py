@@ -22,10 +22,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline.config import Settings
+from pipeline.images.policy import ImagePolicy
+from pipeline.images.registry_auth import RegistryAuthUnavailable
+from pipeline.images.repo import ImagesRepo
 from pipeline.metrics import PROCESS_RUNS
 from pipeline.process.config import ProcessConfigError, parse_process_env, parse_process_runtime
 from pipeline.process.credentials import RunCredentialsError
-from pipeline.process.executor import Executor, ExecutorUnavailable
+from pipeline.process.executor import Executor, ExecutorUnavailable, ImagePullFailed
 from pipeline.process.hardware import (
     HardwareProfileError,
     HardwareProfileSet,
@@ -41,15 +44,15 @@ from pipeline.process.inputs import (
 )
 from pipeline.process.launch import (
     HardwareProfileRejected,
+    ImagePolicyUnavailable,
     ImageUnusable,
     NetworkCapExceeded,
     RuntimeImageUnavailable,
     SecretResolutionError,
     check_hardware_bounds_for,
     check_network_cap,
-    check_user_image_launchable,
     execute_run,
-    resolve_runtime_image,
+    resolve_run_image,
 )
 from pipeline.process.ledger import infrastructure_transition, outcome_transition
 from pipeline.process.repo import ProcessRepo, QueuedRun
@@ -83,14 +86,18 @@ async def run_one(
     fetch_remote: RemoteFetcher | None = None,
     on_dead: Callable[[QueuedRun, str], Awaitable[None]] | None = None,
     profiles: HardwareProfileSet | None = None,
+    images_repo: ImagesRepo | None = None,
+    image_policy: ImagePolicy | None = None,
+    master_key: bytes | None = None,
 ) -> RunResult:
     """Execute a claimed run and write its outcome. Never raises for a run
     that merely failed — that is a result, recorded in the ledger.
 
-    Order (GOES spec §3.2): parse → network cap → runtime image → hardware
-    bounds → plan inputs (repo reads) → stage remote inputs → mint
-    credentials + launch. A failure anywhere before launch means no
-    container ever existed.
+    Order (GOES spec §3.2, C-2 spec §8.4): parse -> code rule -> network cap
+    -> run image (alias, or the user image re-checked by digest) -> hardware
+    bounds -> plan inputs (repo reads) -> stage remote inputs -> mint
+    credentials + launch (a user image is pulled by digest at launch). A
+    failure anywhere before launch means no container ever existed.
     """
     at = now or dt.datetime.now(dt.UTC)
 
@@ -106,16 +113,10 @@ async def run_one(
         )
         return RunResult(run.id, "dead", error=str(err))
 
-    # C-1 (ADR 0021): the contract admits user-image kinds but nothing can
-    # launch one yet. This runs before the code check, so a kind-3 run
-    # (legitimately code-less) dies for the real reason.
-    try:
-        check_user_image_launchable(runtime)
-    except ImageUnusable as err:
-        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
-        return RunResult(run.id, "dead", error=str(err))
-
-    if run.code is None:
+    # Kind 3 is the image's own entrypoint: it has no code by contract
+    # (spec §3), and a stray code field on it is never run.
+    code = None if runtime.kind == "container" else run.code
+    if code is None and runtime.kind != "container":
         await _finish(
             repo,
             run,
@@ -136,14 +137,24 @@ async def run_one(
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
-    # X-queue spec §8: same shape for the runtime image alias — a known alias
-    # this deployment ships no image for dies here, before anything is staged
-    # or minted, naming the alias and the variable.
+    # X-queue spec §8 + C-2 spec §8.4: the image this run launches on,
+    # resolved before anything is staged or minted.
     try:
-        resolve_runtime_image(runtime, settings)
-    except RuntimeImageUnavailable as err:
+        resolved = await resolve_run_image(
+            runtime,
+            settings,
+            repo=images_repo,
+            policy=image_policy,
+            master_key=master_key,
+            now=at,
+        )
+    except (RuntimeImageUnavailable, ImageUnusable) as err:
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
+    except (ImagePolicyUnavailable, RegistryAuthUnavailable) as err:
+        # The deployment's policy or key is missing: our failure, not the
+        # process's -- the hardware-profile precedent below.
+        return await _requeue_infrastructure(repo, run, at, err)
 
     # K-1 spec §4: resolve the deployment's profile set. An unreadable or
     # missing profile document is OUR infrastructure failing, not the
@@ -157,23 +168,7 @@ async def run_one(
         else:
             profile_set = load_hardware_profiles()
     except HardwareProfileError as err:
-        transition = infrastructure_transition(
-            now=at, retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS, error=str(err)
-        )
-        PROCESS_RUNS.labels(outcome=transition.status).inc()
-        await repo.finish_run(
-            run.id,
-            status=transition.status,
-            error=transition.error,
-            log_ref=None,
-            next_attempt_at=transition.next_attempt_at,
-        )
-        logger.warning(
-            "process run could not start: hardware profiles unavailable; requeued "
-            "without spending an attempt",
-            extra={"run_id": run.id, "process_id": run.process_id, "error": str(err)},
-        )
-        return RunResult(run.id, transition.status, error=str(err))
+        return await _requeue_infrastructure(repo, run, at, err)
 
     # K-1 spec §4: the hardware block against the deployment's profile set —
     # the same check the app ran at deploy time, run again here because the
@@ -292,7 +287,7 @@ async def run_one(
             run_id=run.id,
             process_id=run.process_id,
             runtime=runtime,
-            code=run.code,
+            code=code,
             env_entries=env_entries,
             resolve_secret=resolve_secret,
             sts_client=sts_client,
@@ -300,7 +295,31 @@ async def run_one(
             extra_env=input_env(run.id, plan.manifest_key),
             profile=profile,
             priority="interactive" if run.is_test else "triggered",
+            image=resolved,
         )
+    except ImagePullFailed as err:
+        # Spec §8.4: the registry refused the digest. A per-run outcome that
+        # spends an attempt, then dies on budget -- never an endless requeue.
+        transition = outcome_transition(
+            exit_code=1,
+            timed_out=False,
+            attempts=run.attempts,
+            max_attempts=runtime.max_attempts,
+            now=at,
+            retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS,
+            error=str(err),
+        )
+        await _finish(
+            repo,
+            run,
+            transition.status,
+            None,
+            transition.error,
+            transition.next_attempt_at,
+            at,
+            on_dead=on_dead,
+        )
+        return RunResult(run.id, transition.status, error=transition.error)
     except (ExecutorUnavailable, RunCredentialsError) as err:
         # OUR failure, not the process's: back to `queued` without spending an
         # attempt (see ledger.infrastructure_transition).
@@ -377,3 +396,32 @@ async def _finish(
     # may still land the batch).
     if status == "dead" and run.association_id is not None and on_dead is not None:
         await on_dead(run, error or "run died")
+
+
+async def _requeue_infrastructure(
+    repo: ProcessRepo, run: QueuedRun, at: dt.datetime, err: Exception
+) -> RunResult:
+    """Back to `queued` without spending an attempt: the deployment is at
+    fault (a missing policy, profile set or key), not the process."""
+    transition = infrastructure_transition(
+        now=at, retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS, error=str(err)
+    )
+    PROCESS_RUNS.labels(outcome=transition.status).inc()
+    await repo.finish_run(
+        run.id,
+        status=transition.status,
+        error=transition.error,
+        log_ref=None,
+        next_attempt_at=transition.next_attempt_at,
+    )
+    logger.warning(
+        "process run could not start: deployment configuration unavailable; requeued "
+        "without spending an attempt",
+        extra={
+            "run_id": run.id,
+            "process_id": run.process_id,
+            "error": str(err),
+            "cause": type(err).__name__,
+        },
+    )
+    return RunResult(run.id, transition.status, error=str(err))

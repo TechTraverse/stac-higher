@@ -89,8 +89,10 @@ jobs:
       - run: uv sync --frozen --extra dev --extra stactools
       - name: Lint (ruff check)
         # ../process-runtime/stac_higher_stactools ships in the runtime image but
-        # is unit-tested (and so linted) from this suite — X-2.
-        run: uv run ruff check . ../process-runtime/stac_higher_stactools
+        # is unit-tested (and so linted) from this suite — X-2. Same arrangement
+        # for ../image-scanner/stac_higher_scanner, the image-scanner's package
+        # (C-2).
+        run: uv run ruff check . ../process-runtime/stac_higher_stactools ../image-scanner/stac_higher_scanner
       # ADR 0001: the app owns every stac_higher.* DDL and creates it via
       # runMigrations() on the first API request; the pipeline only reads and
       # writes rows. Nothing starts the app in this job, so the pgstac service

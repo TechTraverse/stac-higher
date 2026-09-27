@@ -20,6 +20,30 @@ def test_get_object_reads_body_bytes():
     assert get_object(client, "bucket", "assets/c/i/f.tif") == b"RAWBYTES"
 
 
+def test_get_object_range_passes_the_range_header_and_reads_only_that_body():
+    """C-2 M1: the caller reads at most one Range worth of bytes, never the
+    full object -- the guard against an oversized swap between a HEAD and a
+    GET lives in the caller, but only works if the Range is actually sent."""
+    from pipeline.storage.platform import get_object_range
+
+    class _RangedClient:
+        def __init__(self, objects):
+            self.objects = objects
+            self.calls: list[dict] = []
+
+        def get_object(self, **kwargs):
+            self.calls.append(kwargs)
+            data = self.objects[(kwargs["Bucket"], kwargs["Key"])]
+            return {"Body": io.BytesIO(data)}
+
+    client = _RangedClient({("bucket", "scans/i/s/result.json"): b'{"version": 1}'})
+    body = get_object_range(client, "bucket", "scans/i/s/result.json", "bytes=0-1048576")
+    assert body == b'{"version": 1}'
+    assert client.calls == [
+        {"Bucket": "bucket", "Key": "scans/i/s/result.json", "Range": "bytes=0-1048576"}
+    ]
+
+
 def test_head_object_returns_stripped_etag_and_size():
     from pipeline.storage.platform import head_object
 

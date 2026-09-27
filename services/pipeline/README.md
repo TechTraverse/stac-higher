@@ -67,7 +67,13 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `PROCESS_RUNTIME_IMAGE` | `stac-higher-process-runtime:local` | The platform runtime image every `inline_python` run executes on (ADR 0013) — `runtime.runtime_image: "default"`. |
 | `PROCESS_RUNTIME_IMAGE_STACTOOLS` | `stac-higher-process-runtime-stactools:local` | The image behind `runtime.runtime_image: "stactools"` (X-3, the built-in extractor library). **Empty** declares the deployment ships no such image: a run asking for the alias dies naming this variable rather than launching on the base image. |
 | `PROCESS_HARDWARE_PROFILES_FILE` | _(unset — the repo checkout's `infra/hardware-profiles/local.json`)_ | Path to the deployment's hardware-profile document (K-1, process-compute spec §3), re-checked at launch against the revision's `hardware` block. The image copies `infra/hardware-profiles/local.json` here through the `hardware` named build context and sets this variable to that path; unset means the checkout fallback (dev, pytest). An unreadable or missing file is our infrastructure failing, not the process's — the run is requeued without spending an attempt. |
-| `PROCESS_IMAGE_POLICY_FILE` | _(unset — the repo checkout's `infra/image-policy/default.json`)_ | The image policy (C-1, container-images spec §7). `pipeline.images.policy.load_image_policy` reads it and fails closed. The image copies the file here through the `imagepolicy` named build context. C-1 only parses and evaluates it; the scan drain and the launch path (C-2) are its first runtime readers. |
+| `PROCESS_IMAGE_POLICY_FILE` | _(unset — the repo checkout's `infra/image-policy/default.json`)_ | The image policy (C-1, container-images spec §7). `pipeline.images.policy.load_image_policy` reads it and fails closed. The image copies the file here through the `imagepolicy` named build context. The scan drain reads it every tick and the launch path for every kind 2/3 run (C-2); a missing or invalid file skips the drain tick and requeues those runs, and `GET /health` reports it under `image_policy`. |
+| `IMAGE_SCANNER_IMAGE` | `stac-higher-image-scanner:local` | The platform scanner image (C-2, container-images spec §6.1; `services/image-scanner/`). |
+| `PROCESS_SCANNER_NETWORK` | `none` | The scanner run's Docker network (spec §11). `none` means every scan fails for want of a registry; compose sets `stac-higher_scanner-egress`. |
+| `IMAGE_SCANNER_DB_UPDATE` | `true` | Refresh the baked Grype DB at scan start (spec §6.1). `false` for an air-gapped deployment, which rebuilds the scanner image instead. |
+| `GRYPE_DB_UPDATE_URL` | _(unset — Anchore's listing)_ | Where that refresh comes from; an air-gap mirror when set. |
+| `IMAGE_SCAN_CONCURRENCY` | `1` | Scans running at once, deployment-wide. Each holds one worker slot for up to the policy's `scan_limits.timeout_seconds` until K-4 (ISSUES I-124). |
+| `REGISTRY_DOCKERHUB_USER` / `REGISTRY_DOCKERHUB_TOKEN` | _(unset)_ | Optional deployment Docker Hub credential for `docker.io` images that carry no group `registry` credential, for scans and launch pulls alike (spec §5). Unset = anonymous, which shares Docker's 100-pulls-per-6-hours-per-IP budget (ISSUES I-125). The token never appears in logs or `repr`. |
 | `DB_POOL_MIN` | `2` | Connections the process-wide async pool keeps warm (M3-B). The pool grows on demand and trims back after `max_idle` (600 s), so a mostly-idle deployment holds two backends, not `DB_POOL_MAX`. |
 | `DB_POOL_MAX` | `16` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 4`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC). Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
 | `WORKER_CONCURRENCY` | `12` | Jobs the worker process runs at once, both queues together (M3-D; spec §7 decision 2, S-C's 12–16 band at the conservative end). Size `DB_POOL_MAX` to at least this + 4; the process logs a WARNING at startup when it is not. |
@@ -336,6 +342,51 @@ runs plug in without a parallel path.
   `pipeline_finalize_bytes_total{producer}`; the job/sweep get
   run/duration/outcome from the central `instrument_handler` wrap.
 
+## Image scans (C-2)
+
+`pipeline.image_scan_drain` (`* * * * *`, `jobs/image_scans.py`) fails scans
+stalled past the policy timeout + 600 s, then claims one pending
+`image_scans` row (deployment-wide cap `IMAGE_SCAN_CONCURRENCY`), launches
+the scanner through the executor with an STS credential for
+`scans/{image_id}/{scan_id}/`, reads `result.json` back as untrusted data
+(`pipeline/images/drain.py`: it must name this scan's image, tag, kind,
+prefix and platform), evaluates it against the policy and transitions the
+image: pass -> `approved`, fail -> `rejected` (admission) or `flagged`
+(rescan of an approved image, unless an exception is live), failure ->
+`scan_failed`. A transient scanner or registry fault ends the same way, in
+`scan_failed` — there is no automatic retry; the operator re-requests a
+rescan. A second add of an already-known digest folds into the existing row
+(the folded scan is recorded with kind `admission`, even though spec §9.1
+calls it a rescan): the triggering scan row is re-pointed at the existing
+image (`image_scans.image_id` updated in place — the scan row itself is
+kept, not deleted), and only then is the now scan-less provisional
+`container_images` row deleted. The scan id from the original 202 still
+resolves, under the existing image's id, matching spec §9.1 ("the client
+follows the scan id from the 202, whose `image_id` is authoritative once the
+scan is `done`") — C-3's `getImageScan`
+(`app/src/lib/images/storage.ts`) resolves a scan by `image_id = $1 OR the
+image $1 no longer exists`, so after a fold the scan is still found by its
+scan id under BOTH the existing image's id and the deleted provisional one;
+only the provisional image's own detail GET (`/api/images/<provisional
+id>`) 404s. The scanner's registry credential (the
+group's, or the deployment Docker Hub one) is resolved into the scanner
+container's own environment at launch and stays there until the container
+is reaped, the same posture as any run's `secret_ref` injection (spec
+§6.2). The orphan reaper judges scanner containers
+(`stac-higher.run-kind=image_scan`) against `image_scans`, never
+`process_runs`. Two operational notes: (i) with no `CREDENTIALS_MASTER_KEY`
+set, an admission scan of a private image fails fast as `could_not_start`
+and leaves the image `scan_failed` -- there is no automatic retry, unlike
+the launch path, which requeues the same missing-key condition instead of
+dying (`registry_auth.RegistryAuthUnavailable` is launch-time
+infrastructure); the operator re-requests a rescan once the key is set.
+(ii) The image write (`record_admission` / `record_rescan` /
+`merge_admission`) and the scan row's `finish_scan` are separate
+transactions, so a crash between them can leave `last_scan_id` pointing at
+a scan the stall sweep later fails -- the image keeps its transitioned
+status, but its `last_scan_id` then names a `failed` scan rather than the
+`done` one that actually produced it.
+
 ## Develop
 
 Requires [uv](https://docs.astral.sh/uv/) (falls back to `python3 -m venv` +
@@ -375,7 +426,8 @@ reachable, `503` otherwise:
       "pool_min": 2, "pool_max": 16, "pool_size": 4,
       "pool_available": 3, "requests_waiting": 0
     }
-  }
+  },
+  "image_policy": { "file": "/app/share/image-policy/default.json", "ok": true, "version": 1, "error": null }
 }
 ```
 
@@ -389,6 +441,11 @@ appear only once they are non-zero. `pipeline_jobs_in_flight{job}` on
 `/metrics` is the in-process evidence that the job slots are in use (M3-D):
 at most 8 across the `default` jobs and 4 across `ingest_fetch` /
 `ingest_itemize` / `deliver`.
+
+`image_policy` (C-2) names the image policy file and whether it parses. It
+does **not** affect the 200/503 decision: inline processes do not need it,
+and a broken policy already fails closed where it matters (no scan runs, no
+user-image run launches).
 
 ## Connection pooling (M3-B)
 

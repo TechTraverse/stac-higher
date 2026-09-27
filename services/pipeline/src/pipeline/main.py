@@ -33,6 +33,7 @@ from pipeline.jobs import (
     health_sweep,
     heartbeat,
     history,
+    image_scans,
     ingest,
     monitor,
     notify,
@@ -88,6 +89,9 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # item_event leg and the cron tick queue runs through the §7 rate
     # ceiling; the run tick executes them behind the ADR 0013 executor.
     process.register(queue, settings)
+    # C-2 (ADR 0021): drain image_scans -- the scanner as a platform run, one
+    # at a time deployment-wide, the verdict evaluated here (spec §8.1).
+    image_scans.register(queue, settings)
     # M3-A: drain pgstac.query_queue (partition stats deferred by the writer's
     # `use_queue` session GUC) — or only sample it where pg_cron drains.
     pgstac_drain.register(queue, settings)

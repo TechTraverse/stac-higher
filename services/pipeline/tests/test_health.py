@@ -104,3 +104,24 @@ def test_health_reports_db_pool_stats(monkeypatch):
     }
     # The DSN's password must never reach an unauthenticated endpoint.
     assert "password" not in str(body["db_pool"])
+
+
+def test_health_names_the_image_policy_file():
+    body = make_client(InMemoryQueue(), HeartbeatState()).get("/health").json()
+    policy = body["image_policy"]
+    assert policy["ok"] is True and policy["version"] == 1 and policy["error"] is None
+    assert policy["file"].endswith("default.json")
+
+
+def test_a_broken_image_policy_is_reported_but_not_a_503(tmp_path):
+    from fastapi.testclient import TestClient
+
+    missing = tmp_path / "policy.json"
+    app = create_health_app(
+        InMemoryQueue(), heartbeat_state=HeartbeatState(), image_policy_file=missing
+    )
+    response = TestClient(app).get("/health")
+    assert response.status_code == 200
+    policy = response.json()["image_policy"]
+    assert policy == {"file": str(missing), "ok": False, "version": None, "error": policy["error"]}
+    assert "policy.json" in policy["error"]

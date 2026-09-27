@@ -206,6 +206,8 @@ services:
       # that declares `networks:` stops joining the default implicitly.
       - default
       - process-runs
+      # C-2: the scanner uploads its SBOMs, findings and result here.
+      - scanner-egress
 
   # One-shot bootstrap: creates the default bucket, then exits.
   # stac-higher-deliveries: the destination bucket the GOES e2e and
@@ -232,15 +234,23 @@ services:
   # hold /var/run/docker.sock itself: that is unrestricted control of the host
   # daemon, and the pipeline is the process that also holds the DB URL and the
   # credentials master key. This HAProxy allowlist is the auditable seam —
-  # container create/start/wait/logs/remove are permitted, everything else
-  # (exec, volumes, images, networks, swarm, the daemon socket's write API)
-  # returns 403. P9-A verified exactly this configuration.
+  # container create/start/wait/logs/remove and (C-2) the image endpoints
+  # (see SEC2 below) are permitted, everything else (exec, volumes, networks,
+  # swarm, the daemon socket's write API) returns 403. P9-A verified the
+  # container-only configuration (CONTAINERS=1, POST=1, everything else 0);
+  # C-2 added IMAGES=1 on top of it.
   #
   # RESIDUAL RISK, documented rather than hidden (ADR 0013): create/start with
   # arbitrary HostConfig can still request bind mounts and privileged flags.
   # Two things contain it — the EXECUTOR is the only client of this proxy (it
   # is not published and not on the run network), and our executor never asks
   # for a mount (the revision's code travels in the environment instead).
+  #
+  # C-2 (ADR 0021, spec §8.5): IMAGES=1 lets the pipeline pull, push, tag,
+  # delete, load and fromSrc-import images on the daemon (see SEC2 below).
+  # The executor pulls only digests that exist as an approved/flagged
+  # container_images row, and it is still the proxy's only client. NETWORKS,
+  # VOLUMES and EXEC stay off.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0
     environment:
@@ -252,7 +262,11 @@ services:
       # silent widening of a security boundary.
       - EXEC=0
       - VOLUMES=0
-      - IMAGES=0
+      # SEC2: IMAGES=1 is more than pull-by-digest -- it also permits image
+      # push, tag, delete, load, and the `fromSrc` URL import. The proxy has
+      # no way to allow only pull; the executor's own digest check is what
+      # keeps the extra surface from being exercised.
+      - IMAGES=1
       - NETWORKS=0
       - SERVICES=0
       - TASKS=0
@@ -367,6 +381,21 @@ services:
       # C-1: where the image published the image policy the `imagepolicy`
       # build context copied in above. Unset means the repo checkout.
       - PROCESS_IMAGE_POLICY_FILE=${PROCESS_IMAGE_POLICY_FILE:-/app/share/image-policy/default.json}
+      # C-2 (container-images spec §6, §11): the scanner image, the network it
+      # runs on (egress-capable: it pulls from registries; MinIO is attached),
+      # whether it refreshes the Grype DB at scan start (false for air-gap,
+      # with GRYPE_DB_UPDATE_URL pointing at a mirror when it is true), and
+      # how many scans run at once (each holds a worker slot, I-124).
+      - IMAGE_SCANNER_IMAGE=${IMAGE_SCANNER_IMAGE:-stac-higher-image-scanner:local}
+      - PROCESS_SCANNER_NETWORK=${PROCESS_SCANNER_NETWORK:-stac-higher_scanner-egress}
+      - IMAGE_SCANNER_DB_UPDATE=${IMAGE_SCANNER_DB_UPDATE:-true}
+      - GRYPE_DB_UPDATE_URL=${GRYPE_DB_UPDATE_URL:-}
+      - IMAGE_SCAN_CONCURRENCY=${IMAGE_SCAN_CONCURRENCY:-1}
+      # Optional deployment Docker Hub credential for docker.io images that
+      # carry no group credential (spec §5). Unset = anonymous, which shares
+      # Docker's 100-pulls-per-6-hours-per-IP budget (ISSUES I-125).
+      - REGISTRY_DOCKERHUB_USER=${REGISTRY_DOCKERHUB_USER:-}
+      - REGISTRY_DOCKERHUB_TOKEN=${REGISTRY_DOCKERHUB_TOKEN:-}
       # GOES spec §3.4: remote input files staged concurrently per run.
       - PROCESS_INPUT_STAGE_CONCURRENCY=${PROCESS_INPUT_STAGE_CONCURRENCY:-4}
     ports:
@@ -496,6 +525,27 @@ networks:
   # feature impossible is not isolation, it is a bug.
   process-runs:
     internal: true
+
+  # C-2 (container-images spec §11): the image scanner's network. NOT
+  # internal -- the scanner must reach public and private registries. Docker
+  # cannot filter it by host, so `allowed_registries` is enforced twice in
+  # software (the app on add, the pipeline and the scanner before any pull)
+  # and the scanner is the only container on it besides MinIO (ISSUES
+  # I-123). Neither the database nor the socket proxy is attached.
+  #
+  # SEC1: this is NOT an internal network, and being non-internal, and being
+  # a plain Docker bridge, means it is not egress-isolated from the host
+  # either -- a container on it can reach the docker host's own network
+  # stack through the bridge gateway. On a dev host that means the scanner
+  # can also reach every port this compose file publishes: Postgres 5433,
+  # the auth proxy 8081, the API 8082, the pipeline 8083, titiler 8084,
+  # tipg 8085, Keycloak 8180, and MinIO 9000/9001. The egress boundary for
+  # registries is this network plus the `allowed_registries` allow-list in
+  # the image policy file (infra/image-policy/default.json, or the
+  # PROCESS_IMAGE_POLICY_FILE override) -- not network isolation, which this
+  # network does not provide.
+  scanner-egress:
+    driver: bridge
 
 volumes:
   pgdata:

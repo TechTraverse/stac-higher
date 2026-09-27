@@ -36,6 +36,10 @@ from pipeline.process.hardware import HardwareProfile
 #: Kueue's two priority classes (K-5/K-6) — unread until then.
 PRIORITIES = ("interactive", "triggered")
 
+#: What a run is (C-2): a process run, judged against ``process_runs``, or an
+#: image scan, judged against ``image_scans``. The reaper keeps them apart.
+RUN_KINDS = ("process", "image_scan")
+
 
 class ExecutorError(Exception):
     """Base class for executor failures."""
@@ -53,6 +57,24 @@ class RunTimeout(ExecutorError):
     """The run exceeded its wall-clock budget and was killed."""
 
 
+class ImagePullFailed(ExecutorError):
+    """The daemon refused or could not pull a user image by digest (C-2,
+    spec §8.4). A per-run OUTCOME, not an outage: the registry may have
+    deleted the manifest or revoked the credential, so the caller spends an
+    attempt rather than requeueing forever."""
+
+
+@dataclass(frozen=True)
+class RegistryAuth:
+    """A pull credential for one registry, resolved at launch (spec §8.4) and
+    handed only to the daemon. ``password`` never appears in a repr, a log
+    line or an error message."""
+
+    username: str
+    password: str = field(repr=False)
+    server: str = ""
+
+
 @dataclass(frozen=True)
 class RunSpec:
     """Everything needed to start one run — and nothing implicit."""
@@ -65,7 +87,8 @@ class RunSpec:
     #: (ADR 0013). Populated by the launch path from the revision's resolved
     #: env plus the run-scoped storage credentials.
     env: dict[str, str] = field(default_factory=dict)
-    #: Container-side entrypoint override; empty = the image's own.
+    #: Docker ``Cmd`` override: a kind-3 revision's ``command``. Empty = the
+    #: image's own. It never overrides ``Entrypoint`` or ``User``.
     cmd: tuple[str, ...] = ()
     memory_mb: int = 512
     timeout_seconds: int = 900
@@ -82,6 +105,17 @@ class RunSpec:
     #: "interactive" for a UI test run, "triggered" otherwise — Kueue's two
     #: priority classes (K-5/K-6); unread until then.
     priority: str = "triggered"
+    #: One of RUN_KINDS. A scan's ``process_id`` carries the IMAGE id.
+    kind: str = "process"
+    #: C-2 (spec §3.2/§8.4): True for kinds 2-3. The backend then refuses an
+    #: image not pinned by digest, pulls it if absent, and forces the
+    #: platform's hardening whatever the image says: uid 10001, a /tmp tmpfs.
+    user_image: bool = False
+    #: Entrypoint override. Only the kind-2 bootstrap sets one; empty = the
+    #: image's own.
+    entrypoint: tuple[str, ...] = ()
+    #: Pull credential for a user image; None = anonymous.
+    registry_auth: RegistryAuth | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +157,9 @@ class LaunchedRun:
     #: A missing time is not an orphan signal — it just means the age rule
     #: cannot apply and the ledger decides alone.
     created_at: dt.datetime | None = None
+    #: One of RUN_KINDS, from the backend's own label. A container launched
+    #: before C-2 carries no kind label and reads as a process run.
+    kind: str = "process"
 
 
 class Executor(abc.ABC):

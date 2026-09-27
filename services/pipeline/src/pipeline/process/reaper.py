@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 from pipeline.metrics import PROCESS_ORPHANS_REAPED
@@ -64,6 +65,7 @@ async def process_reap_tick(
     *,
     executor: Executor,
     repo: ProcessRepo,
+    scan_statuses: Callable[[Sequence[str]], Awaitable[dict[str, str]]] | None = None,
     max_age_seconds: int = DEFAULT_REAP_MAX_AGE_SECONDS,
     now: dt.datetime | None = None,
 ) -> ReapResult:
@@ -81,15 +83,29 @@ async def process_reap_tick(
     if not launched:
         return ReapResult()
 
-    statuses = await repo.run_statuses([entry.run_id for entry in launched])
+    # C-2: a scan container has no process_runs row by design. It is judged
+    # against image_scans when the caller can read that ledger, and left
+    # alone when it cannot: a missing row must never read as "orphan".
+    process_ids = [e.run_id for e in launched if e.kind != "image_scan"]
+    scan_ids = [e.run_id for e in launched if e.kind == "image_scan"]
+    statuses = await repo.run_statuses(process_ids)
+    scans = (
+        await scan_statuses(scan_ids) if scan_ids and scan_statuses is not None else {}
+    )
 
     reaped = failed = 0
     for entry in launched:
+        if entry.kind == "image_scan":
+            if scan_statuses is None:
+                continue
+            status = scans.get(entry.run_id)
+        else:
+            status = statuses.get(entry.run_id)
         aged = (
             entry.created_at is not None
             and (at - entry.created_at).total_seconds() > max_age_seconds
         )
-        if statuses.get(entry.run_id) == LIVE_STATUS and not aged:
+        if status == LIVE_STATUS and not aged:
             continue
         try:
             executor.reap(entry.handle)
@@ -100,6 +116,7 @@ async def process_reap_tick(
                 extra={
                     "run_id": entry.run_id,
                     "container": entry.handle.id,
+                    "kind": entry.kind,
                     "error": str(err),
                 },
             )
@@ -111,7 +128,8 @@ async def process_reap_tick(
             extra={
                 "run_id": entry.run_id,
                 "container": entry.handle.id,
-                "run_status": statuses.get(entry.run_id),
+                "run_status": status,
+                "kind": entry.kind,
                 "aged_out": aged,
             },
         )

@@ -11,6 +11,7 @@ from pipeline.jobs.gc import COLLECT_JOB_NAME, RETENTION_JOB_NAME
 from pipeline.jobs.health_sweep import JOB_NAME as SWEEP_JOB
 from pipeline.jobs.heartbeat import JOB_NAME as HEARTBEAT_JOB
 from pipeline.jobs.history import JOB_NAME as HISTORY_JOB
+from pipeline.jobs.image_scans import JOB_NAME as IMAGE_SCAN_JOB
 from pipeline.jobs.ingest import JOB_DISCOVER, JOB_FETCH, JOB_GROUP, JOB_ITEMIZE, JOB_POLL
 from pipeline.jobs.monitor import JOB_NAME as MONITOR_JOB
 from pipeline.jobs.notify import SWEEP_JOB_NAME as NOTIFY_SWEEP_JOB
@@ -42,6 +43,8 @@ def test_build_queue_registers_all_periodic_jobs():
     assert JOB_RUN_NOW in registered
     # M3-A: the pgstac query-queue drain (a sampler when pg_cron owns the drain).
     assert PGSTAC_DRAIN_JOB in registered
+    # C-2: the image scan drain (the scanner as a platform run, ADR 0021).
+    assert IMAGE_SCAN_JOB in registered
 
 
 async def test_run_closes_both_pools_before_the_queue(monkeypatch):

@@ -287,3 +287,61 @@ def test_docker_ignores_a_container_whose_run_label_is_missing():
     executor._request = api  # type: ignore[method-assign]
 
     assert executor.list_launched() == []
+
+
+# ---------------------------------------------------------------------------
+# C-2: scan containers are judged against image_scans, never process_runs
+# ---------------------------------------------------------------------------
+
+
+def launched_scan(scan_id: str, *, age_seconds: int = 10):
+    return LaunchedRun(
+        handle=RunHandle(id=f"c-{scan_id}", backend="fake"),
+        run_id=scan_id,
+        created_at=NOW - dt.timedelta(seconds=age_seconds),
+        kind="image_scan",
+    )
+
+
+class ScanLedger:
+    def __init__(self, statuses):
+        self.statuses = statuses
+        self.asked: list[str] = []
+
+    async def __call__(self, scan_ids):
+        self.asked = list(scan_ids)
+        return {s: self.statuses[s] for s in scan_ids if s in self.statuses}
+
+
+@pytest.mark.asyncio
+async def test_a_running_scan_container_is_left_alone():
+    executor = RecordingExecutor([launched_scan("s1")])
+    repo = LedgerRepo({})
+    ledger = ScanLedger({"s1": "running"})
+    result = await process_reap_tick(
+        executor=executor, repo=repo, scan_statuses=ledger, now=NOW
+    )
+    assert result.reaped == 0
+    # The process ledger was never asked about a scan id.
+    assert repo.asked == []
+    assert ledger.asked == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_or_unknown_scan_container_is_reaped():
+    executor = RecordingExecutor([launched_scan("s1"), launched_scan("s2")])
+    ledger = ScanLedger({"s1": "done"})
+    result = await process_reap_tick(
+        executor=executor, repo=LedgerRepo({}), scan_statuses=ledger, now=NOW
+    )
+    assert result.reaped == 2
+
+
+@pytest.mark.asyncio
+async def test_without_a_scan_ledger_scan_containers_are_never_judged():
+    """The process reaper cannot know a scan's status, so it must not guess:
+    no row in process_runs would otherwise read as 'orphan'."""
+    executor = RecordingExecutor([launched_scan("s1"), launched("r1")])
+    result = await process_reap_tick(executor=executor, repo=LedgerRepo({}), now=NOW)
+    assert result.reaped == 1
+    assert "reap:c-s1" not in executor.order

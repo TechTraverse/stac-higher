@@ -17,7 +17,7 @@ invisibly.
 ``inline_python``, ``inline_python_on_image`` and ``container``. The
 snapshot ``image`` of kinds 2-3 is parsed here. Whether that image may
 deploy is the app's DB-backed gate, and whether it may LAUNCH is the launch
-path's (``launch.check_user_image_launchable``; C-2 makes that a digest check).
+path's (``launch.resolve_run_image``, the C-2 digest check).
 """
 
 from __future__ import annotations

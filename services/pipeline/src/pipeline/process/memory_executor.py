@@ -59,8 +59,11 @@ class MemoryExecutor(Executor):
         # Launched-minus-reaped is the fake's honest analogue of "resources
         # the backend still holds", which is what the reaper reconciles.
         return [
-            LaunchedRun(handle=RunHandle(id=f"mem-{spec.run_id}", backend=self.name),
-                        run_id=spec.run_id)
+            LaunchedRun(
+                handle=RunHandle(id=f"mem-{spec.run_id}", backend=self.name),
+                run_id=spec.run_id,
+                kind=spec.kind,
+            )
             for spec in self.launched
             if f"mem-{spec.run_id}" not in self.reaped
         ]

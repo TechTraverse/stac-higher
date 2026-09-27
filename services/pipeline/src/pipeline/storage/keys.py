@@ -24,6 +24,10 @@ STAGING_PREFIX = "staging"
 #: history_retention sweep (object first, then the row) and asset_gc is
 #: deliberately not involved.
 LOGS_PREFIX = "logs"
+#: C-2 (container-images spec §6.2/§8.3): one scan's objects -- the SBOM
+#: pair, the full Grype findings, result.json and the scanner's log. Platform
+#: bytes like logs/: never catalog assets, never asset_gc (ADR 0011).
+SCANS_PREFIX = "scans"
 
 
 class InvalidKeySegment(ValueError):
@@ -161,6 +165,22 @@ def run_log_key(process_id: str, run_id: str) -> str:
         if not _SAFE_IDENTITY.match(value):
             raise InvalidKeySegment(f"{field} is not a safe path segment: {value!r}")
     return f"{LOGS_PREFIX}/runs/{process_id}/{run_id}.log"
+
+
+def image_scan_prefix(image_id: str, scan_id: str) -> str:
+    """``scans/{image_id}/{scan_id}/`` -- the ONLY place a scanner run may
+    write. Its STS credential is bounded to exactly this prefix (spec §6.2),
+    and the drain believes only object keys under it."""
+    for field, value in (("image id", image_id), ("scan id", scan_id)):
+        if not _SAFE_IDENTITY.match(value):
+            raise InvalidKeySegment(f"{field} is not a safe path segment: {value!r}")
+    return f"{SCANS_PREFIX}/{image_id}/{scan_id}/"
+
+
+def image_scan_log_key(image_id: str, scan_id: str) -> str:
+    """``scans/{image_id}/{scan_id}/log`` -- the scanner run's captured log,
+    referenced from ``image_scans.log_ref`` (spec §8.1)."""
+    return f"{image_scan_prefix(image_id, scan_id)}log"
 
 
 def is_staged_href(href: object) -> bool:
