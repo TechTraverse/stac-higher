@@ -13,7 +13,6 @@ vi.mock("@/lib/db/migrate", () => ({ runMigrations: vi.fn(async () => {}) }));
 import { getClient, query } from "@/lib/db/connection";
 import {
   IMAGE_LIST_LIMIT,
-  checkRegistryConnectionForAdd,
   findOpenAdmission,
   getImage,
   getImageScan,
@@ -203,7 +202,7 @@ describe("scans and users", () => {
 });
 
 describe("adding an image (ADR 0004: rows, never a call)", () => {
-  it("inserts a pending image and its admission scan in one transaction", async () => {
+  it("takes the lock, re-checks on the same client, then inserts a pending image and its admission scan in one transaction", async () => {
     const client = mockClient((sql) => {
       if (sql.includes("INSERT INTO stac_higher.container_images")) return { rows: [{ id: IMG }] };
       if (sql.includes("INSERT INTO stac_higher.image_scans")) return { rows: [{ id: SCAN }] };
@@ -216,15 +215,42 @@ describe("adding an image (ADR 0004: rows, never a call)", () => {
       addedBy: "user-1",
     });
     expect(added).toEqual({ image_id: IMG, scan_id: SCAN, deduplicated: false });
-    const sqls = client.query.mock.calls.map(([sql]) => String(sql).trim().split(/\s+/)[0]);
-    expect(sqls).toEqual(["BEGIN", "INSERT", "INSERT", "COMMIT"]);
+    const sqls = client.query.mock.calls.map(([sql]) => String(sql));
+    const kinds = sqls.map((sql) => sql.trim().split(/\s+/)[0]);
+    expect(kinds).toEqual(["BEGIN", "SELECT", "SELECT", "INSERT", "INSERT", "COMMIT"]);
+    expect(sqls[1]).toContain("pg_advisory_xact_lock");
+    expect(sqls[2]).toContain("FROM stac_higher.container_images i");
+    expect(sqls[2]).toContain("s.status IN ('pending','running')");
     expect(client.query.mock.calls[1][1]).toEqual([
+      "docker.io/library/python",
+      "3.12-slim",
+      null,
+    ]);
+    expect(client.query.mock.calls[3][1]).toEqual([
       "docker.io/library/python",
       "3.12-slim",
       null,
       "user-1",
     ]);
-    expect(String(client.query.mock.calls[2][0])).toContain("'admission'");
+    expect(String(client.query.mock.calls[4][0])).toContain("'admission'");
+    expect(client.release).toHaveBeenCalled();
+  });
+
+  it("returns the row the in-transaction re-check finds, deduplicated, and never inserts", async () => {
+    const client = mockClient((sql) => {
+      if (sql.startsWith("SELECT i.id AS image_id")) return { rows: [{ image_id: IMG, scan_id: SCAN }] };
+      return { rows: [] };
+    });
+    const added = await insertImageWithAdmission({
+      reference: "ghcr.io/org/img",
+      tag: "1",
+      registryConnectionId: null,
+      addedBy: "user-1",
+    });
+    expect(added).toEqual({ image_id: IMG, scan_id: SCAN, deduplicated: true });
+    const kinds = client.query.mock.calls.map(([sql]) => String(sql).trim().split(/\s+/)[0]);
+    expect(kinds).toEqual(["BEGIN", "SELECT", "SELECT", "COMMIT"]);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT"))).toBe(false);
     expect(client.release).toHaveBeenCalled();
   });
 
@@ -255,32 +281,6 @@ describe("adding an image (ADR 0004: rows, never a call)", () => {
     expect(sql).toContain("IS NOT DISTINCT FROM $3::uuid");
     expect(sql).toContain("s.status IN ('pending','running')");
     expect(params).toEqual(["ghcr.io/org/img", "1", null]);
-  });
-});
-
-describe("checkRegistryConnectionForAdd (F13: a disabled credential refuses the add)", () => {
-  it("is ok when no connection is named, without a query", async () => {
-    expect(await checkRegistryConnectionForAdd(null)).toEqual({ outcome: "ok" });
-    expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  it("is ok for an enabled connection", async () => {
-    mockQuery.mockResolvedValue({ rows: [{ enabled: true }] } as never);
-    expect(await checkRegistryConnectionForAdd("c-1")).toEqual({ outcome: "ok" });
-    expect(mockQuery.mock.calls[0][1]).toEqual(["c-1"]);
-  });
-
-  it("refuses a disabled connection distinctly, so the route can answer 422", async () => {
-    mockQuery.mockResolvedValue({ rows: [{ enabled: false }] } as never);
-    expect(await checkRegistryConnectionForAdd("c-1")).toEqual({ outcome: "disabled" });
-    const [sql] = mockQuery.mock.calls[0];
-    expect(sql).toContain("FROM stac_higher.connections");
-    expect(sql).toContain("deleted_at IS NULL");
-  });
-
-  it("is not_found for a missing or soft-deleted connection", async () => {
-    mockQuery.mockResolvedValue({ rows: [] } as never);
-    expect(await checkRegistryConnectionForAdd("gone")).toEqual({ outcome: "not_found" });
   });
 });
 

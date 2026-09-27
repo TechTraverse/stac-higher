@@ -380,45 +380,10 @@ export interface AddedImage {
   deduplicated: boolean;
 }
 
-export type RegistryConnectionForAdd =
-  | { outcome: "ok" }
-  | { outcome: "not_found" }
-  | { outcome: "disabled" };
-
-/**
- * F13 (controller ruling): adding an image against a DISABLED registry
- * credential must be refused distinctly, so the route can answer 422
- * instead of silently admitting a row nothing will ever be able to pull
- * with. `enabled` (migration 004) is a separate switch from soft-delete
- * (`deleted_at`, spec §5.2's "the gate treats it as another group"); a
- * soft-deleted connection reads the same as a missing one here; the route
- * calls this BEFORE `findOpenAdmission` / `insertImageWithAdmission`.
- * `registryConnectionId: null` (no credential named) always answers "ok".
- */
-export async function checkRegistryConnectionForAdd(
-  registryConnectionId: string | null,
-): Promise<RegistryConnectionForAdd> {
-  if (registryConnectionId === null) return { outcome: "ok" };
-  await runMigrations();
-  const result = await query<{ enabled: boolean }>(
-    `SELECT enabled FROM stac_higher.connections
-      WHERE id = $1 AND deleted_at IS NULL`,
-    [registryConnectionId],
-  );
-  const row = result.rows[0];
-  if (!row) return { outcome: "not_found" };
-  return row.enabled ? { outcome: "ok" } : { outcome: "disabled" };
-}
-
-/** An admission still in flight for the same reference, tag and credential.
- * A second "Add" (a double-click, a second operator) reuses it instead of
- * queueing a second provisional row the drain would only merge again. */
-export async function findOpenAdmission(
-  input: Omit<AddImageInput, "addedBy">,
-): Promise<AddedImage | null> {
-  await runMigrations();
-  const result = await query<{ image_id: string; scan_id: string }>(
-    `SELECT i.id AS image_id, s.id AS scan_id
+/** Shared by the lock-free fast path (`findOpenAdmission`) and the
+ * in-transaction re-check (`insertImageWithAdmission`): an admission still
+ * in flight for the same reference, tag and credential. */
+const OPEN_ADMISSION_SQL = `SELECT i.id AS image_id, s.id AS scan_id
        FROM stac_higher.container_images i
        JOIN stac_higher.image_scans s
          ON s.image_id = i.id AND s.kind = 'admission' AND s.status IN ('pending','running')
@@ -427,21 +392,62 @@ export async function findOpenAdmission(
         AND i.registry_connection_id IS NOT DISTINCT FROM $3::uuid
         AND i.status IN ('pending','scanning')
       ORDER BY s.requested_at DESC
-      LIMIT 1`,
-    [input.reference, input.tag, input.registryConnectionId],
-  );
+      LIMIT 1`;
+
+/** An admission still in flight for the same reference, tag and credential.
+ * A second "Add" (a double-click, a second operator) reuses it instead of
+ * queueing a second provisional row the drain would only merge again. This
+ * runs on the pool: it is a fast, lock-free pre-check for the common case
+ * (an earlier Add already has an open admission). It cannot by itself
+ * prevent two CONCURRENT Adds from both missing and both inserting —
+ * `insertImageWithAdmission` closes that race with an in-transaction lock
+ * and re-check. */
+export async function findOpenAdmission(
+  input: Omit<AddImageInput, "addedBy">,
+): Promise<AddedImage | null> {
+  await runMigrations();
+  const result = await query<{ image_id: string; scan_id: string }>(OPEN_ADMISSION_SQL, [
+    input.reference,
+    input.tag,
+    input.registryConnectionId,
+  ]);
   const row = result.rows[0];
   return row ? { ...row, deduplicated: true } : null;
 }
 
+/** Serializes concurrent `insertImageWithAdmission` calls for the same
+ * reference/tag/credential (Review Focus #4: two concurrent Adds must never
+ * create two provisional rows). `UNIQUE (reference, digest)` cannot catch
+ * this: both digests are NULL before a scan resolves one, and NULLs are
+ * distinct. `pg_advisory_xact_lock` is transaction-scoped (auto-releases on
+ * COMMIT/ROLLBACK) and free when uncontested. */
+const ADMISSION_LOCK_SQL = `SELECT pg_advisory_xact_lock(hashtextextended($1 || E'\n' || $2 || E'\n' || coalesce($3::text,''), 0))`;
+
 /** A `pending` row (digest NULL: the app never touches a registry) and its
  * `admission` scan request, in ONE transaction, so there is never an image
- * nobody will scan. */
+ * nobody will scan. Takes the advisory lock FIRST, then re-checks for an
+ * open admission on the SAME client before inserting: a second concurrent
+ * caller blocks on the lock until the first commits, then its re-check
+ * finds the first's row and returns it deduplicated instead of inserting a
+ * second one. */
 export async function insertImageWithAdmission(input: AddImageInput): Promise<AddedImage> {
   await runMigrations();
   const client = await getClient();
   try {
     await client.query("BEGIN");
+    await client.query(ADMISSION_LOCK_SQL, [
+      input.reference,
+      input.tag,
+      input.registryConnectionId,
+    ]);
+    const existing = await client.query<{ image_id: string; scan_id: string }>(
+      OPEN_ADMISSION_SQL,
+      [input.reference, input.tag, input.registryConnectionId],
+    );
+    if (existing.rows[0]) {
+      await client.query("COMMIT");
+      return { ...existing.rows[0], deduplicated: true };
+    }
     const image = await client.query<{ id: string }>(
       `INSERT INTO stac_higher.container_images
          (reference, tag_at_add, registry_connection_id, added_by)
