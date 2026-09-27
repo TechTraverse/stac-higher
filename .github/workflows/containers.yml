@@ -50,6 +50,11 @@ jobs:
             context: .
             # upstream base is linux/amd64 only
             platforms: linux/amd64
+          - name: image-scanner
+            # The platform image scanner (C-2): Syft + Grype, DB baked at
+            # build. Tagged by date too so the baked DB's age is visible.
+            dockerfile: services/image-scanner/Dockerfile
+            context: services/image-scanner
     env:
       # Publish only from main and version tags; every other ref build-verifies.
       PUSH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
@@ -76,6 +81,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{date 'YYYYMMDD'}},enable=${{ matrix.image.name == 'image-scanner' }}
       - name: Build${{ env.PUSH == 'true' && ' + push' || '' }}
         uses: docker/build-push-action@v7
         with:

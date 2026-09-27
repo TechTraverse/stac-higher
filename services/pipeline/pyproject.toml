@@ -83,7 +83,8 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 # stac_higher_stactools ships in the runtime image, not this package; its
 # unit tests (merge rules, adapters) run here with the `stactools` extra.
-pythonpath = ["../process-runtime"]
+# stac_higher_scanner ships in the image-scanner image (C-2); same arrangement.
+pythonpath = ["../process-runtime", "../image-scanner"]
 
 [tool.uv]
 no-build-package = ["rasterio"]

@@ -34,3 +34,14 @@ target "stactools" {
   }
   tags = ["stac-higher-process-runtime-stactools:local"]
 }
+
+// The image scanner (C-2, container-images spec §6.1): Syft + Grype with the
+// vulnerability DB baked in. Deliberately NOT in the default group -- it is
+// not a process runtime and CI builds it in containers.yml's matrix. Build it
+// locally with:
+//   docker buildx bake -f services/process-runtime/docker-bake.hcl image-scanner
+target "image-scanner" {
+  context    = "services/image-scanner"
+  dockerfile = "Dockerfile"
+  tags       = ["stac-higher-image-scanner:local"]
+}
