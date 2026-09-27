@@ -42,10 +42,13 @@ import { useLandingPage } from "@/lib/query/search";
 import { useAlerts, useFlows } from "@/lib/monitoring/queries";
 import { usePipelineGraph } from "@/lib/monitoring/graph-queries";
 import { ALERTS_PAGE_LIMIT } from "@/lib/monitoring/api";
+import { useImages } from "@/lib/images/queries";
 import {
   buildConnectionChips,
   buildProductRows,
   buildStats,
+  countImagesAtRisk,
+  describeImagesAtRisk,
   type ProductRow,
 } from "@/components/layout/overview";
 
@@ -302,6 +305,10 @@ function DashboardContent() {
   const { data: flows } = useFlows();
   const { data: openAlerts, isLoading: alertsLoading, isError: alertsError } =
     useAlerts("open");
+  // C-3: in-use images a human must look at. A member without a session
+  // gets a 401 here; the tile then simply shows nothing extra. Platform-wide
+  // (overview.ts header), unlike the rest of this page's group-scoped reads.
+  const { data: inUseImages } = useImages({ in_use: true }, { retry: false });
 
   if (catalogs.length === 0) {
     return (
@@ -328,6 +335,14 @@ function DashboardContent() {
 
   const chips = buildConnectionChips(graph, flows, openAlerts);
   const stats = buildStats(graph, flows, chips);
+  const imagesAtRisk = countImagesAtRisk(inUseImages?.images);
+  const processSub =
+    [
+      stats.processesUndeployed > 0 ? `${stats.processesUndeployed} not deployed` : null,
+      describeImagesAtRisk(imagesAtRisk),
+    ]
+      .filter(Boolean)
+      .join(" · ") || undefined;
   // "Healthy" is only claimed on a loaded, untruncated alert list — the same
   // evidence rule the /monitoring flows card uses for its on-time hint.
   const alertsAreComplete =
@@ -366,11 +381,7 @@ function DashboardContent() {
         <StatTile
           label="Processes"
           value={stats.processes}
-          sub={
-            stats.processesUndeployed > 0
-              ? `${stats.processesUndeployed} not deployed`
-              : undefined
-          }
+          sub={processSub}
           subTone="warn"
           href="/processes"
           loading={graphLoading}

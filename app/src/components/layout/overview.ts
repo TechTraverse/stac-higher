@@ -12,9 +12,17 @@
  * lateness comes from `isLate` (the monitor's expectation-breach alert), never
  * from a local re-derivation. That is what keeps this page and /monitoring
  * from disagreeing.
+ *
+ * `countImagesAtRisk`/`describeImagesAtRisk` (C-3) are the one exception to
+ * the group-scoped rule above: images are PLATFORM-WIDE by spec (container-
+ * images spec §4 — there is no per-group image registry), so that count
+ * reflects every live process's current revision on the platform, not just
+ * the caller's own group, even though the rest of this module and the tile
+ * it feeds are group-scoped.
  */
 import type { LineageGroup, LineageHealth } from "@stac-higher/shared";
 import type { Association } from "@/lib/associations/types";
+import type { Image } from "@/lib/images/types";
 import type { Alert } from "@/lib/monitoring/api";
 import type { DailyStats, PipelineGraph } from "@/lib/monitoring/graph-api";
 import { collectionNode } from "@/lib/graph/edges";
@@ -365,4 +373,30 @@ export function successRate(
   }
   const total = ok + bad;
   return total === 0 ? null : (ok / total) * 100;
+}
+
+/**
+ * C-3 (container-images spec §9.2): images a live process's CURRENT
+ * revision uses that need a human: flagged (new deploys refused), revoked
+ * (runs die at launch) or stale (deploys AND launches refused). Unknown
+ * staleness (policy unreadable) is not counted: no evidence is not a
+ * finding, the same rule as the health verdicts above.
+ */
+export function countImagesAtRisk(images: readonly Image[] | undefined): number {
+  return (images ?? []).filter(
+    (image) =>
+      image.in_use_by > 0 &&
+      (image.status === "flagged" || image.status === "revoked" || image.stale === true),
+  ).length;
+}
+
+/**
+ * The Processes tile's image-risk line (controller ruling F5): it must read
+ * as an IMAGE count — "N in-use image(s) flagged or stale" — never as a
+ * process count, since one flagged image can back many processes' current
+ * revisions or none at all. Returns null (nothing to show) at zero.
+ */
+export function describeImagesAtRisk(count: number): string | null {
+  if (count <= 0) return null;
+  return `${count} in-use image${count === 1 ? "" : "s"} flagged or stale`;
 }

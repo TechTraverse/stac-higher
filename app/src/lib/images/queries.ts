@@ -52,11 +52,18 @@ export function scanRefetchInterval(state: PollState<ImageScanPoll>): number | f
   return isScanTerminal(state.data?.scan.status) ? false : SCAN_POLL_MS;
 }
 
-export function useImages(filters: ImageListQuery = {}) {
+/**
+ * `options.retry` lets a caller opt out of the default retry (C-3's home
+ * overview: a member without a session gets a 401 from the platform-wide
+ * images read, and retrying that is pointless — see `DashboardPage.tsx`).
+ * Omitted entirely, the global default (`query/client.ts`) applies.
+ */
+export function useImages(filters: ImageListQuery = {}, options: { retry?: boolean } = {}) {
   return useQuery({
     queryKey: imageKeys.list(filters),
     queryFn: () => listImages(filters),
     refetchInterval: (query) => listRefetchInterval(query.state),
+    ...options,
   });
 }
 
