@@ -392,11 +392,11 @@ export function countImagesAtRisk(images: readonly Image[] | undefined): number 
 
 /**
  * The Processes tile's image-risk line (controller ruling F5): it must read
- * as an IMAGE count — "N in-use image(s) flagged or stale" — never as a
- * process count, since one flagged image can back many processes' current
- * revisions or none at all. Returns null (nothing to show) at zero.
+ * as an IMAGE count — "N in-use image(s) flagged, revoked or stale" — never
+ * as a process count, since one flagged image can back many processes'
+ * current revisions or none at all. Returns null (nothing to show) at zero.
  */
 export function describeImagesAtRisk(count: number): string | null {
   if (count <= 0) return null;
-  return `${count} in-use image${count === 1 ? "" : "s"} flagged or stale`;
+  return `${count} in-use image${count === 1 ? "" : "s"} flagged, revoked or stale`;
 }

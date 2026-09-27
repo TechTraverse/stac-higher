@@ -102,6 +102,17 @@ describe("buildRuntimePayload", () => {
     expect(noCommand.ok && noCommand.runtime).toMatchObject({ kind: "container", command: null });
   });
 
+  it("ignores a leftover image/commandText from a previous kind when the form switches back to kind 1 (regression)", () => {
+    const payload = buildRuntimePayload(
+      { ...DEFAULT_RUNTIME_FORM, image: SNAP, commandText: "x" },
+      LIMITS,
+    );
+    if (!payload.ok) throw new Error(payload.error);
+    expect(payload.runtime).toMatchObject({ kind: "inline_python", image: null });
+    expect("command" in payload.runtime).toBe(false);
+    expect(payload.carriesCode).toBe(true);
+  });
+
   it("refuses a user-image kind with no image, or a broken command", () => {
     expect(buildRuntimePayload({ ...DEFAULT_RUNTIME_FORM, kind: "container" }, LIMITS)).toEqual({
       ok: false,

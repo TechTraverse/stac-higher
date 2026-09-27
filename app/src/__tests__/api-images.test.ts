@@ -318,6 +318,17 @@ describe("POST /api/images", () => {
     expect(insertImageWithAdmission).not.toHaveBeenCalled();
   });
 
+  it("never looks up the credential when the registry itself is disallowed", async () => {
+    const { res } = await call(addRoute, operator, {
+      method: "POST",
+      body: { reference: "quay.io/org/tool:1", registry_connection_id: CONN },
+    });
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe("registry_not_allowed");
+    expect(getConnection).not.toHaveBeenCalled();
+    expect(insertImageWithAdmission).not.toHaveBeenCalled();
+  });
+
   it("allows a wildcard-matched ECR host", async () => {
     const { res } = await call(addRoute, operator, {
       method: "POST",

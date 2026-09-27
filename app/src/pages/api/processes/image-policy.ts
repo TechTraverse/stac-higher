@@ -31,7 +31,7 @@ export const GET: APIRoute = async ({ locals }) => {
     return jsonResponse(200, visible);
   } catch (err) {
     if (err instanceof ImagePolicyUnavailable) return imagePolicyUnavailable(err);
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return jsonResponse(500, { error: message });
+    console.error(err instanceof Error ? err.message : "Unknown error");
+    return jsonResponse(500, { error: "internal error" });
   }
 };

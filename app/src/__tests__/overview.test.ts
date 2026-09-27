@@ -475,11 +475,11 @@ describe("countImagesAtRisk (C-3, container-images spec §9.2)", () => {
 
 describe("describeImagesAtRisk (C-3, controller ruling F5 — reads as an image count)", () => {
   it("uses the singular for exactly one image", () => {
-    expect(describeImagesAtRisk(1)).toBe("1 in-use image flagged or stale");
+    expect(describeImagesAtRisk(1)).toBe("1 in-use image flagged, revoked or stale");
   });
 
   it("uses the plural for more than one image", () => {
-    expect(describeImagesAtRisk(3)).toBe("3 in-use images flagged or stale");
+    expect(describeImagesAtRisk(3)).toBe("3 in-use images flagged, revoked or stale");
   });
 
   it("shows nothing at zero — the zero case has no line", () => {

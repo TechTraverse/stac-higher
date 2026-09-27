@@ -126,11 +126,30 @@ describe("GET /api/internal/images/approved", () => {
     expect(res.status).toBe(401);
   });
 
+  it("rejects a same-length wrong token without throwing (constant-time compare)", async () => {
+    vi.mocked(isDigestLaunchable).mockResolvedValue(true);
+    const res = await call(approvedRoute, {
+      search: `?digest=${DIGEST}`,
+      headers: { "X-Internal-Token": "s3cret-tokeX" },
+    });
+    expect(res.status).toBe(401);
+  });
+
   it("fails closed (503) without a policy", async () => {
     vi.stubEnv("PROCESS_IMAGE_POLICY_FILE", "/nonexistent/image-policy.json");
     resetImagePolicyCache();
     const res = await call(approvedRoute, { search: `?digest=${DIGEST}`, headers: HEADERS });
     expect(res.status).toBe(503);
     expect(isDigestLaunchable).not.toHaveBeenCalled();
+  });
+
+  it("answers a generic 500 without leaking the error message (logs it instead)", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(isDigestLaunchable).mockRejectedValue(new Error("pg: connection refused"));
+    const res = await call(approvedRoute, { search: `?digest=${DIGEST}`, headers: HEADERS });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "internal error" });
+    expect(spy).toHaveBeenCalledWith("pg: connection refused");
+    spy.mockRestore();
   });
 });
