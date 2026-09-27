@@ -41,7 +41,11 @@ uv run python -m pipeline.loadgen --label run1 teardown
 ```
 
 `--label` namespaces one run's rows and objects, so runs can be compared
-without a `docker compose down -v` between them. Every subcommand is
+without a `docker compose down -v` between them. One feed per label: `feed`
+writes `g{index}` keys from 0, so a second `feed` under the same label
+rewrites the same objects with the same content and DISCOVER — settle by
+fingerprint — ingests nothing. A saturation probe and a sustained probe
+therefore need two labels (M3-D's Task 6 learned this the slow way). Every subcommand is
 re-runnable: `setup` reuses what exists, `teardown` tolerates what is gone.
 Since M3-B0 teardown is queue-aware: it resolves the probe collection's
 partition name, deletes that partition's rows from `pgstac.query_queue` and
