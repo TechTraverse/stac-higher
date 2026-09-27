@@ -25,7 +25,7 @@ import re
 import ssl
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from pipeline.connections.egress import EgressBlocked, resolve_pinned
 from pipeline.connections.registry import (
@@ -58,6 +58,11 @@ Request = Callable[[str, str, Mapping[str, str]], HttpResponse]
 
 class DriftCheckFailed(Exception):
     """The registry could not say where the tag points now."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        #: the HTTP status that caused the failure, when there is one.
+        self.status = status
 
 
 def _https_request(
@@ -101,21 +106,30 @@ def _bearer(
     request: Request,
 ) -> str:
     realm_url = challenge.get("realm", "")
-    realm = urlsplit(realm_url)
-    if realm.scheme != "https" or not realm.hostname:
+    try:
+        realm = urlsplit(realm_url)
+        hostname = realm.hostname
+        _ = realm.port  # validated eagerly: out-of-range ports raise here too
+    except ValueError as err:
+        raise DriftCheckFailed("the registry names a malformed token endpoint") from err
+    if realm.scheme != "https" or not hostname:
         raise DriftCheckFailed("the registry names a token endpoint that is not https")
-    resolve_pinned(realm.hostname, allow_hosts)
-    query = {"scope": f"repository:{repository}:pull"}
+    resolve_pinned(hostname, allow_hosts)
+    # A hostile realm's #fragment is not sent to a server; it must be
+    # dropped rather than appended after (which would silently swallow the
+    # scope/service query we add).
+    query_pairs = parse_qsl(realm.query, keep_blank_values=True)
+    query_pairs.append(("scope", f"repository:{repository}:pull"))
     if challenge.get("service"):
-        query["service"] = challenge["service"]
-    url = f"{realm_url}{'&' if realm.query else '?'}{urlencode(query)}"
+        query_pairs.append(("service", challenge["service"]))
+    url = urlunsplit((realm.scheme, realm.netloc, realm.path, urlencode(query_pairs), ""))
     basic = _basic(auth)
     resp = request("GET", url, {"Authorization": basic} if basic else {})
     if resp.status != 200:
-        raise DriftCheckFailed(f"the token endpoint returned {resp.status}")
+        raise DriftCheckFailed(f"the token endpoint returned {resp.status}", status=resp.status)
     try:
         doc = json.loads(resp.body)
-    except ValueError as err:
+    except (ValueError, RecursionError) as err:
         raise DriftCheckFailed("the token endpoint sent malformed JSON") from err
     value = (doc.get("token") or doc.get("access_token")) if isinstance(doc, dict) else None
     if not isinstance(value, str) or not value:
@@ -133,6 +147,8 @@ def head_tag_digest(
 ) -> str:
     """The digest ``reference:tag`` names now. Raises on anything else."""
     host = registry_host(reference)
+    if "/" not in reference:
+        raise DriftCheckFailed(f"image reference {reference!r} has no repository path")
     repository = reference.split("/", 1)[1]
     api = registry_api_host(host)
     url = f"https://{api}/v2/{repository}/manifests/{quote(tag, safe='')}"
@@ -150,7 +166,9 @@ def head_tag_digest(
             raise DriftCheckFailed(f"{host} requires credentials the pipeline does not have")
         resp = request("HEAD", url, {**headers, "Authorization": authorization})
     if resp.status != 200:
-        raise DriftCheckFailed(f"HEAD manifests/{tag} on {host} returned {resp.status}")
+        raise DriftCheckFailed(
+            f"HEAD manifests/{tag} on {host} returned {resp.status}", status=resp.status
+        )
     digest = resp.headers.get("docker-content-digest", "")
     if not _DIGEST_RE.fullmatch(digest):
         raise DriftCheckFailed(f"{host} reported no sha256 digest for tag {tag!r}")
@@ -175,10 +193,17 @@ def tag_drift(
         OSError,
         http.client.HTTPException,
         ValueError,
+        IndexError,
+        RecursionError,
     ) as err:
         logger.warning(
             "tag drift check failed",
-            extra={"image_id": image.id, "error_type": type(err).__name__},
+            extra={
+                "image_id": image.id,
+                "host": registry_host(image.reference),
+                "error_type": type(err).__name__,
+                "status": getattr(err, "status", None),
+            },
         )
         return {"current_digest": None, "drifted": False}
     return {"current_digest": current, "drifted": current != image.digest}

@@ -162,8 +162,79 @@ def test_an_egress_refusal_is_recorded_not_raised(monkeypatch):
 
 
 def test_no_log_line_carries_the_credential(pinned, caplog):
+    """A token IS minted before the failure (a 404 on the retried HEAD), so
+    this exercises the real leak surface: neither the password nor the
+    minted token may appear in the formatted log text or in any record's
+    extra fields."""
     caplog.set_level(logging.DEBUG)
-    registry = Registry(challenge(), HttpResponse(401, {}, b""))
-    tag_drift(IMAGE, RegistryAuth("robot", "s3cr3t-pat"), frozenset(), request=registry)
+    registry = Registry(challenge(), token(), HttpResponse(404, {}, b""))
+    result = tag_drift(IMAGE, RegistryAuth("robot", "s3cr3t-pat"), frozenset(), request=registry)
+    assert result["current_digest"] is None
     assert "s3cr3t-pat" not in caplog.text
     assert "t0k3n" not in caplog.text
+    for record in caplog.records:
+        for value in vars(record).values():
+            assert "s3cr3t-pat" not in str(value)
+            assert "t0k3n" not in str(value)
+
+
+def test_a_deeply_nested_token_body_is_recorded_not_raised(pinned):
+    """RecursionError (a RuntimeError, not a ValueError) from json.loads on a
+    hostile, deeply nested body must not escape tag_drift."""
+    registry = Registry(challenge(), HttpResponse(200, {}, b"[" * 60_000))
+    assert tag_drift(IMAGE, None, frozenset(), request=registry) == {
+        "current_digest": None,
+        "drifted": False,
+    }
+
+
+def test_a_reference_with_no_repository_path_fails_head_tag_digest(pinned):
+    with pytest.raises(DriftCheckFailed):
+        head_tag_digest("justahost", "latest", None, frozenset(), request=Registry())
+
+
+def test_a_reference_with_no_repository_path_is_recorded_not_raised(pinned):
+    image = ImageRow(
+        id=IMAGE.id, reference="justahost", tag_at_add="latest", status="approved", digest=None
+    )
+    assert tag_drift(image, None, frozenset(), request=Registry())["current_digest"] is None
+
+
+def test_a_malformed_token_realm_url_is_recorded_not_raised(pinned):
+    registry = Registry(challenge('Bearer realm="https://[::1"'))
+    assert tag_drift(IMAGE, None, frozenset(), request=registry)["current_digest"] is None
+
+
+def test_a_token_realm_with_an_out_of_range_port_is_recorded_not_raised(pinned):
+    registry = Registry(challenge('Bearer realm="https://auth.example:99999/token"'))
+    assert tag_drift(IMAGE, None, frozenset(), request=registry)["current_digest"] is None
+
+
+def test_malformed_token_json_is_recorded_not_raised(pinned):
+    registry = Registry(challenge(), HttpResponse(200, {}, b"not json"))
+    assert tag_drift(IMAGE, None, frozenset(), request=registry)["current_digest"] is None
+
+
+def test_token_json_without_a_token_field_is_recorded_not_raised(pinned):
+    registry = Registry(challenge(), HttpResponse(200, {}, b"{}"))
+    assert tag_drift(IMAGE, None, frozenset(), request=registry)["current_digest"] is None
+
+
+def test_a_bearer_challenge_with_no_realm_is_recorded_not_raised(pinned):
+    registry = Registry(challenge('Bearer service="registry.docker.io"'))
+    assert tag_drift(IMAGE, None, frozenset(), request=registry)["current_digest"] is None
+
+
+def test_a_non_200_token_response_is_recorded_not_raised(pinned):
+    registry = Registry(challenge(), HttpResponse(403, {}, b""))
+    assert tag_drift(IMAGE, None, frozenset(), request=registry)["current_digest"] is None
+
+
+def test_a_fragment_on_the_token_realm_is_stripped_before_the_query(pinned):
+    registry = Registry(
+        challenge('Bearer realm="https://auth.docker.io/token#frag"'), token(), ok()
+    )
+    head_tag_digest(IMAGE.reference, IMAGE.tag_at_add, None, frozenset(), request=registry)
+    token_url = registry.calls[1][1]
+    assert "#" not in token_url
+    assert "scope=repository%3Alibrary%2Fpython%3Apull" in token_url
