@@ -1,8 +1,9 @@
 """Docker Engine API executor (ADR 0013 slice-1 backend, spec §4).
 
 Talks the Engine API over HTTP to a **least-privilege socket proxy**
-(`tecnativa/docker-socket-proxy` with ``CONTAINERS=1 POST=1`, everything else
-off — P9-A verified `exec` and `volumes` return 403 there). The pipeline never
+(`tecnativa/docker-socket-proxy` with ``CONTAINERS=1 IMAGES=1 POST=1`` (IMAGES
+since C-2, for pull-by-digest), everything else off — P9-A verified `exec` and
+`volumes` return 403 there). The pipeline never
 holds the raw socket, so the proxy is the auditable seam, and
 :func:`assert_safe_docker_host` refuses to start against a raw socket at all.
 
@@ -41,11 +42,14 @@ import urllib.request
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from pipeline.images.reference import is_image_digest
 from pipeline.process.executor import (
     Executor,
     ExecutorUnavailable,
     ExitStatus,
+    ImagePullFailed,
     LaunchedRun,
+    RegistryAuth,
     RunHandle,
     RunSpec,
 )
@@ -65,6 +69,15 @@ CODE_ENV_VAR = "STAC_HIGHER_PROCESS_CODE_B64"
 #: and the only thing that distinguishes ours from a stranger's.
 RUN_ID_LABEL = "stac-higher.run-id"
 PROCESS_ID_LABEL = "stac-higher.process-id"
+#: C-2: what a container is ("process" | "image_scan"), so the reaper can
+#: judge a scan against image_scans instead of process_runs.
+RUN_KIND_LABEL = "stac-higher.run-kind"
+#: C-2: a scan container names the image it scans.
+IMAGE_ID_LABEL = "stac-higher.image-id"
+#: Spec §3.2 / §14 decision 1: every user image runs as the platform
+#: runtime's `runner` uid, whatever its own USER says.
+USER_IMAGE_USER = "10001:10001"
+_CONTAINER_NAME_PREFIX = {"process": "stac-run-", "image_scan": "stac-scan-"}
 
 #: Docker reports a SIGKILLed container as 137. It cannot distinguish OUR
 #: timeout kill from any other SIGKILL, which is why `wait` tracks the kill
@@ -74,6 +87,41 @@ SIGKILL_EXIT_CODE = 137
 
 class UnsafeDockerHost(ExecutorUnavailable):
     """`DOCKER_HOST` points at a raw socket instead of the socket proxy."""
+
+
+class EngineHTTPError(ExecutorUnavailable):
+    """The daemon ANSWERED with an HTTP error. Distinct from unreachable:
+    a 404 on an image inspect means "pull it", and a refused pull is the
+    run's problem (ImagePullFailed), not the daemon's."""
+
+    def __init__(self, message: str, *, status: int, detail: str = "") -> None:
+        super().__init__(message)
+        self.status = status
+        self.detail = detail
+
+
+def encode_registry_auth(auth: RegistryAuth) -> str:
+    """The Engine API's ``X-Registry-Auth`` value: base64url JSON."""
+    doc = {"username": auth.username, "password": auth.password, "serveraddress": auth.server}
+    return base64.urlsafe_b64encode(json.dumps(doc).encode("utf-8")).decode("ascii")
+
+
+def _pull_stream_error(payload: bytes) -> str | None:
+    """A pull answers 200 and reports failure INSIDE its JSON-lines progress
+    stream. The first error line wins; non-JSON lines are ignored."""
+    for line in payload.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        detail = event.get("errorDetail")
+        if isinstance(detail, dict) and detail.get("message"):
+            return str(detail["message"])[:500]
+        if event.get("error"):
+            return str(event["error"])[:500]
+    return None
 
 
 def assert_safe_docker_host(docker_host: str) -> None:
@@ -111,6 +159,9 @@ class DockerExecutor(Executor):
     request_timeout_seconds: int = 30
     #: How long each /wait long-poll blocks before we re-check our own budget.
     poll_slice_seconds: int = 5
+    #: A pull streams progress, so this bounds each socket read, not the
+    #: whole pull. Generous: a first pull of a large user image is slow.
+    pull_timeout_seconds: int = 900
 
     def __post_init__(self) -> None:
         assert_safe_docker_host(self.docker_host)
@@ -128,12 +179,15 @@ class DockerExecutor(Executor):
         body: dict | None = None,
         timeout: int | None = None,
         raw: bool = False,
+        headers: dict[str, str] | None = None,
     ) -> bytes | dict | list:
         url = f"{self._base}{path}"
         data = json.dumps(body).encode() if body is not None else None
         request = urllib.request.Request(url, data=data, method=method)
         if data is not None:
             request.add_header("Content-Type", "application/json")
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
         try:
             with urllib.request.urlopen(
                 request, timeout=timeout or self.request_timeout_seconds
@@ -141,8 +195,10 @@ class DockerExecutor(Executor):
                 payload = response.read()
         except urllib.error.HTTPError as err:
             detail = err.read().decode("utf-8", "replace")[:500]
-            raise ExecutorUnavailable(
-                f"docker {method} {path} failed: {err.code} {detail}"
+            raise EngineHTTPError(
+                f"docker {method} {path} failed: {err.code} {detail}",
+                status=err.code,
+                detail=detail,
             ) from err
         except (urllib.error.URLError, OSError) as err:
             raise ExecutorUnavailable(
@@ -152,9 +208,52 @@ class DockerExecutor(Executor):
             return payload
         return json.loads(payload) if payload else {}
 
+    def _ensure_image(self, image: str, auth: RegistryAuth | None) -> None:
+        """Spec §8.4: a user image runs only by digest, pulled if absent.
+
+        The inspect is by the pinned name, so "present" means THIS digest is
+        on the daemon; a tag of the same repository is irrelevant.
+        """
+        reference, sep, digest = image.partition("@")
+        if not sep or not is_image_digest(digest):
+            raise ImagePullFailed(
+                f"refusing to launch a user image not pinned by digest: {image!r}"
+            )
+        try:
+            self._request("GET", f"/images/{urllib.parse.quote(image, safe='/:@')}/json")
+            return
+        except EngineHTTPError as err:
+            if err.status != 404:
+                raise
+        query = urllib.parse.urlencode({"fromImage": reference, "tag": digest})
+        headers = {"X-Registry-Auth": encode_registry_auth(auth)} if auth is not None else None
+        try:
+            payload = self._request(
+                "POST",
+                f"/images/create?{query}",
+                headers=headers,
+                timeout=self.pull_timeout_seconds,
+                raw=True,
+            )
+        except EngineHTTPError as err:
+            raise ImagePullFailed(
+                f"pulling {reference}@{digest} failed: {err.status} {err.detail}"
+            ) from err
+        assert isinstance(payload, bytes)
+        error = _pull_stream_error(payload)
+        if error:
+            raise ImagePullFailed(f"pulling {reference}@{digest} failed: {error}")
+
     # -- Executor -----------------------------------------------------------
 
     def launch(self, spec: RunSpec) -> RunHandle:
+        if spec.user_image:
+            self._ensure_image(spec.image, spec.registry_auth)
+        labels = {RUN_ID_LABEL: spec.run_id, RUN_KIND_LABEL: spec.kind}
+        if spec.kind == "image_scan":
+            labels[IMAGE_ID_LABEL] = spec.process_id
+        else:
+            labels[PROCESS_ID_LABEL] = spec.process_id
         config = {
             "Image": spec.image,
             # Engine wants KEY=VALUE strings. `spec.env` is the COMPLETE
@@ -179,17 +278,24 @@ class DockerExecutor(Executor):
             },
             # Named so an operator looking at `docker ps` can tell what a
             # stray container was, and so the reap sweep can find orphans.
-            "Labels": {
-                RUN_ID_LABEL: spec.run_id,
-                PROCESS_ID_LABEL: spec.process_id,
-            },
+            "Labels": labels,
         }
+        if spec.user_image:
+            # Spec §3.2: the platform's hardening, not the image's. The forced
+            # uid has no home, so /tmp is its one writable directory.
+            config["User"] = USER_IMAGE_USER
+            config["HostConfig"]["Tmpfs"] = {
+                "/tmp": f"rw,nosuid,nodev,size={spec.memory_mb}m"
+            }
+        if spec.entrypoint:
+            config["Entrypoint"] = list(spec.entrypoint)
         if spec.cmd:
             config["Cmd"] = list(spec.cmd)
 
+        name = f"{_CONTAINER_NAME_PREFIX.get(spec.kind, 'stac-run-')}{spec.run_id}"
         created = self._request(
             "POST",
-            f"/containers/create?name={urllib.parse.quote(f'stac-run-{spec.run_id}')}",
+            f"/containers/create?name={urllib.parse.quote(name)}",
             body=config,
         )
         container_id = created.get("Id") if isinstance(created, dict) else None
@@ -290,6 +396,7 @@ class DockerExecutor(Executor):
             if not run_id or not container_id:
                 continue
             created = entry.get("Created")
+            labels = entry.get("Labels") or {}
             entries.append(
                 LaunchedRun(
                     handle=RunHandle(id=container_id, backend=self.name),
@@ -299,6 +406,7 @@ class DockerExecutor(Executor):
                         if isinstance(created, int | float)
                         else None
                     ),
+                    kind=labels.get(RUN_KIND_LABEL) or "process",
                 )
             )
         return entries

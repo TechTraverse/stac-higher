@@ -110,10 +110,12 @@ class FakeApi:
 
     def __init__(self, responses=None):
         self.calls: list[tuple[str, str, dict | None]] = []
+        self.headers: list[dict | None] = []
         self.responses = responses or {}
 
-    def __call__(self, method, path, *, body=None, timeout=None, raw=False):
+    def __call__(self, method, path, *, body=None, timeout=None, raw=False, headers=None):
         self.calls.append((method, path, body))
+        self.headers.append(headers)
         for key, value in self.responses.items():
             if key in path:
                 if isinstance(value, Exception):
