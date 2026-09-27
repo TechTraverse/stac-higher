@@ -6,32 +6,37 @@ scanner's environment, never to user code (ADR 0021):
 1. The image row names a group ``registry`` connection: that connection's
    ``{username, password}``, decrypted here. A deleted connection, one of
    another protocol, one with no stored credentials at all, one configured
-   for a DIFFERENT registry host, or one without both secrets is
-   :class:`RegistryCredentialGone` -- never a silent fall-back to an
-   anonymous pull (C-1 Review Focus 4), and never a credential sent to a
-   host it was not configured for. A registry connection can exist with no
-   credentials ever having been stored on it; that is reported the same way
-   as a deleted one (the run dies ``image_group_mismatch``), not as a
-   transient fault that requeues.
+   for a DIFFERENT registry host, one whose decrypted payload is not a JSON
+   object, or one without both secrets is :class:`RegistryCredentialGone`
+   -- never a silent fall-back to an anonymous pull (C-1 Review Focus 4),
+   and never a credential sent to a host it was not configured for. A
+   registry connection can exist with no credentials ever having been
+   stored on it; that is reported the same way as a deleted one (the run
+   dies ``image_group_mismatch``), not as a transient fault that requeues.
+   A corrupt-but-present payload (not JSON, not an object) is the same:
+   permanent, not transient -- decrypting it again will not fix it.
 2. Otherwise a ``docker.io`` image uses the optional deployment credential
    (``REGISTRY_DOCKERHUB_USER`` / ``_TOKEN``, ISSUES I-125).
 3. Otherwise anonymous (``None``).
 
-A missing master key or an undecryptable envelope is
-:class:`RegistryAuthUnavailable`: infrastructure, not the run's fault.
+A missing master key or an envelope that fails to decrypt at all (wrong or
+rotated ``CREDENTIALS_MASTER_KEY``) is :class:`RegistryAuthUnavailable`:
+infrastructure, not the run's fault -- the same envelope may decrypt
+successfully once the key is fixed.
 """
 
 from __future__ import annotations
 
+import json
+
 from pipeline.config import Settings
-from pipeline.connections.build import AdapterBuildError, decrypt_credentials
+from pipeline.connections.envelope import EnvelopeError, decrypt
 from pipeline.connections.registry import (
     REGISTRY_PROTOCOL,
     RegistryConfigError,
     parse_registry_config,
     registry_api_host,
 )
-from pipeline.connections.repo import ConnectionRow
 from pipeline.images.reference import registry_host
 from pipeline.images.repo import ImageRow, ImagesRepo
 from pipeline.process.executor import RegistryAuth
@@ -84,21 +89,24 @@ async def resolve_registry_auth(
                 "cannot be decrypted"
             )
         try:
-            secrets = decrypt_credentials(
-                ConnectionRow(
-                    id=row.connection_id,
-                    name="",
-                    protocol=row.protocol,
-                    config=row.config,
-                    credentials=row.credentials,
-                    host_key=None,
-                ),
-                master_key,
-            )
-        except AdapterBuildError as err:
+            plaintext = decrypt(row.credentials, master_key)
+        except EnvelopeError as err:
+            # A wrong or rotated master key: infrastructure, not a verdict on
+            # this credential -- the same bytes may decrypt fine once the key
+            # is fixed, so this must never be treated as permanently gone.
             raise RegistryAuthUnavailable(
                 f"registry credential {connection_id}: {err}"
             ) from err
+        try:
+            secrets = json.loads(plaintext)
+        except json.JSONDecodeError as err:
+            raise RegistryCredentialGone(
+                f"the registry credential {connection_id} payload is not valid JSON"
+            ) from err
+        if not isinstance(secrets, dict):
+            raise RegistryCredentialGone(
+                f"the registry credential {connection_id} payload is not an object"
+            )
         username = secrets.get("username")
         password = secrets.get("password")
         if not (

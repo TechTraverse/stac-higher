@@ -8,15 +8,16 @@ their logic is tested against ``tests/_images_fake.py``;
 DB-gated ``tests/test_integration_images_repo.py``.
 
 **Compare-and-set status writes.** ``record_admission``, ``record_rescan``
-and ``merge_admission`` take the image status the caller read at claim time
-(``expected_status``) and only write when the row's status still matches it
-and is not ``revoked``; each returns whether it changed a row. This closes
-the window between the drain reading an image's status and writing its
-verdict -- an admin can grant an exception or revoke the image in between,
-and that decision must never be clobbered by a stale scan result. On a
-miss, the drain re-reads the row with :meth:`ImagesRepo.get_image` (its
-current ``status`` and ``exception_expires_at`` are enough to recompute),
-and retries once (Task 7).
+and ``merge_admission`` take the image status AND the exception expiry the
+caller read at claim time (``expected_status``, ``expected_exception_expires_at``)
+and only write when the row's status still matches, its exception expiry
+still matches, and the status is not ``revoked``; each returns whether it
+changed a row. This closes the window between the drain reading an image's
+status and writing its verdict -- an admin can grant or revoke an exception,
+or revoke the image outright, in between, and that decision must never be
+clobbered by a stale scan result. On a miss, the drain re-reads the row with
+:meth:`ImagesRepo.get_image` (its current ``status`` and
+``exception_expires_at`` are enough to recompute), and retries once (Task 7).
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline.images.scan_result import ScanResult
+from pipeline.images.scan_result import SCAN_RESULT_VERSION, ScanResult
 
 #: The error a stall sweep writes (a scan still `running` long after its
 #: timeout: the worker that ran it is gone).
@@ -124,15 +125,17 @@ class ImagesRepo(abc.ABC):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
         """Spec §8.1: fill digest, platform_digest, platform, size_bytes,
         config, sbom_ref, verdict, status, last_scan_id, last_scanned_at --
-        but only when the row's status still equals ``expected_status`` (the
-        status the caller read at claim time) and is not ``revoked``.
-        Returns whether the row changed; a miss means an admin acted on the
-        image between claim and write, and the caller must not overwrite
-        that decision."""
+        but only when the row's status still equals ``expected_status`` AND
+        its ``exception_expires_at`` still equals
+        ``expected_exception_expires_at`` (both read by the caller at claim
+        time) and the status is not ``revoked``. Returns whether the row
+        changed; a miss means an admin acted on the image between claim and
+        write, and the caller must not overwrite that decision."""
 
     @abc.abstractmethod
     async def record_rescan(
@@ -143,6 +146,7 @@ class ImagesRepo(abc.ABC):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
         """Spec §8.1: only verdict, status, last_scan_id, last_scanned_at --
@@ -164,16 +168,18 @@ class ImagesRepo(abc.ABC):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
         """Spec §9.1 dedup, atomically: re-point the scan at the existing row,
         record the verdict there (its own SBOM stays), delete the provisional
         row while it is still ``pending``/``scanning``/``scan_failed`` --
         but only when the EXISTING row's status still equals
-        ``expected_status`` and is not ``revoked`` (the same compare-and-set
-        as :meth:`record_admission`). On a miss nothing is written -- the
-        scan stays pointed at the provisional row and the provisional row is
-        not deleted -- and the caller retries after re-reading."""
+        ``expected_status`` AND its exception expiry still equals
+        ``expected_exception_expires_at`` (the same compare-and-set as
+        :meth:`record_admission`). On a miss nothing is written -- the scan
+        stays pointed at the provisional row and the provisional row is not
+        deleted -- and the caller retries after re-reading."""
 
     @abc.abstractmethod
     async def mark_image_scan_failed(self, image_id: str) -> None:
@@ -292,7 +298,7 @@ class PgImagesRepo(ImagesRepo):
                 "  UPDATE stac_higher.image_scans s"
                 "     SET status = 'failed', finished_at = now(),"
                 "         result = jsonb_build_object("
-                "           'version', 1, 'kind', s.kind, 'reference', ci.reference,"
+                "           'version', %s::int, 'kind', s.kind, 'reference', ci.reference,"
                 "           'tag', ci.tag_at_add, 'error', %s::text)"
                 "    FROM stac_higher.container_images ci"
                 "   WHERE ci.id = s.image_id AND s.status = 'running'"
@@ -305,7 +311,7 @@ class PgImagesRepo(ImagesRepo):
                 "     AND status IN ('pending', 'scanning')"
                 "  RETURNING 1"
                 ") SELECT count(*) FROM stalled",
-                (STALLED_SCAN_ERROR, started_before),
+                (SCAN_RESULT_VERSION, STALLED_SCAN_ERROR, started_before),
             )
             (count,) = await cur.fetchone()
             await conn.commit()
@@ -341,6 +347,7 @@ class PgImagesRepo(ImagesRepo):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
         from psycopg.types.json import Json
@@ -351,7 +358,8 @@ class PgImagesRepo(ImagesRepo):
                 " platform = %s, size_bytes = %s, config = %s, sbom_ref = %s, verdict = %s,"
                 " status = %s, last_scan_id = %s::uuid, last_scanned_at = %s,"
                 " updated_at = now() WHERE id = %s::uuid AND status = %s"
-                " AND status <> 'revoked' RETURNING id",
+                " AND status <> 'revoked'"
+                " AND exception_expires_at IS NOT DISTINCT FROM %s RETURNING id",
                 (
                     result.digest,
                     result.platform_digest,
@@ -365,6 +373,7 @@ class PgImagesRepo(ImagesRepo):
                     at,
                     image_id,
                     expected_status,
+                    expected_exception_expires_at,
                 ),
             )
             changed = await cur.fetchone() is not None
@@ -379,6 +388,7 @@ class PgImagesRepo(ImagesRepo):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
         from psycopg.types.json import Json
@@ -387,8 +397,17 @@ class PgImagesRepo(ImagesRepo):
             cur = await conn.execute(
                 "UPDATE stac_higher.container_images SET verdict = %s, status = %s,"
                 " last_scan_id = %s::uuid, last_scanned_at = %s, updated_at = now()"
-                " WHERE id = %s::uuid AND status = %s AND status <> 'revoked' RETURNING id",
-                (Json(verdict), status, scan_id, at, image_id, expected_status),
+                " WHERE id = %s::uuid AND status = %s AND status <> 'revoked'"
+                " AND exception_expires_at IS NOT DISTINCT FROM %s RETURNING id",
+                (
+                    Json(verdict),
+                    status,
+                    scan_id,
+                    at,
+                    image_id,
+                    expected_status,
+                    expected_exception_expires_at,
+                ),
             )
             changed = await cur.fetchone() is not None
             await conn.commit()
@@ -415,6 +434,7 @@ class PgImagesRepo(ImagesRepo):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
         from psycopg.types.json import Json
@@ -423,8 +443,17 @@ class PgImagesRepo(ImagesRepo):
             cur = await conn.execute(
                 "UPDATE stac_higher.container_images SET verdict = %s, status = %s,"
                 " last_scan_id = %s::uuid, last_scanned_at = %s, updated_at = now()"
-                " WHERE id = %s::uuid AND status = %s AND status <> 'revoked' RETURNING id",
-                (Json(verdict), status, scan_id, at, existing_id, expected_status),
+                " WHERE id = %s::uuid AND status = %s AND status <> 'revoked'"
+                " AND exception_expires_at IS NOT DISTINCT FROM %s RETURNING id",
+                (
+                    Json(verdict),
+                    status,
+                    scan_id,
+                    at,
+                    existing_id,
+                    expected_status,
+                    expected_exception_expires_at,
+                ),
             )
             changed = await cur.fetchone() is not None
             if changed:

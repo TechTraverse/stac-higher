@@ -67,13 +67,24 @@ class FakeImagesRepo(ImagesRepo):
     def _set(self, image_id: str, **changes: Any) -> None:
         self.images[image_id] = replace(self.images[image_id], **changes)
 
-    def _cas(self, image_id: str, expected_status: str) -> bool:
+    def _cas(
+        self,
+        image_id: str,
+        expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
+    ) -> bool:
         """The same guard the Pg UPDATE's WHERE clause enforces: the row's
-        status must still equal ``expected_status`` and never ``revoked``."""
+        status must still equal ``expected_status``, its exception expiry
+        must still equal ``expected_exception_expires_at``, and the status
+        must never be ``revoked``."""
         image = self.images.get(image_id)
         if image is None:
             return False
-        return image.status == expected_status and image.status != "revoked"
+        return (
+            image.status == expected_status
+            and image.status != "revoked"
+            and image.exception_expires_at == expected_exception_expires_at
+        )
 
     # -- ImagesRepo ---------------------------------------------------------
 
@@ -144,9 +155,10 @@ class FakeImagesRepo(ImagesRepo):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
-        if not self._cas(image_id, expected_status):
+        if not self._cas(image_id, expected_status, expected_exception_expires_at):
             return False
         self._set(
             image_id,
@@ -171,9 +183,10 @@ class FakeImagesRepo(ImagesRepo):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
-        if not self._cas(image_id, expected_status):
+        if not self._cas(image_id, expected_status, expected_exception_expires_at):
             return False
         self._set(image_id, status=status, last_scanned_at=at)
         self.verdicts[image_id] = verdict
@@ -197,9 +210,10 @@ class FakeImagesRepo(ImagesRepo):
         verdict: dict[str, Any],
         status: str,
         expected_status: str,
+        expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
     ) -> bool:
-        if not self._cas(existing_id, expected_status):
+        if not self._cas(existing_id, expected_status, expected_exception_expires_at):
             return False
         self.scans[scan_id]["image_id"] = existing_id
         self._set(existing_id, status=status, last_scanned_at=at)

@@ -123,6 +123,51 @@ async def test_a_connection_with_no_stored_credentials_is_gone_not_transient():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    ["not json at all", "[1, 2, 3]"],
+    ids=["not-json", "not-an-object"],
+)
+async def test_a_corrupt_decrypted_payload_is_gone_not_transient(payload):
+    """Ruling: a payload that decrypts fine (the key and the envelope are
+    both good) but is not JSON, or is JSON that is not an object, can never
+    become usable by retrying -- it is the same permanent verdict as a
+    missing credential, never RegistryAuthUnavailable."""
+    row = RegistryCredentialRow(
+        connection_id=CONN,
+        protocol="registry",
+        config={"host": "ghcr.io"},
+        credentials=seal(payload, KEY),
+        deleted=False,
+    )
+    with pytest.raises(RegistryCredentialGone):
+        await resolve_registry_auth(
+            image(connection=CONN),
+            repo=repo_with(row),
+            settings=Settings.from_env({}),
+            master_key=KEY,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_or_rotated_master_key_is_infrastructure_not_gone():
+    """Ruling: EnvelopeError (the key cannot open this envelope) stays
+    RegistryAuthUnavailable -- the credential itself may be perfectly fine,
+    just not decryptable with the key this worker currently has."""
+    other_key = load_master_key(
+        {"CREDENTIALS_MASTER_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+    )
+    row = credential()  # sealed with KEY
+    with pytest.raises(RegistryAuthUnavailable):
+        await resolve_registry_auth(
+            image(connection=CONN),
+            repo=repo_with(row),
+            settings=Settings.from_env({}),
+            master_key=other_key,
+        )
+
+
+@pytest.mark.asyncio
 async def test_no_master_key_is_infrastructure_not_a_verdict():
     with pytest.raises(RegistryAuthUnavailable, match="CREDENTIALS_MASTER_KEY"):
         await resolve_registry_auth(

@@ -145,8 +145,9 @@ def test_tag_drift_is_rebuilt_to_exactly_current_digest_and_drifted():
 
 # ---------------------------------------------------------------------------
 # B1 (controller ruling): record_admission/record_rescan/merge_admission are
-# compare-and-set on the image's status read at claim time, and never touch a
-# revoked row even if the caller (wrongly) expects "revoked".
+# compare-and-set on the image's status AND exception expiry read at claim
+# time, and never touch a revoked row even if the caller (wrongly) expects
+# "revoked".
 # ---------------------------------------------------------------------------
 
 
@@ -160,6 +161,7 @@ async def test_record_admission_with_a_stale_expected_status_changes_nothing():
         verdict={"pass": True},
         status="approved",
         expected_status="pending",
+        expected_exception_expires_at=None,
         at=NOW,
     )
     assert changed is False
@@ -179,6 +181,7 @@ async def test_record_admission_never_changes_a_revoked_row():
         verdict={"pass": True},
         status="approved",
         expected_status="revoked",
+        expected_exception_expires_at=None,
         at=NOW,
     )
     assert changed is False
@@ -197,15 +200,44 @@ async def test_an_exception_granted_between_claim_and_write_is_not_overwritten()
     changed = await repo.record_admission(
         IMG,
         scan_id="s1",
-        result=admitted_result(error="registry unreachable", digest=None),
+        result=admitted_result(),
         verdict={"pass": False},
         status="rejected",
         expected_status="flagged",
+        expected_exception_expires_at=None,
         at=NOW,
     )
     assert changed is False
     assert repo.images[IMG].status == "approved"
     assert repo.images[IMG].exception_expires_at == exception_expires_at
+    assert IMG not in repo.verdicts
+
+
+@pytest.mark.asyncio
+async def test_an_exception_expiry_that_changed_between_claim_and_write_is_a_noop():
+    """B1 ruling 2: the CAS also keys on the exception expiry, not only the
+    status. An admin can extend, shorten or clear an exception without the
+    status itself moving, and a stale scan result must not overwrite that
+    either."""
+    exception_expires_at = NOW + dt.timedelta(days=10)
+    repo = repo_with(status="approved", exception_expires_at=exception_expires_at)
+    # An admin extends the exception between claim and write. The status is
+    # unchanged (still "approved"), but the expiry the drain read at claim
+    # time no longer matches.
+    extended = NOW + dt.timedelta(days=40)
+    repo._set(IMG, exception_expires_at=extended)
+    changed = await repo.record_admission(
+        IMG,
+        scan_id="s1",
+        result=admitted_result(),
+        verdict={"pass": True},
+        status="approved",
+        expected_status="approved",
+        expected_exception_expires_at=exception_expires_at,
+        at=NOW,
+    )
+    assert changed is False
+    assert repo.images[IMG].exception_expires_at == extended
     assert IMG not in repo.verdicts
 
 
@@ -218,6 +250,7 @@ async def test_record_rescan_with_a_stale_expected_status_changes_nothing():
         verdict={"pass": True},
         status="approved",
         expected_status="flagged",
+        expected_exception_expires_at=None,
         at=NOW,
     )
     assert changed is False
@@ -234,6 +267,7 @@ async def test_record_rescan_never_changes_a_revoked_row():
         verdict={"pass": True},
         status="approved",
         expected_status="revoked",
+        expected_exception_expires_at=None,
         at=NOW,
     )
     assert changed is False
@@ -258,6 +292,7 @@ async def test_merge_admission_with_a_stale_expected_status_on_the_existing_row_
         verdict={"pass": True},
         status="approved",
         expected_status="flagged",
+        expected_exception_expires_at=None,
         at=NOW,
     )
     assert changed is False
@@ -284,6 +319,7 @@ async def test_merge_admission_never_changes_a_revoked_existing_row():
         verdict={"pass": True},
         status="approved",
         expected_status="revoked",
+        expected_exception_expires_at=None,
         at=NOW,
     )
     assert changed is False
