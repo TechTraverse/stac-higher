@@ -149,8 +149,20 @@ async def test_a_failed_object_leg_prunes_no_rows():
     assert not any(isinstance(step, tuple) and step[0] == "detach" for step in order)
 
 
+def test_a_pending_scan_also_keeps_its_whole_prefix():
+    """Item 4's pending-scan case: keep_set's whole-prefix rule covers
+    `pending`, not only `running` (the retention sweep's own test above only
+    exercises `running`)."""
+    keep, whole = keep_set([KeptScan(S_RUN, IMG, "pending", None, None)], [])
+    assert whole == {f"scans/{IMG}/{S_RUN}/"}
+    assert keep == frozenset()
+
+
 def test_the_sql_keeps_the_newest_ten_the_last_scan_and_scans_in_flight():
-    window = "row_number() OVER (PARTITION BY image_id ORDER BY requested_at DESC)"
+    # Item 4 (Minor 3): a requested_at tie-break makes the three windows
+    # provably agree -- ties are unreachable in practice (one scan per image
+    # per transaction), but the tie-break is free insurance.
+    window = "row_number() OVER (PARTITION BY image_id ORDER BY requested_at DESC, id DESC)"
     assert window in KEPT_SCANS_SQL
     assert "s.rn <= %s OR s.status IN ('pending', 'running') OR s.id = i.last_scan_id" in (
         KEPT_SCANS_SQL

@@ -14,9 +14,12 @@ The hourly ``history_retention`` sweep runs this leg after its table legs:
    and the objects of rows that no longer exist. The grace covers a scan
    that starts between this sweep's database read and its listing.
 2. **Refs.** A terminal row outside its image's ten newest (and not its
-   ``last_scan_id``) has its ``findings_ref``/``log_ref`` set to NULL: step 1
-   removed those objects, and no row may keep naming them (the findings
-   route then answers 404 instead of redirecting to a missing object).
+   ``last_scan_id``) has its ``findings_ref``/``log_ref`` set to NULL: those
+   objects are no longer kept (step 1 removes them once they clear the
+   24-hour grace; a row younger than that keeps its refs pointed at objects
+   step 1 has not yet swept), and no row may keep naming them past that
+   point (the findings route then answers 404 instead of redirecting to a
+   missing object).
 3. **Rows**, AFTER the objects (spec §8.3, the run-log precedent I-62):
    ``image_scans`` rows older than ``HISTORY_RETENTION_DAYS``, outside their
    image's ten newest, terminal, and not the image's ``last_scan_id``. If
@@ -82,7 +85,7 @@ class ScanRetentionRepo(abc.ABC):
 KEPT_SCANS_SQL = (
     "SELECT s.id::text, s.image_id::text, s.status, s.findings_ref, s.log_ref"
     " FROM (SELECT id, image_id, status, findings_ref, log_ref,"
-    "        row_number() OVER (PARTITION BY image_id ORDER BY requested_at DESC) AS rn"
+    "        row_number() OVER (PARTITION BY image_id ORDER BY requested_at DESC, id DESC) AS rn"
     "       FROM stac_higher.image_scans) s"
     " JOIN stac_higher.container_images i ON i.id = s.image_id"
     " WHERE s.rn <= %s OR s.status IN ('pending', 'running') OR s.id = i.last_scan_id"
@@ -91,7 +94,7 @@ KEPT_SCANS_SQL = (
 DETACH_PRUNED_REFS_SQL = (
     "UPDATE stac_higher.image_scans s SET findings_ref = NULL, log_ref = NULL"
     " FROM (SELECT id,"
-    "        row_number() OVER (PARTITION BY image_id ORDER BY requested_at DESC) AS rn"
+    "        row_number() OVER (PARTITION BY image_id ORDER BY requested_at DESC, id DESC) AS rn"
     "       FROM stac_higher.image_scans) r,"
     "      stac_higher.container_images i"
     " WHERE r.id = s.id AND i.id = s.image_id AND r.rn > %s"
@@ -103,7 +106,7 @@ DETACH_PRUNED_REFS_SQL = (
 PRUNE_SCAN_ROWS_SQL = (
     "DELETE FROM stac_higher.image_scans s"
     " USING (SELECT id,"
-    "          row_number() OVER (PARTITION BY image_id ORDER BY requested_at DESC) AS rn"
+    "          row_number() OVER (PARTITION BY image_id ORDER BY requested_at DESC, id DESC) AS rn"
     "         FROM stac_higher.image_scans) r,"
     "       stac_higher.container_images i"
     " WHERE r.id = s.id AND i.id = s.image_id"
