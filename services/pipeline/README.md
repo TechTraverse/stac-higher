@@ -363,15 +363,29 @@ kept, not deleted), and only then is the now scan-less provisional
 `container_images` row deleted. The scan id from the original 202 still
 resolves, under the existing image's id, matching spec §9.1 ("the client
 follows the scan id from the 202, whose `image_id` is authoritative once the
-scan is `done`") — but a caller that instead polls scoped by the
-*provisional* image id (the one the 202 first returned) can no longer find
-the scan there once the fold lands. The scanner's registry credential (the
+scan is `done`") — C-3's `getImageScan`
+(`app/src/lib/images/storage.ts`) resolves a scan by `image_id = $1 OR the
+image $1 no longer exists`, so after a fold the scan is still found by its
+scan id under BOTH the existing image's id and the deleted provisional one;
+only the provisional image's own detail GET (`/api/images/<provisional
+id>`) 404s. The scanner's registry credential (the
 group's, or the deployment Docker Hub one) is resolved into the scanner
 container's own environment at launch and stays there until the container
 is reaped, the same posture as any run's `secret_ref` injection (spec
 §6.2). The orphan reaper judges scanner containers
 (`stac-higher.run-kind=image_scan`) against `image_scans`, never
-`process_runs`.
+`process_runs`. Two operational notes: (i) with no `CREDENTIALS_MASTER_KEY`
+set, an admission scan of a private image fails fast as `could_not_start`
+and leaves the image `scan_failed` -- there is no automatic retry, unlike
+the launch path, which requeues the same missing-key condition instead of
+dying (`registry_auth.RegistryAuthUnavailable` is launch-time
+infrastructure); the operator re-requests a rescan once the key is set.
+(ii) The image write (`record_admission` / `record_rescan` /
+`merge_admission`) and the scan row's `finish_scan` are separate
+transactions, so a crash between them can leave `last_scan_id` pointing at
+a scan the stall sweep later fails -- the image keeps its transitioned
+status, but its `last_scan_id` then names a `failed` scan rather than the
+`done` one that actually produced it.
 
 ## Develop
 

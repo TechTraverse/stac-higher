@@ -1515,6 +1515,13 @@ effect, not a missing check — the deploy-time write gate and the launch
 re-check are deliberately two separate points in time (§3, "the pipeline
 re-checks at launch"). Accept for C-2; a tighter bound needs either a
 launch-time row lock or a short-TTL re-check immediately before create.
+(c) A registry credential's connection is re-groupable (`group_id` is
+editable): moving it to another group does not stop it serving pulls for
+already-deployed runs of the OLD group, because `resolve_registry_auth`
+resolves the credential by `registry_connection_id` alone and never
+re-checks its group at launch. This is the same precedent the deploy-time
+`secret_ref` gate already sets (`findUnresolvableSecretRef` checks the
+group at deploy; the launch path does not re-check it), not a new gap.
 - Found in: the C-2 plan (2026-09-27).
 
 ### I-139 · A launch pulls the multi-arch index digest, not the platform manifest that was scanned 🟡
