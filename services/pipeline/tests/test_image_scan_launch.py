@@ -112,6 +112,20 @@ def test_the_sbom_read_prefix_must_be_the_images_own():
         sbom_read_prefix(replace(APPROVED, sbom_ref="assets/other/sbom.syft.json"))
 
 
+def test_the_sbom_read_prefix_rejects_a_flat_key_without_a_scan_id_segment():
+    """Ruling: only `scans/{image_id}/{uuid}/...` grants read on one scan's
+    prefix -- a flat key directly under the image's whole scan history must
+    not grant read on all of it."""
+    from dataclasses import replace
+
+    flat = replace(APPROVED, sbom_ref=f"scans/{IMG}/sbom.syft.json")
+    with pytest.raises(ValueError, match="outside"):
+        sbom_read_prefix(flat)
+    not_a_uuid = replace(APPROVED, sbom_ref=f"scans/{IMG}/not-a-scan-id/sbom.syft.json")
+    with pytest.raises(ValueError, match="outside"):
+        sbom_read_prefix(not_a_uuid)
+
+
 class FakeSts:
     def __init__(self):
         self.kwargs = None
@@ -138,7 +152,12 @@ class FakeStore:
     def get_object(self, **kwargs):
         import io
 
-        return {"Body": io.BytesIO(self.objects[kwargs["Key"]])}
+        data = self.objects[kwargs["Key"]]
+        byte_range = kwargs.get("Range")
+        if byte_range:
+            start, end = byte_range.removeprefix("bytes=").split("-")
+            data = data[int(start) : int(end) + 1]
+        return {"Body": io.BytesIO(data)}
 
 
 def test_execute_scan_mints_for_the_scan_prefix_stores_the_log_and_always_reaps():
@@ -166,3 +185,39 @@ def test_read_scan_result_missing_oversized_and_present():
     with pytest.raises(ScanResultError, match="not JSON"):
         read_scan_result(FakeStore({key: b"{nope"}), "b", key)
     assert read_scan_result(FakeStore({key: b'{"version": 1}'}), "b", key) == {"version": 1}
+
+
+class SwappingStore:
+    """M1: reports a small object via HEAD, but a compromised scanner has
+    swapped it for an oversized one by the time the (ranged) GET runs. The
+    cap must be enforced on what the GET itself returns, never on the HEAD's
+    say-so, and the GET must never read the oversized object in full."""
+
+    def __init__(self, small: bytes, big: bytes):
+        self.small = small
+        self.big = big
+        self.get_calls: list[dict] = []
+
+    def head_object(self, **kwargs):
+        return {"ETag": '"e"', "ContentLength": len(self.small)}
+
+    def get_object(self, **kwargs):
+        import io
+
+        self.get_calls.append(kwargs)
+        data = self.big
+        byte_range = kwargs.get("Range")
+        if byte_range:
+            start, end = byte_range.removeprefix("bytes=").split("-")
+            data = data[int(start) : int(end) + 1]
+        return {"Body": io.BytesIO(data)}
+
+
+def test_read_scan_result_head_says_small_but_the_body_was_swapped_oversized():
+    """M1: a HEAD pre-check must never be trusted over the GET's own length."""
+    key = f"scans/{IMG}/{SCAN}/result.json"
+    store = SwappingStore(small=b'{"version": 1}', big=b"x" * (RESULT_MAX_BYTES + 10))
+    with pytest.raises(ScanResultError, match="cap"):
+        read_scan_result(store, "b", key)
+    # The GET was ranged, not a full unbounded read of the swapped object.
+    assert store.get_calls[0]["Range"] == f"bytes=0-{RESULT_MAX_BYTES}"

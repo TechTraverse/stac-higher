@@ -17,7 +17,7 @@ import psycopg
 import pytest
 
 from _images_fake import FakeImagesRepo
-from pipeline.images.drain import drain_one, effective_kind, next_image_status
+from pipeline.images.drain import check_identity, drain_one, effective_kind, next_image_status
 from pipeline.images.policy import load_image_policy
 from pipeline.images.repo import ClaimedScan, ImageRow
 from pipeline.images.scan_launch import ScanRun
@@ -472,3 +472,167 @@ async def test_m4_the_scanners_untrusted_text_never_reaches_the_pipelines_own_lo
     for record in caplog.records:
         assert marker not in record.getMessage()
         assert marker not in str(record.__dict__)
+
+
+# ---------------------------------------------------------------------------
+# Task 7 fix round 1.
+# ---------------------------------------------------------------------------
+
+
+def test_check_identity_rescan_digest_mismatch_is_not_believed():
+    """Item 4: the rescan branch of check_identity, digest leg."""
+    image = ImageRow(
+        id=IMG, reference=REF, tag_at_add="3.12-slim", status="approved",
+        digest=DIGEST, sbom_ref=f"scans/{IMG}/{OLD}/sbom.syft.json",
+    )
+    doc = result_doc(
+        kind="rescan", sbom_ref=image.sbom_ref,
+        digest="sha256:" + "b" * 64, platform_digest="sha256:" + "b" * 64,
+    )
+    result = parse_scan_result(doc)
+    assert (
+        check_identity(result, image, kind="rescan", prefix=PREFIX, policy=POLICY)
+        == "the rescan reported a digest other than the row's"
+    )
+
+
+def test_check_identity_rescan_sbom_ref_mismatch_is_not_believed():
+    """Item 4: the rescan branch of check_identity, sbom_ref leg -- a key
+    that is otherwise well-formed (this scan's own prefix) but is not the
+    STORED key must still be refused."""
+    image = ImageRow(
+        id=IMG, reference=REF, tag_at_add="3.12-slim", status="approved",
+        digest=DIGEST, sbom_ref=f"scans/{IMG}/{OLD}/sbom.syft.json",
+    )
+    doc = result_doc(kind="rescan", sbom_ref=f"{PREFIX}sbom.syft.json", digest=DIGEST)
+    result = parse_scan_result(doc)
+    assert (
+        check_identity(result, image, kind="rescan", prefix=PREFIX, policy=POLICY)
+        == "the rescan read an SBOM other than the stored one"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ruling2_a_passing_merge_must_not_raise_a_rejected_existing_row():
+    """A digest merge may only keep or worsen the existing row's status,
+    never raise it."""
+    repo = repo_with()
+    repo.add_image(
+        id=OTHER, reference=REF, tag_at_add="3.12", status="rejected", digest=DIGEST,
+        sbom_ref=f"scans/{OTHER}/{OLD}/sbom.syft.json",
+    )
+    outcome = await drain(repo, Scanner(result_doc()))
+    assert outcome.scan_status == "failed" and outcome.image_id == IMG
+    # The existing row is left COMPLETELY untouched.
+    assert repo.images[OTHER].status == "rejected"
+    assert OTHER not in repo.verdicts
+    assert repo.scans[SCAN]["image_id"] == IMG
+    # The provisional row is resolved out of `scanning`.
+    assert repo.images[IMG].status == "scan_failed"
+
+
+@pytest.mark.asyncio
+async def test_ruling2_a_passing_merge_must_not_raise_a_flagged_existing_row():
+    repo = repo_with()
+    repo.add_image(
+        id=OTHER, reference=REF, tag_at_add="3.12", status="flagged", digest=DIGEST,
+        sbom_ref=f"scans/{OTHER}/{OLD}/sbom.syft.json",
+    )
+    outcome = await drain(repo, Scanner(result_doc()))
+    assert outcome.scan_status == "failed"
+    assert repo.images[OTHER].status == "flagged"
+    assert OTHER not in repo.verdicts
+
+
+@pytest.mark.asyncio
+async def test_ruling2_a_worsening_or_same_merge_still_lands():
+    """The cap only blocks an IMPROVEMENT; a same-or-worse result still
+    merges normally (unaffected by the ruling)."""
+    repo = repo_with()
+    repo.add_image(
+        id=OTHER, reference=REF, tag_at_add="3.12", status="approved", digest=DIGEST,
+        sbom_ref=f"scans/{OTHER}/{OLD}/sbom.syft.json",
+    )
+    outcome = await drain(repo, Scanner(result_doc(kev=["CVE-2026-0001"])))
+    assert outcome.image_id == OTHER and outcome.image_status == "flagged"
+    assert repo.images[OTHER].status == "flagged"
+
+
+@pytest.mark.asyncio
+async def test_ruling2_a_revoked_existing_row_gets_a_clear_reason():
+    repo = repo_with()
+    repo.add_image(
+        id=OTHER, reference=REF, tag_at_add="3.12", status="revoked", digest=DIGEST,
+        sbom_ref=f"scans/{OTHER}/{OLD}/sbom.syft.json",
+    )
+    outcome = await drain(repo, Scanner(result_doc()))
+    assert outcome.scan_status == "failed"
+    parsed = parse_scan_result(repo.scans[SCAN]["result"])
+    assert "is revoked" in parsed.error
+    assert "changed while merging" not in parsed.error
+    assert repo.images[OTHER].status == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_fake_finish_scan_only_finishes_a_running_scan():
+    """Item 3: mirrors the PgImagesRepo `AND status = 'running'` guard."""
+    repo = repo_with()
+    repo.scans[SCAN]["status"] = "failed"
+    repo.scans[SCAN]["result"] = {
+        "version": 1, "kind": "admission", "reference": REF, "tag": "3.12-slim",
+        "error": "the scan stalled",
+    }
+    changed = await repo.finish_scan(
+        SCAN, status="done", result={"version": 1}, findings_ref=None, log_ref=None,
+        executor_handle="c1",
+    )
+    assert changed is False
+    assert repo.scans[SCAN]["status"] == "failed"
+    assert repo.scans[SCAN]["result"]["error"] == "the scan stalled"
+
+
+@pytest.mark.asyncio
+async def test_ruling3_a_stall_swept_scan_is_not_overwritten_and_the_image_is_untouched():
+    """A scan whose result arrives after `fail_stalled_scans` already failed
+    it (e.g. a very slow read_result, a GC pause) must not have its scan row
+    overwritten, and the image must not be transitioned on its behalf."""
+    repo = repo_with(status="pending")
+
+    class StallingScanner(Scanner):
+        async def run_scan(self, scan, kind):
+            repo.scans[SCAN]["status"] = "failed"
+            repo.scans[SCAN]["result"] = {
+                "version": 1, "kind": "admission", "reference": REF, "tag": "3.12-slim",
+                "error": "the scan stalled",
+            }
+            repo._set(IMG, status="scan_failed")
+            return await super().run_scan(scan, kind)
+
+    outcome = await drain(repo, StallingScanner(result_doc()))
+    assert outcome.scan_status == "already_resolved"
+    assert outcome.image_status is None
+    assert repo.images[IMG].status == "scan_failed"
+    assert repo.scans[SCAN]["result"]["error"] == "the scan stalled"
+    assert IMG not in repo.verdicts
+
+
+@pytest.mark.asyncio
+async def test_ruling3_a_stall_swept_scan_during_a_would_be_failure_is_not_overwritten():
+    """The same guard on the `_fail` path: a scan that could not even start,
+    but was concurrently stall-swept, must not reapply a status transition."""
+    repo = repo_with(status="pending")
+
+    class StallingFailureScanner(Scanner):
+        async def run_scan(self, scan, kind):
+            repo.scans[SCAN]["status"] = "failed"
+            repo.scans[SCAN]["result"] = {
+                "version": 1, "kind": "admission", "reference": REF, "tag": "3.12-slim",
+                "error": "the scan stalled",
+            }
+            repo._set(IMG, status="scan_failed")
+            raise RuntimeError("docker unreachable")
+
+    outcome = await drain(repo, StallingFailureScanner())
+    assert outcome.scan_status == "already_resolved"
+    assert repo.scans[SCAN]["result"]["error"] == "the scan stalled"
+    assert repo.images[IMG].status == "scan_failed"

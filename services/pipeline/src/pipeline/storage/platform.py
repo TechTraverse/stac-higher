@@ -187,6 +187,18 @@ def get_object(client: S3Like, bucket: str, key: str) -> bytes:
     return resp["Body"].read()
 
 
+def get_object_range(client: S3Like, bucket: str, key: str, byte_range: str) -> bytes:
+    """Ranged GET: reads at most the requested byte range, never the full
+    object (C-2 M1 fix: the scanner's result.json is untrusted, and a
+    compromised scanner could swap it for an oversized object between a HEAD
+    pre-check and a full read -- the cap has to be enforced by the GET's own
+    returned length, not by trusting an earlier HEAD). ``byte_range`` is an
+    HTTP Range header value, e.g. ``"bytes=0-1048576"``. Pure over an
+    injected client; synchronous boto3 -- wrap in ``asyncio.to_thread``."""
+    resp = client.get_object(Bucket=bucket, Key=key, Range=byte_range)
+    return resp["Body"].read()
+
+
 def head_object(client: S3Like, bucket: str, key: str) -> tuple[str, int]:
     """Quote-stripped ETag + size of the object at ``key`` — the server-side
     copy path's fingerprint source (delivery B-ii; no byte read). Pure over an

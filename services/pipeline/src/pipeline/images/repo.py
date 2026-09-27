@@ -112,8 +112,13 @@ class ImagesRepo(abc.ABC):
         findings_ref: str | None,
         log_ref: str | None,
         executor_handle: str | None,
-    ) -> None:
-        """Write the terminal scan row (``done``/``failed``) with ``finished_at``."""
+    ) -> bool:
+        """Write the terminal scan row (``done``/``failed``) with
+        ``finished_at`` -- but only while the row is still ``running``.
+        Returns whether it changed. A scan ``fail_stalled_scans`` already
+        resolved must never be overwritten by a late-arriving drain result
+        (Task 7 fix round 1): the caller checks this return and must not
+        apply an image status transition when it is False."""
 
     @abc.abstractmethod
     async def record_admission(
@@ -326,17 +331,19 @@ class PgImagesRepo(ImagesRepo):
         findings_ref: str | None,
         log_ref: str | None,
         executor_handle: str | None,
-    ) -> None:
+    ) -> bool:
         from psycopg.types.json import Json
 
         async with await self._connect() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 "UPDATE stac_higher.image_scans SET status = %s, result = %s,"
                 " findings_ref = %s, log_ref = %s, executor_handle = %s, finished_at = now()"
-                " WHERE id = %s::uuid",
+                " WHERE id = %s::uuid AND status = 'running' RETURNING id",
                 (status, Json(result), findings_ref, log_ref, executor_handle, scan_id),
             )
+            changed = await cur.fetchone() is not None
             await conn.commit()
+        return changed
 
     async def record_admission(  # pragma: no cover
         self,

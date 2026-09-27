@@ -140,10 +140,10 @@ async def test_claim_record_and_finish_round_trip(conn, seeded):
         at=now,
     )
     assert changed is True
-    await repo.finish_scan(
+    assert await repo.finish_scan(
         scan_id, status="done", result={"version": 1}, findings_ref=result.findings_ref,
         log_ref=None, executor_handle="c1",
-    )
+    ) is True
     row = await repo.get_image(image_id)
     assert (row.status, row.digest, row.last_scanned_at is not None) == ("approved", DIGEST, True)
     assert await repo.scan_statuses([scan_id]) == {scan_id: "done"}
@@ -481,6 +481,55 @@ async def test_fail_stalled_scans_fails_a_stalled_scan_and_flips_the_image(conn)
 
         row = await repo.get_image(image_id)
         assert row.status == "scan_failed"
+    finally:
+        await conn.execute(
+            "DELETE FROM stac_higher.container_images WHERE reference = %s", (reference,)
+        )
+
+
+async def test_finish_scan_does_not_overwrite_an_already_finished_scan(conn):
+    """Task 7 fix round 1, item 3: `finish_scan` only writes a scan row still
+    `running`. A late-arriving drain result (e.g. after `fail_stalled_scans`
+    already resolved it) must not overwrite the terminal result already
+    stored, and the caller (the drain) must see `False` and skip the image
+    transition it would otherwise apply."""
+    from pipeline.images.repo import PgImagesRepo
+
+    reference = f"ghcr.io/itest/finish-once-{uuid.uuid4().hex[:12]}"
+    try:
+        cur = await conn.execute(
+            INSERT_IMAGE_SQL, (reference, "1.0", None, "pending", None, None, None, None)
+        )
+        (image_id,) = await cur.fetchone()
+        cur = await conn.execute(INSERT_SCAN_SQL, (image_id, "admission"))
+        (scan_id,) = await cur.fetchone()
+
+        repo = PgImagesRepo(DATABASE_URL)
+        first = await repo.finish_scan(
+            scan_id,
+            status="failed",
+            result={
+                "version": 1, "kind": "admission", "reference": reference, "tag": "1.0",
+                "error": "the scan stalled",
+            },
+            findings_ref=None,
+            log_ref=None,
+            executor_handle=None,
+        )
+        assert first is True
+
+        second = await repo.finish_scan(
+            scan_id, status="done", result={"version": 1}, findings_ref=None,
+            log_ref=None, executor_handle="c1",
+        )
+        assert second is False
+
+        cur = await conn.execute(
+            "SELECT status, result ->> 'error' FROM stac_higher.image_scans WHERE id = %s::uuid",
+            (scan_id,),
+        )
+        row = await cur.fetchone()
+        assert tuple(row) == ("failed", "the scan stalled")
     finally:
         await conn.execute(
             "DELETE FROM stac_higher.container_images WHERE reference = %s", (reference,)

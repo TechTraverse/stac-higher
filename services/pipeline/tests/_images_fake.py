@@ -137,14 +137,18 @@ class FakeImagesRepo(ImagesRepo):
         findings_ref: str | None,
         log_ref: str | None,
         executor_handle: str | None,
-    ) -> None:
-        self.scans[scan_id].update(
+    ) -> bool:
+        scan = self.scans.get(scan_id)
+        if scan is None or scan["status"] != "running":
+            return False
+        scan.update(
             status=status,
             result=result,
             findings_ref=findings_ref,
             log_ref=log_ref,
             executor_handle=executor_handle,
         )
+        return True
 
     async def record_admission(
         self,

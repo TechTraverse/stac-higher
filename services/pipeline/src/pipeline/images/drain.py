@@ -33,13 +33,24 @@ match); otherwise the provisional scan fails outright, nothing is merged.
 The compare-and-set for a merge is judged against the EXISTING row, never
 the provisional one. If the merge's compare-and-set exhausts its retry, the
 provisional row must not linger in ``scanning`` -- it resolves as a failed
-scan.
+scan. A merge may only KEEP OR WORSEN the existing row's status, never raise
+it (Task 7 fix round 1): a rejected or flagged row stays that way even when
+the folded-in verdict passes -- the row is left completely untouched rather
+than partially updated. A revoked existing row gets its own clear reason
+(``existing_image_revoked``), not the generic "changed while merging" one.
 
 **Concurrent same-digest admissions (ruling M3).** ``find_image_by_digest``
 is checked before ``record_admission``, but two scans can still race between
 that read and the write; the database's ``UNIQUE (reference, digest)``
 constraint is the backstop, surfaced as a unique-violation on the UPDATE.
 That is caught and re-driven through the merge path.
+
+**A scan already resolved by the stall sweep is left alone (Task 7 fix round
+1).** ``finish_scan`` only writes a scan row still ``running``, and the
+drain checks that BEFORE attempting any image write, not just at the final
+``finish_scan`` call -- a scan whose result arrives after
+``fail_stalled_scans`` already failed it must not overwrite that row NOR
+apply a status transition to the image.
 """
 
 from __future__ import annotations
@@ -76,6 +87,23 @@ ReadResult = Callable[[str], Awaitable[dict[str, Any] | None]]
 #: A trusted, caller-chosen classification for the log line -- never the
 #: scanner's own (untrusted) message text (ruling M4).
 REGISTRY_NOT_ALLOWED_REASON = "registry_not_allowed"
+
+#: A scan's outcome when a stall sweep (or another worker) already resolved
+#: it before this drain's own write landed (Task 7 fix round 1).
+ALREADY_RESOLVED = "already_resolved"
+
+#: A merge may only keep or worsen the EXISTING row's status, never raise it
+#: (Task 7 fix round 1 ruling): folding in a fresh, unrelated admission's
+#: clean verdict must not un-reject or un-flag an image whose own history
+#: earned that status. Higher = better.
+_STATUS_RANK: dict[str, int] = {
+    "rejected": 0,
+    "scan_failed": 0,
+    "pending": 0,
+    "scanning": 0,
+    "flagged": 1,
+    "approved": 2,
+}
 
 
 class _ConcurrentDigest(Exception):
@@ -142,6 +170,15 @@ def check_identity(
     return None
 
 
+async def _still_running(repo: ImagesRepo, scan_id: str) -> bool:
+    """Whether the claimed scan is still ``running`` -- False when a stall
+    sweep (or another worker) already resolved it. Checked BEFORE applying
+    any image status transition (Task 7 fix round 1 ruling): a scan
+    ``fail_stalled_scans`` already finished must not be overwritten, and the
+    image must not be transitioned a second time on its behalf."""
+    return (await repo.scan_statuses([scan_id])).get(scan_id) == "running"
+
+
 async def _fail(
     repo: ImagesRepo,
     scan: ClaimedScan,
@@ -152,6 +189,12 @@ async def _fail(
     reason: str,
 ) -> DrainOutcome:
     image = scan.image
+    if not await _still_running(repo, scan.id):
+        logger.info(
+            "image scan already resolved: leaving the scan row and the image as-is",
+            extra={"scan_id": scan.id, "image_id": image.id},
+        )
+        return DrainOutcome(scan.id, image.id, ALREADY_RESOLVED, None, error)
     await repo.mark_image_scan_failed(image.id)
     await repo.finish_scan(
         scan.id,
@@ -199,6 +242,19 @@ async def _cas_retry(
     return None
 
 
+def _merge_status(row: ImageRow, *, passed: bool, now: dt.datetime) -> str | None:
+    """The status a merge may write onto ``row``, or None when the candidate
+    would RAISE it above what it already has -- the merge must then not
+    happen at all, and ``row`` is left completely untouched (Task 7 fix
+    round 1 ruling)."""
+    candidate = next_image_status(
+        row.status, passed=passed, exception_live=exception_is_live(row, now)
+    )
+    if _STATUS_RANK.get(candidate, 0) > _STATUS_RANK.get(row.status, 0):
+        return None
+    return candidate
+
+
 async def _merge_or_fail(
     repo: ImagesRepo,
     scan: ClaimedScan,
@@ -239,21 +295,58 @@ async def _merge_or_fail(
             at=now,
         )
 
-    status = await _cas_retry(
-        repo, write, existing, passed=passed, now=now, refresh_id=existing.id
-    )
-    if status is None:
-        # S2: a merge that cannot land must not leave the provisional row
-        # stuck in `scanning` -- resolve it as a failed scan instead.
+    async def resolve(row: ImageRow) -> tuple[str, str] | DrainOutcome | None:
+        """Try to write onto ``row``. A success tuple, a terminal
+        :class:`DrainOutcome` when the merge must not happen at all, or None
+        on a plain compare-and-set miss (the caller re-reads and retries
+        once)."""
+        if row.status == "revoked":
+            return await _fail(
+                repo,
+                scan,
+                kind,
+                f"the matching image {row.id} is revoked; a duplicate admission of the "
+                "same digest cannot be merged into it",
+                run,
+                reason="existing_image_revoked",
+            )
+        status = _merge_status(row, passed=passed, now=now)
+        if status is None:
+            return await _fail(
+                repo,
+                scan,
+                kind,
+                f"image {row.id} already has status {row.status!r}; a merge must not raise "
+                "it, so this duplicate digest was not folded in",
+                run,
+                reason="merge_would_improve_status",
+            )
+        if await write(status, row.status, row.exception_expires_at):
+            return row.id, status
+        return None
+
+    outcome = await resolve(existing)
+    if outcome is not None:
+        return outcome
+    fresh = await repo.get_image(existing.id)
+    if fresh is None:
         return await _fail(
-            repo,
-            scan,
-            kind,
-            f"image {existing.id} changed while merging this duplicate digest",
-            run,
+            repo, scan, kind, f"image {existing.id} no longer exists", run,
             reason="merge_conflict",
         )
-    return existing.id, status
+    outcome = await resolve(fresh)
+    if outcome is not None:
+        return outcome
+    # S2: a merge that cannot land must not leave the provisional row stuck
+    # in `scanning` -- resolve it as a failed scan instead.
+    return await _fail(
+        repo,
+        scan,
+        kind,
+        f"image {existing.id} changed while merging this duplicate digest",
+        run,
+        reason="merge_conflict",
+    )
 
 
 async def drain_one(
@@ -336,6 +429,18 @@ async def drain_one(
     now = clock()
     verdict = evaluate(result, policy, now=now)
     verdict_json = verdict.as_json()
+
+    if not await _still_running(repo, scan.id):
+        # Task 7 fix round 1: checked BEFORE any image write, not just at
+        # the final `finish_scan` call below -- a scan a stall sweep already
+        # resolved must not have its result overwritten, and the image must
+        # not be transitioned on its behalf.
+        logger.info(
+            "image scan already resolved: skipping the image transition",
+            extra={"scan_id": scan.id, "image_id": image.id},
+        )
+        return DrainOutcome(scan.id, image.id, ALREADY_RESOLVED, None)
+
     image_id = image.id
     final_status: str | None
 

@@ -15,6 +15,7 @@ This module is synchronous (the Engine API client is): the job runs it in
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,11 +27,18 @@ from pipeline.process.credentials import RunCredentials, mint_prefix_credentials
 from pipeline.process.executor import Executor, ExitStatus, RegistryAuth, RunSpec
 from pipeline.process.logs import store_log
 from pipeline.storage.keys import SCANS_PREFIX, image_scan_log_key, image_scan_prefix
-from pipeline.storage.platform import get_object, head_object
+from pipeline.storage.platform import get_object_range, head_object
 
 SCANNER_RUN_KIND = "image_scan"
 #: result.json is a summary (top <= 25); anything this large is not one.
 RESULT_MAX_BYTES = 1024 * 1024
+
+#: A scan id shaped path segment (the drain's own scan ids are uuid4s, and a
+#: legitimate `sbom_ref` always names one -- ruling: `sbom_read_prefix` must
+#: refuse anything else, including a flat `scans/{image_id}/sbom.json`).
+_SCAN_ID_SEGMENT_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 
 @dataclass(frozen=True)
@@ -83,13 +91,26 @@ def scan_env(
 
 
 def sbom_read_prefix(image: ImageRow) -> str:
-    """The stored SBOM's scan prefix, which a rescan may read. It must sit
-    under this image's own ``scans/{image_id}/`` or nothing is granted."""
+    """The stored SBOM's scan prefix, which a rescan may read.
+
+    Must be shaped exactly ``scans/{image_id}/{scan_id}/...`` -- a flat key
+    directly under the image's own ``scans/{image_id}/`` (no scan-id
+    segment) is refused, since granting read there would grant the image's
+    WHOLE scan history rather than the one scan the SBOM actually came from
+    (ruling)."""
     ref = image.sbom_ref or ""
-    prefix = ref.rsplit("/", 1)[0] + "/"
-    if not prefix.startswith(f"{SCANS_PREFIX}/{image.id}/") or ".." in ref:
+    parts = ref.split("/")
+    valid = (
+        len(parts) >= 4
+        and parts[0] == SCANS_PREFIX
+        and parts[1] == image.id
+        and _SCAN_ID_SEGMENT_RE.fullmatch(parts[2]) is not None
+        and all(parts)
+        and ".." not in ref
+    )
+    if not valid:
         raise ValueError(f"the stored SBOM {ref!r} is outside the image's scan prefix")
-    return prefix
+    return "/".join(parts[:3]) + "/"
 
 
 def build_scan_spec(
@@ -168,14 +189,23 @@ def execute_scan(
 
 def read_scan_result(storage_client, bucket: str, key: str) -> dict[str, Any] | None:
     """The scanner's result.json, or None when it wrote none. UNTRUSTED: the
-    caller parses it with ``parse_scan_result``."""
+    caller parses it with ``parse_scan_result``.
+
+    M1: the HEAD below is only a fast pre-check for the common "no result"
+    case -- a compromised scanner could swap the object for an oversized one
+    in the window between a HEAD and a separate full GET, so the cap is
+    enforced on the GET's own returned length. The GET itself is RANGED
+    (``bytes=0-RESULT_MAX_BYTES``), so an oversized object is never read in
+    full: the drain asks for one byte more than the cap, and if that many
+    come back, the object exceeds it.
+    """
     try:
-        _etag, size = head_object(storage_client, bucket, key)
+        head_object(storage_client, bucket, key)
     except Exception:  # absent (or unreadable): the scanner left no result
         return None
-    if size > RESULT_MAX_BYTES:
-        raise ScanResultError(f"result.json is {size} bytes; the cap is {RESULT_MAX_BYTES}")
-    body = get_object(storage_client, bucket, key)
+    body = get_object_range(storage_client, bucket, key, f"bytes=0-{RESULT_MAX_BYTES}")
+    if len(body) > RESULT_MAX_BYTES:
+        raise ScanResultError(f"result.json exceeds the cap of {RESULT_MAX_BYTES} bytes")
     try:
         doc = json.loads(body)
     except ValueError as err:
