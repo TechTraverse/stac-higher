@@ -223,6 +223,35 @@ describe("buildProductRows attribution", () => {
     expect(unattributed).toEqual([]);
   });
 
+  it("a flagged image degrades its process and its product, never fails them (C-4)", () => {
+    const { rows } = buildProductRows({
+      collections: [{ id: "prod-a" }],
+      graph: GRAPH,
+      flows: [flow()],
+      alertsAreComplete: true,
+      openAlerts: [alert({ id: "img", kind: "process_image_flagged", process_id: "p1" })],
+    });
+    expect(rows[0].health).toBe("warn");
+    expect(rows[0].reason).toBe(alertKindLabel("process_image_flagged"));
+    const processes = rows[0].lineage.find((g) => g.kind === "process")!;
+    expect(processes.nodes.every((n) => n.health === "warn")).toBe(true);
+  });
+
+  it("a firing process_failed still wins over an image-flagged alert listed first on the same process (C-4, lead ruling F1)", () => {
+    const { rows } = buildProductRows({
+      collections: [{ id: "prod-a" }],
+      graph: GRAPH,
+      flows: [flow()],
+      alertsAreComplete: true,
+      openAlerts: [
+        alert({ id: "img", kind: "process_image_flagged", process_id: "p1" }),
+        alert({ id: "dead", kind: "process_failed", process_id: "p1" }),
+      ],
+    });
+    const processes = rows[0].lineage.find((g) => g.kind === "process")!;
+    expect(processes.nodes.every((n) => n.health === "error")).toBe(true);
+  });
+
   it("claims a process alert through a process_output edge alone (I-84)", () => {
     const graph: PipelineGraph = {
       nodes: [

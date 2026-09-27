@@ -15,10 +15,14 @@
  * the monitor's verdict (ADR 0010) and outranks the ledger: firing ⇒ error,
  * acknowledged ⇒ warning. Deployment state still comes first — a disabled
  * process is "unknown" whatever the monitor says about its past.
+ *
+ * C-4: a firing `process_image_flagged` is degraded (warn), not failing: the
+ * image blocks new deploys while the process keeps running (container-images
+ * spec §10).
  */
 import type { LineageHealth } from "@stac-higher/shared";
 import type { Alert } from "@/lib/monitoring/api";
-import { alertKindLabel } from "@/components/monitoring/shared";
+import { DEGRADED_ALERT_KINDS, alertKindLabel, openAlertHealth } from "@/components/monitoring/shared";
 import type { Process, ProcessRun, ProcessSource } from "@/lib/processes/types";
 
 export interface ProcessVerdict {
@@ -83,10 +87,16 @@ export function processVerdict(
   }
 
   const own = (openAlerts ?? []).filter((a) => a.process_id === process.id);
-  const firingAlert = own.find((a) => a.state === "firing");
+  const firingAlert = own.find((a) => openAlertHealth(a) === "error");
+  const degradedAlert = own.find(
+    (a) => a.state === "firing" && DEGRADED_ALERT_KINDS.has(a.kind),
+  );
   const acknowledgedAlert = own.find((a) => a.state === "acknowledged");
   if (firingAlert) {
     return { health: "error", label: "Failing", reason: alertKindLabel(firingAlert.kind) };
+  }
+  if (degradedAlert) {
+    return { health: "warn", label: "Degraded", reason: alertKindLabel(degradedAlert.kind) };
   }
   if (acknowledgedAlert) {
     return {
