@@ -796,3 +796,50 @@ def test_three_runtime_kinds_parse_their_snapshot_and_command():
         parse_process_runtime({"kind": "inline_python", "image": snap})
     with pytest.raises(ProcessConfigError, match=r"runtime\.runtime_image must be null"):
         parse_process_runtime({"kind": "container", "image": snap, "runtime_image": "default"})
+
+
+# ---------------------------------------------------------------------------
+# C-2: the run spec of a user image
+# ---------------------------------------------------------------------------
+
+
+def test_a_revision_may_set_its_own_home_on_a_user_image():
+    from pipeline.process.launch import ResolvedImage
+
+    runtime = parse_process_runtime(
+        {
+            "kind": "container",
+            "image": {
+                "id": "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f",
+                "reference": "ghcr.io/example/tool",
+                "digest": "sha256:" + "a" * 64,
+            },
+        }
+    )
+    spec = build_run_spec(
+        settings(),
+        run_id=RUN,
+        process_id=PROC,
+        runtime=runtime,
+        code=None,
+        env={"HOME": "/work"},
+        credentials=RunCredentials("AK", "SK", "TOK", "b", run_staging_prefix(RUN), None, "r"),
+        image=ResolvedImage(image="ghcr.io/example/tool@sha256:" + "a" * 64, user_image=True),
+    )
+    assert spec.env["HOME"] == "/work"
+    assert spec.user_image is True
+    assert CODE_ENV_VAR not in spec.env
+
+
+def test_a_platform_image_gets_no_home_default():
+    spec = build_run_spec(
+        settings(),
+        run_id=RUN,
+        process_id=PROC,
+        runtime=ProcessRuntime(kind="inline_python"),
+        code="print(1)",
+        env={},
+        credentials=RunCredentials("AK", "SK", "TOK", "b", run_staging_prefix(RUN), None, "r"),
+    )
+    assert "HOME" not in spec.env
+    assert spec.user_image is False and spec.entrypoint == ()

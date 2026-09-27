@@ -32,6 +32,7 @@ from pipeline.finalize.process_run import build_process_request
 from pipeline.finalize.repo import PgFinalizeRepo
 from pipeline.finalize.steps import run_finalize
 from pipeline.finalize.store import PlatformObjectStore
+from pipeline.images.repo import PgImagesRepo
 from pipeline.ingest.repo import IngestRepo, PgIngestRepo
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import build_hooks
@@ -215,6 +216,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         master_key = load_key_or_skip(settings, JOB_RUN_TICK)
         fetch_remote = build_remote_fetcher(settings, master_key)
         ingest_repo = PgIngestRepo(settings.database_url)
+        images_repo = PgImagesRepo(settings.database_url)
 
         async def _fail_extract_batch(run: QueuedRun, error: str) -> None:
             await fail_extract_batch(ingest_repo, run, error)
@@ -235,6 +237,8 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     now=now,
                     fetch_remote=fetch_remote,
                     on_dead=_fail_extract_batch,
+                    images_repo=images_repo,
+                    master_key=master_key,
                 )
             except Exception:
                 logger.exception(
@@ -368,6 +372,8 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         await process_reap_tick(
             executor=DockerExecutor(docker_host=settings.docker_host),
             repo=_repo(),
+            # C-2: scan containers are judged against image_scans.
+            scan_statuses=PgImagesRepo(settings.database_url).scan_statuses,
         )
 
     queue.register_task(process_trigger, name=JOB_TRIGGER, retry=TRIGGER_RETRY)
