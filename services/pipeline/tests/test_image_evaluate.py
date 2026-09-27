@@ -56,6 +56,21 @@ def test_a_blank_error_is_not_a_failure_marker():
         parse_scan_result({**BASE, "error": "   "})
 
 
+def test_nan_epss_is_rejected_not_treated_as_a_never_blocking_score():
+    """json.loads accepts the literal NaN, and a NaN comparison is always
+    False, so an unchecked NaN epss would never trip the policy's
+    high_fixed_epss_at_least block. It must be rejected as an invalid
+    number, the same as any other malformed value (section 6.4)."""
+    finding = {**BASE["top"][0], "epss": float("nan")}
+    with pytest.raises(ScanResultError, match="finite"):
+        parse_scan_result({**BASE, "top": [finding]})
+
+
+def test_infinite_max_risk_is_rejected():
+    with pytest.raises(ScanResultError, match="finite"):
+        parse_scan_result({**BASE, "max_risk": float("inf")})
+
+
 def test_evaluate_is_pure():
     """Purity, asserted for real: the policy and scan-result inputs are
     deep-copied before evaluate() runs (twice), and afterwards the ORIGINALS

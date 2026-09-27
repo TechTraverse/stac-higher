@@ -1460,6 +1460,19 @@ item, not a code change; in GovCloud the ECR pull-through cache (spec
 §12) removes it.
 - Tracked in: `docs/backend.md` env table (C-2).
 
+### I-136 · The registry check's Bearer token realm is untrusted 🟡
+`check_registry` (`pipeline/connections/registry.py`) reads the token
+endpoint from the registry's own `WWW-Authenticate: Bearer realm=...`
+challenge; a hostile registry can name any host on `EGRESS_ALLOW_HOSTS`
+(compose-internal services, say) instead of its own host, and the probe
+sends the connection's own Basic credentials there. `resolve_pinned` still
+enforces the allow-list and HTTPS, so the registry cannot reach an arbitrary
+host, only one already on the allow-list, and only the response status code
+comes back to the caller — no body, no header is relayed. Same posture as
+every other adapter in this codebase: the egress allow-list is the trust
+boundary, not the far end's identity. Possible hardening: accept a realm
+host on the allow-list only when it equals the registry's own host.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

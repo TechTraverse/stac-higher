@@ -90,9 +90,10 @@ describe("evaluateImageGate", () => {
   });
 
   it("a soft-deleted registry credential is 'another group', never 'public'", () => {
-    expect(
-      gate(row({ registry_connection_id: "c-1", registry_connection_group_id: null }))?.reason,
-    ).toBe("image_group_mismatch");
+    const refusal = gate(row({ registry_connection_id: "c-1", registry_connection_group_id: null }));
+    expect(refusal?.reason).toBe("image_group_mismatch");
+    expect(refusal?.message).toContain("was deleted");
+    expect(refusal?.message).not.toContain("belongs to another group");
   });
 
   it("passes an image pulled with the process's own group's credential", () => {

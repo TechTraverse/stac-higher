@@ -13,6 +13,7 @@ lenient reader ``app/src/lib/images/scan-result.ts``.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,6 +79,8 @@ def _text(raw: Any, what: str, *, blank_ok: bool = False) -> str:
 def _number(raw: Any, what: str, *, minimum: float = 0.0, maximum: float | None = None) -> float:
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         raise ScanResultError(f"{what} must be a number")
+    if not math.isfinite(raw):
+        raise ScanResultError(f"{what} must be a finite number")
     if raw < minimum or (maximum is not None and raw > maximum):
         raise ScanResultError(f"{what} is out of range")
     return float(raw)

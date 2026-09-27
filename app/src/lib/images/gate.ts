@@ -64,10 +64,11 @@ export function evaluateImageGate(input: {
     };
   }
   if (row.registry_connection_id !== null && row.registry_connection_group_id !== processGroupId) {
-    return {
-      reason: "image_group_mismatch",
-      message: `image ${named} is pulled with a registry credential that belongs to another group; only that group's processes can use it`,
-    };
+    const message =
+      row.registry_connection_group_id === null
+        ? `image ${named} is pulled with a registry credential that was deleted; add a fresh credential before deploying`
+        : `image ${named} is pulled with a registry credential that belongs to another group; only that group's processes can use it`;
+    return { reason: "image_group_mismatch", message };
   }
   return null;
 }
