@@ -25,6 +25,7 @@ class FakeImagesRepo(ImagesRepo):
     credentials: dict[str, RegistryCredentialRow] = field(default_factory=dict)
     verdicts: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_scan_ids: dict[str, str] = field(default_factory=dict)
+    tag_digests: dict[str, str] = field(default_factory=dict)
     deleted_images: list[str] = field(default_factory=list)
     clock: dt.datetime = field(
         default_factory=lambda: dt.datetime(2026, 9, 27, 12, 0, tzinfo=dt.UTC)
@@ -46,6 +47,7 @@ class FakeImagesRepo(ImagesRepo):
         requested_at: dt.datetime | None = None,
         status: str = "pending",
         started_at: dt.datetime | None = None,
+        result: dict[str, Any] | None = None,
     ) -> None:
         self.scans[scan_id] = {
             "id": scan_id,
@@ -55,7 +57,7 @@ class FakeImagesRepo(ImagesRepo):
             "requested_by": "user-1",
             "requested_at": requested_at or self.clock,
             "started_at": started_at,
-            "result": None,
+            "result": result,
             "findings_ref": None,
             "log_ref": None,
             "executor_handle": None,
@@ -90,6 +92,10 @@ class FakeImagesRepo(ImagesRepo):
 
     async def get_image(self, image_id: str) -> ImageRow | None:
         return self.images.get(image_id)
+
+    async def get_scan_result(self, scan_id: str) -> dict[str, Any] | None:
+        scan = self.scans.get(scan_id)
+        return scan["result"] if scan else None
 
     async def claim_pending_scan(self, *, max_running: int) -> ClaimedScan | None:
         if sum(1 for s in self.scans.values() if s["status"] == "running") >= max_running:
@@ -174,6 +180,7 @@ class FakeImagesRepo(ImagesRepo):
             sbom_ref=result.sbom_ref,
             status=status,
             last_scanned_at=at,
+            last_scan_id=scan_id,
         )
         self.verdicts[image_id] = verdict
         self.last_scan_ids[image_id] = scan_id
@@ -189,12 +196,15 @@ class FakeImagesRepo(ImagesRepo):
         expected_status: str,
         expected_exception_expires_at: dt.datetime | None,
         at: dt.datetime,
+        tag_current_digest: str | None = None,
     ) -> bool:
         if not self._cas(image_id, expected_status, expected_exception_expires_at):
             return False
-        self._set(image_id, status=status, last_scanned_at=at)
+        self._set(image_id, status=status, last_scanned_at=at, last_scan_id=scan_id)
         self.verdicts[image_id] = verdict
         self.last_scan_ids[image_id] = scan_id
+        if tag_current_digest is not None:
+            self.tag_digests[image_id] = tag_current_digest
         return True
 
     async def find_image_by_digest(
@@ -220,7 +230,7 @@ class FakeImagesRepo(ImagesRepo):
         if not self._cas(existing_id, expected_status, expected_exception_expires_at):
             return False
         self.scans[scan_id]["image_id"] = existing_id
-        self._set(existing_id, status=status, last_scanned_at=at)
+        self._set(existing_id, status=status, last_scanned_at=at, last_scan_id=scan_id)
         self.verdicts[existing_id] = verdict
         self.last_scan_ids[existing_id] = scan_id
         if self.images[provisional_id].status in ("pending", "scanning", "scan_failed"):

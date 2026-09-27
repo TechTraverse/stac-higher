@@ -706,3 +706,153 @@ async def test_a_finish_scan_race_inside_fail_is_reported_as_already_resolved(ca
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert warnings[0].scan_id == SCAN and warnings[0].image_id == IMG
+
+
+# ---------------------------------------------------------------------------
+# C-4: the rescan's diff (spec §8.2) and the pipeline's drift HEAD.
+# ---------------------------------------------------------------------------
+
+MOVED = "sha256:" + "b" * 64
+
+
+def rescan_repo(**image) -> FakeImagesRepo:
+    repo = repo_with(
+        status="approved",
+        scan_kind="rescan",
+        digest=DIGEST,
+        sbom_ref=f"scans/{IMG}/{OLD}/sbom.syft.json",
+        last_scan_id=OLD,
+        **image,
+    )
+    repo.add_scan(
+        OLD,
+        IMG,
+        kind="admission",
+        status="done",
+        requested_at=NOW - dt.timedelta(days=1),
+        result={**result_doc(), "verdict": {"pass": True, "reasons": []}, "diff": None},
+    )
+    return repo
+
+
+class Drift:
+    def __init__(self, answer):
+        self.answer = answer
+        self.images: list[str] = []
+
+    async def __call__(self, image):
+        self.images.append(image.id)
+        return self.answer
+
+
+async def drain_with(repo, scanner, check_drift, policy=POLICY):
+    return await drain_one(
+        repo,
+        policy=policy,
+        max_running=1,
+        run_scan=scanner.run_scan,
+        read_result=scanner.read_result,
+        clock=lambda: NOW,
+        check_drift=check_drift,
+    )
+
+
+def rescan_doc(**overrides):
+    return result_doc(kind="rescan", sbom_ref=f"scans/{IMG}/{OLD}/sbom.syft.json", **overrides)
+
+
+async def test_a_rescan_stores_its_diff_against_the_previous_scan():
+    repo = rescan_repo()
+    outcome = await drain_with(repo, Scanner(rescan_doc(kev=["CVE-2026-0001"])), None)
+    assert outcome.image_status == "flagged"
+    diff = repo.scans[SCAN]["result"]["diff"]
+    assert diff["previous_scan_id"] == OLD
+    assert diff["new_kev"] == ["CVE-2026-0001"]
+    assert diff["new"] == ["CVE-2026-0001"]
+    assert diff["verdict_changed"] is True
+
+
+async def test_a_rescan_without_a_readable_previous_scan_stores_a_null_diff():
+    repo = repo_with(
+        status="approved",
+        scan_kind="rescan",
+        digest=DIGEST,
+        sbom_ref=f"scans/{IMG}/{OLD}/sbom.syft.json",
+    )
+    await drain_with(repo, Scanner(rescan_doc()), None)
+    assert repo.scans[SCAN]["result"]["diff"] is None
+
+
+async def test_an_admission_stores_a_null_diff_and_never_heads_the_tag():
+    repo = repo_with()
+    drift = Drift({"current_digest": MOVED, "drifted": True})
+    await drain_with(repo, Scanner(result_doc()), drift)
+    assert drift.images == []
+    stored = repo.scans[SCAN]["result"]
+    assert stored["diff"] is None and stored["tag_drift"] is None
+    assert IMG not in repo.tag_digests
+
+
+async def test_a_rescan_records_where_the_tag_points_now():
+    repo = rescan_repo()
+    drift = Drift({"current_digest": MOVED, "drifted": True})
+    await drain_with(repo, Scanner(rescan_doc()), drift)
+    assert drift.images == [IMG]
+    assert repo.scans[SCAN]["result"]["tag_drift"] == {"current_digest": MOVED, "drifted": True}
+    assert repo.tag_digests[IMG] == MOVED
+
+
+async def test_a_failed_head_is_recorded_but_leaves_the_last_known_digest():
+    repo = rescan_repo()
+    drift = Drift({"current_digest": None, "drifted": False})
+    outcome = await drain_with(repo, Scanner(rescan_doc()), drift)
+    assert outcome.scan_status == "done"
+    assert repo.scans[SCAN]["result"]["tag_drift"] == {"current_digest": None, "drifted": False}
+    assert IMG not in repo.tag_digests
+
+
+async def test_no_head_against_a_registry_the_policy_no_longer_allows():
+    repo = rescan_repo()
+    drift = Drift({"current_digest": MOVED, "drifted": True})
+    policy = replace(POLICY, allowed_registries=("ghcr.io",))
+    await drain_with(repo, Scanner(rescan_doc()), drift, policy=policy)
+    assert drift.images == []
+
+
+async def test_the_diff_does_not_disturb_the_compare_and_set():
+    """An exception granted while the rescan ran still wins (C-2 ruling B1)."""
+    repo = rescan_repo()
+    granted = NOW + dt.timedelta(days=7)
+
+    class Granting(Scanner):
+        async def run_scan(self, scan, kind):
+            repo._set(IMG, exception_expires_at=granted)
+            return await super().run_scan(scan, kind)
+
+    outcome = await drain_with(repo, Granting(rescan_doc(kev=["CVE-2026-0001"])), None)
+    assert outcome.image_status == "approved"
+    assert repo.images[IMG].exception_expires_at == granted
+    assert repo.scans[SCAN]["result"]["diff"]["new_kev"] == ["CVE-2026-0001"]
+
+
+# ---------------------------------------------------------------------------
+# Lead ruling F2: the drain wraps the drift check itself -- ANY exception
+# from the injected `check_drift` callable, not only a caught failure inside
+# `tag_drift`, must still let the scan finish with an unchecked tag_drift.
+# ---------------------------------------------------------------------------
+
+
+async def test_f2_a_raising_check_drift_still_finishes_the_scan_unchecked(caplog):
+    repo = rescan_repo()
+
+    async def raising_check_drift(image):
+        raise RuntimeError("SECRET_UNTRUSTED_MARKER_should_never_be_logged")
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.images.drain"):
+        outcome = await drain_with(repo, Scanner(rescan_doc()), raising_check_drift)
+    assert outcome.scan_status == "done"
+    assert repo.scans[SCAN]["result"]["tag_drift"] == {"current_digest": None, "drifted": False}
+    assert IMG not in repo.tag_digests
+    for record in caplog.records:
+        assert "SECRET_UNTRUSTED_MARKER_should_never_be_logged" not in record.getMessage()
+        assert "SECRET_UNTRUSTED_MARKER_should_never_be_logged" not in str(record.__dict__)

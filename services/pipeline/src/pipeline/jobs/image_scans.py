@@ -17,12 +17,18 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+from typing import Any
 
 from pipeline.config import Settings
 from pipeline.images.drain import STALL_GRACE_SECONDS, drain_one
+from pipeline.images.drift import tag_drift
 from pipeline.images.policy import ImagePolicyError, load_image_policy
-from pipeline.images.registry_auth import resolve_registry_auth
-from pipeline.images.repo import ClaimedScan, PgImagesRepo
+from pipeline.images.registry_auth import (
+    RegistryAuthUnavailable,
+    RegistryCredentialGone,
+    resolve_registry_auth,
+)
+from pipeline.images.repo import ClaimedScan, ImageRow, PgImagesRepo
 from pipeline.images.scan_launch import ScanRun, execute_scan, read_scan_result
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.process.docker_executor import DockerExecutor
@@ -85,6 +91,22 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 read_scan_result, storage_client, settings.staging_bucket, key
             )
 
+        async def check_drift(image: ImageRow) -> dict[str, Any]:
+            # The pull credential the daemon would use, so a private tag can
+            # be HEADed. If it cannot be resolved, the HEAD goes anonymous and
+            # a private tag reads as unchecked (current_digest null), never a
+            # failed scan.
+            key = (
+                load_key_or_skip(settings, JOB_NAME) if image.registry_connection_id else None
+            )
+            try:
+                auth = await resolve_registry_auth(
+                    image, repo=repo, settings=settings, master_key=key
+                )
+            except (RegistryCredentialGone, RegistryAuthUnavailable):
+                auth = None
+            return await asyncio.to_thread(tag_drift, image, auth, settings.egress_allow_hosts)
+
         outcome = await drain_one(
             repo,
             policy=policy,
@@ -92,6 +114,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
             run_scan=run_scan,
             read_result=read_result,
             clock=lambda: dt.datetime.now(dt.UTC),
+            check_drift=check_drift,
         )
         if outcome is not None:
             logger.info(

@@ -11,8 +11,14 @@ Transitions (spec §4.3, :func:`next_image_status`): a passing scan approves
 (a passing scan auto-approves, spec decision 3, a ``rejected`` or
 ``scan_failed`` image included); a failing admission rejects; a failing
 rescan flags an ``approved`` image unless a live exception covers it;
-``revoked`` is terminal. The rescan TICK, the diff, drift, alerts and
-exception expiry are C-4's; the drain records ``diff: null``.
+``revoked`` is terminal.
+
+A rescan's stored result carries the diff against the image's previous scan
+(C-4, ``pipeline/images/diff.py``) and the pipeline's own tag-drift HEAD
+(``pipeline/images/drift.py``, injected as ``check_drift``); the tag columns
+follow a HEAD that answered. An admission stores ``diff: null`` and never
+HEADs. The rescan tick, alerts and exception expiry live beside the drain
+(``lifecycle.py``, ``alerts.py``).
 
 **Compare-and-set writes (controller ruling B1).** ``record_admission``,
 ``record_rescan`` and ``merge_admission`` only write when the row's status
@@ -63,6 +69,7 @@ from typing import Any
 
 import psycopg
 
+from pipeline.images.diff import scan_diff
 from pipeline.images.policy import ImagePolicy, evaluate, registry_allowed
 from pipeline.images.reference import registry_host
 from pipeline.images.repo import ClaimedScan, ImageRow, ImagesRepo
@@ -83,6 +90,9 @@ STALL_GRACE_SECONDS = 600
 
 RunScan = Callable[[ClaimedScan, str], Awaitable[ScanRun]]
 ReadResult = Callable[[str], Awaitable[dict[str, Any] | None]]
+#: The pipeline's drift HEAD for a rescan (C-4, spec §8.2): the §6.4
+#: ``tag_drift`` record, or None when no check ran.
+CheckDrift = Callable[[ImageRow], Awaitable[dict[str, Any] | None]]
 
 #: A trusted, caller-chosen classification for the log line -- never the
 #: scanner's own (untrusted) message text (ruling M4).
@@ -99,6 +109,14 @@ ALREADY_RESOLVED = "already_resolved"
 #: instant before this write landed (final-review fix wave item 5). Ids
 #: only, never the scanner's own text (ruling M4).
 FINISH_SCAN_RACED_MSG = "image scan finish raced: leaving the scan row and the image as-is"
+
+#: Logged when the injected ``check_drift`` callable itself raises (lead
+#: ruling F2) -- a narrower case than :func:`pipeline.images.drift.tag_drift`
+#: catching its own failures, since ``check_drift`` also resolves the pull
+#: credential. The scan still finishes; tag_drift is recorded as unchecked.
+#: Never the exception's text, which may carry a credential -- the type name
+#: only (ruling M4's rule, applied here too).
+CHECK_DRIFT_FAILED_MSG = "image scan drift check failed: recording tag_drift as unchecked"
 
 #: A merge may only keep or worsen the EXISTING row's status, never raise it
 #: (Task 7 fix round 1 ruling): folding in a fresh, unrelated admission's
@@ -374,6 +392,7 @@ async def drain_one(
     run_scan: RunScan,
     read_result: ReadResult,
     clock: Callable[[], dt.datetime],
+    check_drift: CheckDrift | None = None,
 ) -> DrainOutcome | None:
     """Claim and process at most one scan. None when nothing was claimable."""
     scan = await repo.claim_pending_scan(max_running=max_running)
@@ -443,9 +462,38 @@ async def drain_one(
             reason="identity_mismatch",
         )
 
+    drift: dict[str, Any] | None = None
+    if (
+        kind == "rescan"
+        and check_drift is not None
+        and registry_allowed(registry_host(image.reference), policy.allowed_registries)
+    ):
+        try:
+            drift = await check_drift(image)
+        except Exception as err:  # F2: the injected check itself must never fail the scan
+            logger.warning(
+                CHECK_DRIFT_FAILED_MSG,
+                extra={
+                    "scan_id": scan.id,
+                    "image_id": image.id,
+                    "error_type": type(err).__name__,
+                },
+            )
+            drift = {"current_digest": None, "drifted": False}
+
     now = clock()
     verdict = evaluate(result, policy, now=now)
     verdict_json = verdict.as_json()
+
+    diff: dict[str, Any] | None = None
+    if kind == "rescan" and image.last_scan_id and image.last_scan_id != scan.id:
+        found = scan_diff(
+            await repo.get_scan_result(image.last_scan_id),
+            result,
+            current_pass=verdict.passed,
+            previous_scan_id=image.last_scan_id,
+        )
+        diff = found.as_json() if found is not None else None
 
     if not await _still_running(repo, scan.id):
         # Task 7 fix round 1: checked BEFORE any image write, not just at
@@ -538,6 +586,7 @@ async def drain_one(
                 expected_status=expected_status,
                 expected_exception_expires_at=expected_exp,
                 at=now,
+                tag_current_digest=(drift or {}).get("current_digest"),
             )
 
         final_status = await _cas_retry(
@@ -549,10 +598,16 @@ async def drain_one(
                 extra={"scan_id": scan.id, "image_id": image.id},
             )
 
+    stored = scan_result_to_json(result)
+    if kind == "rescan":
+        # The scanner's own tag_drift is always null (C-2); the pipeline's
+        # HEAD is the record (spec §8.2, §5).
+        stored["tag_drift"] = drift
+    stored = {**stored, "verdict": verdict_json, "diff": diff}
     finished = await repo.finish_scan(
         scan.id,
         status="done",
-        result={**scan_result_to_json(result), "verdict": verdict_json, "diff": None},
+        result=stored,
         findings_ref=result.findings_ref,
         log_ref=run.log_ref,
         executor_handle=run.handle_id,
