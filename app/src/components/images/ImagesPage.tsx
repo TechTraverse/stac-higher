@@ -35,6 +35,7 @@ function ImagesContent() {
   const { data: me } = useAuthMe();
   const roles = me?.identity?.roles ?? [];
   const canOperate = roles.includes("operator") || roles.includes("admin");
+  const canAdmin = roles.includes("admin");
 
   const [status, setStatus] = useState<ImageStatus | "">("");
   const [inUse, setInUse] = useState(false);
@@ -232,7 +233,12 @@ function ImagesContent() {
       )}
 
       {adding && <AddImageDialog open onOpenChange={(open) => !open && setAdding(false)} />}
-      <ImageDetailSheet imageId={selected} onClose={() => setSelected(null)} canOperate={canOperate} />
+      <ImageDetailSheet
+        imageId={selected}
+        onClose={() => setSelected(null)}
+        canOperate={canOperate}
+        canAdmin={canAdmin}
+      />
     </div>
   );
 }

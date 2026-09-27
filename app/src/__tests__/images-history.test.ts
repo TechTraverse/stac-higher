@@ -5,6 +5,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  canTakeException,
+  exceptionExpiry,
   formatCountsDelta,
   isExceptionExpired,
   scanDiffSummary,
@@ -96,6 +98,31 @@ describe("scanDiffSummary", () => {
   it("is null for an admission or a scan without a readable diff", () => {
     expect(scanDiffSummary(scan(), [])).toBeNull();
     expect(scanDiffSummary(scan({ result: { diff: { new: "x" } } }), [])).toBeNull();
+  });
+});
+
+describe("the exception verbs' helpers", () => {
+  it("offers an exception on rejected and flagged images, and on an approved image that carries one", () => {
+    const live = { reason: "r", by: "a", at: "x", expires_at: "2026-10-01T00:00:00.000Z" };
+    expect(canTakeException({ status: "rejected", exception: null })).toBe(true);
+    expect(canTakeException({ status: "flagged", exception: null })).toBe(true);
+    expect(canTakeException({ status: "approved", exception: live })).toBe(true);
+    expect(canTakeException({ status: "approved", exception: null })).toBe(false);
+    for (const status of ["pending", "scanning", "revoked", "scan_failed"] as const) {
+      expect(canTakeException({ status, exception: null }), status).toBe(false);
+    }
+  });
+
+  it("sends an expiry whole days from now", () => {
+    expect(exceptionExpiry(30, NOW)).toBe("2026-10-27T12:00:00.000Z");
+  });
+
+  it("subtracts a 5-minute margin when the grant sits at the policy's exception_max_days cap (F7): a client clock slightly ahead of the server must not risk a 422 exception_too_long", () => {
+    expect(exceptionExpiry(90, NOW, 90)).toBe(
+      new Date(NOW.getTime() + 90 * 86_400_000 - 5 * 60_000).toISOString(),
+    );
+    // Below the cap, no margin is subtracted.
+    expect(exceptionExpiry(89, NOW, 90)).toBe(new Date(NOW.getTime() + 89 * 86_400_000).toISOString());
   });
 });
 

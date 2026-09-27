@@ -3,7 +3,7 @@
  * so the dashboard, the detail sheet and the deploy form agree.
  */
 import { imageScanResultSchema, type ImageScanResult } from "@/lib/images/scan-result";
-import type { ImageScan } from "@/lib/images/types";
+import type { Image, ImageScan } from "@/lib/images/types";
 import { readScanDiff, type ImageScanDiff } from "@/lib/images/scan-diff";
 
 /** "sha256:" + 12 hex characters: enough to tell digests apart (the gate's
@@ -91,6 +91,27 @@ export function dbAgeDays(dbBuiltAt: string | null | undefined, now: Date): numb
 export function isExceptionExpired(expiresAt: string, now: Date): boolean {
   const t = Date.parse(expiresAt);
   return !Number.isFinite(t) || t <= now.getTime();
+}
+
+/** Spec §4.4 + C-4: an exception approves a rejected or flagged image, and a
+ * new grant replaces the one an approved image carries. An approved image
+ * without one passed on its own. */
+export function canTakeException(image: Pick<Image, "status" | "exception">): boolean {
+  return (
+    image.status === "rejected" ||
+    image.status === "flagged" ||
+    (image.status === "approved" && image.exception !== null)
+  );
+}
+
+/** The `expires_at` a grant of `days` sends. The server measures its cap
+ * from its own, later "now", so a whole-day grant at the cap stays inside.
+ * F7: when `days` sits exactly at the policy's `exception_max_days` cap
+ * (`maxDays`), a 5-minute margin is subtracted so a browser clock running
+ * slightly ahead of the server does not risk a 422 `exception_too_long`. */
+export function exceptionExpiry(days: number, now: Date, maxDays?: number): string {
+  const margin = maxDays !== undefined && days === maxDays ? 5 * 60_000 : 0;
+  return new Date(now.getTime() + days * 86_400_000 - margin).toISOString();
 }
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low", "negligible", "unknown"] as const;

@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { timeAgo } from "@/components/monitoring/shared";
 import { useImage, useRescanImage } from "@/lib/images/queries";
 import { exceptionLapsed, readVerdict } from "@/lib/images/verdict";
+import { ImageAdminActions } from "./ImageAdminActions";
 import { ImageStatusBadge } from "./ImageStatusBadge";
 import { SeverityStack } from "./SeverityStack";
 import {
@@ -39,10 +40,12 @@ export function ImageDetailSheet({
   imageId,
   onClose,
   canOperate,
+  canAdmin,
 }: {
   imageId: string | null;
   onClose: () => void;
   canOperate: boolean;
+  canAdmin: boolean;
 }) {
   const { data, isLoading, error } = useImage(imageId);
   const rescan = useRescanImage();
@@ -276,6 +279,8 @@ export function ImageDetailSheet({
                 </Button>
               </div>
             )}
+
+            {canAdmin && <ImageAdminActions image={image} />}
           </div>
         )}
       </SheetContent>
