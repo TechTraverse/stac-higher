@@ -68,7 +68,10 @@ test.describe("Images (C-3)", () => {
     await page.getByRole("button", { name: "Add image" }).first().click();
     await expect(page.getByRole("heading", { name: "Add image" })).toBeVisible();
     await page.getByLabel("Image reference").fill("python:3.12-slim");
-    await expect(page.getByText("docker.io/library/python:3.12-slim")).toBeVisible();
+    // Scoped to the dialog: a registry that already holds this image lists it too.
+    await expect(
+      page.getByRole("dialog", { name: "Add image" }).getByText("docker.io/library/python:3.12-slim"),
+    ).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByRole("heading", { name: "Add image" })).toHaveCount(0);
   });
