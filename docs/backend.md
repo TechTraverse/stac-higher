@@ -105,7 +105,7 @@ requests are rows the pipeline drains (ADR 0004).
 | `/api/processes` | GET, POST | List (member+: own groups; admin: all) / create (operator+, audited) group-owned processes — Phase 9 M5-A |
 | `/api/processes/hardware-profiles` | GET | The deployment's hardware profiles minus their backend blocks, plus the executor backend (member+; K-1) |
 | `/api/processes/[id]` | GET, PUT, DELETE | Get / update / soft-delete a process. `current_revision` is NOT updatable — only a deploy moves it |
-| `/api/processes/[id]/revisions` | GET, POST | List immutable revision snapshots / **deploy** (operator+, audited `deploy`): insert a revision + repoint `current_revision` in one transaction. `runtime.kind: container` is refused this slice (ADR 0013) |
+| `/api/processes/[id]/revisions` | GET, POST | List immutable revision snapshots / **deploy** (operator+, audited `deploy`): insert a revision + repoint `current_revision` in one transaction. `runtime.kind` is `inline_python` \| `inline_python_on_image` \| `container`. A kind 2/3 snapshot must name an approved, fresh, digest-equal image the process's group may use: otherwise **422** with `code` `image_not_approved` \| `image_stale` \| `image_group_mismatch` \| `image_digest_mismatch`, or **503** `image_policy_unavailable` when the policy cannot be read (C-1, ADR 0021) |
 | `/api/processes/[id]/sources` | GET, POST | List / attach a trigger source (operator+ who can also manage the collection; archived collections refused) |
 | `/api/processes/[id]/sources/[sourceId]` | PUT, DELETE | Update trigger/expectation/enabled, or detach. `collection_id` is immutable (unique key + M5-D cycle edge) |
 | `/api/processes/[id]/outputs` | GET, POST | List / attach an output collection (operator+, same collection rules) |

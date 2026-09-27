@@ -619,6 +619,19 @@ group-owned, read-only extractor process.
 |---|---|---|
 | K-1 · hardware-profile contract | ✅ | `infra/hardware-profiles/local.json` — one JSON document both runtimes read via `PROCESS_HARDWARE_PROFILES_FILE` (unset: the checkout), packaged into both the app and pipeline images through a `hardware` named build context (the repo-root `.dockerignore` excludes `infra/`, same pattern as `fixtures`/X-2). `pipeline/process/hardware.py` (lenient) and `app/src/lib/processes/hardware.ts` (strict) parse the same shape: named profiles with `cpu`/`memory_mb`/optional `gpu_count` bounds, a queue-wait promise, an optional base `image`, and an opaque per-executor `backend` block (K-3 Docker, K-5 Kubernetes). The app's write gate rejects a revision's `hardware` block outside its profile's bounds or naming an unknown profile at deploy time (`hardwareBoundsError`, 400) — on every deploy path, hand-written and built-in alike; the pipeline re-checks the same bounds at launch (`check_hardware_bounds`) — a bounds violation or unknown profile dies naming the bound, an unreadable/missing profile document requeues without spending an attempt instead (Task 4 review; the file path comes from `Settings.process_hardware_profiles_file`). `GET /api/processes/hardware-profiles` serves the set minus each profile's `backend` (member+). `RunSpec` already carries `cpu`, `gpu_count`, the resolved `profile` and a `priority` (`interactive`/`triggered`) that nothing reads yet |
 
+### Bring-your-own container images + scanning (C queue) 🔄
+
+Spec: `docs/superpowers/specs/2026-09-13-container-images-scanning-design.md`
+(approved 2026-09-27), ADR 0021; epic #56.
+
+| Slice | Status | Notes |
+|---|---|---|
+| C-1 · Contracts, migration 030, write gate | ✅ | `runtime.kind` is `inline_python \| inline_python_on_image \| container`. Kinds 2–3 carry an immutable `image` snapshot `{id, reference, digest}` with `runtime_image: null`; `command` is kind 3 only; `code` is required for kinds 1–2 and refused for kind 3 (Zod `processes/schemas.ts`, Python `process/config.py`). Migration **030** adds `container_images` (the platform-wide registry: metadata only, status machine, verdict, exception columns, drift columns) and `image_scans` (the ADR 0004 ledger), widens the connections protocol CHECK to `registry`, and indexes `process_revisions` by snapshot image id. The revisions route's DB-backed `checkImageGate` (`lib/images/gate.ts`) replaces `CONTAINER_RUNTIME_REFUSAL`: 422 `image_not_approved` / `image_stale` / `image_group_mismatch` / `image_digest_mismatch`, or 503 `image_policy_unavailable`. It refuses everything until C-2's scanner approves something. The pipeline dies any kind 2/3 run naming ADR 0021 (`launch.check_user_image_launchable`, C-2's seam). Both runtimes read the image policy (`infra/image-policy/default.json`, `PROCESS_IMAGE_POLICY_FILE`, packaged into both images through an `imagepolicy` build context) and the Python side has the pure `evaluate()` (KEV → fixed CRITICAL → aged unfixed CRITICAL → fixed HIGH by EPSS). The `registry` connection protocol has a v2 check probe (`connections/registry.py`) and is refused as a data-flow connection. `process_image_flagged` is declared. Fixtures: `image-status`, `image-reference`, `image-policy`, `image-scan-result`, `registry-connection-config`, plus the three-kind `process-runtime` and `alert-kinds`. No executor change, no new screen |
+| C-2 · Scanner image, drain, digest-pinned launch | ⬜ | #51 |
+| C-3 · API, `/images` dashboard, deploy-form chooser | ⬜ | #52 |
+| C-4 · Rescans, drift, flagged/stale, exceptions, retention | ⬜ | #53 |
+| C-5 · Live gate (lead) | ⬜ | #54 |
+
 ## Pipeline graph views (P queue, 2026-09-04) ✅
 
 Design spec approved 2026-09-04

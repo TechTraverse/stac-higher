@@ -89,9 +89,9 @@ may appear in later versions, so ignore what you do not know.
 
 ## Runtime image
 
-Every run executes on a **platform-built** image — a user-supplied image
-(`runtime.image`) is refused (ADR 0013). A revision picks WHICH platform
-image with an alias:
+An `inline_python` revision runs on a **platform-built** image and picks
+WHICH one with an alias. (To run on your own image, see
+[Bring your own image](#bring-your-own-image).)
 
 ```json
 "runtime_image": "default"
@@ -110,6 +110,82 @@ aliases is fixed in both runtimes' schemas; a value outside it is refused at
 the deploy form and, should it ever reach the ledger, dies as an unusable
 revision. (K-1's hardware profiles will carry an image BASE; the alias
 selects the variant, so a GPU profile and `stactools` compose.)
+
+## Bring your own image
+
+A process can also run on an image you supply (ADR 0021). The runtime `kind`
+picks one of three shapes. The Lambda console's choice between "code" and
+"container image" is the model.
+
+| `kind` | What runs | `code` | `image` | `runtime_image` | `command` |
+|---|---|---|---|---|---|
+| `inline_python` | your code on a platform image | required | `null` | `default` \| `stactools` | — |
+| `inline_python_on_image` | your code on **your** image (the image is the dependency bundle) | required | snapshot | `null` | — |
+| `container` | **your image's own entrypoint** (the image is the process) | refused | snapshot | `null` | optional |
+
+`image` is an immutable **snapshot** of a registry row, taken at deploy time:
+
+```json
+"image": { "id": "…uuid…", "reference": "ghcr.io/org/satpy-runtime", "digest": "sha256:…" }
+```
+
+`reference` is the normalized repository: lowercase, with an explicit
+registry host and no tag (`docker.io/library/python` for a bare `python`).
+`digest` is the manifest digest that runs. **Only that digest ever runs.** A
+tag is resolved once, when the image is added, and is never followed
+afterwards. A later rescan, revocation or deletion never rewrites a stored
+revision.
+
+`command` (kind 3 only) replaces the image's `CMD`: a non-empty list of up to
+64 non-blank strings. It never replaces `ENTRYPOINT` or `USER`.
+
+### What your image must provide
+
+- **Kind 2:** `python3` (≥ 3.10) on `PATH`, and nothing else. The platform
+  injects its runner and your code through the environment, not a mount, so
+  no platform package or particular base image is needed.
+- **Kind 3:** an entrypoint that speaks the run contract in this document: it
+  reads its inputs from the environment and exits 0/1/2.
+
+### What every user image gets, whatever its own config says
+
+The platform's hardening applies, not the image's: all capabilities dropped,
+`no-new-privileges`, the revision's memory/CPU/timeout, the run's network
+profile, and **user `10001:10001`** whatever the image's `USER` says. An
+image whose files that uid cannot read fails at run time. Writable scratch is
+`/tmp` (a tmpfs sized with the memory limit) plus the run's output prefix.
+
+### When a deploy is refused
+
+The deploy answers **422** with a `code` when the snapshot's image is not
+usable:
+
+| `code` | Meaning |
+|---|---|
+| `image_not_approved` | The image is not in the registry, or is `pending`, `scanning`, `rejected`, `flagged`, `revoked` or `scan_failed`. Only `approved` deploys. |
+| `image_digest_mismatch` | The registry row with that id has a different reference or digest than the snapshot. |
+| `image_stale` | The image has not been scanned within the policy's window (30 days by default, the FedRAMP rule). An exception does not cover staleness. |
+| `image_group_mismatch` | The image is pulled with a `registry` connection that belongs to another group. |
+
+A **503** `image_policy_unavailable` means the deployment's image policy
+(`PROCESS_IMAGE_POLICY_FILE`) is missing or invalid. User images fail closed,
+and inline revisions are unaffected.
+
+An image is approved by a **scan**: an SBOM (Syft) and a vulnerability match
+(Grype, with CISA KEV and EPSS) evaluated against the deployment's policy.
+The default policy blocks any KEV entry, a fixed CRITICAL, an unfixed
+CRITICAL published more than 30 days ago, and a fixed HIGH with EPSS ≥ 0.1. A
+failing image needs an admin's expiring, audited exception. The scanner, the
+image registry page and rescans are being built now. Until the scanner
+exists nothing is approved, so every kind 2/3 deploy is refused with
+`image_not_approved`, and a kind 2/3 run that reached the pipeline by any
+other route dies naming ADR 0021.
+
+### Private registries
+
+Pull credentials are a group-owned `registry` connection (`{host}` plus
+`{username, password}`; [`connections.md`](connections.md)). An image added
+with a group's credential can be used only by that group's processes.
 
 ## Network access
 

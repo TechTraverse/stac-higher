@@ -129,8 +129,10 @@ The Python pipeline (`services/pipeline`) is the only runtime that decrypts
 - **Registry check** — `connections/registry.py`'s `check_registry` is
   `GET https://{host}/v2/` with Basic auth, following a Bearer challenge to its
   HTTPS token endpoint with the same credentials (`docker.io` is probed at
-  `registry-1.docker.io`). Every host goes through `resolve_pinned`, and
-  nothing is logged but the host and the status.
+  `registry-1.docker.io`). Every host goes through `resolve_pinned`.
+  `registry.py` itself logs nothing; the drain and the health sweep — which
+  runs this same `GET /v2/` against every enabled `registry` connection on
+  its own schedule — log `connection_id` / `protocol` / `ok`.
 - **Bridge jobs** — `pipeline.connection_check_drain` (drains
   `connection_checks`) and `pipeline.connection_health_sweep` (tests enabled
   connections). Both update only health/pin columns, never `updated_at`. Drain
