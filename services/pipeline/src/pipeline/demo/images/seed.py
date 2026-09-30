@@ -442,10 +442,11 @@ def seed(args: argparse.Namespace) -> int:
         )
         say(f"  process {CANARY_NAME} deployed (no outputs)")
 
+    app_url = args.app_url.rstrip("/")
     say("")
-    say("UI:    http://localhost:4321/images")
-    say("       http://localhost:4321/processes")
-    say(f"       http://localhost:4321/collections/{OUTPUT_COLLECTION}/items")
+    say(f"UI:    {app_url}/images")
+    say(f"       {app_url}/processes")
+    say(f"       {app_url}/collections/{OUTPUT_COLLECTION}/items")
     say("Strict policy (flags an image the default passes):")
     say(
         "  docker compose -f docker-compose.yml"

@@ -392,6 +392,25 @@ def test_a_rejected_image_blocks_the_install_unless_an_exception_is_requested(
     assert 13.9 <= delta_days <= 14.1
 
 
+def test_seed_prints_ui_links_using_the_given_app_url(images_seed_module, monkeypatch):
+    module = images_seed_module
+    said: list[str] = []
+    monkeypatch.setattr(module, "say", said.append)
+    client = _runtime_slim_client("approved")
+    monkeypatch.setattr(module, "AppClient", lambda base_url, bearer=None: client)
+
+    # A trailing slash on --app-url must not leak a double slash into a link.
+    assert module.seed(_images_args(app_url="http://127.0.0.1:4399/")) == 0
+
+    assert any(line == "UI:    http://127.0.0.1:4399/images" for line in said)
+    assert any(line == "       http://127.0.0.1:4399/processes" for line in said)
+    assert any(
+        line == f"       http://127.0.0.1:4399/collections/{OUTPUT_COLLECTION}/items"
+        for line in said
+    )
+    assert not any("localhost:4321" in line for line in said)
+
+
 def test_a_403_on_the_exception_names_the_admin_identity(images_seed_module, monkeypatch):
     module = images_seed_module
     client = _runtime_slim_client("rejected", exception_status=403)
