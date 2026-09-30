@@ -63,7 +63,7 @@ from pipeline.demo.fixtures import (
 )
 from pipeline.demo.goes import seed as goes
 from pipeline.demo.images import seed as images
-from pipeline.demo.images.seed import SeedError
+from pipeline.demo.images.seed import AppError, SeedError
 from pipeline.demo.platform import (
     check_migrations,
     enable_serving,
@@ -431,6 +431,12 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except SeedError as err:
         say(str(err))
+        return 1
+    except AppError as err:
+        # A safety net for an AppError that reached here uncaught (a status
+        # `seed()`/`status()` did not have a specific hint for): a clean
+        # one-line message, never a traceback.
+        say(f"app answered {err}")
         return 1
 
 

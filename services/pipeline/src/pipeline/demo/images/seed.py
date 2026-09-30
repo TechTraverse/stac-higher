@@ -108,9 +108,9 @@ def _split_reference(typed: str) -> tuple[str, str]:
     return "/".join([host, *path]), tag
 
 
-def _demo_references() -> list[str]:
+def _demo_reference_tag_pairs() -> list[tuple[str, str]]:
     images = (RUNTIME_IMAGE, SLIM_IMAGE, LARGE_IMAGE, KEV_IMAGE)
-    return [_split_reference(image)[0] for image in images]
+    return [_split_reference(image) for image in images]
 
 
 # --------------------------------------------------------------------------- #
@@ -214,14 +214,42 @@ def wait_for_scans(
     poll_s: float = 10.0,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    find_by: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, dict]:
     """Poll each id's image until every one is terminal (spec §4.3) or the
-    timeout passes. Returns the last dict seen per id either way, so the
-    caller can still report a `pending`/`scanning` image once time is up."""
+    timeout passes. Returns the last dict seen per id either way (keyed by
+    the ORIGINAL id passed in), so the caller can still report a
+    `pending`/`scanning` image once time is up.
+
+    A provisional admission can be folded into an existing row by digest
+    while a scan is in flight (spec §9.1's de-duplication): the drain
+    deletes the provisional row, so `get_image(id)` 404s for it from then on.
+    `find_by` maps each id to its `(reference, tag)` pair so a 404 can be
+    resolved once by re-finding the surviving row; without an entry there
+    (or when the re-find comes up empty), a 404 is a clear `SeedError`
+    rather than a raw `AppError`/traceback.
+    """
+    find_by = find_by or {}
+    lookup_id = {image_id: image_id for image_id in ids}
     deadline = clock() + timeout_s
     last: dict[str, dict] = {}
     while True:
-        last = {image_id: client.get_image(image_id) for image_id in ids}
+        for original_id in ids:
+            try:
+                last[original_id] = client.get_image(lookup_id[original_id])
+            except AppError as err:
+                if err.status != 404:
+                    raise
+                reference_tag = find_by.get(original_id)
+                found = client.find_image(*reference_tag) if reference_tag else None
+                if found is None:
+                    raise SeedError(
+                        f"image {original_id} vanished mid-scan (folded into another row "
+                        "by the drain, and no row matches its reference/tag); re-run"
+                        " images-seed"
+                    ) from err
+                lookup_id[original_id] = found["id"]
+                last[original_id] = found
         if all(image["status"] in TERMINAL_STATUSES for image in last.values()):
             return last
         if clock() >= deadline:
@@ -241,11 +269,20 @@ def kind2_runtime(image: dict, base: dict) -> dict:
 
 
 def require_deployable(image: dict, name: str) -> None:
-    if image["status"] != "approved":
+    reference = image.get("reference", "?")
+    status = image["status"]
+    if status == "scan_failed":
+        # The exception route 409s on a scan_failed image (only rejected,
+        # flagged, or an approved row with an exception to replace take one),
+        # so the fix here is always a rescan, never --exception-days.
+        raise SeedError(f"{name} ({reference}) failed to scan; select Rescan now on /images")
+    if status != "approved":
         raise SeedError(
-            f"{name} ({image.get('reference', '?')}) is {image['status']}, not approved;"
+            f"{name} ({reference}) is {status}, not approved;"
             " grant an exception (--exception-days) or wait for a passing rescan"
         )
+    if image.get("stale"):
+        raise SeedError(f"{name} ({reference}) is stale: rescan it on /images")
 
 
 def _output_collection_document() -> dict:
@@ -269,6 +306,13 @@ def _output_collection_document() -> dict:
 def _expires_at(days: int) -> str:
     when = dt.datetime.now(dt.UTC) + dt.timedelta(days=days)
     return when.replace(microsecond=0).isoformat()
+
+
+def _auth_hint(reference: str, err: AppError) -> str:
+    return (
+        f"the app answered {err} on {reference}: it needs an operator identity"
+        ' (DEV_AUTH_IDENTITY=\'{"roles":["operator"]}\') or a valid --bearer token'
+    )
 
 
 def _selected_demo_images(args: argparse.Namespace) -> list[DemoImage]:
@@ -300,14 +344,22 @@ def seed(args: argparse.Namespace) -> int:
     say("images")
     images: dict[str, dict] = {}
     for demo in demos:
-        image = ensure_image(client, demo)
+        try:
+            image = ensure_image(client, demo)
+        except AppError as err:
+            if err.status in (401, 403):
+                raise SeedError(_auth_hint(demo.reference, err)) from err
+            raise
         images[demo.key] = image
         say(f"  image {demo.reference}: {image['status']}")
 
     if not getattr(args, "no_wait", False):
         say("waiting for scans")
         ids = [image["id"] for image in images.values()]
-        updated = wait_for_scans(client, ids, timeout_s=args.scan_timeout)
+        find_by = {
+            image["id"]: (image["reference"], image["tag_at_add"]) for image in images.values()
+        }
+        updated = wait_for_scans(client, ids, timeout_s=args.scan_timeout, find_by=find_by)
         for demo in demos:
             image = updated[images[demo.key]["id"]]
             images[demo.key] = image
@@ -326,6 +378,7 @@ def seed(args: argparse.Namespace) -> int:
                 raise SeedError(
                     "granting an exception needs an ADMIN app identity: start the dev"
                     ' server with DEV_AUTH_IDENTITY=\'{"roles":["admin"]}\''
+                    f" (app answered {err})"
                 ) from err
             raise
         say(f"  runtime image: exception granted ({exception_days} day(s))")
@@ -425,15 +478,21 @@ def status(args: argparse.Namespace) -> int:
         )
 
     with psycopg.connect(args.database_url) as conn:
-        runs = conn.execute(
-            "SELECT p.name, r.status, to_char(r.created_at, 'HH24:MI:SS'),"
-            "       round(extract(epoch from (r.finished_at - r.started_at)))"
-            "  FROM stac_higher.process_runs r"
-            "  JOIN stac_higher.processes p ON p.id = r.process_id"
-            " WHERE r.process_id = ANY(%s)"
-            " ORDER BY r.created_at DESC LIMIT 10",
-            ([GEOCOLOR_IMG_ID, CANARY_ID],),
-        ).fetchall()
+        # Two LIMIT 5 queries rather than one LIMIT 10 across both processes,
+        # so a chatty canary run history cannot crowd the geocolor twin's
+        # runs (or vice versa) out of the last-five-each report.
+        runs: list[tuple] = []
+        for process_id, name in ((GEOCOLOR_IMG_ID, GEOCOLOR_IMG_NAME), (CANARY_ID, CANARY_NAME)):
+            runs.extend(
+                conn.execute(
+                    "SELECT %s, status, to_char(created_at, 'HH24:MI:SS'),"
+                    "       round(extract(epoch from (finished_at - started_at)))"
+                    "  FROM stac_higher.process_runs"
+                    " WHERE process_id = %s"
+                    " ORDER BY created_at DESC LIMIT 5",
+                    (name, process_id),
+                ).fetchall()
+            )
         alerts = conn.execute(
             "SELECT message, first_seen FROM stac_higher.alerts"
             " WHERE kind = 'process_image_flagged' AND process_id = ANY(%s)"
@@ -475,12 +534,12 @@ def teardown(args: argparse.Namespace) -> int:
         if not getattr(args, "force", False):
             running = conn.execute(
                 "SELECT DISTINCT process_id FROM stac_higher.process_runs"
-                " WHERE process_id = ANY(%s) AND status = 'running'",
+                " WHERE process_id = ANY(%s) AND status IN ('queued', 'running')",
                 ([GEOCOLOR_IMG_ID, CANARY_ID],),
             ).fetchall()
             if running:
                 raise SeedError(
-                    "a run is still in progress for "
+                    "a run is queued or in progress for "
                     + ", ".join(str(row[0]) for row in running)
                     + "; wait for it to finish or pass --force"
                 )
@@ -493,24 +552,30 @@ def teardown(args: argparse.Namespace) -> int:
         )
 
         if getattr(args, "images", False):
-            refs = _demo_references()
+            # (reference, tag_at_add) pairs, not reference alone: matching on
+            # reference only would also catch a user's own `python:3.11` or
+            # `python:3.12` row that merely shares the demo's repository.
+            pairs = _demo_reference_tag_pairs()
+            references = [reference for reference, _ in pairs]
+            tags = [tag for _, tag in pairs]
             rows = conn.execute(
-                "SELECT i.id, i.reference,"
+                "SELECT i.id, i.reference, i.tag_at_add,"
                 "       EXISTS (SELECT 1 FROM stac_higher.process_revisions r"
                 "                WHERE r.runtime->'image'->>'id' = i.id::text) AS in_use"
                 "  FROM stac_higher.container_images i"
-                " WHERE i.reference = ANY(%s)",
-                (refs,),
+                " WHERE (i.reference, i.tag_at_add) IN ("
+                "   SELECT * FROM unnest(%s::text[], %s::text[]))",
+                (references, tags),
             ).fetchall()
-            to_delete = [row[0] for row in rows if not row[2]]
-            skipped = [row[1] for row in rows if row[2]]
+            to_delete = [row[0] for row in rows if not row[3]]
+            skipped = [(row[1], row[2]) for row in rows if row[3]]
             if to_delete:
                 conn.execute(
                     "DELETE FROM stac_higher.container_images WHERE id = ANY(%s)", (to_delete,)
                 )
             say(f"  {len(to_delete)} image row(s) deleted")
-            for ref in skipped:
-                say(f"  kept {ref}: still in use by a process revision")
+            for reference, tag in skipped:
+                say(f"  kept {reference}:{tag}: still in use by a process revision")
 
     say("platform rows removed")
 

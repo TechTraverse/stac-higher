@@ -30,6 +30,7 @@ from pipeline.demo.images.seed import (
     ensure_image,
     image_snapshot,
     kind2_runtime,
+    require_deployable,
     wait_for_scans,
 )
 
@@ -58,14 +59,20 @@ def _image(
 
 class FakeClient:
     """A dict of images keyed by id. Records every call; `add_image` mints a
-    new (normalized) row; `grant_exception` can be told to answer 403."""
+    new (normalized) row (or answers `add_status` if set); `grant_exception`
+    can be told to answer `exception_status`."""
 
     def __init__(
-        self, images: dict[str, dict] | None = None, *, exception_status: int | None = None
+        self,
+        images: dict[str, dict] | None = None,
+        *,
+        exception_status: int | None = None,
+        add_status: int | None = None,
     ):
         self.images: dict[str, dict] = images or {}
         self.calls: list[str] = []
         self.exception_status = exception_status
+        self.add_status = add_status
         self.grant_calls: list[dict] = []
         self._next_id = itertools.count(1)
 
@@ -83,6 +90,8 @@ class FakeClient:
 
     def add_image(self, reference: str) -> dict:
         self.calls.append("add_image")
+        if self.add_status is not None:
+            raise AppError(self.add_status, "unauthorized")
         reference_norm, tag = _split_reference(reference)
         image_id = f"img-{next(self._next_id)}"
         self.images[image_id] = _image(image_id, reference_norm, tag, "pending")
@@ -173,6 +182,57 @@ def test_wait_for_scans_stops_at_the_timeout():
     assert sleeps == []
 
 
+def test_wait_for_scans_refinds_a_folded_row_by_reference_and_tag_after_a_404():
+    # The drain de-duplicated the provisional admission onto an existing row
+    # by digest and deleted the provisional one (spec §9.1): `get_image` on
+    # the ORIGINAL id 404s forever after, but the reference/tag still finds
+    # the surviving (now terminal) row under a DIFFERENT id.
+    winner = {"id": "winner-1", "status": "approved", "reference": "docker.io/library/python"}
+
+    def get_image(image_id):
+        if image_id == "provisional-1":
+            raise AppError(404, "not found")
+        return winner
+
+    client = SimpleNamespace(
+        get_image=get_image,
+        find_image=lambda reference, tag: winner if (reference, tag) == ("r", "t") else None,
+    )
+
+    result = wait_for_scans(
+        client, ["provisional-1"], timeout_s=30,
+        find_by={"provisional-1": ("r", "t")},
+    )
+
+    # keyed by the ORIGINAL id, so the caller's `images[demo.key]["id"]`
+    # lookup still resolves even though the winner's own id differs.
+    assert result["provisional-1"] == winner
+
+
+def test_wait_for_scans_raises_a_clear_error_when_the_folded_row_cannot_be_refound():
+    def get_image(image_id):
+        raise AppError(404, "not found")
+
+    client = SimpleNamespace(get_image=get_image, find_image=lambda reference, tag: None)
+
+    with pytest.raises(SeedError) as excinfo:
+        wait_for_scans(
+            client, ["provisional-1"], timeout_s=30, find_by={"provisional-1": ("r", "t")}
+        )
+
+    assert "provisional-1" in str(excinfo.value)
+
+
+def test_wait_for_scans_turns_a_404_into_a_clear_error_without_find_by():
+    def get_image(image_id):
+        raise AppError(404, "not found")
+
+    client = SimpleNamespace(get_image=get_image)
+
+    with pytest.raises(SeedError):
+        wait_for_scans(client, ["a"], timeout_s=30)
+
+
 # --------------------------------------------------------------------------- #
 # kind2_runtime / image_snapshot
 # --------------------------------------------------------------------------- #
@@ -206,6 +266,31 @@ def test_kind2_runtime_snapshots_the_digest_and_keeps_the_base():
 
 
 # --------------------------------------------------------------------------- #
+# require_deployable: stale and scan_failed
+# --------------------------------------------------------------------------- #
+
+
+def test_require_deployable_refuses_a_stale_image():
+    image = _image("img-1", "docker.io/library/python", "3.12-slim", "approved")
+    image["stale"] = True
+
+    with pytest.raises(SeedError) as excinfo:
+        require_deployable(image, "slim image")
+
+    assert "stale" in str(excinfo.value) and "/images" in str(excinfo.value)
+
+
+def test_require_deployable_points_a_scan_failed_image_to_rescan_now():
+    image = _image("img-1", "docker.io/library/python", "3.12-slim", "scan_failed")
+
+    with pytest.raises(SeedError) as excinfo:
+        require_deployable(image, "slim image")
+
+    assert "Rescan now" in str(excinfo.value) and "/images" in str(excinfo.value)
+    assert "exception" not in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------- #
 # seed(): the rejected-image / exception path (Review Focus #2)
 # --------------------------------------------------------------------------- #
 
@@ -231,9 +316,11 @@ def _images_args(**overrides) -> argparse.Namespace:
 class _FakeConn:
     def __init__(self):
         self.statements: list[str] = []
+        self.params: list[object] = []
 
     def execute(self, sql, params=None):
         self.statements.append(sql)
+        self.params.append(params)
         return self
 
     def fetchall(self):
@@ -313,7 +400,25 @@ def test_a_403_on_the_exception_names_the_admin_identity(images_seed_module, mon
     with pytest.raises(SeedError) as excinfo:
         module.seed(_images_args(exception_days=14))
 
-    assert "DEV_AUTH_IDENTITY" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "DEV_AUTH_IDENTITY" in message
+    # the (truncated) response body rides along too, so a CSRF 403 from a
+    # wrong --app-url reads as what it is, not as "needs admin".
+    assert "forbidden" in message
+    assert module._test_installed == []
+
+
+def test_a_401_on_add_names_the_dev_auth_identity_or_bearer(images_seed_module, monkeypatch):
+    module = images_seed_module
+    client = FakeClient(add_status=401)
+    monkeypatch.setattr(module, "AppClient", lambda base_url, bearer=None: client)
+
+    with pytest.raises(SeedError) as excinfo:
+        module.seed(_images_args())
+
+    message = str(excinfo.value)
+    assert "DEV_AUTH_IDENTITY" in message
+    assert "--bearer" in message
     assert module._test_installed == []
 
 
@@ -364,6 +469,23 @@ def test_app_client_sends_origin_and_bearer(monkeypatch):
     assert headers["Authorization"] == "Bearer tok"
 
 
+def test_app_client_omits_authorization_header_without_a_bearer(monkeypatch):
+    from pipeline.demo.images.seed import AppClient
+
+    calls: list[dict] = []
+
+    def fake_json_request(url, *, method="GET", body=None, headers=None):
+        calls.append(headers)
+        return 200, json.dumps({"images": []}).encode()
+
+    monkeypatch.setattr("pipeline.demo.images.seed.json_request", fake_json_request)
+
+    client = AppClient("http://127.0.0.1:4321")
+    client.find_image("docker.io/library/python", "3.12-slim")
+
+    assert "Authorization" not in calls[0]
+
+
 # --------------------------------------------------------------------------- #
 # images-teardown (Review Focus #5)
 # --------------------------------------------------------------------------- #
@@ -388,6 +510,10 @@ def test_teardown_removes_only_its_own_processes_and_collection(images_seed_modu
     assert set(removed_ids) == {CANARY_ID, GEOCOLOR_IMG_ID}
     assert deleted == [(f"http://stac.invalid/collections/{OUTPUT_COLLECTION}", "DELETE")]
 
+    conn = module._test_conn
+    idx = next(i for i, stmt in enumerate(conn.statements) if "collection_settings" in stmt)
+    assert conn.params[idx] == (OUTPUT_COLLECTION,)
+
 
 def test_teardown_keeps_images_without_the_flag(images_seed_module, monkeypatch):
     module = images_seed_module
@@ -397,6 +523,93 @@ def test_teardown_keeps_images_without_the_flag(images_seed_module, monkeypatch)
     module.teardown(_images_args(images=False))
 
     assert not any("container_images" in stmt for stmt in module._test_conn.statements)
+
+
+class _QueuedRunFakeConn(_FakeConn):
+    def fetchall(self):
+        return [("proc-1",)]
+
+
+def test_teardown_refuses_while_a_run_is_queued_or_running(images_seed_module, monkeypatch):
+    module = images_seed_module
+    monkeypatch.setattr(module.psycopg, "connect", lambda *a, **k: _QueuedRunFakeConn())
+
+    with pytest.raises(SeedError) as excinfo:
+        module.teardown(_images_args(force=False))
+
+    assert "queued" in str(excinfo.value) or "progress" in str(excinfo.value)
+
+
+class _ImagesFlagFakeConn(_FakeConn):
+    """Answers the `--images` deletion query with one demo row not in use
+    (id-slim) and one in use (id-runtime); every other query behaves like
+    the plain `_FakeConn` (empty)."""
+
+    def fetchall(self):
+        last_sql = self.statements[-1]
+        if "unnest" in last_sql:
+            return [
+                ("id-slim", "docker.io/library/python", "3.12-slim", False),
+                (
+                    "id-runtime",
+                    "ghcr.io/techtraverse/stac-higher-process-runtime",
+                    "latest",
+                    True,
+                ),
+            ]
+        return []
+
+
+def test_teardown_images_flag_matches_reference_and_tag_pairs_and_skips_in_use(
+    images_seed_module, monkeypatch
+):
+    module = images_seed_module
+    conn = _ImagesFlagFakeConn()
+    monkeypatch.setattr(module.psycopg, "connect", lambda *a, **k: conn)
+    monkeypatch.setattr(module, "remove_process", lambda *a, **k: None)
+    monkeypatch.setattr(module, "request", lambda *a, **k: (204, b""))
+
+    assert module.teardown(_images_args(images=True)) == 0
+
+    unnest_idx = next(i for i, stmt in enumerate(conn.statements) if "unnest" in stmt)
+    references, tags = conn.params[unnest_idx]
+    assert set(zip(references, tags, strict=True)) == set(module._demo_reference_tag_pairs())
+
+    delete_idx = next(
+        i
+        for i, stmt in enumerate(conn.statements)
+        if "DELETE FROM stac_higher.container_images" in stmt
+    )
+    (deleted_ids,) = conn.params[delete_idx]
+    assert deleted_ids == ["id-slim"]  # the in-use row (id-runtime) was skipped
+
+
+# --------------------------------------------------------------------------- #
+# status()
+# --------------------------------------------------------------------------- #
+
+
+def test_status_reports_images_runs_and_item_count(images_seed_module, monkeypatch):
+    module = images_seed_module
+    said: list[str] = []
+    monkeypatch.setattr(module, "say", said.append)
+
+    runtime_ref, runtime_tag = module._split_reference(RUNTIME_IMAGE)
+    client = FakeClient(
+        {
+            "runtime-1": _image(
+                "runtime-1", runtime_ref, runtime_tag, "approved", digest="sha256:" + "a" * 64
+            )
+        }
+    )
+    monkeypatch.setattr(module, "AppClient", lambda base_url, bearer=None: client)
+    monkeypatch.setattr(module, "request", lambda *a, **k: (200, b'{"numberMatched": 3}'))
+
+    assert module.status(_images_args()) == 0
+
+    assert any(runtime_ref in line for line in said)
+    assert any("no runs yet" in line for line in said)
+    assert any(f"{OUTPUT_COLLECTION}: 3 item(s)" in line for line in said)
 
 
 # --------------------------------------------------------------------------- #
@@ -425,3 +638,17 @@ def test_the_cli_registers_the_three_subcommands(monkeypatch):
 
     assert demo_main.main(["images-teardown"]) == 0
     assert seen[-1].func is images_seed.teardown
+
+
+def test_the_cli_turns_an_uncaught_app_error_into_a_clean_message(monkeypatch):
+    from pipeline.demo import __main__ as demo_main
+    from pipeline.demo.images import seed as images_seed
+
+    said: list[str] = []
+    monkeypatch.setattr(demo_main, "say", said.append)
+    monkeypatch.setattr(
+        images_seed, "status", lambda args: (_ for _ in ()).throw(AppError(500, "boom"))
+    )
+
+    assert demo_main.main(["images-status"]) == 1
+    assert any("500" in line and "boom" in line for line in said)

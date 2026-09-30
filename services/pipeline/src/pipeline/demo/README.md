@@ -265,7 +265,10 @@ hand, one control at a time, in `/images` and `/processes`:
    `approved`, the alert auto-resolves.
 6. **Revoke image** (`/images` → detail sheet → admin) the KEV row — a
    revoked row is terminal, so a later `images-seed --with-kev` adds a
-   fresh row rather than reusing it.
+   fresh row rather than reusing it. That fresh row itself can still land
+   `scan_failed` (`existing_image_revoked`) if the drain resolves it to the
+   same digest as the row you just revoked; run `images-teardown --images`
+   first to clear the revoked row before re-seeding `--with-kev` again.
 
 ### The strict-policy toggle
 
