@@ -411,7 +411,10 @@ def main(argv: list[str] | None = None) -> int:
         "images-status", help="the images live-gate scenario: image states, runs, alerts"
     )
     images_status_parser.add_argument("--app-url", default="http://127.0.0.1:4321")
-    images_status_parser.add_argument("--bearer", default=os.environ.get("STAC_HIGHER_BEARER"))
+    images_status_parser.add_argument(
+        "--bearer", default=os.environ.get("STAC_HIGHER_BEARER"),
+        help="bearer token for the app API (default: $STAC_HIGHER_BEARER)",
+    )
     images_status_parser.set_defaults(func=images.status)
 
     images_teardown_parser = sub.add_parser(
@@ -419,7 +422,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     images_teardown_parser.add_argument(
         "--images", action="store_true",
-        help="also delete the demo images' registry rows (skips any still in use)",
+        help="list the demo images' registry rows that would be deleted (matches"
+        " by reference:tag, so it includes rows the seed found already"
+        " registered, and skips any still in use); add --yes to actually"
+        " delete them (bypasses the app, writes no audit row)",
+    )
+    images_teardown_parser.add_argument(
+        "--yes", action="store_true",
+        help="delete the --images rows listed instead of only listing them"
+        " (no effect without --images)",
     )
     images_teardown_parser.add_argument(
         "--force", action="store_true", help="skip the in-progress-run check"

@@ -5,6 +5,12 @@ No Docker, no dev server, no network: `AppClient` is monkeypatched out (a
 `FakeClient`) and the platform writers (`install_process`, `put_collection`,
 `enable_serving`, `check_migrations`, `psycopg.connect`) are stubbed the same
 way `test_demo_goes.py` stubs `pipeline.demo.goes.seed`.
+
+The `_FakeConn`-backed tests exercise the SEQUENCE and PARAMETERS of the SQL
+`teardown()`/its `--images`/in-use-check statements build; they run no real
+query. The SQL's actual behaviour (the `(reference, tag_at_add)` match, the
+`process_revisions` in-use join, the queued/running check) was verified live
+against the DB during the C-5 walk-through, not by these fakes.
 """
 
 from __future__ import annotations
@@ -20,6 +26,8 @@ import pytest
 from pipeline.demo.images.seed import (
     CANARY_ID,
     GEOCOLOR_IMG_ID,
+    KEV_IMAGE,
+    LARGE_IMAGE,
     OUTPUT_COLLECTION,
     RUNTIME_IMAGE,
     SLIM_IMAGE,
@@ -55,6 +63,19 @@ def _image(
         "exception": exception,
         "last_scanned_at": None,
     }
+
+
+def test_split_reference_matches_what_the_app_actually_stores():
+    # Verified live against the DB (not just this module's own logic): the
+    # app's normalizeImageInput() (app/src/lib/images/normalize.ts) produced
+    # exactly these (reference, tag_at_add) pairs for the four demo images.
+    assert _split_reference(RUNTIME_IMAGE) == (
+        "ghcr.io/techtraverse/stac-higher-process-runtime",
+        "latest",
+    )
+    assert _split_reference(SLIM_IMAGE) == ("docker.io/library/python", "3.12-slim")
+    assert _split_reference(LARGE_IMAGE) == ("docker.io/library/python", "3.12")
+    assert _split_reference(KEV_IMAGE) == ("docker.io/vulnerables/cve-2014-6271", "latest")
 
 
 class FakeClient:
@@ -266,8 +287,21 @@ def test_kind2_runtime_snapshots_the_digest_and_keeps_the_base():
 
 
 # --------------------------------------------------------------------------- #
-# require_deployable: stale and scan_failed
+# require_deployable: still scanning, stale and scan_failed
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("status", ["pending", "scanning"])
+def test_require_deployable_points_a_still_scanning_image_to_no_wait(status):
+    image = _image("img-1", "docker.io/library/python", "3.12-slim", status)
+
+    with pytest.raises(SeedError) as excinfo:
+        require_deployable(image, "slim image")
+
+    message = str(excinfo.value)
+    assert "still scanning" in message
+    assert "--no-wait" in message
+    assert "exception" not in message
 
 
 def test_require_deployable_refuses_a_stale_image():
@@ -307,6 +341,7 @@ def _images_args(**overrides) -> argparse.Namespace:
         "no_wait": True,
         "scan_timeout": 1800,
         "images": False,
+        "yes": False,
         "force": False,
     }
     defaults.update(overrides)
@@ -533,6 +568,24 @@ def test_teardown_removes_only_its_own_processes_and_collection(images_seed_modu
     idx = next(i for i, stmt in enumerate(conn.statements) if "collection_settings" in stmt)
     assert conn.params[idx] == (OUTPUT_COLLECTION,)
 
+    # Verified live against the DB (not just these fakes): the GOES demo's
+    # own processes, collections and ids must never appear anywhere this
+    # teardown touches.
+    goes_process_ids = {
+        "60e50000-0000-4000-8000-000000000001",
+        "60e50000-0000-4000-8000-000000000002",
+        "60e50000-0000-4000-8000-000000000003",
+        "60e50000-0000-4000-8000-000000000004",
+    }
+    goes_names = ('"goes-geocolor"', "'goes-geocolor'", "goes-abi-mcmipc", "goes-abi-metadata")
+    haystacks = [str(stmt) for stmt in conn.statements]
+    haystacks += [str(params) for params in conn.params]
+    haystacks += [str(entry) for entry in deleted]
+    haystacks += [str(pid) for pid in removed_ids]
+    blob = " ".join(haystacks)
+    assert not any(name in blob for name in goes_names)
+    assert not any(pid in blob for pid in goes_process_ids)
+
 
 def test_teardown_keeps_images_without_the_flag(images_seed_module, monkeypatch):
     module = images_seed_module
@@ -561,22 +614,44 @@ def test_teardown_refuses_while_a_run_is_queued_or_running(images_seed_module, m
 
 class _ImagesFlagFakeConn(_FakeConn):
     """Answers the `--images` deletion query with one demo row not in use
-    (id-slim) and one in use (id-runtime); every other query behaves like
-    the plain `_FakeConn` (empty)."""
+    (id-slim, approved) and one in use (id-runtime, approved); every other
+    query behaves like the plain `_FakeConn` (empty)."""
 
     def fetchall(self):
         last_sql = self.statements[-1]
         if "unnest" in last_sql:
             return [
-                ("id-slim", "docker.io/library/python", "3.12-slim", False),
+                ("id-slim", "docker.io/library/python", "3.12-slim", "approved", False),
                 (
                     "id-runtime",
                     "ghcr.io/techtraverse/stac-higher-process-runtime",
                     "latest",
+                    "approved",
                     True,
                 ),
             ]
         return []
+
+
+def test_teardown_images_flag_alone_lists_rows_and_deletes_nothing(
+    images_seed_module, monkeypatch
+):
+    module = images_seed_module
+    conn = _ImagesFlagFakeConn()
+    monkeypatch.setattr(module.psycopg, "connect", lambda *a, **k: conn)
+    monkeypatch.setattr(module, "remove_process", lambda *a, **k: None)
+    monkeypatch.setattr(module, "request", lambda *a, **k: (204, b""))
+    said: list[str] = []
+    monkeypatch.setattr(module, "say", said.append)
+
+    assert module.teardown(_images_args(images=True, yes=False)) == 0
+
+    assert not any(
+        "DELETE FROM stac_higher.container_images" in stmt for stmt in conn.statements
+    )
+    assert any("id-slim" in line for line in said)
+    assert any("re-run with --yes" in line for line in said)
+    assert any("stac-higher-process-runtime" in line and "in use" in line for line in said)
 
 
 def test_teardown_images_flag_matches_reference_and_tag_pairs_and_skips_in_use(
@@ -588,7 +663,7 @@ def test_teardown_images_flag_matches_reference_and_tag_pairs_and_skips_in_use(
     monkeypatch.setattr(module, "remove_process", lambda *a, **k: None)
     monkeypatch.setattr(module, "request", lambda *a, **k: (204, b""))
 
-    assert module.teardown(_images_args(images=True)) == 0
+    assert module.teardown(_images_args(images=True, yes=True)) == 0
 
     unnest_idx = next(i for i, stmt in enumerate(conn.statements) if "unnest" in stmt)
     references, tags = conn.params[unnest_idx]
@@ -601,6 +676,16 @@ def test_teardown_images_flag_matches_reference_and_tag_pairs_and_skips_in_use(
     )
     (deleted_ids,) = conn.params[delete_idx]
     assert deleted_ids == ["id-slim"]  # the in-use row (id-runtime) was skipped
+
+
+def test_teardown_images_yes_without_images_flag_deletes_nothing(images_seed_module, monkeypatch):
+    module = images_seed_module
+    monkeypatch.setattr(module, "remove_process", lambda *a, **k: None)
+    monkeypatch.setattr(module, "request", lambda *a, **k: (204, b""))
+
+    module.teardown(_images_args(images=False, yes=True))
+
+    assert not any("container_images" in stmt for stmt in module._test_conn.statements)
 
 
 # --------------------------------------------------------------------------- #

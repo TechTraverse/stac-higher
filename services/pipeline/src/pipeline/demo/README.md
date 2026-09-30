@@ -221,19 +221,33 @@ images-canary (process)        a second kind-2 process on the SLIM image,
 ```sh
 uv run python -m pipeline.demo images-seed --exception-days 14 --with-kev
 uv run python -m pipeline.demo images-status
-uv run python -m pipeline.demo images-teardown        # add --images to also drop the rows
+uv run python -m pipeline.demo images-teardown        # add --images to LIST the demo rows
 ```
 
 `images-seed` is idempotent: re-running it finds each demo image already
 registered (by normalized reference + tag) instead of re-adding it, and
-reinstalls both process revisions. `--with-large` also adds `python:3.12`
+reinstalls both process revisions. Do not re-seed while a demo run is queued
+or running: `install_process` replaces the demo processes' revisions and
+their run history out from under it. `--with-large` also adds `python:3.12`
 (~1 GB, to see a bigger image scan); `--with-kev` also adds
 `vulnerables/cve-2014-6271`, which the policy rejects on KEV membership.
 `--exception-days N` (1-90) grants the runtime image a time-boxed exception
 if the scan rejects or flags it — the runtime image fails the DEFAULT policy
 today on fixed `openssl`/`libssl3` CRITICALs (#60), so a live run needs this
-flag. `--no-wait` returns immediately instead of polling for scan verdicts;
-`--scan-timeout` (default 1800s) bounds that poll.
+flag. `--no-wait` returns immediately instead of polling for scan verdicts —
+it only registers the images; nothing installs until a later run finds both
+scans settled `approved` (`--scan-timeout`, default 1800s, bounds the poll
+when waiting).
+
+`images-teardown --images` matches rows by `reference:tag`, so it also lists
+a row the seed merely found already registered — a user's own
+`python:3.12-slim`, or the runtime row carrying its admin exception — not
+only rows `images-seed` itself created. On its own it deletes nothing: it
+lists each matching row not in use (reference:tag, id, status) and each it
+would skip (still in use by a process revision), then says "re-run with
+--yes to delete these rows". `--images --yes` deletes the listed rows and
+prints each one deleted. Deleting bypasses the app entirely and writes no
+audit row.
 
 ### The manual C-5 walk-through in the UI
 
@@ -247,7 +261,8 @@ hand, one control at a time, in `/images` and `/processes`:
 2. **Grant exception** (`/images` → the runtime image's detail sheet →
    Grant exception, admin only) on the GHCR runtime image once its scan
    lands `rejected` (fixed `openssl`/`libssl3` CRITICALs). Without this
-   step the seed stops before installing `goes-geocolor-img` and says why.
+   step or `--exception-days`, the seed stops before installing
+   `goes-geocolor-img` and says why.
 3. **Custom image + your code** (`/processes` → the deploy form's Runtime
    chooser) redeploy `goes-geocolor` as `goes-geocolor-img` on the
    now-approved runtime digest, same code unchanged. Watch the next
@@ -255,20 +270,22 @@ hand, one control at a time, in `/images` and `/processes`:
 4. **Add image** the KEV reference (`vulnerables/cve-2014-6271`, `--with-kev`)
    and watch it land `rejected` naming `kev:CVE-2014-6271` and its sibling
    CVEs.
-5. **Rescan now** (`/images` → an in-use image's detail sheet) after
-   switching to the strict policy below: watch it go `flagged` in about two
-   minutes, a `process_image_flagged` alert fire within a minute ("new
-   deploys are refused, runs continue"), the process read Degraded, and a
-   UI deploy attempt refused (409 `only an approved image can be
-   deployed`) while the next triggered run still launches and succeeds.
-   Switch back to the default policy and **Rescan now** again: back to
-   `approved`, the alert auto-resolves.
+5. **Rescan now** (`/images` → `python:3.12-slim`'s detail sheet, the
+   canary's image) after switching to the strict policy below: watch it go
+   `flagged` in about two minutes, a `process_image_flagged` alert fire
+   within a minute ("new deploys are refused, runs continue"), the process
+   read Degraded, and a UI deploy attempt refused (409 `only an approved
+   image can be deployed`) while the next triggered run still launches and
+   succeeds. Switch back to the default policy and **Rescan now** again:
+   back to `approved`, the alert auto-resolves.
 6. **Revoke image** (`/images` → detail sheet → admin) the KEV row — a
    revoked row is terminal, so a later `images-seed --with-kev` adds a
-   fresh row rather than reusing it. That fresh row itself can still land
+   fresh row rather than reusing it. That fresh row can itself land
    `scan_failed` (`existing_image_revoked`) if the drain resolves it to the
-   same digest as the row you just revoked; run `images-teardown --images`
-   first to clear the revoked row before re-seeding `--with-kev` again.
+   same digest as the row you just revoked; it is harmless (the KEV
+   reference is never installed on a process either way) — **Rescan now**
+   on its detail sheet clears it, or omit `--with-kev` on the next
+   `images-seed` to skip it entirely.
 
 ### The strict-policy toggle
 
@@ -279,7 +296,8 @@ policy passes, for step 5 above.
 ```sh
 # pipeline: strict policy
 docker compose -f docker-compose.yml -f infra/compose.strict-image-policy.yml up -d pipeline
-# pipeline: back to the default policy
+# pipeline: back to the default policy (repeat any other -f overlays you
+# normally run with too, e.g. the auth-enforced one, or this drops them)
 docker compose up -d pipeline
 ```
 
@@ -287,7 +305,9 @@ The app reads the same policy file for its deploy gate and verdict display
 (`app/src/lib/images/policy.ts` caches it in memory per path, so a switch
 needs a dev-server restart either way). Stop the running `npm run dev`
 (`astro dev stop` or Ctrl-C) and restart it pointed at the strict file, then
-restart again without the variable to restore the default:
+restart again without the variable to restore the default — both restarts
+in the same shell as precondition 3's `.env` source (or repeat
+`set -a; source ../.env; set +a` first):
 
 ```sh
 # strict

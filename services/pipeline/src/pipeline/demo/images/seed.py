@@ -271,6 +271,11 @@ def kind2_runtime(image: dict, base: dict) -> dict:
 def require_deployable(image: dict, name: str) -> None:
     reference = image.get("reference", "?")
     status = image["status"]
+    if status in ("pending", "scanning"):
+        raise SeedError(
+            f"{name} ({reference}) is still scanning;"
+            " re-run without --no-wait (or later)"
+        )
     if status == "scan_failed":
         # The exception route 409s on a scan_failed image (only rejected,
         # flagged, or an approved row with an exception to replace take one),
@@ -555,12 +560,18 @@ def teardown(args: argparse.Namespace) -> int:
         if getattr(args, "images", False):
             # (reference, tag_at_add) pairs, not reference alone: matching on
             # reference only would also catch a user's own `python:3.11` or
-            # `python:3.12` row that merely shares the demo's repository.
+            # `python:3.12` row that merely shares the demo's repository. This
+            # still matches (and, with --yes, deletes) a row the SEED merely
+            # found already registered (a user's own python:3.12-slim, or the
+            # runtime row with its admin exception): it is not scoped to
+            # rows images-seed itself created. Deleting bypasses the app
+            # entirely and writes no audit row, so list-then-confirm: without
+            # --yes this only prints what WOULD be deleted.
             pairs = _demo_reference_tag_pairs()
             references = [reference for reference, _ in pairs]
             tags = [tag for _, tag in pairs]
             rows = conn.execute(
-                "SELECT i.id, i.reference, i.tag_at_add,"
+                "SELECT i.id, i.reference, i.tag_at_add, i.status,"
                 "       EXISTS (SELECT 1 FROM stac_higher.process_revisions r"
                 "                WHERE r.runtime->'image'->>'id' = i.id::text) AS in_use"
                 "  FROM stac_higher.container_images i"
@@ -568,15 +579,29 @@ def teardown(args: argparse.Namespace) -> int:
                 "   SELECT * FROM unnest(%s::text[], %s::text[]))",
                 (references, tags),
             ).fetchall()
-            to_delete = [row[0] for row in rows if not row[3]]
-            skipped = [(row[1], row[2]) for row in rows if row[3]]
-            if to_delete:
-                conn.execute(
-                    "DELETE FROM stac_higher.container_images WHERE id = ANY(%s)", (to_delete,)
+            unused = [row for row in rows if not row[4]]
+            used = [row for row in rows if row[4]]
+            if getattr(args, "yes", False):
+                to_delete = [row[0] for row in unused]
+                if to_delete:
+                    conn.execute(
+                        "DELETE FROM stac_higher.container_images WHERE id = ANY(%s)",
+                        (to_delete,),
+                    )
+                say(f"  {len(to_delete)} image row(s) deleted")
+                for image_id, reference, tag, image_status, _ in unused:
+                    say(f"    deleted {reference}:{tag}  {image_id}  {image_status}")
+            else:
+                say(f"  {len(unused)} image row(s) match and are unused:")
+                for image_id, reference, tag, image_status, _ in unused:
+                    say(f"    {reference}:{tag}  {image_id}  {image_status}")
+                if unused:
+                    say("  re-run with --yes to delete these rows")
+            for _, reference, tag, image_status, _ in used:
+                say(
+                    f"  kept {reference}:{tag} ({image_status}):"
+                    " still in use by a process revision"
                 )
-            say(f"  {len(to_delete)} image row(s) deleted")
-            for reference, tag in skipped:
-                say(f"  kept {reference}:{tag}: still in use by a process revision")
 
     say("platform rows removed")
 
