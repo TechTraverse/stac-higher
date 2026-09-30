@@ -18,6 +18,9 @@ from types import SimpleNamespace
 import pytest
 
 from pipeline.demo.images.seed import (
+    CANARY_ID,
+    GEOCOLOR_IMG_ID,
+    OUTPUT_COLLECTION,
     RUNTIME_IMAGE,
     SLIM_IMAGE,
     AppError,
@@ -359,3 +362,66 @@ def test_app_client_sends_origin_and_bearer(monkeypatch):
     _, _, _, headers = calls[0]
     assert headers["Origin"] == "http://127.0.0.1:4321"
     assert headers["Authorization"] == "Bearer tok"
+
+
+# --------------------------------------------------------------------------- #
+# images-teardown (Review Focus #5)
+# --------------------------------------------------------------------------- #
+
+
+def test_teardown_removes_only_its_own_processes_and_collection(images_seed_module, monkeypatch):
+    module = images_seed_module
+    removed_ids: list[str] = []
+    monkeypatch.setattr(
+        module, "remove_process", lambda conn, process_id: removed_ids.append(process_id)
+    )
+    deleted: list[tuple[str, str]] = []
+
+    def fake_request(url, *, method="GET", body=None):
+        deleted.append((url, method))
+        return 204, b""
+
+    monkeypatch.setattr(module, "request", fake_request)
+
+    assert module.teardown(_images_args()) == 0
+
+    assert set(removed_ids) == {CANARY_ID, GEOCOLOR_IMG_ID}
+    assert deleted == [(f"http://stac.invalid/collections/{OUTPUT_COLLECTION}", "DELETE")]
+
+
+def test_teardown_keeps_images_without_the_flag(images_seed_module, monkeypatch):
+    module = images_seed_module
+    monkeypatch.setattr(module, "remove_process", lambda *a, **k: None)
+    monkeypatch.setattr(module, "request", lambda *a, **k: (204, b""))
+
+    module.teardown(_images_args(images=False))
+
+    assert not any("container_images" in stmt for stmt in module._test_conn.statements)
+
+
+# --------------------------------------------------------------------------- #
+# the CLI
+# --------------------------------------------------------------------------- #
+
+
+def test_the_cli_registers_the_three_subcommands(monkeypatch):
+    from pipeline.demo import __main__ as demo_main
+    from pipeline.demo.images import seed as images_seed
+
+    seen: list[argparse.Namespace] = []
+    monkeypatch.setattr(images_seed, "seed", lambda args: seen.append(args) or 0)
+    monkeypatch.setattr(images_seed, "status", lambda args: seen.append(args) or 0)
+    monkeypatch.setattr(images_seed, "teardown", lambda args: seen.append(args) or 0)
+
+    assert demo_main.main(["images-seed", "--exception-days", "14", "--with-kev"]) == 0
+    args = seen[-1]
+    assert args.exception_days == 14
+    assert args.with_kev is True
+    assert args.with_large is False
+    assert args.func is images_seed.seed
+
+    assert demo_main.main(["images-status"]) == 0
+    assert seen[-1].func is images_seed.status
+
+    assert demo_main.main(["images-teardown"]) == 0
+    assert seen[-1].func is images_seed.teardown

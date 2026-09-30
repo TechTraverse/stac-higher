@@ -38,6 +38,7 @@ from pipeline.demo.platform import (
     install_process,
     json_request,
     put_collection,
+    remove_process,
     request,
     say,
 )
@@ -105,6 +106,11 @@ def _split_reference(typed: str) -> tuple[str, str]:
     if host == "docker.io" and len(path) == 1:
         path = ["library", *path]
     return "/".join([host, *path]), tag
+
+
+def _demo_references() -> list[str]:
+    images = (RUNTIME_IMAGE, SLIM_IMAGE, LARGE_IMAGE, KEV_IMAGE)
+    return [_split_reference(image)[0] for image in images]
 
 
 # --------------------------------------------------------------------------- #
@@ -394,3 +400,120 @@ def seed(args: argparse.Namespace) -> int:
     )
     return 0
 
+
+# --------------------------------------------------------------------------- #
+# status / teardown
+# --------------------------------------------------------------------------- #
+
+
+def status(args: argparse.Namespace) -> int:
+    client = AppClient(args.app_url, getattr(args, "bearer", None))
+
+    say("images")
+    for image_ref in (RUNTIME_IMAGE, SLIM_IMAGE, LARGE_IMAGE, KEV_IMAGE):
+        reference, tag = _split_reference(image_ref)
+        image = client.find_image(reference, tag)
+        if image is None:
+            continue
+        reasons = ((image.get("verdict") or {}).get("reasons") or [])[:3]
+        digest = (image.get("digest") or "")[:19]
+        exception = image.get("exception")
+        expiry = f", exception until {exception['expires_at']}" if exception else ""
+        say(
+            f"  {image['reference']}:{image['tag_at_add']}  {image['status']}"
+            f"  {digest}  last scanned {image.get('last_scanned_at')}{expiry}  {reasons}"
+        )
+
+    with psycopg.connect(args.database_url) as conn:
+        runs = conn.execute(
+            "SELECT p.name, r.status, to_char(r.created_at, 'HH24:MI:SS'),"
+            "       round(extract(epoch from (r.finished_at - r.started_at)))"
+            "  FROM stac_higher.process_runs r"
+            "  JOIN stac_higher.processes p ON p.id = r.process_id"
+            " WHERE r.process_id = ANY(%s)"
+            " ORDER BY r.created_at DESC LIMIT 10",
+            ([GEOCOLOR_IMG_ID, CANARY_ID],),
+        ).fetchall()
+        alerts = conn.execute(
+            "SELECT message, first_seen FROM stac_higher.alerts"
+            " WHERE kind = 'process_image_flagged' AND process_id = ANY(%s)"
+            "   AND resolved_at IS NULL"
+            " ORDER BY first_seen DESC",
+            ([GEOCOLOR_IMG_ID, CANARY_ID],),
+        ).fetchall()
+
+    if not runs:
+        say("no runs yet")
+    else:
+        say("recent runs (newest first)")
+        for name, run_status, created, seconds in runs:
+            elapsed = seconds if seconds is not None else "-"
+            say(f"  {name:<18} {run_status:<10} {created:>10} {elapsed!s:>6}s")
+
+    if alerts:
+        say("open process_image_flagged alerts")
+        for message, first_seen in alerts:
+            say(f"  {first_seen}: {message}")
+
+    code, body = request(f"{args.stac_url}/collections/{OUTPUT_COLLECTION}/items?limit=1")
+    if code == 200:
+        parsed = json.loads(body)
+        count = parsed.get("numberMatched")
+        if count is None:
+            code2, body2 = request(
+                f"{args.stac_url}/collections/{OUTPUT_COLLECTION}/items?limit=1000"
+            )
+            count = len(json.loads(body2).get("features", [])) if code2 == 200 else -1
+        say(f"{OUTPUT_COLLECTION}: {count} item(s)")
+    else:
+        say(f"{OUTPUT_COLLECTION}: not found ({code})")
+    return 0
+
+
+def teardown(args: argparse.Namespace) -> int:
+    with psycopg.connect(args.database_url, autocommit=True) as conn:
+        if not getattr(args, "force", False):
+            running = conn.execute(
+                "SELECT DISTINCT process_id FROM stac_higher.process_runs"
+                " WHERE process_id = ANY(%s) AND status = 'running'",
+                ([GEOCOLOR_IMG_ID, CANARY_ID],),
+            ).fetchall()
+            if running:
+                raise SeedError(
+                    "a run is still in progress for "
+                    + ", ".join(str(row[0]) for row in running)
+                    + "; wait for it to finish or pass --force"
+                )
+
+        remove_process(conn, CANARY_ID)
+        remove_process(conn, GEOCOLOR_IMG_ID)
+        conn.execute(
+            "DELETE FROM stac_higher.collection_settings WHERE collection_id = %s",
+            (OUTPUT_COLLECTION,),
+        )
+
+        if getattr(args, "images", False):
+            refs = _demo_references()
+            rows = conn.execute(
+                "SELECT i.id, i.reference,"
+                "       EXISTS (SELECT 1 FROM stac_higher.process_revisions r"
+                "                WHERE r.runtime->'image'->>'id' = i.id::text) AS in_use"
+                "  FROM stac_higher.container_images i"
+                " WHERE i.reference = ANY(%s)",
+                (refs,),
+            ).fetchall()
+            to_delete = [row[0] for row in rows if not row[2]]
+            skipped = [row[1] for row in rows if row[2]]
+            if to_delete:
+                conn.execute(
+                    "DELETE FROM stac_higher.container_images WHERE id = ANY(%s)", (to_delete,)
+                )
+            say(f"  {len(to_delete)} image row(s) deleted")
+            for ref in skipped:
+                say(f"  kept {ref}: still in use by a process revision")
+
+    say("platform rows removed")
+
+    code, _ = request(f"{args.stac_url}/collections/{OUTPUT_COLLECTION}", method="DELETE")
+    say(f"  collection {OUTPUT_COLLECTION}: {code}")
+    return 0
