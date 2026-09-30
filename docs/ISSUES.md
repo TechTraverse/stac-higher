@@ -1445,10 +1445,22 @@ follows a registry's `WWW-Authenticate: Bearer realm=...` challenge and a
 blob redirect to any https host (stripping `Authorization` on a host
 change) — that client has no allow-list of its own, so the network is the
 only boundary. On Kubernetes the equivalent is a NetworkPolicy with FQDN
-egress, which is CNI-dependent (K8s spec §12). Accept for compose; revisit
-with the egress proxy that ADR 0018's higher network levels will need
-anyway.
-- Tracked in: ADR 0021 Consequences; `docker-compose.yml` `scanner-egress` (built in C-2).
+egress, which is CNI-dependent (K8s spec §12).
+
+**Decision (2026-09-29, #61): accepted for the compose/dev stack.** A dev
+stack runs on one developer's machine with throwaway data, and binding the
+published ports to `127.0.0.1` is not a reliable fix on Docker Desktop
+(containers reach the host through `host.docker.internal`; untested). Treat a dev
+stack's Postgres credentials as disposable: never reuse them anywhere real,
+and do not scan images you would not run on that machine.
+
+**Production posture:** no deployment beyond a developer's machine may run
+the scanner on this network. The fix is an egress proxy that allows only
+the policy's registries (and their token and blob hosts) as the scanner's
+only route out, plus default-deny NetworkPolicies, the cloud metadata
+endpoint (`169.254.169.254`) blocked at pod and node level, and enforced
+policy. It is built with the Kubernetes work.
+- Tracked in: GitHub #68
 
 ### I-124 · A scan holds a worker slot until K-4 🟡
 The drain launches the scanner through the executor and blocks in
