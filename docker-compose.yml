@@ -544,6 +544,11 @@ networks:
   # the image policy file (infra/image-policy/default.json, or the
   # PROCESS_IMAGE_POLICY_FILE override) -- not network isolation, which this
   # network does not provide.
+  #
+  # Accepted for dev only (ISSUES I-123, decided on #61): a compromised
+  # scanner on a dev host can reach those ports. Deployments beyond a
+  # developer's machine must not use this network. The egress proxy and
+  # the NetworkPolicy lockdown are built with the Kubernetes work (#68).
   scanner-egress:
     driver: bridge
 
