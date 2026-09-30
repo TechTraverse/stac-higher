@@ -661,3 +661,30 @@ dependency; the pipeline gains no Python dependency (Syft/Grype live in
 the scanner image). Docs: `processes.md`, `backend.md`, `connections.md`
 (the `registry` row), `monitoring.md` (the kind), `FEATURES.md` rows on
 merge, `ISSUES.md` entries I-122…I-125 (written with this spec).
+
+## Addendum: C-5 live gate measurements (2026-09-30)
+
+The gate in §15 was walked live by the lead on the current stack, no volume
+wipe. Recipe: `services/pipeline/src/pipeline/demo/README.md` "Images loop".
+
+| Step | Result |
+|---|---|
+| 1 `python:3.12-slim` via the UI | re-add created a provisional row that folded into the existing approved row by digest; approved; scan history shows C-4 diff lines |
+| 2 exception | the GHCR runtime image was **rejected** (critical_fixed openssl/libssl3 + old unfixed CRITICALs); admin granted a 14-day exception in the UI |
+| 3 kind 2 GOES | `goes-geocolor-img` (a twin of `goes-geocolor`, same code) redeployed in the UI as "Custom image + your code" on the runtime digest; the next granule's run succeeded in 44 s and published a `visual` COG |
+| 4 KEV image | `vulnerables/cve-2014-6271` rejected: `kev:CVE-2014-6271`, `kev:CVE-2014-6278`, `kev:CVE-2014-7169` |
+| 5 flag in use | canary process on `python:3.12-slim`; pipeline + app switched to `strict-demo.json` (`block.high_unfixed: true`); UI "Rescan now" -> `flagged` in ~2 min; `process_image_flagged` fired within a minute ("new deploys are refused, runs continue"); process reads Degraded; a UI deploy was refused (409 "only an approved image can be deployed"); the next triggered run launched and succeeded; default policy restored + rescan -> approved, alert auto-resolved |
+| 6 digest pins | `docker image ls --digests`: the only daemon pull is `ghcr.io/techtraverse/stac-higher-process-runtime@sha256:1d13f0a6...` with tag `<none>`; scans never pull through the daemon |
+
+Measurements (admission scans, `docker stats` sampled at 1 s; Docker Desktop, Apple silicon, amd64 platform):
+
+| Image | Scan wall time | Peak scanner memory |
+|---|---|---|
+| `python:3.12-slim` | 82 s | 407 MiB |
+| `python:3.12` (~1 GB) | 101 s | 794 MiB |
+| GHCR runtime image | 109 s | 315 MiB |
+| `vulnerables/cve-2014-6271` | 83 s | 325 MiB |
+
+Measured on Docker Desktop (Apple silicon) scanning linux/amd64; a Linux
+amd64 host will differ. The policy's `scan_limits.memory_mb: 4096` leaves 5x
+headroom over the largest measured peak.

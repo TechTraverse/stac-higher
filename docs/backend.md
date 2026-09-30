@@ -40,6 +40,10 @@ docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --
 See [`decisions/0002-auth-proxy-enforcement.md`](decisions/0002-auth-proxy-enforcement.md)
 and [`decisions/0015-proxy-write-policy.md`](decisions/0015-proxy-write-policy.md).
 
+Manual-testing overlay: `infra/compose.strict-image-policy.yml` runs the
+pipeline on a stricter image policy (C-5); recipe in
+`services/pipeline/src/pipeline/demo/README.md` "Images loop".
+
 ## App environment
 
 | Variable | Purpose |

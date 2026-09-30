@@ -162,6 +162,160 @@ tears down only those.)
 | Tiles, straight from the tiler | `http://localhost:8084/collections/goes-geocolor/WebMercatorQuad/map?assets=visual` |
 | Runs + ingest ledger + item counts | `uv run python -m pipeline.demo goes-status` |
 
+## Images loop (`images-seed`)
+
+The C-5 live-gate scenario (container-images spec §15, GitHub #54): the same
+CLI adds demo images through the APP's own `/api/images` HTTP surface (the
+path an operator uses on the dashboard, not a direct SQL write) and deploys
+two kind-2 processes on top of whatever the app hands back.
+
+```
+demo images                    ghcr.io/…/stac-higher-process-runtime:latest
+  │                             (the platform's own runtime image) and
+  │                             python:3.12-slim, added through /api/images
+  │  each add opens an admission scan (Syft + Grype, C-2)
+  ▼
+goes-geocolor-img (process)    a kind-2 TWIN of goes-seed's goes-geocolor:
+  │                             the SAME GeoColor code, running on the
+  │                             runtime image's APPROVED digest instead of
+  │                             the built-in runtime, triggered by
+  │                             goes-abi-mcmipc like the original
+  ▼
+goes-geocolor-img (collection) what it publishes into
+
+images-canary (process)        a second kind-2 process on the SLIM image,
+                                no outputs — just enough to prove a small
+                                user image also deploys and runs
+```
+
+### Preconditions (beyond the three at the top of this file)
+
+1. **`goes-seed` already run** — `images-seed` checks for its source
+   collection (`goes-abi-mcmipc`) and stops, naming the command, if it is
+   missing.
+2. **The scanner image built**: `docker buildx bake -f
+   services/process-runtime/docker-bake.hcl image-scanner` from the repo
+   root (`stac-higher-image-scanner:local`). Without it every add stalls in
+   `scanning`/`pending` until `--scan-timeout`.
+3. **The dev server running as an ADMIN identity** — granting an exception
+   is an admin-only route. From `app/`, with the repo's `.env` sourced:
+
+   ```sh
+   cd app
+   set -a; source ../.env; set +a
+   DEV_AUTH_IDENTITY='{"roles":["admin"]}' ASTRO_DEV_BACKGROUND=0 npm run dev
+   ```
+
+   (Astro 7 daemonizes `astro dev` under an AI agent unless
+   `ASTRO_DEV_BACKGROUND=0` is set.) If :4321 is already taken by another
+   session's server, run it on :4399 instead and point `images-seed`/
+   `images-status` at it:
+
+   ```sh
+   DEV_AUTH_IDENTITY='{"roles":["admin"]}' ASTRO_DEV_BACKGROUND=0 npm run dev -- --port 4399
+   uv run python -m pipeline.demo images-seed --app-url http://127.0.0.1:4399 ...
+   ```
+
+### Use
+
+```sh
+uv run python -m pipeline.demo images-seed --exception-days 14 --with-kev
+uv run python -m pipeline.demo images-status
+uv run python -m pipeline.demo images-teardown        # add --images to also drop the rows
+```
+
+`images-seed` is idempotent: re-running it finds each demo image already
+registered (by normalized reference + tag) instead of re-adding it, and
+reinstalls both process revisions. `--with-large` also adds `python:3.12`
+(~1 GB, to see a bigger image scan); `--with-kev` also adds
+`vulnerables/cve-2014-6271`, which the policy rejects on KEV membership.
+`--exception-days N` (1-90) grants the runtime image a time-boxed exception
+if the scan rejects or flags it — the runtime image fails the DEFAULT policy
+today on fixed `openssl`/`libssl3` CRITICALs (#60), so a live run needs this
+flag. `--no-wait` returns immediately instead of polling for scan verdicts;
+`--scan-timeout` (default 1800s) bounds that poll.
+
+### The manual C-5 walk-through in the UI
+
+`images-seed` drives the API path; the gate itself (spec §15) is walked by
+hand, one control at a time, in `/images` and `/processes`:
+
+1. **Add image** (`/images` → Add image) `python:3.12-slim`. Re-adding an
+   already-registered reference folds into the existing row by digest
+   instead of creating a second one — watch it land `approved` with a scan
+   history entry.
+2. **Grant exception** (`/images` → the runtime image's detail sheet →
+   Grant exception, admin only) on the GHCR runtime image once its scan
+   lands `rejected` (fixed `openssl`/`libssl3` CRITICALs). Without this
+   step the seed stops before installing `goes-geocolor-img` and says why.
+3. **Custom image + your code** (`/processes` → the deploy form's Runtime
+   chooser) redeploy `goes-geocolor` as `goes-geocolor-img` on the
+   now-approved runtime digest, same code unchanged. Watch the next
+   triggered run publish a `visual` COG.
+4. **Add image** the KEV reference (`vulnerables/cve-2014-6271`, `--with-kev`)
+   and watch it land `rejected` naming `kev:CVE-2014-6271` and its sibling
+   CVEs.
+5. **Rescan now** (`/images` → an in-use image's detail sheet) after
+   switching to the strict policy below: watch it go `flagged` in about two
+   minutes, a `process_image_flagged` alert fire within a minute ("new
+   deploys are refused, runs continue"), the process read Degraded, and a
+   UI deploy attempt refused (409 `only an approved image can be
+   deployed`) while the next triggered run still launches and succeeds.
+   Switch back to the default policy and **Rescan now** again: back to
+   `approved`, the alert auto-resolves.
+6. **Revoke image** (`/images` → detail sheet → admin) the KEV row — a
+   revoked row is terminal, so a later `images-seed --with-kev` adds a
+   fresh row rather than reusing it.
+
+### The strict-policy toggle
+
+`infra/image-policy/strict-demo.json` is the default policy plus
+`block.high_unfixed: true` — strict enough to flag an image the default
+policy passes, for step 5 above.
+
+```sh
+# pipeline: strict policy
+docker compose -f docker-compose.yml -f infra/compose.strict-image-policy.yml up -d pipeline
+# pipeline: back to the default policy
+docker compose up -d pipeline
+```
+
+The app reads the same policy file for its deploy gate and verdict display
+(`app/src/lib/images/policy.ts` caches it in memory per path, so a switch
+needs a dev-server restart either way). Stop the running `npm run dev`
+(`astro dev stop` or Ctrl-C) and restart it pointed at the strict file, then
+restart again without the variable to restore the default:
+
+```sh
+# strict
+PROCESS_IMAGE_POLICY_FILE="$(pwd)/../infra/image-policy/strict-demo.json" \
+  DEV_AUTH_IDENTITY='{"roles":["admin"]}' ASTRO_DEV_BACKGROUND=0 npm run dev
+# default (unset the override)
+DEV_AUTH_IDENTITY='{"roles":["admin"]}' ASTRO_DEV_BACKGROUND=0 npm run dev
+```
+
+### Sampling scan memory
+
+Each admission/rescan runs as a container named `stac-scan-*`; sample its
+memory while one is in flight:
+
+```sh
+while true; do
+  docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}' | grep stac-scan-
+  sleep 1
+done
+```
+
+### What to look at afterwards
+
+| Surface | Where |
+|---|---|
+| Every demo image, its status and its scan history | `http://localhost:4321/images` |
+| Both processes, their runs and logs | `http://localhost:4321/processes` |
+| What `goes-geocolor-img` published | `http://localhost:4321/collections/goes-geocolor-img/items` |
+| Runs + alerts + item count | `uv run python -m pipeline.demo images-status` |
+| Only digest-pinned pulls reach the daemon | `docker image ls --digests` |
+
 ## Relationship to the other harnesses
 
 - **`pipeline.loadgen`** measures throughput with synthetic volume through an
