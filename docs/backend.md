@@ -49,7 +49,9 @@ pipeline on a stricter image policy (C-5); recipe in
 Every `FROM` and every third-party compose `image:` is `tag@sha256:<index digest>`
 (GitHub #60); `services/pipeline/tests/test_base_image_pins.py` fails CI on an
 unpinned one. Dependabot's `docker` and `docker-compose` entries refresh the
-digests weekly. To bump by hand (an urgent CVE):
+digests weekly. Workflow service images (`.github/workflows/*.yml`) are pinned
+too and are bumped by hand alongside the compose pin, because Dependabot does
+not refresh them. To bump by hand (an urgent CVE):
 
     docker buildx imagetools inspect python:3.12-slim-trixie --format '{{json .Manifest}}'
 

@@ -1,4 +1,4 @@
-"""Every platform base image and third-party compose image is pinned by
+"""Every platform base image and third-party compose/workflow-service image is pinned by
 digest (GitHub #60): `image:tag@sha256:<64 hex>`, the tag kept for
 readability. A re-pushed upstream tag must not change what we build or run
 without a diff. Dependabot (`.github/dependabot.yml`) refreshes the digests.
@@ -53,15 +53,51 @@ def _walk(predicate) -> list[Path]:
     return sorted(found)
 
 
+def is_dockerfile_name(name: str) -> bool:
+    """`Dockerfile`, `Dockerfile.<x>`, `Containerfile`, `<x>.Dockerfile`.
+    Any `Dockerfile.<x>` counts, including `Dockerfile.md`: a false positive
+    only scans a non-Dockerfile for FROM lines, which is harmless."""
+    return (
+        name in ("Dockerfile", "Containerfile")
+        or name.startswith("Dockerfile.")
+        or name.endswith(".Dockerfile")
+    )
+
+
+def is_compose_name(name: str) -> bool:
+    """`docker-compose.y(a)ml`, `compose.y(a)ml`, `compose.<x>.y(a)ml`."""
+    if name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
+        return True
+    return name.startswith("compose.") and name.endswith((".yml", ".yaml"))
+
+
 def dockerfiles() -> list[Path]:
-    return _walk(lambda name: name == "Dockerfile" or name.startswith("Dockerfile."))
+    return _walk(is_dockerfile_name)
 
 
 def compose_files() -> list[Path]:
-    return _walk(
-        lambda name: name in ("docker-compose.yml", "compose.yml")
-        or (name.startswith("compose.") and name.endswith(".yml"))
-    )
+    return _walk(is_compose_name)
+
+
+def workflow_files() -> list[Path]:
+    """GitHub Actions workflows, whose `services:` images are pinned too."""
+    return sorted((REPO_ROOT / ".github/workflows").glob("*.y*ml"))
+
+
+def unpinned_images(path: Path) -> list[str]:
+    """`file:line: ref` for each `image: <ref>` that is not a digest pin."""
+    rel = str(path.relative_to(REPO_ROOT))
+    bad = []
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        match = _IMAGE.match(line)
+        if not match:
+            continue
+        ref = match.group(1)
+        if ref.startswith(_LOCAL_IMAGE_PREFIX) or ref.startswith("$"):
+            continue
+        if not is_pinned(ref):
+            bad.append(f"{rel}:{lineno}: {ref}")
+    return bad
 
 
 def unpinned_froms(text: str, rel: str) -> list[str]:
@@ -139,20 +175,46 @@ def test_every_dockerfile_from_is_digest_pinned():
     assert bad == [], PIN_HINT + "\n".join(bad)
 
 
-def test_every_compose_image_is_digest_pinned():
+def test_every_compose_and_workflow_image_is_digest_pinned():
     bad = []
-    for path in compose_files():
-        rel = str(path.relative_to(REPO_ROOT))
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            match = _IMAGE.match(line)
-            if not match:
-                continue
-            ref = match.group(1)
-            if ref.startswith(_LOCAL_IMAGE_PREFIX) or ref.startswith("$"):
-                continue
-            if not is_pinned(ref):
-                bad.append(f"{rel}:{lineno}: {ref}")
+    for path in [*compose_files(), *workflow_files()]:
+        bad += unpinned_images(path)
     assert bad == [], PIN_HINT + "\n".join(bad)
+
+
+@pytest.mark.parametrize(
+    "name, ok",
+    [
+        ("Dockerfile", True),
+        ("Dockerfile.stactools", True),
+        ("Containerfile", True),
+        ("base.Dockerfile", True),
+        ("Dockerfile.md", True),  # accepted false positive, see is_dockerfile_name
+        ("dockerfile", False),
+        ("Dockerfile-notes", False),
+        ("README.md", False),
+    ],
+)
+def test_dockerfile_name_predicate(name, ok):
+    assert is_dockerfile_name(name) is ok
+
+
+@pytest.mark.parametrize(
+    "name, ok",
+    [
+        ("docker-compose.yml", True),
+        ("docker-compose.yaml", True),
+        ("compose.yml", True),
+        ("compose.yaml", True),
+        ("compose.test-servers.yml", True),
+        ("compose.test-servers.yaml", True),
+        ("docker-compose.override.yml", False),
+        ("compose.md", False),
+        ("mycompose.yml", False),
+    ],
+)
+def test_compose_name_predicate(name, ok):
+    assert is_compose_name(name) is ok
 
 
 def _dependabot_dirs() -> dict[str, set[str]]:
