@@ -8,7 +8,8 @@
 #     --build-context hardware=infra/hardware-profiles \
 #     --build-context imagepolicy=infra/image-policy services/pipeline
 
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+# Both stages trixie and digest-pinned (GitHub #60): the builder's venv is copied into the runtime, so they move together.
+FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim@sha256:5ae92e4d35b8d586d50ddf4aba6ecdd9f744237284d31c86bf45077e4e17e4bd AS builder
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
 WORKDIR /app
 # dependency layer (cached until pyproject/lock change)
@@ -20,7 +21,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-trixie@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 # libpq5: runtime C library for psycopg (pure-python build links against libpq).
 # libexpat1: rasterio's bundled-GDAL wheels dynamically link libexpat at runtime
 # (XML/GML drivers); without it `import rasterio` fails with

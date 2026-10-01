@@ -8,7 +8,7 @@
 #
 # Build context is the REPO ROOT (set in docker-compose.yml):
 #   docker build -f infra/titiler/Dockerfile .
-FROM ghcr.io/stac-utils/titiler-pgstac:1.7.2
+FROM ghcr.io/stac-utils/titiler-pgstac:1.7.2@sha256:29920c615edf1347ace6fd8a04895dd7bbd65d32dc1f25fe7f9d3f8679d75f0e
 
 COPY infra/titiler/stac_higher_titiler /opt/stac-higher/titiler/stac_higher_titiler
 ENV PYTHONPATH=/opt/stac-higher/titiler \

@@ -24,7 +24,7 @@ x-pipeline-build: &pipeline-build
 
 services:
   database:
-    image: ghcr.io/stac-utils/pgstac:v0.9.11
+    image: ghcr.io/stac-utils/pgstac:v0.9.11@sha256:26d5c20c650736a65793ab61cb2e7113ecef0c036ec8c2d6c6838c7aa14e131d
     environment:
       - POSTGRES_USER=username
       - POSTGRES_PASSWORD=password
@@ -65,7 +65,7 @@ services:
     # PINNED (was :latest) with the auth-proxy pin below — ADR 0015: the proxy
     # write-policy factory's startup conformance check depends on this
     # version's default filter extensions; bump the pair deliberately.
-    image: ghcr.io/stac-utils/stac-fastapi-pgstac:6.3.1
+    image: ghcr.io/stac-utils/stac-fastapi-pgstac:6.3.1@sha256:db117b91302f7983ce4e07658768a6e8d2f6716613252a15f5dcdbda8dae9883
     environment:
       - APP_HOST=0.0.0.0
       - APP_PORT=8082
@@ -113,7 +113,7 @@ services:
     # (and the derived image infra/proxy-policy/Dockerfile FROMs the same
     # tag); upstream bumps must be deliberate, updated in both places, and
     # re-proven by the P7-Z live confirm.
-    image: ghcr.io/developmentseed/stac-auth-proxy:v1.2.0
+    image: ghcr.io/developmentseed/stac-auth-proxy:v1.2.0@sha256:3f0969d16badabd0212c0e7c462209490841ad4a342b9da1c2953ae56da21c11
     environment:
       - UPSTREAM_URL=http://api:8082
       # Public discovery URL (issuer as browser clients see it) vs. the
@@ -140,7 +140,7 @@ services:
       start_period: 15s
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.3
+    image: quay.io/keycloak/keycloak:26.3@sha256:357829ec7c4693397533035092ad13b0644bcc95ded311f33a3738c4d9e9bdba
     command: start-dev --import-realm
     environment:
       - KC_BOOTSTRAP_ADMIN_USERNAME=admin
@@ -180,7 +180,7 @@ services:
     # 2026-09-24); upstream was archived 2026-04-25. Silo keeps the MINIO_*
     # env, `server /data`, /minio/health/* and ships `mc` (a symlink to its
     # `mcli`), so nothing else here changes. Which store to keep: #48.
-    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=minioadmin
@@ -214,7 +214,7 @@ services:
   # `pipeline.demo goes-seed --deliver` deliver into (G-7).
   minio-init:
     # The server image doubles as the client: it carries `mc` and a shell.
-    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     depends_on:
       minio:
         condition: service_healthy
@@ -252,7 +252,7 @@ services:
   # container_images row, and it is still the proxy's only client. NETWORKS,
   # VOLUMES and EXEC stay off.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
+    image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     environment:
       # Least privilege: containers only, and POST so create/start/kill work.
       - CONTAINERS=1
@@ -482,7 +482,7 @@ services:
   # (tipg serves database tables/functions, not STAC collections — the
   # per-collection Settings toggle links it as the stack-wide vector surface).
   tipg:
-    image: ghcr.io/developmentseed/tipg:1.0.1
+    image: ghcr.io/developmentseed/tipg:1.0.1@sha256:70ae557c4fab6983a5f302b91aa772548518ab0c9b9b4a0ebcf1c85ec7daaf54
     command: uvicorn tipg.main:app --host 0.0.0.0 --port 8085
     environment:
       - POSTGRES_USER=username

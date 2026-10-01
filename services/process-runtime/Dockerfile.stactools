@@ -21,6 +21,9 @@
 #   docker build -f services/process-runtime/Dockerfile.stactools \
 #     --build-context fixtures=tests/contract-fixtures \
 #     -t stac-higher-process-runtime-stactools:local services/process-runtime
+# Not a registry image, so not digest-pinned here: the bake file feeds
+# BASE_IMAGE the runtime TARGET (`base = "target:runtime"`), whose own FROM is
+# pinned — the variant inherits that pin (GitHub #60).
 ARG BASE_IMAGE=stac-higher-process-runtime:local
 FROM ${BASE_IMAGE}
 

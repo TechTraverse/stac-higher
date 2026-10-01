@@ -13,7 +13,7 @@
 #     --build-context hardware=infra/hardware-profiles \
 #     --build-context imagepolicy=infra/image-policy .
 
-FROM node:22-bookworm-slim AS build
+FROM node:22-trixie-slim@sha256:b26b04c123d9ff8ab646ceb18b9d75a1173acf64b9a401094b906d27b29338d4 AS build
 WORKDIR /srv
 COPY package.json package-lock.json ./
 COPY app/package.json app/
@@ -28,7 +28,7 @@ RUN npm run build --workspace app \
     && npm prune --omit=dev \
     && mkdir -p app/node_modules
 
-FROM node:22-bookworm-slim
+FROM node:22-trixie-slim@sha256:b26b04c123d9ff8ab646ceb18b9d75a1173acf64b9a401094b906d27b29338d4
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4321 \

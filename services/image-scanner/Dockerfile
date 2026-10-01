@@ -12,7 +12,7 @@
 #   docker buildx bake -f services/process-runtime/docker-bake.hcl image-scanner
 # or:
 #   docker build -t stac-higher-image-scanner:local services/image-scanner
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-trixie@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 ARG SYFT_VERSION=1.52.0
 ARG SYFT_SHA256_AMD64=caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
