@@ -308,31 +308,47 @@ git commit -m "C: pin every base and compose image by digest; Python images and 
 
 **Interfaces:**
 - Consumes: `REPO_ROOT`, `dockerfiles()`, `compose_files()` from Task 1.
+- Note: `infra/` also holds `compose.auth-enforced.yml` and `compose.strict-image-policy.yml`. Their `image:` lines are `stac-higher-*` (skipped) or absent, but they put `/infra` in the compose directory set, which the `docker-compose` entry already covers.
 
 - [ ] **Step 1: Write the failing coverage test**
 
-Append to `services/pipeline/tests/test_base_image_pins.py`. PyYAML is already a pipeline dependency; confirm with `uv run python -c "import yaml"`. If it is NOT importable, parse the file with a regex over `- /path` lines instead, and add no dependency.
+Append to `services/pipeline/tests/test_base_image_pins.py`. PyYAML is NOT a pipeline dependency (verified 2026-09-30) and none is added. Instead, the test reads the `updates:` list with a small line parser that understands exactly the shape `.github/dependabot.yml` uses: `- package-ecosystem: X`, followed by `directory: /p` or a `directories:` block of `- /p` lines.
 
 ```python
+def _dependabot_dirs() -> dict[str, set[str]]:
+    """ecosystem -> directories, from .github/dependabot.yml's `updates:` list.
+    A deliberately narrow parser (no YAML dependency): one entry starts at
+    `- package-ecosystem:`; `directory: /p` or a `directories:` block of
+    `- /p` lines follows."""
+    dirs: dict[str, set[str]] = {}
+    ecosystem: str | None = None
+    in_dirs = False
+    for raw in (REPO_ROOT / ".github/dependabot.yml").read_text().splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        stripped = line.strip()
+        if stripped.startswith("- package-ecosystem:"):
+            ecosystem = stripped.split(":", 1)[1].strip()
+            dirs.setdefault(ecosystem, set())
+            in_dirs = False
+        elif ecosystem and stripped.startswith("directory:"):
+            dirs[ecosystem].add(stripped.split(":", 1)[1].strip().strip("\"'"))
+            in_dirs = False
+        elif ecosystem and stripped == "directories:":
+            in_dirs = True
+        elif in_dirs and stripped.startswith("- /"):
+            dirs[ecosystem].add(stripped[2:].strip().strip("\"'"))
+        elif stripped:
+            in_dirs = False
+    return dirs
+
+
 def test_dependabot_covers_every_dockerfile_directory():
-    import yaml
-
-    config = yaml.safe_load((REPO_ROOT / ".github/dependabot.yml").read_text())
-
-    def dirs(ecosystem: str) -> set[str]:
-        out: set[str] = set()
-        for update in config["updates"]:
-            if update["package-ecosystem"] == ecosystem:
-                out.update(update.get("directories", []))
-                if "directory" in update:
-                    out.add(update["directory"])
-        return out
-
-    docker_dirs = dirs("docker")
+    dirs = _dependabot_dirs()
+    docker_dirs = dirs.get("docker", set())
     for path in dockerfiles():
         rel = "/" + str(path.parent.relative_to(REPO_ROOT))
         assert rel in docker_dirs, f"{rel} has a Dockerfile but no Dependabot docker entry"
-    compose_dirs = dirs("docker-compose")
+    compose_dirs = dirs.get("docker-compose", set())
     for path in compose_files():
         parent = path.parent.relative_to(REPO_ROOT)
         rel = "/" if str(parent) == "." else "/" + str(parent)
