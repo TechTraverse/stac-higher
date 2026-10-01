@@ -44,6 +44,20 @@ Manual-testing overlay: `infra/compose.strict-image-policy.yml` runs the
 pipeline on a stricter image policy (C-5); recipe in
 `services/pipeline/src/pipeline/demo/README.md` "Images loop".
 
+### Base images (pinned by digest)
+
+Every `FROM` and every third-party compose `image:` is `tag@sha256:<index digest>`
+(GitHub #60); `services/pipeline/tests/test_base_image_pins.py` fails CI on an
+unpinned one. Dependabot's `docker` and `docker-compose` entries refresh the
+digests weekly. To bump by hand (an urgent CVE):
+
+    docker buildx imagetools inspect python:3.12-slim-trixie --format '{{json .Manifest}}'
+
+Take `.digest`, the multi-arch index, never a per-platform manifest. Replace it
+everywhere the tag appears (`git grep -n 'python:3.12-slim-trixie@'`), rebuild,
+and for the process-runtime images re-add the new `:latest` digest on
+`/images`: the runtime is scanned under the default policy like any user image.
+
 ## App environment
 
 | Variable | Purpose |

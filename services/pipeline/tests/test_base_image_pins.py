@@ -153,3 +153,45 @@ def test_every_compose_image_is_digest_pinned():
             if not is_pinned(ref):
                 bad.append(f"{rel}:{lineno}: {ref}")
     assert bad == [], PIN_HINT + "\n".join(bad)
+
+
+def _dependabot_dirs() -> dict[str, set[str]]:
+    """ecosystem -> directories, from .github/dependabot.yml's `updates:` list.
+    A deliberately narrow parser (no YAML dependency): one entry starts at
+    `- package-ecosystem:`; `directory: /p` or a `directories:` block of
+    `- /p` lines follows."""
+    dirs: dict[str, set[str]] = {}
+    ecosystem: str | None = None
+    in_dirs = False
+    for raw in (REPO_ROOT / ".github/dependabot.yml").read_text().splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        stripped = line.strip()
+        if stripped.startswith("- package-ecosystem:"):
+            ecosystem = stripped.split(":", 1)[1].strip()
+            dirs.setdefault(ecosystem, set())
+            in_dirs = False
+        elif ecosystem and stripped.startswith("directory:"):
+            dirs[ecosystem].add(stripped.split(":", 1)[1].strip().strip("\"'"))
+            in_dirs = False
+        elif ecosystem and stripped == "directories:":
+            in_dirs = True
+        elif in_dirs and stripped.startswith("- /"):
+            dirs[ecosystem].add(stripped[2:].strip().strip("\"'"))
+        elif stripped:
+            in_dirs = False
+    return dirs
+
+
+def test_dependabot_covers_every_dockerfile_directory():
+    dirs = _dependabot_dirs()
+    docker_dirs = dirs.get("docker", set())
+    for path in dockerfiles():
+        rel = "/" + str(path.parent.relative_to(REPO_ROOT))
+        assert rel in docker_dirs, f"{rel} has a Dockerfile but no Dependabot docker entry"
+    compose_dirs = dirs.get("docker-compose", set())
+    for path in compose_files():
+        parent = path.parent.relative_to(REPO_ROOT)
+        rel = "/" if str(parent) == "." else "/" + str(parent)
+        assert rel in compose_dirs, (
+            f"{rel} has a compose file but no Dependabot docker-compose entry"
+        )
