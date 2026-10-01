@@ -197,13 +197,15 @@ images-canary (process)        a second kind-2 process on the SLIM image,
    services/process-runtime/docker-bake.hcl image-scanner` from the repo
    root (`stac-higher-image-scanner:local`). Without it every add stalls in
    `scanning`/`pending` until `--scan-timeout`.
-3. **The dev server running as an ADMIN identity** — granting an exception
-   is an admin-only route. From `app/`, with the repo's `.env` sourced:
+3. **The dev server running as an operator identity** (an admin is needed
+   only to grant an exception: `--exception-days`, or Grant exception on
+   `/images`; the runtime no longer needs one since #60). From `app/`, with
+   the repo's `.env` sourced:
 
    ```sh
    cd app
    set -a; source ../.env; set +a
-   DEV_AUTH_IDENTITY='{"roles":["admin"]}' ASTRO_DEV_BACKGROUND=0 npm run dev
+   DEV_AUTH_IDENTITY='{"roles":["operator"]}' ASTRO_DEV_BACKGROUND=0 npm run dev
    ```
 
    (Astro 7 daemonizes `astro dev` under an AI agent unless
@@ -212,14 +214,14 @@ images-canary (process)        a second kind-2 process on the SLIM image,
    `images-status` at it:
 
    ```sh
-   DEV_AUTH_IDENTITY='{"roles":["admin"]}' ASTRO_DEV_BACKGROUND=0 npm run dev -- --port 4399
+   DEV_AUTH_IDENTITY='{"roles":["operator"]}' ASTRO_DEV_BACKGROUND=0 npm run dev -- --port 4399
    uv run python -m pipeline.demo images-seed --app-url http://127.0.0.1:4399 ...
    ```
 
 ### Use
 
 ```sh
-uv run python -m pipeline.demo images-seed --exception-days 14 --with-kev
+uv run python -m pipeline.demo images-seed --with-kev
 uv run python -m pipeline.demo images-status
 uv run python -m pipeline.demo images-teardown        # add --images to LIST the demo rows
 ```
@@ -232,12 +234,15 @@ their run history out from under it. `--with-large` also adds `python:3.12`
 (~1 GB, to see a bigger image scan); `--with-kev` also adds
 `vulnerables/cve-2014-6271`, which the policy rejects on KEV membership.
 `--exception-days N` (1-90) grants the runtime image a time-boxed exception
-if the scan rejects or flags it — the runtime image fails the DEFAULT policy
-today on fixed `openssl`/`libssl3` CRITICALs (#60), so a live run needs this
-flag. `--no-wait` returns immediately instead of polling for scan verdicts —
-it only registers the images; nothing installs until a later run finds both
-scans settled `approved` (`--scan-timeout`, default 1800s, bounds the poll
-when waiting).
+if the scan rejects or flags it. Since GitHub #60 the runtime is built on
+Debian trixie and passes the default policy, so no exception is needed; the
+flag stays for a future failing digest. After a rebuild pushes a new
+`:latest` digest, add the image again on `/images` (a new digest is a new
+row), then re-run `images-seed`; it picks the newest non-revoked row for the
+tag. Revoke the old row on `/images` once nothing uses it. `--no-wait` returns
+immediately instead of polling for scan verdicts: it only registers the
+images; nothing installs until a later run finds both scans settled
+`approved` (`--scan-timeout`, default 1800s, bounds the poll when waiting).
 
 `images-teardown --images` matches rows by `reference:tag`, so it also lists
 a row the seed merely found already registered — a user's own
@@ -258,11 +263,10 @@ hand, one control at a time, in `/images` and `/processes`:
    already-registered reference folds into the existing row by digest
    instead of creating a second one — watch it land `approved` with a scan
    history entry.
-2. **Grant exception** (`/images` → the runtime image's detail sheet →
-   Grant exception, admin only) on the GHCR runtime image once its scan
-   lands `rejected` (fixed `openssl`/`libssl3` CRITICALs). Without this
-   step or `--exception-days`, the seed stops before installing
-   `goes-geocolor-img` and says why.
+2. **Grant exception** (optional; `/images` → an image's detail sheet →
+   Grant exception, admin only) on a `rejected` or `flagged` image, to
+   exercise the exception path. The runtime image passes the default policy
+   since #60 and does not need one.
 3. **Custom image + your code** (`/processes` → the deploy form's Runtime
    chooser) redeploy `goes-geocolor` as `goes-geocolor-img` on the
    now-approved runtime digest, same code unchanged. Watch the next

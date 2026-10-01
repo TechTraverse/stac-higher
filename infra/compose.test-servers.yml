@@ -26,7 +26,7 @@ services:
   # OpenSSH-based SFTP server. The trailing command arg creates user `demo`
   # (password `demo`) with an `upload` directory, so root_path=/upload works.
   sftp-test:
-    image: atmoz/sftp:alpine
+    image: atmoz/sftp:alpine@sha256:6d41b9200f8115ce925bbd295376cb3c6b72634a267f41946e5aee4efe482186
     command: demo:demo:::upload
     ports:
       - "2222:22" # host-side convenience; adapters use the in-network :22
@@ -38,7 +38,7 @@ services:
   # container filesystem root (read-only for demo), so connections against it
   # must set root_path=/ftp/demo (found by the B-iii live FTP run).
   ftp-test:
-    image: delfer/alpine-ftp-server:latest
+    image: delfer/alpine-ftp-server:latest@sha256:60bb774d8408d9d4d5c74d05d1c086a34ce192c6c1a142ffac268cac0dbc6fac
     environment:
       - USERS=demo|demo
       - ADDRESS=ftp-test
@@ -59,7 +59,7 @@ services:
   # live; the FTPS-specific behaviour is covered by unit tests. On arm64, skip
   # this service (or run it on an amd64 machine) — the pipeline is unaffected.
   ftps-test:
-    image: fauria/vsftpd:latest
+    image: fauria/vsftpd:latest@sha256:6d71d7c7f1b0ab2844ec7dc7999a30aef6d758b6d8179cf5967513f87c79c177
     platform: linux/amd64
     environment:
       - FTP_USER=demo

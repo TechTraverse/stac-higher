@@ -9,7 +9,14 @@
 # dependency the platform vouches for inside its own trust boundary, and
 # "operators will ask for more packages" is answered by versioning THIS image,
 # never by per-process installs at run time (spec §14 risk list).
-FROM python:3.12-slim-bookworm
+# Debian trixie, pinned by index digest (GitHub #60). This image is scanned
+# under infra/image-policy/default.json like any user image (C-5). On bookworm
+# it FAILED that policy (fixed CRITICAL CVE-2026-75803 in libssl3/openssl,
+# plus unfixed CRITICALs in perl-base/libc/sqlite older than 30 days that no
+# bookworm rebuild clears); on trixie it scans 0 CRITICAL. Dependabot bumps
+# the digest; `rasterio`'s wheel and the stactools variant's smoke were
+# re-proved on this base (plan 2026-09-30-c-pin-base-images).
+FROM python:3.12-slim-trixie@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 # No pip cache, no root, no shell tools the run does not need. The executor
 # also drops all capabilities and sets no-new-privileges at create time; this

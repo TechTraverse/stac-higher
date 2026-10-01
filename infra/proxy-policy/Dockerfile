@@ -11,7 +11,7 @@
 #
 # Build context is the REPO ROOT (set by infra/compose.auth-enforced.yml):
 #   docker build -f infra/proxy-policy/Dockerfile .
-FROM ghcr.io/developmentseed/stac-auth-proxy:v1.2.0
+FROM ghcr.io/developmentseed/stac-auth-proxy:v1.2.0@sha256:3f0969d16badabd0212c0e7c462209490841ad4a342b9da1c2953ae56da21c11
 
 # Upstream runs as uid 1001 ("user"); install system-wide as root, then drop
 # back. The base is python:3.13-slim, so pip is available and the package

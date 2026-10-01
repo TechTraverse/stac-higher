@@ -16,11 +16,36 @@ updates:
     directory: /services/pipeline
     schedule:
       interval: weekly
+  # Base images are pinned tag@digest (GitHub #60). These entries refresh the
+  # digests weekly as one grouped PR per ecosystem. Version jumps (python
+  # 3.12 → 3.13, node 22 → 24) are ignored: they are deliberate upgrades with
+  # their own issue, not a digest refresh.
   - package-ecosystem: docker
-    directory: /app
+    directories:
+      - /app
+      - /services/pipeline
+      - /services/image-scanner
+      - /services/process-runtime
+      - /infra/titiler
+      - /infra/proxy-policy
     schedule:
       interval: weekly
-  - package-ecosystem: docker
-    directory: /services/pipeline
+    groups:
+      base-image-digests:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: python
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+      - dependency-name: ghcr.io/astral-sh/uv
+        update-types: [version-update:semver-major, version-update:semver-minor]
+  - package-ecosystem: docker-compose
+    directories:
+      - /
+      - /infra
     schedule:
       interval: weekly
+    groups:
+      compose-image-digests:
+        patterns: ["*"]

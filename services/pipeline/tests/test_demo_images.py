@@ -38,6 +38,7 @@ from pipeline.demo.images.seed import (
     ensure_image,
     image_snapshot,
     kind2_runtime,
+    pick_image,
     require_deployable,
     wait_for_scans,
 )
@@ -52,6 +53,7 @@ def _image(
     digest: str | None = None,
     reasons: list[str] | None = None,
     exception: dict | None = None,
+    created_at: str = "2026-09-30T00:00:00Z",
 ) -> dict:
     return {
         "id": image_id,
@@ -61,8 +63,36 @@ def _image(
         "digest": digest,
         "verdict": {"reasons": reasons or []} if reasons is not None else None,
         "exception": exception,
+        "created_at": created_at,
         "last_scanned_at": None,
     }
+
+
+def test_pick_image_prefers_the_newest_live_row():
+    ref, tag = "ghcr.io/techtraverse/stac-higher-process-runtime", "latest"
+    old = _image(
+        "old", ref, tag, "approved", digest="sha256:old",
+        exception={"reason": "x"}, created_at="2026-09-30T10:00:00Z",
+    )
+    new = _image(
+        "new", ref, tag, "scanning", digest="sha256:new", created_at="2026-10-01T10:00:00Z"
+    )
+    # Whatever order the API answers in, the newest live row wins, even
+    # while it is still scanning, so the seed waits for it instead of
+    # deploying on the old excepted digest.
+    assert pick_image([old, new], ref, tag)["id"] == "new"
+    assert pick_image([new, old], ref, tag)["id"] == "new"
+
+
+def test_pick_image_skips_revoked_and_other_tags():
+    ref = "ghcr.io/techtraverse/stac-higher-process-runtime"
+    revoked = _image("rev", ref, "latest", "revoked", created_at="2026-10-02T00:00:00Z")
+    other_tag = _image("v1", ref, "v1", "approved", created_at="2026-10-03T00:00:00Z")
+    live = _image("live", ref, "latest", "approved", created_at="2026-09-01T00:00:00Z")
+    assert pick_image([revoked, other_tag, live], ref, "latest")["id"] == "live"
+    assert pick_image([revoked], ref, "latest") is None
+    # tag=None matches any tag: the newest live row of the reference.
+    assert pick_image([revoked, other_tag, live], ref, None)["id"] == "v1"
 
 
 def test_split_reference_matches_what_the_app_actually_stores():
@@ -99,15 +129,7 @@ class FakeClient:
 
     def find_image(self, reference: str, tag: str | None) -> dict | None:
         self.calls.append("find_image")
-        for image in self.images.values():
-            if image["reference"] != reference:
-                continue
-            if tag is not None and image["tag_at_add"] != tag:
-                continue
-            if image["status"] == "revoked":
-                continue
-            return image
-        return None
+        return pick_image(list(self.images.values()), reference, tag)
 
     def add_image(self, reference: str) -> dict:
         self.calls.append("add_image")

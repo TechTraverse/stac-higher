@@ -65,7 +65,7 @@ jobs:
         working-directory: services/pipeline
     services:
       pgstac:
-        image: ghcr.io/stac-utils/pgstac:v0.9.11
+        image: ghcr.io/stac-utils/pgstac:v0.9.11@sha256:26d5c20c650736a65793ab61cb2e7113ecef0c036ec8c2d6c6838c7aa14e131d
         env:
           POSTGRES_USER: username
           POSTGRES_PASSWORD: password
