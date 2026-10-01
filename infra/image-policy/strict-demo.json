@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "allowed_registries": [
+    "docker.io",
+    "ghcr.io",
+    "public.ecr.aws",
+    "*.dkr.ecr.*.amazonaws.com"
+  ],
+  "platform": "linux/amd64",
+  "max_image_size_mb": 4096,
+  "block": {
+    "kev": true,
+    "critical_fixed": true,
+    "critical_unfixed_older_than_days": 30,
+    "high_fixed_epss_at_least": 0.1,
+    "high_unfixed": true
+  },
+  "scan_window_days": 30,
+  "rescan_interval_hours": 24,
+  "exception_max_days": 90,
+  "scan_limits": {
+    "memory_mb": 4096,
+    "timeout_seconds": 900
+  }
+}

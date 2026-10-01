@@ -1475,6 +1475,8 @@ against the run's own timeout, so a big cold image can occupy a slot well
 past the policy's stated bound. C-2 caps scans at `IMAGE_SCAN_CONCURRENCY`
 (default 1) deployment-wide, so at most that many slots are held, and runs
 each scan in a thread so the event loop is never blocked.
+Measured (C-5): admission scans took 82-109 s for images up to ~1 GB, so
+the held slot is minutes, not the 900 s bound; still closes with K-4.
 - Tracked in: `jobs/image_scans.py` (C-2); closes with K-4.
 
 ### I-125 · Anonymous Docker Hub pulls share a 100-per-6-hour budget per IP 🟡
@@ -1486,6 +1488,8 @@ Personal account, unlimited for paid orgs); a NAT'd cluster shares one
 budget. HEAD requests (tag→digest, drift) are free. Deployment checklist
 item, not a code change; in GovCloud the ECR pull-through cache (spec
 §12) removes it.
+C-5 pulled 3 docker.io images anonymously (scanner registry reads) without
+hitting the limit; unchanged.
 - Tracked in: `services/pipeline/README.md` env table (C-2).
 
 ### I-136 · The registry check's Bearer token realm is untrusted 🟡

@@ -1,0 +1,17 @@
+# Manual-testing overlay (C-5): run the pipeline on a STRICTER image policy,
+# infra/image-policy/strict-demo.json (default.json plus block.high_unfixed),
+# so a rescan of an image that passes the default flags it. Recipe:
+# services/pipeline/src/pipeline/demo/README.md "Images loop".
+#
+#   docker compose -f docker-compose.yml -f infra/compose.strict-image-policy.yml up -d pipeline
+#   docker compose up -d pipeline      # back to the default policy
+#
+# The app reads the policy too (deploy gate, verdict display): start the dev
+# server with PROCESS_IMAGE_POLICY_FILE=<repo>/infra/image-policy/strict-demo.json
+# to match.
+services:
+  pipeline:
+    environment:
+      - PROCESS_IMAGE_POLICY_FILE=/app/share/image-policy/strict-demo.json
+    volumes:
+      - ./infra/image-policy/strict-demo.json:/app/share/image-policy/strict-demo.json:ro

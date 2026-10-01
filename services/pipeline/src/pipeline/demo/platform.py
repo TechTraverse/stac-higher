@@ -33,9 +33,12 @@ def say(message: str) -> None:
     print(message, flush=True)
 
 
-def request(url: str, *, method: str = "GET", body: dict | None = None) -> tuple[int, bytes]:
+def _http(
+    url: str, *, method: str, body: dict | None, extra_headers: dict[str, str] | None
+) -> tuple[int, bytes]:
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
+    headers.update(extra_headers or {})
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -44,6 +47,22 @@ def request(url: str, *, method: str = "GET", body: dict | None = None) -> tuple
         return err.code, err.read()
     except urllib.error.URLError as err:
         raise SystemExit(f"cannot reach {url}: {err.reason}. Is the stack up?") from err
+
+
+def request(url: str, *, method: str = "GET", body: dict | None = None) -> tuple[int, bytes]:
+    return _http(url, method=method, body=body, extra_headers=None)
+
+
+def json_request(
+    url: str,
+    *,
+    method: str = "GET",
+    body: dict | None = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Like `request()`, with caller-supplied headers (the app's CSRF `Origin`
+    check and an optional bearer token — the STAC API needs neither)."""
+    return _http(url, method=method, body=body, extra_headers=headers)
 
 
 def s3_client(endpoint: str):

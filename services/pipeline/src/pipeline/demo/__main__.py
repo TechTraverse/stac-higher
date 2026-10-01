@@ -37,6 +37,7 @@ import argparse
 import datetime as dt
 import io
 import json
+import os
 import sys
 
 import numpy as np
@@ -61,6 +62,8 @@ from pipeline.demo.fixtures import (
     scene_item,
 )
 from pipeline.demo.goes import seed as goes
+from pipeline.demo.images import seed as images
+from pipeline.demo.images.seed import AppError, SeedError
 from pipeline.demo.platform import (
     check_migrations,
     enable_serving,
@@ -375,8 +378,84 @@ def main(argv: list[str] | None = None) -> int:
     )
     goes_teardown_parser.set_defaults(func=goes.teardown)
 
+    images_seed_parser = sub.add_parser(
+        "images-seed",
+        help="add demo container images through the app API and deploy their"
+        " kind-2 GOES twin + canary (C-5)",
+    )
+    images_seed_parser.add_argument("--app-url", default="http://127.0.0.1:4321")
+    images_seed_parser.add_argument(
+        "--bearer", default=os.environ.get("STAC_HIGHER_BEARER"),
+        help="bearer token for the app API (default: $STAC_HIGHER_BEARER)",
+    )
+    images_seed_parser.add_argument(
+        "--with-large", action="store_true", help="also add python:3.12 (a larger image)"
+    )
+    images_seed_parser.add_argument(
+        "--with-kev", action="store_true",
+        help="also add vulnerables/cve-2014-6271 (a known-exploited-vulnerability image)",
+    )
+    images_seed_parser.add_argument(
+        "--exception-days", type=_exception_days, default=None,
+        help="grant the runtime image an exception this many days long (1-90) if it fails",
+    )
+    images_seed_parser.add_argument(
+        "--no-wait", action="store_true", help="do not poll for scan results before returning"
+    )
+    images_seed_parser.add_argument(
+        "--scan-timeout", type=int, default=1800, help="seconds to poll for scans (default: 1800)"
+    )
+    images_seed_parser.set_defaults(func=images.seed)
+
+    images_status_parser = sub.add_parser(
+        "images-status", help="the images live-gate scenario: image states, runs, alerts"
+    )
+    images_status_parser.add_argument("--app-url", default="http://127.0.0.1:4321")
+    images_status_parser.add_argument(
+        "--bearer", default=os.environ.get("STAC_HIGHER_BEARER"),
+        help="bearer token for the app API (default: $STAC_HIGHER_BEARER)",
+    )
+    images_status_parser.set_defaults(func=images.status)
+
+    images_teardown_parser = sub.add_parser(
+        "images-teardown", help="remove everything images-seed created"
+    )
+    images_teardown_parser.add_argument(
+        "--images", action="store_true",
+        help="list the demo images' registry rows that would be deleted (matches"
+        " by reference:tag, so it includes rows the seed found already"
+        " registered, and skips any still in use); add --yes to actually"
+        " delete them (bypasses the app, writes no audit row)",
+    )
+    images_teardown_parser.add_argument(
+        "--yes", action="store_true",
+        help="delete the --images rows listed instead of only listing them"
+        " (no effect without --images)",
+    )
+    images_teardown_parser.add_argument(
+        "--force", action="store_true", help="skip the in-progress-run check"
+    )
+    images_teardown_parser.set_defaults(func=images.teardown)
+
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except SeedError as err:
+        say(str(err))
+        return 1
+    except AppError as err:
+        # A safety net for an AppError that reached here uncaught (a status
+        # `seed()`/`status()` did not have a specific hint for): a clean
+        # one-line message, never a traceback.
+        say(f"app answered {err}")
+        return 1
+
+
+def _exception_days(value: str) -> int:
+    days = int(value)
+    if not 1 <= days <= 90:
+        raise argparse.ArgumentTypeError("--exception-days must be between 1 and 90")
+    return days
 
 
 if __name__ == "__main__":
