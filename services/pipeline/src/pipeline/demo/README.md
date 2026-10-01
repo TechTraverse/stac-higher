@@ -232,9 +232,12 @@ their run history out from under it. `--with-large` also adds `python:3.12`
 (~1 GB, to see a bigger image scan); `--with-kev` also adds
 `vulnerables/cve-2014-6271`, which the policy rejects on KEV membership.
 `--exception-days N` (1-90) grants the runtime image a time-boxed exception
-if the scan rejects or flags it — the runtime image fails the DEFAULT policy
-today on fixed `openssl`/`libssl3` CRITICALs (#60), so a live run needs this
-flag. `--no-wait` returns immediately instead of polling for scan verdicts —
+if the scan rejects or flags it. Since GitHub #60 the runtime is built on
+Debian trixie and passes the default policy, so no exception is needed; the
+flag stays for a future failing digest. After a rebuild pushes a new
+`:latest` digest, add the image again on `/images` (a new digest is a new
+row), then re-run `images-seed`; it picks the newest non-revoked row for the
+tag. Revoke the old row on `/images` once nothing uses it. `--no-wait` returns immediately instead of polling for scan verdicts —
 it only registers the images; nothing installs until a later run finds both
 scans settled `approved` (`--scan-timeout`, default 1800s, bounds the poll
 when waiting).
@@ -260,7 +263,7 @@ hand, one control at a time, in `/images` and `/processes`:
    history entry.
 2. **Grant exception** (`/images` → the runtime image's detail sheet →
    Grant exception, admin only) on the GHCR runtime image once its scan
-   lands `rejected` (fixed `openssl`/`libssl3` CRITICALs). Without this
+   lands `rejected` (only needed if a future digest fails the policy). Without this
    step or `--exception-days`, the seed stops before installing
    `goes-geocolor-img` and says why.
 3. **Custom image + your code** (`/processes` → the deploy form's Runtime

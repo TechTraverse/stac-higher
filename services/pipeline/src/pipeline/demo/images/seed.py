@@ -60,10 +60,7 @@ SLIM_IMAGE = "python:3.12-slim"
 LARGE_IMAGE = "python:3.12"
 KEV_IMAGE = "vulnerables/cve-2014-6271"
 
-EXCEPTION_REASON = (
-    "images-seed: platform runtime image for the kind-2 GOES demo (C-5);"
-    " base-image CVEs pending #60"
-)
+EXCEPTION_REASON = "images-seed: platform runtime image for the kind-2 GOES demo (C-5)"
 
 #: The statuses a scan settles into (spec §4.3); anything else keeps polling.
 TERMINAL_STATUSES = frozenset({"approved", "rejected", "flagged", "revoked", "scan_failed"})
@@ -127,6 +124,24 @@ class AppError(Exception):
         self.body = body
 
 
+def pick_image(images: list[dict], reference: str, tag: str | None) -> dict | None:
+    """The NEWEST non-revoked row for `(reference, tag)` (tag None: any tag).
+
+    A re-pushed tag (the platform runtime's `:latest` after a rebuild) gets a
+    second row when it is re-added; the old row may still be approved through
+    an exception. Newest wins, even mid-scan: the seed then waits for that
+    scan rather than silently deploying on the older digest. A revoked row is
+    terminal and never picked."""
+    live = [
+        image
+        for image in images
+        if image.get("reference") == reference
+        and (tag is None or image.get("tag_at_add") == tag)
+        and image.get("status") != "revoked"
+    ]
+    return max(live, key=lambda image: image.get("created_at") or "", default=None)
+
+
 class AppClient:
     """The slice of `/api/images*` the seed needs. Every request carries the
     `Origin` header the app's CSRF check requires (every mutating route
@@ -153,15 +168,7 @@ class AppClient:
     def find_image(self, reference: str, tag: str | None) -> dict | None:
         query = reference if tag is None else f"{reference}:{tag}"
         result = self._call(f"/api/images?q={urllib.parse.quote(query)}")
-        for image in result.get("images", []):
-            if image.get("reference") != reference:
-                continue
-            if tag is not None and image.get("tag_at_add") != tag:
-                continue
-            if image.get("status") == "revoked":
-                continue
-            return image
-        return None
+        return pick_image(result.get("images", []), reference, tag)
 
     def add_image(self, reference: str) -> dict:
         # The app's POST answers 202 with the admission it opened (id,
