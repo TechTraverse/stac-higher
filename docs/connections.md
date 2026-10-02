@@ -69,18 +69,73 @@ ciphertext+tag of the UTF-8 credential JSON. Implementation:
 `app/src/lib/connections/crypto.ts`, behind an `EncryptionProvider`
 interface (local master key now; KMS provider in Phase 8).
 
-| Var | Purpose |
-|---|---|
-| `CREDENTIALS_MASTER_KEY` | base64-encoded 32 bytes. Required for any credential write — missing/malformed keys fail the request loudly (no fallback key). The pipeline service must be configured with the same value. |
+### The master key (`CREDENTIALS_MASTER_KEY`)
 
-Generate a dev key:
+One AES-256 key: 32 random bytes written as **standard base64** (44
+characters, ending in `=`). The app seals with it and the pipeline opens with
+it, so both must hold the same value. Every stored secret depends on it:
+connection credentials (an anonymous connection too, which stores a sealed
+`{}`) and the registry credentials of private container images. There is no
+fallback key; a missing or malformed key fails loudly.
 
-```
+**Generate one per stack.** Never reuse another developer's key, and never
+commit it (`.env` is gitignored). The key plus a database dump reads every
+stored credential.
+
+```sh
+openssl rand -base64 32
+# or, with only Node:
 node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
-# or: openssl rand -base64 32
 ```
 
-and set it in `.env.local` (app) and the pipeline's environment.
+Use standard base64, never base64url (`toString('base64url')`). The app's
+decoder accepts both alphabets, but the pipeline's (`base64.b64decode(...,
+validate=True)`) rejects `-`, `_` and missing padding. A base64url key
+therefore saves connections fine, and then every pipeline job that needs them
+fails.
+
+**Put it in the root `.env`**, from the committed template:
+
+```sh
+grep -v '^CREDENTIALS_MASTER_KEY=' .env.example > .env
+echo "CREDENTIALS_MASTER_KEY=$(openssl rand -base64 32)" >> .env
+```
+
+The two consumers read it differently:
+
+- **Pipeline:** `docker compose` reads the root `.env` and passes the key
+  through (`docker-compose.yml`, `pipeline.environment`). Set it before the
+  first `docker compose up`. After adding or changing it, run
+  `docker compose up -d pipeline` to recreate the container.
+- **App:** `npm run dev` is plain `astro dev`, and the server code reads
+  `process.env`. Nothing loads the root `.env` for it, so export it into the
+  shell that starts the dev server, and restart the server after a change:
+
+  ```sh
+  cd app && set -a && source ../.env && set +a && npm run dev
+  ```
+
+**Check it.** The second line runs the same decode as the pipeline:
+
+```sh
+set -a; source .env; set +a   # repo root
+node -e "console.log(Buffer.from(process.env.CREDENTIALS_MASTER_KEY, 'base64').length)"          # 32
+python3 -c "import base64, os; print(len(base64.b64decode(os.environ['CREDENTIALS_MASTER_KEY'], validate=True)))"  # 32
+```
+
+**When it is wrong:**
+
+| Symptom | Cause |
+|---|---|
+| Creating or editing a connection fails with `CREDENTIALS_MASTER_KEY is not set` | The dev server's shell has no key. Restart it as above. |
+| `must be base64-encoded 32 bytes (got N bytes after decoding)` | Wrong length, for example `openssl rand -base64 24`, or a hex key. |
+| Connections save, but Test never reports reachable and ingest never polls. The pipeline logs say `is not set` or `is not valid base64`. | The pipeline has no key, or a base64url one. It still starts, because only the jobs that need credentials fail. |
+| `Credential envelope failed authentication (wrong key or tampered data)` | The app and pipeline keys differ, or the key changed after the connections were saved. |
+
+**Keep it.** An envelope carries a version byte but no key ID, so there is no
+rotation. A new key makes every stored credential unreadable, anonymous
+connections included, and the fix is to recreate those connections. A
+KMS-backed provider replaces the local key in Phase 8 (`docs/ISSUES.md`).
 
 ## API
 

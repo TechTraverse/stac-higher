@@ -69,7 +69,7 @@ and for the process-runtime images re-add the new `:latest` digest on
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_FORCE_PATH_STYLE` | Object storage (MinIO defaults work locally). `S3_ENDPOINT` must be **browser-reachable** — `app/src/lib/storage/` presigns offline and never streams bytes (ADR 0005). |
 | `CREDENTIALS_MASTER_KEY` | AES-256-GCM key for write-only connection credentials — dev key command in [`connections.md`](connections.md). |
 | `CATALOG_BFF_SHARED_SECRET` | Stamps `X-BFF-Auth` on BFF writes so the enforced proxy exempts app writes (ADR 0015). |
-| `SAFE_FETCH_ALLOW_HOSTS` | `safeFetch` blocks private/loopback targets; for dev against local pgstac set `SAFE_FETCH_ALLOW_HOSTS=localhost,127.0.0.1` in `.env.local`. `SAFE_FETCH_LOG=0` silences its logs. |
+| `SAFE_FETCH_ALLOW_HOSTS` | `safeFetch` blocks private/loopback targets; for dev against local pgstac it must be `localhost,127.0.0.1` (the `.env.example` value), exported into the dev server's shell like the master key (`set -a; source ../.env; set +a` before `npm run dev`); without it, creating a collection 403s. `SAFE_FETCH_LOG=0` silences its logs. |
 | `PROXY_AUTH_TOKEN` | Optional; makes `/api/proxy` require an `X-Proxy-Auth` header. `/api/proxy` always rejects `Sec-Fetch-Site: cross-site`. |
 | Auth (`AUTH_MODE`, OIDC issuer/client, claims mapping) | Full reference: [`auth.md`](auth.md). Dev-bypass is the default in dev — a static operator identity, so unit tests and e2e need no IdP. |
 | `STAGING_*` | Pipeline-side TTL sweep of abandoned `staging/` uploads. |
