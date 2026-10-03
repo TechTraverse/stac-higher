@@ -76,6 +76,8 @@ The spike should settle the open questions before any of this becomes a plan.
 | Whether titiler-multidim's `from_env=True` honors a custom endpoint (fallback viability) | Point it at Silo with `AWS_ENDPOINT_URL` |
 | NODD CORS for any future browser-direct (icechunk-js) path | Send a preflight range GET to `noaa-goes19` |
 
+See results: [2026-10-03 virtual cube spike](2026-10-03-virtual-cube-spike.md).
+
 ## Conclusion
 
 The question has inverted. The expected risk was the data layer: whether a self-hosted MinIO fork could hold a transactional virtual cube, and whether a rolling window would require rewriting data. Icechunk 2's `shift_array` and Silo's correct conditional writes retire both, with local evidence rather than vendor claims. The remaining risk is architectural and lives inside stac-higher. Its process abstraction assumes that runs are stateless, parallel, at-least-once, item-publishing and sandboxed, and a cube writer is the opposite on every axis. The highest-leverage move is to decide early whether cubes are a platform primitive (a cube sink alongside ingest) or a capability granted to user processes. The first choice unblocks a demo without #68. The second forces the platform to grow serialization, persistent grants and collection outputs that other future workloads (catalog-maintaining processes, mosaics) will also want.

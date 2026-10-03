@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Z-1 cube tiles</title>
+<link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<style>
+  body { margin: 0; font: 13px system-ui; }
+  #map { position: absolute; inset: 0; }
+  #ctl { position: absolute; top: 8px; left: 8px; background: #fff; padding: 6px 10px; border-radius: 4px; z-index: 1; }
+</style>
+</head>
+<body>
+<div id="ctl"><input id="f" type="range" min="0" value="0" step="1" style="width:260px"> <span id="lbl"></span>
+  <button id="play">play</button></div>
+<div id="map"></div>
+<script>
+const DS = new URLSearchParams(location.search).get("ds") || "goes-c13-m";
+const Q = "variables=CMI&style=raster/gray&colorscalerange=190,310&width=256&height=256&f=png";
+const map = new maplibregl.Map({
+  container: "map", center: [-97, 38], zoom: 3.5,
+  style: { version: 8, sources: { osm: { type: "raster", tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], tileSize: 256, attribution: "© OpenStreetMap" } },
+           layers: [{ id: "osm", type: "raster", source: "osm" }] },
+});
+let times = [];
+async function init() {
+  const csv = await (await fetch(`/datasets/${DS}/edr/position?coords=POINT(-97%2038.5)&parameter-name=CMI&f=csv`)).text();
+  times = csv.trim().split("\n").slice(1).map(l => l.split(",")[0].replace(" ", "T"));
+  const f = document.getElementById("f"); f.max = times.length - 1;
+  times.forEach((t, i) => {
+    map.addSource(`c${i}`, { type: "raster", tiles: [`${location.origin}/datasets/${DS}/tiles/WebMercatorQuad/{z}/{y}/{x}?${Q}&t=${t}`], tileSize: 256 });
+    map.addLayer({ id: `c${i}`, type: "raster", source: `c${i}`, paint: { "raster-opacity": i === 0 ? 0.6 : 0, "raster-fade-duration": 0 } });
+  });
+  show(0);
+}
+function show(i) {
+  times.forEach((_, j) => map.setPaintProperty(`c${j}`, "raster-opacity", j === i ? 0.6 : 0));
+  document.getElementById("f").value = i; document.getElementById("lbl").textContent = times[i];
+}
+document.getElementById("f").oninput = e => show(+e.target.value);
+let timer = null;
+document.getElementById("play").onclick = () => {
+  if (timer) { clearInterval(timer); timer = null; return; }
+  let i = +document.getElementById("f").value;
+  timer = setInterval(() => { i = (i + 1) % times.length; show(i); }, 400);
+};
+map.on("load", init);
+</script>
+</body>
+</html>
