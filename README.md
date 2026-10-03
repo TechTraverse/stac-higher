@@ -46,10 +46,19 @@ Postgres (pgstac) is the system of record for both the STAC catalog and the plat
 ## Quick start
 
 ```bash
+grep -v '^CREDENTIALS_MASTER_KEY=' .env.example > .env
+echo "CREDENTIALS_MASTER_KEY=$(openssl rand -base64 32)" >> .env   # your own key, never a shared one
 npm install                 # repo root only — one lockfile, workspace symlinks
 docker compose up -d        # pgstac, STAC API, auth proxy, Keycloak, MinIO, pipeline, tilers
-cd app && npm run dev       # http://localhost:4321
+cd app && set -a && source ../.env && set +a && npm run dev   # http://localhost:4321
 ```
+
+The dev server reads its settings from the shell, so start it as above. That
+gives it the master key, which encrypts stored connection credentials, and
+`SAFE_FETCH_ALLOW_HOSTS`, without which creating a collection 403s. Compose
+reads the same `.env` for the pipeline. How to generate the key, check it, and
+what breaks when it is wrong:
+[`docs/connections.md`](docs/connections.md#the-master-key-credentials_master_key).
 
 `npm run verify` at the repo root runs the CI gates (typecheck, build, unit
 tests). Pipeline tests: `uv run pytest` and `uv run ruff check .` from
