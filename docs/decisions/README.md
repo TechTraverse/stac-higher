@@ -29,6 +29,7 @@ From 2026-09-17 an ADR's **Status** line also names the PR that adopted it (`acc
 | [0019](0019-process-compute-kubernetes-kueue.md) | Process compute: Kubernetes Jobs + Kueue, hardware profiles as the portable vocabulary | accepted (2026-09-04; proposed 2026-09-02; supersedes 0013's cloud-backend half) | K queue / Phase 8 |
 | [0020](0020-pgstac-session-guc-pairings.md) | pgstac session GUC pairings: the writer and the drainer carry OPPOSITE settings | accepted (2026-09-09; records M3-A as shipped 2026-09-08) | M3 (M3-A) |
 | [0021](0021-user-images-scan-then-approve.md) | User-supplied process images: scan, approve by policy, run by digest | accepted — PR #23 (2026-09-27; proposed 2026-09-13; amends 0013's slice-1 scope and 0019's "user images remain refused") | C queue |
+| [0022](0022-virtual-cube-sink.md) | Virtual cube sink: a platform-owned rolling Icechunk store per collection | proposed (2026-10-03; amends 0011 on acceptance) | Zarr/Icechunk demo |
 
 Proposed ADRs establish no invariants until accepted (via the Phase 9 design
 spec); their draft invariants live inside the documents.
@@ -55,6 +56,6 @@ spec); their draft invariants live inside the documents.
 ## Adding an ADR
 
 1. Copy the format of an existing record: a `# ADR NNNN — Title` heading, then **Status**, **Context**, **Decision**, **Consequences** (and **Revisit** if the choice is expected to be reconsidered).
-2. Number sequentially (next: `0022`).
+2. Number sequentially (next: `0023`).
 3. Add a row to the index above and, if it changes an invariant, note it in "Key invariants."
 4. ADRs are immutable once accepted — supersede with a new ADR rather than editing history; mark the old one `superseded by NNNN`.
