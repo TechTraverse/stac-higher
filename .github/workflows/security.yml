@@ -38,9 +38,11 @@ jobs:
           cache: npm
       # Gate on high in production deps (tightened from critical when the
       # Astro 7 upgrade cleared the known 6.x high advisories — I-57); the
-      # full report stays visible below.
+      # full report stays visible below. Advisories with no patched release
+      # are accepted by GHSA in .npm-audit-allow.json, each with an ISSUES.md
+      # entry (npm audit itself has no ignore flag).
       - name: npm audit (prod deps, fail on high)
-        run: npm audit --omit=dev --audit-level=high
+        run: node scripts/npm-audit-gate.mjs
       - name: npm audit full report (informational)
         if: always()
         run: npm audit || true

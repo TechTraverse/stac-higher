@@ -1578,6 +1578,18 @@ history shows each rescan's diff. A resolve-and-re-raise on a worsening
 diff would re-notify, at the cost of alert churn.
 - Found in: the C-4 plan (2026-09-27).
 
+### I-142 · `http-cache-semantics` cross-user disclosure advisory has no fix 🟡
+[GHSA-ch52-4w7c-c8xp](https://github.com/advisories/GHSA-ch52-4w7c-c8xp)
+(high, published 2026-09-18) covers every `http-cache-semantics` release
+through 4.2.0, the latest; no patched version exists. It arrives only through
+`astro` (7.3.5 still depends on `^4.2.0`), whose one use is the build-time
+cache for remote images (`astro/dist/assets/build/remote.js`). The app uses
+no `astro:assets` remote images and runs no shared HTTP cache, so the
+max-stale cross-user disclosure has no path here. The npm-audit gate accepts
+the GHSA in `.npm-audit-allow.json` (`scripts/npm-audit-gate.mjs`). When a
+fixed release lands, the gate warns that the entry is stale. Remove it then.
+- Found in: the Security workflow going red on main (2026-10-03).
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
