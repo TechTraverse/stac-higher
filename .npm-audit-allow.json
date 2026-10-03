@@ -1,0 +1,10 @@
+{
+  "advisories": [
+    {
+      "id": "GHSA-ch52-4w7c-c8xp",
+      "package": "http-cache-semantics",
+      "issue": "I-142",
+      "reason": "No patched release (<=4.2.0, latest). Pulled in only by astro's build-time remote-image cache (astro/dist/assets/build/remote.js); the app uses no astro:assets remote images and runs no shared HTTP cache, so the cross-user max-stale disclosure has no path here."
+    }
+  ]
+}
