@@ -1,6 +1,6 @@
 # Documentation
 
-Project documentation for STAC Higher, organized into three tracks:
+Project documentation for STAC Higher, organized into these tracks:
 
 | Track | Where | What it holds |
 |---|---|---|
@@ -8,6 +8,7 @@ Project documentation for STAC Higher, organized into three tracks:
 | **Decision records** | [`decisions/`](decisions/README.md) | Architecture Decision Records (ADRs): one file per significant, hard-to-reverse choice, with context and consequences. |
 | **Outstanding issues** | [`ISSUES.md`](ISSUES.md) | Carried-forward work, known limitations / residual risk, deferrals to later phases, and test/infra gaps. Fully-resolved entries move to [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md) (one-line stubs remain). |
 | **Design specs & plans** | [`superpowers/`](superpowers/) | Dated, approved design specs (milestone/slice scope sources — each queue's GitHub `epic` issue cites its spec) and their implementation plans. |
+| **Research** | [`research/`](research/) | Dated investigations that inform a decision (evidence, options, reproducible probes). Not specs; each names the ADR or spec it fed. |
 
 Delivery is planned in phases — see [`../ROADMAP.md`](../ROADMAP.md) for the full plan and the live phase-status table.
 
