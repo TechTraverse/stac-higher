@@ -44,7 +44,9 @@ ADR that decided it — read the ADR before arguing with the rule.
   and their code — never the DB URL, master key or platform keys (ADR 0013).
   Author contract: `docs/processes.md`.
 - **Byte deletion** happens only through the `asset_gc` mark-then-collect
-  queue (ADR 0011); nothing is deleted on an unconfigured platform.
+  queue (ADR 0011); nothing is deleted on an unconfigured platform. The one
+  exception: Icechunk GC inside a cube repository's `_cube/` prefix, run by
+  `pipeline.cube_maintain` on sinks with a window (ADR 0022).
 - **pgstac session GUCs** are opposite on the writer and the drainer
   (ADR 0020): the writer pool carries `use_queue` + `update_collection_extent`
   ON; the queue drainer runs `CALL pgstac.run_queued_queries()` on a

@@ -1,7 +1,13 @@
 # ADR 0022 — Virtual cube sink: a platform-owned rolling Icechunk store per collection
 
-- **Status:** proposed (2026-10-03)
-- **Related:** ADR 0011 (retention & GC — amended here), ADR 0013 (executor
+- **Status:** accepted — PR #82 (2026-10-03; proposed the same day; the lead
+  confirmed the separate cube collection, the reserved `_cube` item id, the
+  Icechunk libraries in the main pipeline image and skip-late in v1;
+  implemented by the Z queue, epic #83)
+- **Amends:** ADR 0011 — byte deletion only through `asset_gc` gains one
+  exception: Icechunk's own GC inside a cube repository's `_cube/` prefix.
+  Every other ADR 0011 invariant stands unchanged.
+- **Related:** ADR 0011 (retention & GC), ADR 0013 (executor
   isolation — why this is not a process), ADR 0014 (process output path),
   ADR 0018 (process inputs and network profiles — the staging copy this
   avoids), ADR 0005 (canonical key layout), ADR 0006 (pgstac writes from the
@@ -283,7 +289,7 @@ re-include its path).
   materialized overview level (relaxing strict-virtual for overviews only) and
   a smaller source sector.
 
-## Draft invariants (established on acceptance)
+## Invariants added to `docs/decisions/README.md`
 
 - Each cube repository has exactly **one writer**: `pipeline.cube_append`,
   serialized by a per-sink Procrastinate `lock`. No process run is granted
