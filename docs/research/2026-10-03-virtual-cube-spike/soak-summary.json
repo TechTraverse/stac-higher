@@ -1,0 +1,173 @@
+{
+ "span_h": 24.04,
+ "events": {
+  "start": 1,
+  "append": 290,
+  "stats": 1,
+  "duplicate": 1,
+  "heartbeat": 142,
+  "late": 48,
+  "sweep": 23,
+  "gc": 23,
+  "read_check": 23
+ },
+ "commits": 289,
+ "by_6h": [
+  {
+   "bucket": "0-6h",
+   "n": 72,
+   "total_p50": 1.594,
+   "total_p95": 2.983,
+   "commit_p50": 0.043,
+   "commit_p95": 0.056,
+   "trim_p50": 0.0,
+   "parse_p50": 1.505,
+   "manifests_max": 200,
+   "repo_bytes_max": 1574437,
+   "objects_last": {
+    "chunks": 46,
+    "manifests": 184,
+    "overwritten": 83,
+    "repo": 1,
+    "snapshots": 24,
+    "transactions": 74
+   },
+   "rss_mb_max": 146.3,
+   "t_len_last": 72
+  },
+  {
+   "bucket": "6-12h",
+   "n": 72,
+   "total_p50": 1.652,
+   "total_p95": 2.878,
+   "commit_p50": 0.04,
+   "commit_p95": 0.049,
+   "trim_p50": 0.053,
+   "parse_p50": 1.519,
+   "manifests_max": 200,
+   "repo_bytes_max": 3578053,
+   "objects_last": {
+    "chunks": 44,
+    "manifests": 176,
+    "overwritten": 167,
+    "repo": 1,
+    "snapshots": 23,
+    "transactions": 146
+   },
+   "rss_mb_max": 146.9,
+   "t_len_last": 72
+  },
+  {
+   "bucket": "12-18h",
+   "n": 72,
+   "total_p50": 1.532,
+   "total_p95": 2.025,
+   "commit_p50": 0.04,
+   "commit_p95": 0.046,
+   "trim_p50": 0.055,
+   "parse_p50": 1.387,
+   "manifests_max": 200,
+   "repo_bytes_max": 5818324,
+   "objects_last": {
+    "chunks": 42,
+    "manifests": 168,
+    "overwritten": 251,
+    "repo": 1,
+    "snapshots": 22,
+    "transactions": 218
+   },
+   "rss_mb_max": 161.4,
+   "t_len_last": 72
+  },
+  {
+   "bucket": "18-24h",
+   "n": 72,
+   "total_p50": 1.577,
+   "total_p95": 2.369,
+   "commit_p50": 0.04,
+   "commit_p95": 0.045,
+   "trim_p50": 0.055,
+   "parse_p50": 1.428,
+   "manifests_max": 200,
+   "repo_bytes_max": 8411654,
+   "objects_last": {
+    "chunks": 40,
+    "manifests": 160,
+    "overwritten": 335,
+    "repo": 1,
+    "snapshots": 21,
+    "transactions": 290
+   },
+   "rss_mb_max": 162.3,
+   "t_len_last": 72
+  },
+  {
+   "bucket": "24-30h",
+   "n": 1,
+   "total_p50": 1.722,
+   "total_p95": 1.722,
+   "commit_p50": 0.042,
+   "commit_p95": 0.042,
+   "trim_p50": 0.05,
+   "parse_p50": 1.576,
+   "manifests_max": 168,
+   "repo_bytes_max": 8506279,
+   "objects_last": {
+    "chunks": 42,
+    "manifests": 168,
+    "overwritten": 336,
+    "repo": 1,
+    "snapshots": 22,
+    "transactions": 291
+   },
+   "rss_mb_max": 124.6,
+   "t_len_last": 72
+  }
+ ],
+ "gc": {
+  "runs": 23,
+  "expire_s_max": 0.029,
+  "gc_s_max": 0.154,
+  "after_first": {
+   "chunks": 24,
+   "manifests": 96,
+   "overwritten": 15,
+   "repo": 1,
+   "snapshots": 13,
+   "transactions": 14
+  },
+  "after_last": {
+   "chunks": 24,
+   "manifests": 96,
+   "overwritten": 327,
+   "repo": 1,
+   "snapshots": 13,
+   "transactions": 282
+  },
+  "bytes_after_first": 247228,
+  "bytes_after_last": 7658001,
+  "last_summary": "<icechunk.ops.GCSummary>\nbytes_deleted: 701853\nchunks_deleted: 24\nmanifests_deleted: 96\nsnapshots_deleted: 12\nattributes_deleted: 0\ntransaction_logs_deleted: 0\n"
+ },
+ "read_checks": {
+  "n": 23,
+  "all_ok": true,
+  "read_s_max": 1.073
+ },
+ "q8": {
+  "publish_lag_s": {
+   "p50": 30.1,
+   "p95": 39.0,
+   "max": 48.0
+  },
+  "detect_lag_s": {
+   "p50": 75.6,
+   "p95": 79.6,
+   "max": 80.1
+  },
+  "late": "48 events, all pre-start backlog picked up by the hourly re-listing (script artifact; 0 files scanned after the start arrived late) - list omitted",
+  "gaps": [],
+  "missing_steps_total": 0,
+  "duplicates": 1
+ },
+ "errors": []
+}

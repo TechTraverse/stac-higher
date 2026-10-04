@@ -47,6 +47,8 @@ ap.add_argument("--poll", type=int, default=60)
 ap.add_argument("--gc-every", type=int, default=3600)
 ap.add_argument("--retention", type=int, default=3600, help="expire snapshots older than this many seconds")
 ap.add_argument("--backfill", type=int, default=0, help="seed with the newest N existing files instead of 1")
+ap.add_argument("--backfill-hours", type=int, default=2, help="how many hour prefixes to list for --backfill")
+ap.add_argument("--updates-per-file", type=int, default=None, help="RepositoryConfig.num_updates_per_repo_info_file")
 ap.add_argument("--once", action="store_true", help="exit after seeding + one GC (smoke test)")
 ap.add_argument("--log", default=None)
 args = ap.parse_args()
@@ -88,8 +90,13 @@ creds = ic.containers_credentials({f"s3://{SRC_BUCKET}/": ic.s3_credentials(anon
 
 def open_repo():
     if ic.Repository.exists(storage):
-        return ic.Repository.open(storage, authorize_virtual_chunk_access=creds), False
+        conf = None
+        if args.updates_per_file:
+            conf = ic.RepositoryConfig(num_updates_per_repo_info_file=args.updates_per_file)
+        return ic.Repository.open(storage, config=conf, authorize_virtual_chunk_access=creds), False
     cfg = ic.RepositoryConfig.default()
+    if args.updates_per_file:
+        cfg.num_updates_per_repo_info_file = args.updates_per_file
     cfg.set_virtual_chunk_container(ic.VirtualChunkContainer(f"s3://{SRC_BUCKET}/", ic.s3_store(region="us-east-1", anonymous=True)))
     return ic.Repository.create(storage, cfg, authorize_virtual_chunk_access=creds), True
 
@@ -209,7 +216,7 @@ def main():
          versions=dict(icechunk=ic.__version__, zarr=zarr.__version__, xarray=xr.__version__),
          t_len=len(tip_times), tip=tip_times[-1] if tip_times else None)
     seen = set()
-    listing = list_recent(2)
+    listing = list_recent(args.backfill_hours if not tip_times else 2)
     if not tip_times:
         seeds = sorted(listing, key=lambda k: scan_times(k)[0])[-max(1, args.backfill):]
         for i, key in enumerate(seeds):

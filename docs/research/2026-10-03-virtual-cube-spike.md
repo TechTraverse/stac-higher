@@ -46,8 +46,14 @@ cube server:
    modification-time checksum), but the error fails the whole EDR query, not
    just one step. The cube server must read per step and return gaps.
 
-The soak (Q4) and the late-file count (Q8) are **pending**. The soak started
-2026-10-03T18:13Z and needs 24 h (until 2026-10-04T18:13Z).
+**The 24 h soak (Q4) ran clean but found one unbounded leak**: 289 commits, no
+errors, flat append and commit latency, flat working data. But Icechunk never
+deletes transaction logs or the `overwritten/` backups of its `repo` object,
+so the repository grows on every commit (0.25 → 7.7 MB after GC over 24 h).
+Lowering `num_updates_per_repo_info_file` to 100 cuts that to a projected
+~8 MB per cube per day. The lead accepted the rest for v1 (I-143). **Q8:**
+across a day of `noaa-goes19` CMIPC, no file arrived late and no 5-minute step
+was missing, so skip-late stands.
 
 ## Risk summary
 
@@ -56,11 +62,11 @@ The soak (Q4) and the late-file count (Q8) are **pending**. The soak started
 | 1 | Tiles on the fixed grid | Correct placement z3–z8; values = direct read (≤1.5e-5 K, float32 vs float64); fill and scaling survive | **go** |
 | 2 | EDR on scan angles | Silently empty on radians; exact on a metres view | **changes-needed** (cube server rescales `x`/`y`) |
 | 3 | Tile latency without overviews | 0.45–0.75 s low zoom, 0.15–0.22 s high zoom, laptop; no caching; 14-frame z4 loop in 8.5 s | **go with changes** (`Cache-Control`, warm-up, bounded frames) |
-| 4 | Soak: unbounded growth? | *pending* (24 h from 2026-10-03T18:13Z); first 40 min flat | *pending* |
+| 4 | Soak: unbounded growth? | 24 h, 289 commits, 0 errors; latency, manifests, snapshots, RSS flat; transaction logs + `overwritten/` grow one per commit (7.7 MB after 24 h) | **go**, with I-143 accepted (history limit 100, size readout) |
 | 5 | Ref integrity | Always checksummed (write time); replace/modify/delete fail loudly, never wrong data; but one bad step fails a whole series | **go**; **changes-needed** (pass `last_updated_at`; per-step reads) |
 | 6 | MCMIPC | All 16 bands one layout (52×2500, shuffle+zlib); 3-file append works; lazy RGB 2.0 s per 256² | **go** (stretch; RGB needs a custom renderer) |
 | 7 | Writer mechanics | `lock` serializes across processes; `queueing_lock` 1 of 5; connection config → obstore + Icechunk works; `resolve_pinned` vets the host | **go**; **changes-needed** (pin the endpoint so checked host = dialed host) |
-| 8 | Late and missing files | *pending* (from the soak) | *pending* |
+| 8 | Late and missing files | 0 late, 0 missing steps in 24 h; publish lag p50 30 s, max 48 s | **go** (skip-late stands; no region writes) |
 | 9 | titiler-multidim on Silo; NODD CORS | Endpoint env honoured, but no path-style → repo not found; CORS allows `*` + `Range` | fallback **no-go** without a fork; CORS **go** |
 
 ## 1. Tiles land in the right place with the right values
@@ -180,7 +186,7 @@ unpinned ("latest") ones; a warm-up tile at startup to absorb the JIT. In the
 UI: preload frames with progress and default the loop to the last 24 steps.
 Strict-virtual holds; no ADR change.
 
-## 4. Soak — pending
+## 4. Soak
 
 `soak.py` started at **2026-10-03T18:13Z** on `s3://probe/soak-c13/` (z1-silo):
 poll the NODD hour listing every 60 s, append each new `M6C13` file in scan
@@ -189,19 +195,64 @@ steps** in the same commit, and run `expire_snapshots(now − 1 h)` +
 `garbage_collect` hourly. The window fills at hour 6; after that, every commit
 also trims.
 
-First 40 minutes (9 commits, before the first GC): total append p50 1.52 s, p95
-2.20 s. Of that, header parse p50 is 1.44 s and commit p50 0.04 s. Each commit adds
-8 manifests and about 18 KB. Process RSS is flat at 145 MB. No errors.
+It ran **24.0 h** (to 2026-10-04T18:15Z) on a laptop kept awake, plugged in
+and online: **289 commits, 0 errors, 0 gaps**, and all 23 hourly read checks
+(first and last step of the window decode to finite values) passed in ≤1.07 s.
+The full summary is in `2026-10-03-virtual-cube-spike/soak-summary.json`.
 
-The smoke run (3-step window, 6 appends, GC with retention 0) showed the trim
-costing 7 ms and GC deleting 5 snapshots, 40 manifests and 74 KB. GC reported
-`transaction_logs_deleted: 0`, and the `transactions/` and `overwritten/`
-prefixes kept growing. Whether they grow without bound over 288 commits is the
-key soak question.
+| Hours | Commits | Append total p50 / p95 | Header parse p50 | Commit p50 / p95 | Trim p50 | Window |
+|---|---|---|---|---|---|---|
+| 0–6 | 72 | 1.59 / 2.98 s | 1.51 s | 0.043 / 0.056 s | — | filling |
+| 6–12 | 72 | 1.65 / 2.88 s | 1.52 s | 0.040 / 0.049 s | 0.053 s | 72 |
+| 12–18 | 72 | 1.53 / 2.03 s | 1.39 s | 0.040 / 0.046 s | 0.055 s | 72 |
+| 18–24 | 72 | 1.58 / 2.37 s | 1.43 s | 0.040 / 0.045 s | 0.055 s | 72 |
 
-*To be filled from `analyse.py` once the soak has run 24 h: commit latency per
-6 h bucket, object counts and bytes after each GC, GC duration, read checks,
-errors.*
+Commit and trim cost did not grow. GC's expiry took ≤0.03 s and its collection
+≤0.15 s. Process RSS moved between 102 and 162 MB with no trend.
+
+**What GC keeps flat and what it does not.** After every GC the working data
+was constant: 96 manifests, 13 snapshots, 24 inline chunks. Each GC deleted
+about 12 snapshots, 96 manifests and 24 chunks. Two object kinds were
+**never** deleted (`transaction_logs_deleted: 0` in all 23 runs), so the
+repository grew on every commit:
+
+| After GC at | `transactions/` | `overwritten/` | Repo bytes |
+|---|---|---|---|
+| hour 1 | 14 | 15 | 0.25 MB |
+| hour 12 | 148 | 171 | 3.1 MB |
+| hour 23 | 282 | 327 | 7.7 MB |
+
+- **Transaction logs** are about 600 B before the window fills and about 17 KB
+  after: each `shift_array` records every chunk reference it moved, the whole
+  window, on every commit. The Icechunk spec says they are not needed to read
+  data; they serve rebase conflict detection and diffs. Icechunk 2.2.2 has no
+  public call that removes them.
+- **`overwritten/`** holds a copy of the `repo` object, the one mutable file
+  (branches, snapshot list and an operations log), taken before each update.
+  The spec keeps these by design, for recovery and as the operations-log chain.
+  The `repo` object grew from 751 B to 17 KB, about 67 B per commit, as its
+  operations log filled. It caps at `num_updates_per_repo_info_file` (default
+  1,000) entries, so each copy would reach about 75 KB.
+
+**The history-limit test.** Two 150-commit backfills of real NODD files, with
+a 72-step window, one with `num_updates_per_repo_info_file = 100` and one at
+the default: same commit time (0.037 s), no errors, reads fine. In the capped
+run the growth of each `repo` copy roughly halved after update 100, and the
+live `repo` object was 6.7 KB after GC against 8.7 KB at the default. Projected
+steady state at a 5-minute cadence with hourly GC:
+
+| Setting | `repo` object | Backups per day | Transaction logs per day | Per cube per year |
+|---|---|---|---|---|
+| default (1,000) | ~75 KB | ~22 MB | ~5 MB | ~10 GB |
+| 100 | ~10 KB | ~3 MB | ~5 MB | ~3 GB |
+
+That is small next to copying the data (~1.1 GB a day for CMIPC C13).
+
+**Verdict: go, with an accepted limitation.** The sink sets the history limit
+to 100, and `cube_maintain` records per-kind object counts and bytes and warns
+above a threshold. The transaction-log question (is it intended, will upstream
+clean them up?) is recorded as **I-143** in `docs/ISSUES.md`, with its revisit
+triggers. The lead decided on 2026-10-04 not to ask upstream yet.
 
 ## 5. Ref integrity: changes fail loudly, but per series
 
@@ -294,14 +345,24 @@ both libraries: the connection's, or `https://s3.{region}.amazonaws.com` with
 path style. The host it checks is then the host it dials. The compose-internal
 Silo endpoint needs `EGRESS_ALLOW_HOSTS`, as the S3 adapter already does.
 
-## 8. Late and missing files — pending
+## 8. Late and missing files: none in a day
 
-The soak records every key as it appears: `late` (behind the tip, skipped,
-either at poll time or in an hourly re-listing of the last 6 h), `gap` (missing
-5-minute steps), `duplicate`, and the NODD publish lag (scan end → object
-`LastModified`). Over the first 40 minutes the publish lag was 33–40 s and
-detection, including the 60 s poll, about 71 s. There were no late files and no gaps.
-*To be filled after 24 h.*
+The soak recorded every key as it appeared: `late` (behind the tip, skipped,
+seen either at poll time or in an hourly re-listing of the last 6 h), `gap`
+(missing 5-minute steps) and `duplicate`. In 24 h:
+
+- **0 late files.** The log holds 48 `late` events, but all of them are files
+  scanned *before* the soak started that the hourly re-listing picked up. That's
+  an artifact of the script, filtered out here; no file scanned after the start
+  arrived behind the tip.
+- **0 missing steps**: 289 consecutive 5-minute scans.
+- **1 duplicate**, the seed file re-listed at startup.
+- **NODD publish lag** (scan end → object `LastModified`): p50 30 s, p95 39 s,
+  max 48 s. **Detection** including the 60 s poll: p50 76 s, max 80 s.
+
+**Verdict: go.** Skip-late stands for v1, and region-write slots are not
+needed. NODD outages do happen (the April 2026 GOES-19 L2 gap in the first
+research doc), and the sink tolerates them as gaps in `t`.
 
 ## 9. Optional: titiler-multidim and CORS
 
@@ -336,8 +397,10 @@ None of them amends ADR 0022's decisions.
 - **UI:** frames from the exact `t` values; preload with progress; default the
   loop to the last 24 steps (Q3).
 - **MCMIPC RGB:** a later custom render endpoint (Q6).
-- **Pending:** Q4's GC/growth findings may add a `cube_maintain` requirement
-  (e.g. transaction-log cleanup); Q8 decides whether skip-late stands.
+- **`cube_maintain`:** create and open repos with
+  `num_updates_per_repo_info_file = 100`; record per-kind object counts and
+  bytes and warn above a threshold (Q4, I-143).
+- **Late files:** skip-late stands; no region writes (Q8).
 
 ## Appendix: reproducing the spike
 
@@ -368,6 +431,7 @@ docker run -d --name z1-pg -p 15432:5432 -e POSTGRES_PASSWORD=z1 postgres:16
 | MCMIPC | `uv run q6_mcmipc.py` | Q6 |
 | Writer | `uv run q7_conn.py`; `uv run q7_lock.py schema \| defer \| worker w1 & worker w2 \| report` | Q7 |
 | Soak summary | `uv run analyse.py soak-c13.jsonl` | Q4, Q8 |
+| History limit | `uv run soak.py --prefix cap100 --updates-per-file 100 --max-steps 72 --backfill 150 --backfill-hours 14 --once --retention 0` (and without `--updates-per-file` as the control) | Q4 mitigation |
 
 `times.txt` holds the static repo's exact `t` values, from
 `curl '…/datasets/goes-c13-m/edr/position?coords=POINT(-97%2038.5)&parameter-name=CMI&f=csv' | tail -n +2 | cut -d, -f1 | sed 's/ /T/' | paste -sd, -`.
