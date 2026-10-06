@@ -14,6 +14,12 @@ from typing import Any
 import pytest
 
 from pipeline.connections.adapters.s3 import parse_s3_config
+from pipeline.cubes.config import (
+    APPEND_STATUSES,
+    SKIP_REASONS,
+    TERMINAL_STATUSES,
+    parse_cube_sink_config,
+)
 from pipeline.delivery.config import parse_delivery_config
 from pipeline.finalize.status import StatusContractError, validate_status_doc
 from pipeline.flow.expectation import parse_delivery_expectation, parse_ingest_expectation
@@ -60,6 +66,8 @@ IMAGE_POLICY = _load("image-policy.json")
 IMAGE_SCAN_RESULT = _load("image-scan-result.json")
 IMAGE_SCAN_DIFF = _load("image-scan-diff.json")
 REGISTRY_CONFIG = _load("registry-connection-config.json")
+CUBE_SINK_CONFIG = _load("cube-sink-config.json")
+CUBE_APPEND_STATUS = _load("cube-append-status.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -533,3 +541,26 @@ def test_image_scan_diff_cases(case):
     else:
         with pytest.raises(ScanDiffError):
             parse_scan_diff(_diff_doc(case))
+
+
+@pytest.mark.parametrize("case", CUBE_SINK_CONFIG["cases"], ids=lambda c: c["name"])
+def test_cube_sink_config_cases(case):
+    _check(parse_cube_sink_config, case)
+
+
+def test_cube_sink_config_minimal_parses_to_defaults():
+    parsed = parse_cube_sink_config(CUBE_SINK_CONFIG["minimal"])
+    defaults = CUBE_SINK_CONFIG["defaults"]
+    assert parsed.parser == defaults["parser"]
+    assert parsed.append_dim == defaults["append_dim"]
+    assert list(parsed.variables) == defaults["variables"]
+    assert list(parsed.loadable_variables) == defaults["loadable_variables"]
+    assert parsed.asset_key == defaults["asset_key"]
+    assert parsed.on_late == defaults["on_late"]
+    assert parsed.window is None and "window" not in defaults
+
+
+def test_cube_append_vocabulary_matches_golden():
+    assert list(APPEND_STATUSES) == CUBE_APPEND_STATUS["statuses"]
+    assert list(TERMINAL_STATUSES) == CUBE_APPEND_STATUS["terminal"]
+    assert list(SKIP_REASONS) == CUBE_APPEND_STATUS["skip_reasons"]

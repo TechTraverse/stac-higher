@@ -60,6 +60,14 @@ import { isImageDigest, isImageReference } from "@/lib/images/reference";
 import { imagePolicySchema, registryAllowed } from "@/lib/images/policy";
 import { imageScanResultSchema } from "@/lib/images/scan-result";
 import { imageScanDiffSchema, readScanDiff } from "@/lib/images/scan-diff";
+import { cubeSinkConfigSchema } from "@/lib/cubes/schemas";
+import {
+  CUBE_APPEND_STATUSES,
+  CUBE_APPEND_STATUS_LABEL,
+  CUBE_APPEND_TERMINAL,
+  CUBE_SKIP_REASONS,
+  CUBE_SKIP_REASON_LABEL,
+} from "@/lib/cubes/status";
 
 interface FixtureCase {
   name: string;
@@ -554,5 +562,29 @@ describe("image scan diff contract (tests/contract-fixtures/image-scan-diff.json
     expect(readScanDiff({ diff: null })).toBeNull();
     expect(readScanDiff(null)).toBeNull();
     expect(readScanDiff({ diff: { new: "x" } })).toBeNull();
+  });
+});
+
+describe("cube sink config contract (tests/contract-fixtures/cube-sink-config.json)", () => {
+  describeDirection("cube-sink-config.json", cubeSinkConfigSchema);
+});
+
+describe("cube append status vocabulary (tests/contract-fixtures/cube-append-status.json)", () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../../tests/contract-fixtures/cube-append-status.json", import.meta.url)),
+      "utf8",
+    ),
+  ) as { statuses: string[]; terminal: string[]; skip_reasons: string[] };
+
+  it("pins the statuses, terminal set and skip reasons", () => {
+    expect([...CUBE_APPEND_STATUSES]).toEqual(fixture.statuses);
+    expect([...CUBE_APPEND_TERMINAL]).toEqual(fixture.terminal);
+    expect([...CUBE_SKIP_REASONS]).toEqual(fixture.skip_reasons);
+  });
+
+  it("labels every status and every skip reason", () => {
+    expect(Object.keys(CUBE_APPEND_STATUS_LABEL).sort()).toEqual([...fixture.statuses].sort());
+    expect(Object.keys(CUBE_SKIP_REASON_LABEL).sort()).toEqual([...fixture.skip_reasons].sort());
   });
 });
