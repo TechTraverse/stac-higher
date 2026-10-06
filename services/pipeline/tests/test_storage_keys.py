@@ -25,6 +25,17 @@ def test_canonical_asset_key_rejects_traversal(bad):
         canonical_asset_key("coll", "item", bad)
 
 
+def test_canonical_asset_key_refuses_the_cube_repository_item_id():
+    # Z-2 (ADR 0022): assets/{c}/_cube/ is a cube repository's prefix, so no
+    # item may write bytes under it. The app's SAFE_SEGMENT already refuses
+    # a leading `_`; this keeps the pipeline from disagreeing.
+    with pytest.raises(InvalidKeySegment):
+        canonical_asset_key("goes19-c13-cube", "_cube", "f.nc")
+    # Only as an item id: a filename or collection named `_cube` is not the
+    # repository prefix.
+    assert canonical_asset_key("c", "item", "_cube") == "assets/c/item/_cube"
+
+
 class _CaptureS3:
     def __init__(self):
         self.calls = []
