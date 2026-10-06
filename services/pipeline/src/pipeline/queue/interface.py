@@ -141,10 +141,12 @@ class QueueBackend(abc.ABC):
         failed instead: the waiting job does the same work, and requeueing
         would collide with it.
 
-        Recovery is capped: the Procrastinate backend closes a stalled job
-        failed instead of requeueing it once it has been recovered
-        ``MAX_STALLED_ATTEMPTS`` (3) times, so a job that kills its worker
-        on every run cannot crash-loop it. A job that cannot be touched (it
+        Recovery of one job is capped: the Procrastinate backend closes a
+        stalled job failed instead of requeueing it once it has been
+        recovered ``MAX_STALLED_ATTEMPTS`` (3) times. That bounds requeues of
+        that job only; it does not stop a crash loop when the caller
+        re-enqueues the same work as a fresh job, so crash-loop protection
+        belongs on the work's own ledger. A job that cannot be touched (it
         left running meanwhile) is skipped, not counted, and the rest are
         still handled. The in-memory backend has no attempt counter (its
         tests strand jobs explicitly) and recovers without a cap.

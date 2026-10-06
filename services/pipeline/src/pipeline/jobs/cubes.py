@@ -76,8 +76,16 @@ async def kick_stale_sinks(repo: CubeRepo, queue: QueueBackend) -> int:
 
     First, any ``cube_append`` a dead worker left running goes back to the
     queue (plan decision 14). Until then it holds its sink's lock, and the
-    enqueue below would only coalesce into a job that can never start."""
-    await queue.retry_stalled(JOB_CUBE_APPEND)
+    enqueue below would only coalesce into a job that can never start. A
+    failed recovery is logged and the stale-sink kick still runs, so one bad
+    query cannot disable the backstop."""
+    try:
+        await queue.retry_stalled(JOB_CUBE_APPEND)
+    except Exception:
+        logger.exception(
+            "cube_kick: stalled-job recovery failed",
+            extra={"job_name": JOB_CUBE_APPEND},
+        )
     cube_sink_ids = await repo.sinks_with_stale_pending(KICK_STALE_SECONDS)
     await cube_append_enqueuer(queue)(cube_sink_ids)
     return len(cube_sink_ids)

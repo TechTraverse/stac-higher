@@ -55,8 +55,11 @@ SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS = 25.0
 STALLED_WORKER_SECONDS = 300
 
 #: Recoveries before ``retry_stalled`` gives up on a job (finishes it failed):
-#: each retry_job bumps Procrastinate's ``attempts``, so a job that kills its
-#: worker every run cannot take the worker down every kick forever.
+#: each retry_job bumps Procrastinate's ``attempts``. This bounds requeues of
+#: ONE job, not a crash loop: a caller that re-enqueues the same work (cube_kick
+#: for a sink whose ledger rows are still pending) starts a fresh job at
+#: attempts 0. Crash-loop protection for that work belongs on its own ledger
+#: (Z-4: ``cube_appends.attempts``).
 MAX_STALLED_ATTEMPTS = 3
 
 
@@ -187,7 +190,20 @@ class ProcrastinateQueue(QueueBackend):
                 # e.g. the job left 'doing' between the select and the retry
                 # ("Job was not found or has an invalid status to retry"):
                 # nothing to recover, and the remaining jobs still need it.
-                outcome = "skipped"
+                # Its own message + traceback: a DB outage mid-loop must not
+                # read as N "recovered" warnings.
+                logger.warning(
+                    "stalled job not recovered; skipped",
+                    exc_info=True,
+                    extra={
+                        "job_name": job_name,
+                        "job_id": job.id,
+                        "lock": job.lock,
+                        "attempts": job.attempts,
+                        "outcome": "skipped",
+                    },
+                )
+                continue
             logger.warning(
                 "stalled job recovered",
                 extra={
@@ -405,7 +421,8 @@ async def _recover_stalled_job(manager: JobManager, job: Job) -> str:
     if job.attempts >= MAX_STALLED_ATTEMPTS:
         # Recovered MAX_STALLED_ATTEMPTS times already (retry_job bumps
         # attempts; the worker's fetch does not) and stalled again: it most
-        # likely kills its worker. Stop instead of crash-looping it.
+        # likely kills its worker. Stop requeueing THIS job; a fresh job for
+        # the same work is the caller's (and its ledger's) decision.
         await manager.finish_job(job, status=Status.FAILED, delete_job=False)
         return "gave_up"
     try:

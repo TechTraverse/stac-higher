@@ -539,7 +539,8 @@ def _recovery_outcomes(caplog) -> dict[int, str]:
 async def test_retry_stalled_gives_up_on_a_job_at_the_attempt_cap(queue, monkeypatch, caplog):
     """Z-3 final review: Procrastinate's retry_job bumps ``attempts`` on every
     recovery, so a job that kills its worker each run reaches the cap and is
-    closed failed instead of crash-looping its worker every kick."""
+    closed failed instead of being requeued again. (This bounds one job's
+    requeues; crash-loop protection for re-enqueued work is the ledger's.)"""
     import logging
 
     from procrastinate.jobs import Status
@@ -572,7 +573,14 @@ async def test_retry_stalled_skips_a_job_it_cannot_recover(queue, monkeypatch, c
     with caplog.at_level(logging.WARNING, logger="pipeline.queue.procrastinate_backend"):
         assert await queue.retry_stalled("pipeline.cube_append") == 1
     assert manager.calls[1:] == [("retry", 1), ("retry", 2)]
-    assert _recovery_outcomes(caplog) == {1: "skipped", 2: "requeued"}
+    assert _recovery_outcomes(caplog) == {2: "requeued"}
+    # A skip is not a recovery: its own message, with the exception attached,
+    # so a DB outage mid-loop doesn't read as N "recovered" warnings.
+    [skip] = [
+        r for r in caplog.records if r.getMessage() == "stalled job not recovered; skipped"
+    ]
+    assert (skip.job_id, skip.outcome) == (1, "skipped")
+    assert skip.exc_info is not None
 
 
 async def test_retry_stalled_skips_a_job_it_cannot_close(queue, monkeypatch):

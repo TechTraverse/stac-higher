@@ -134,6 +134,31 @@ async def test_kick_requeues_a_stranded_append_with_nothing_waiting(queue: InMem
     assert [j.status for j in queue.jobs] == ["pending"]
 
 
+async def test_kick_still_kicks_stale_sinks_when_stalled_recovery_fails(
+    queue: InMemoryQueue, repo: FakeCubeRepo, monkeypatch, caplog
+):
+    # A raise from retry_stalled (e.g. the stalled-jobs query hits a
+    # ConnectorException) must not disable the §5.3 backstop.
+    import logging
+
+    async def boom(job_name: str) -> int:
+        raise RuntimeError("queue database unreachable")
+
+    monkeypatch.setattr(queue, "retry_stalled", boom)
+    await repo.record_appends([LedgerEntry("s1", "a", T0)])
+    repo.backdate("s1", "a", KICK_STALE_SECONDS + 1)
+
+    with caplog.at_level(logging.ERROR, logger="pipeline.jobs.cubes"):
+        await queue.run_periodic(JOB_CUBE_KICK, timestamp=1_700_000_000)
+
+    assert [(j.name, j.payload) for j in queue.jobs] == [
+        (JOB_CUBE_APPEND, {"cube_sink_id": "s1"})
+    ]
+    assert [r.getMessage() for r in caplog.records] == [
+        "cube_kick: stalled-job recovery failed"
+    ]
+
+
 async def test_stub_marks_pending_rows_failed_not_implemented(
     queue: InMemoryQueue, repo: FakeCubeRepo
 ):
