@@ -35,6 +35,18 @@ beforeEach(() => {
     });
 });
 
+describe("the cube repository prefix (Z-2, ADR 0022)", () => {
+  it("never marks an item named _cube — its prefix is a cube repository's", async () => {
+    await markAssetGc({ collectionId: "c1", itemId: "_cube", reason: "item_delete" });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("still marks the whole collection, repository included", async () => {
+    await markAssetGc({ collectionId: "c1", itemId: null, reason: "collection_delete" });
+    expect(mockQuery.mock.calls[0][1]?.[0]).toBe("assets/c1/");
+  });
+});
+
 describe("gcPrefix", () => {
   it("builds §5.3 prefixes for item and collection scope", () => {
     expect(gcPrefix("c1", "i1")).toBe("assets/c1/i1/");

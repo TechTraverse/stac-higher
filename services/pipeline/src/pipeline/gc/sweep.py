@@ -23,6 +23,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from pipeline.cubes.config import CUBE_ITEM_ID
 from pipeline.gc.repo import GcRepo
 from pipeline.storage.keys import CANONICAL_PREFIX
 
@@ -59,8 +60,9 @@ async def retention_tick(repo: GcRepo, *, batch_limit: int) -> RetentionTickResu
             retention_max_items=c.retention_max_items,
         )
         for item_id in items:
-            # Mark BEFORE delete — see module docstring.
-            if await repo.mark_asset_prefix(
+            # Mark BEFORE delete — see module docstring. Never for `_cube`:
+            # that prefix is a cube repository's (ADR 0022), not the item's.
+            if item_id != CUBE_ITEM_ID and await repo.mark_asset_prefix(
                 item_prefix(c.collection_id, item_id),
                 c.collection_id,
                 item_id,

@@ -51,11 +51,8 @@ import {
   matchCatalogTransaction,
 } from "@/lib/catalog/transactions";
 import { getCollectionSettings } from "@/lib/collections/settings";
-import { CUBE_ITEM_ID, writtenItemIds } from "@/lib/cubes/reserved";
-import {
-  deleteCubeSinksForCollectionTolerant,
-  isCubeCollection,
-} from "@/lib/cubes/storage";
+import { CUBE_ITEM_ID, isCubeItemId, writtenItemIds } from "@/lib/cubes/reserved";
+import { cubeSinksOnCollectionDeleteTolerant } from "@/lib/cubes/storage";
 import { markAssetGcTolerant } from "@/lib/gc/marks";
 import { forwardUpstream } from "@/lib/http/forward";
 import { jsonResponse } from "@/lib/http/response";
@@ -219,25 +216,14 @@ const handler: APIRoute = async ({ params, request, cookies, locals }) => {
     } catch {
       doc = undefined;
     }
-    // Z-2 (virtual cube spec §7): `_cube` is reserved in a cube collection.
-    // The sink table is consulted only when a written id IS `_cube`, and a
-    // failed lookup fails closed — the alternative is an item that owns the
-    // repository's prefix.
-    if (isItemWrite && ids && writtenItemIds(ids.item, doc).includes(CUBE_ITEM_ID)) {
-      let reserved: boolean;
-      try {
-        reserved = await isCubeCollection(ids.collection);
-      } catch {
-        return jsonResponse(503, {
-          error: "Cube sinks are unavailable — an item named _cube cannot be checked",
-        });
-      }
-      if (reserved) {
-        return jsonResponse(422, {
-          error: `Item id '${CUBE_ITEM_ID}' is reserved in cube collection '${ids.collection}'`,
-          code: "reserved_item_id",
-        });
-      }
+    // Z-2 (ADR 0022): `_cube` is reserved in every collection — it is a cube
+    // repository's prefix, and a repository can outlive its sink row, so the
+    // reservation does not depend on one (and cannot race a sink PUT).
+    if (isItemWrite && ids && writtenItemIds(ids.item, doc).some(isCubeItemId)) {
+      return jsonResponse(422, {
+        error: `Item id '${CUBE_ITEM_ID}' is reserved for cube repositories`,
+        code: "reserved_item_id",
+      });
     }
     if (doc !== undefined && hasStagedHrefs(doc)) {
       const verdict = await preValidateStagedWrite(doc, {
@@ -277,22 +263,20 @@ const handler: APIRoute = async ({ params, request, cookies, locals }) => {
   // collection delete the whole-collection prefix (closes I-51's GC half).
   // Best-effort AFTER upstream success; a failed mark never fails the
   // request the catalog already applied.
-  // Z-2: an item named `_cube` is never marked — its prefix is
-  // assets/{c}/_cube/, a cube repository's (ADR 0022), which may outlive its
-  // sink row. Orphaned item bytes are the lesser harm; the repository goes
-  // with the collection delete's whole-prefix mark.
-  const isCubePrefix = txn.resourceType === "catalog_item" && ids?.item === CUBE_ITEM_ID;
-  if (response.ok && txn.action === "delete" && ids && !isCubePrefix) {
+  // (markAssetGc never marks an item `_cube`: that prefix is a cube
+  // repository's, collected only with the whole collection — Z-2.)
+  if (response.ok && txn.action === "delete" && ids) {
     await markAssetGcTolerant({
       collectionId: ids.collection,
       itemId: txn.resourceType === "catalog_item" ? ids.item : null,
       reason:
         txn.resourceType === "catalog_item" ? "item_delete" : "collection_delete",
     });
-    // Z-2: a deleted collection takes its cube sinks with it, as source or
-    // cube. The repository bytes ride the collection_delete GC mark above.
+    // Z-2: a deleted cube collection takes its sink with it (its repository
+    // rides the collection_delete GC mark above); a deleted SOURCE only
+    // disables the sinks it fed, so the cube keeps its lock and ledger.
     if (txn.resourceType === "catalog_collection") {
-      await deleteCubeSinksForCollectionTolerant(ids.collection);
+      await cubeSinksOnCollectionDeleteTolerant(ids.collection);
     }
   }
 

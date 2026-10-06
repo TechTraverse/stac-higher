@@ -123,6 +123,19 @@ class TestRetentionTick:
         assert result.expired_items == 0
         assert len(repo.marks) == 1
 
+    async def test_never_marks_the_cube_repository_prefix(self):
+        # An item named `_cube` would mark assets/{c}/_cube/ — a cube
+        # repository's prefix (ADR 0022). The item is still expired; its
+        # prefix is left for the collection-delete mark.
+        repo = FakeGcRepo(
+            collections=[RetentionCollection("goes19-c13-cube", 1, 0)],
+            expired={"goes19-c13-cube": ["_cube", "item-1"]},
+        )
+        result = await retention_tick(repo, batch_limit=100)
+        assert [m["item_id"] for m in repo.marks] == ["item-1"]
+        assert ("goes19-c13-cube", "_cube") in repo.deleted_items
+        assert result.expired_items == 2
+
     async def test_re_marking_is_idempotent(self):
         repo = FakeGcRepo(
             collections=[RetentionCollection("sentinel-2", 14, 7)],

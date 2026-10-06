@@ -25,6 +25,10 @@ SKIP_REASONS = (
     "no_datetime",
 )
 
+#: Reserved item id (ADR 0022): ``assets/{c}/_cube/`` is a cube repository's
+#: prefix, so no item of this id may ever be GC-marked by item.
+CUBE_ITEM_ID = "_cube"
+
 PARSERS = ("hdf5",)
 DEFAULT_ASSET_KEY = "cube"
 MAX_NAMES = 64

@@ -168,13 +168,28 @@ describe("PUT", () => {
     const res = await put({ source_collection_id: SOURCE, config });
     expect(res.status).toBe(201);
     expect(upsertCubeSink).toHaveBeenCalledWith({
-      cubeCollectionId: CUBE, sourceCollectionId: SOURCE, config: parsedConfig, enabled: true, createdBy: "user-1",
+      cubeCollectionId: CUBE, sourceCollectionId: SOURCE, config: parsedConfig, enabled: true,
+      createdBy: "user-1", resetSourceState: false,
     });
   });
   it("replaces (200) an existing sink", async () => {
     vi.mocked(getCubeSink).mockResolvedValue(sink());
     vi.mocked(upsertCubeSink).mockResolvedValue({ sink: sink(), created: false });
     expect((await put({ source_collection_id: SOURCE, config })).status).toBe(200);
+    expect(vi.mocked(upsertCubeSink).mock.calls[0][0].resetSourceState).toBe(false);
+  });
+  it("resets the old source's state when the source changes before any repository exists", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ source_collection_id: "old-source" }));
+    vi.mocked(upsertCubeSink).mockResolvedValue({ sink: sink(), created: false });
+    expect((await put({ source_collection_id: SOURCE, config })).status).toBe(200);
+    expect(vi.mocked(upsertCubeSink).mock.calls[0][0].resetSourceState).toBe(true);
+  });
+  it("409s a source change once the repository exists", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ source_collection_id: "old-source", last_snapshot_id: "SNAP1" }));
+    const res = await put({ source_collection_id: SOURCE, config });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("cube_layout_locked");
+    expect(upsertCubeSink).not.toHaveBeenCalled();
   });
   it("409s a layout change once the repository exists", async () => {
     vi.mocked(getCubeSink).mockResolvedValue(sink({ last_snapshot_id: "SNAP1" }));
@@ -191,30 +206,71 @@ describe("PUT", () => {
 });
 
 describe("PATCH", () => {
-  it("403s members, 404s outside the group, toggles enabled", async () => {
-    expect((await call(patchRoute, authed(["member"]), { method: "PATCH", body: { enabled: false } })).status).toBe(403);
+  const patch = (enabled: unknown, auth = operator) =>
+    call(patchRoute, auth, { method: "PATCH", body: { enabled } });
+
+  it("403s members, 404s outside the group, disables without source checks", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink());
+    expect((await patch(false, authed(["member"]))).status).toBe(403);
     vi.mocked(canManageCollection).mockResolvedValueOnce(false);
-    expect((await call(patchRoute, operator, { method: "PATCH", body: { enabled: false } })).status).toBe(404);
-    const res = await call(patchRoute, operator, { method: "PATCH", body: { enabled: false } });
+    expect((await patch(false)).status).toBe(404);
+    vi.mocked(referenceIngestSources).mockResolvedValue([]); // would refuse an enable
+    const res = await patch(false);
     expect(res.status).toBe(200);
     expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, false);
   });
   it("400s anything but {enabled}, 404s a missing sink", async () => {
     expect((await call(patchRoute, operator, { method: "PATCH", body: { config } })).status).toBe(400);
-    vi.mocked(setCubeSinkEnabled).mockResolvedValue(null);
-    expect((await call(patchRoute, operator, { method: "PATCH", body: { enabled: true } })).status).toBe(404);
+    expect((await patch(true)).status).toBe(404); // getCubeSink → null
+    expect(setCubeSinkEnabled).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["source_collection_not_found", () => vi.mocked(existingCollections).mockResolvedValue(new Set([CUBE]))],
+    ["no_reference_ingest", () => vi.mocked(referenceIngestSources).mockResolvedValue([])],
+    ["signed_source_unsupported", () => vi.mocked(referenceIngestSources).mockResolvedValue([{ association_id: "a1", connection_id: "c1", anonymous: false }])],
+  ])("enabling re-runs the source checks: 422 %s", async (code, arrange) => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ enabled: false }));
+    arrange();
+    const res = await patch(true);
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe(code);
+    expect(setCubeSinkEnabled).not.toHaveBeenCalled();
+  });
+  it("enabling refuses a source outside the caller's groups", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ enabled: false }));
+    vi.mocked(canManageCollection).mockImplementation(async (_identity, id) => id === CUBE);
+    expect((await (await patch(true)).json()).code).toBe("source_collection_not_found");
+  });
+  it("enables when the source still qualifies", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ enabled: false }));
+    expect((await patch(true)).status).toBe(200);
+    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, true);
   });
 });
 
 describe("DELETE", () => {
+  const del = (auth = operator) => call(deleteRoute, auth, { method: "DELETE" });
+
   it("403s members, 404s outside the group and a missing sink, deletes otherwise", async () => {
-    expect((await call(deleteRoute, authed(["member"]), { method: "DELETE" })).status).toBe(403);
+    expect((await del(authed(["member"]))).status).toBe(403);
     vi.mocked(canManageCollection).mockResolvedValueOnce(false);
-    expect((await call(deleteRoute, operator, { method: "DELETE" })).status).toBe(404);
-    vi.mocked(deleteCubeSink).mockResolvedValueOnce(false);
-    expect((await call(deleteRoute, operator, { method: "DELETE" })).status).toBe(404);
-    const res = await call(deleteRoute, operator, { method: "DELETE" });
+    expect((await del()).status).toBe(404);
+    expect((await del()).status).toBe(404); // getCubeSink → null
+    vi.mocked(getCubeSink).mockResolvedValue(sink());
+    const res = await del();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ deleted: true });
+  });
+  it("409s once the repository exists (disable it, or delete the cube collection)", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ last_snapshot_id: "SNAP1" }));
+    const res = await del();
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("cube_repository_exists");
+    expect(deleteCubeSink).not.toHaveBeenCalled();
+  });
+  it("409s when the first commit lands between the read and the delete", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink());
+    vi.mocked(deleteCubeSink).mockResolvedValue(false); // guarded DELETE matched nothing
+    expect((await (await del()).json()).code).toBe("cube_repository_exists");
   });
 });

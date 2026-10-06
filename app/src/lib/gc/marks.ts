@@ -18,6 +18,7 @@ import { query } from "@/lib/db/connection";
 import { runMigrations } from "@/lib/db/migrate";
 import { CANONICAL_PREFIX, assertSafeSegment } from "@/lib/storage/keys";
 import { getCollectionSettings } from "@/lib/collections/settings";
+import { isCubeItemId } from "@/lib/cubes/reserved";
 
 export type GcReason = "item_delete" | "collection_delete";
 
@@ -39,6 +40,9 @@ export function gcPrefix(collectionId: string, itemId: string | null): string {
 /** Insert one open mark (idempotent via the open-key partial unique index),
  * with `collect_after` from the collection's `gc_grace_days`. */
 export async function markAssetGc(input: GcMarkInput): Promise<void> {
+  // Z-2 (ADR 0022): assets/{c}/_cube/ is a cube repository, never an item's
+  // bytes. It goes only with the whole-collection mark.
+  if (input.itemId !== null && isCubeItemId(input.itemId)) return;
   await runMigrations();
   const settings = await getCollectionSettings(input.collectionId);
   await query(

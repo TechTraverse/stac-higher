@@ -3,21 +3,27 @@
  * collection is [id] (virtual cube spec §7, ADR 0022).
  *
  * GET    — member+ of the cube collection's group: the sink + ledger summary.
- * PUT    — operator+: create or replace. Both collections must exist, the
- *          source must have an enabled reference-mode ingest association,
- *          and every such association must read anonymously (§13) — else
- *          422 with a `code`. Once the repository exists the layout
- *          (parser, append_dim, variables, loadable_variables) is locked
- *          (409 cube_layout_locked).
- * PATCH  — operator+: { enabled }.
- * DELETE — operator+: removes the row; the repository stays until the
- *          collection is deleted (asset_gc), so this is reversible.
+ * PUT    — operator+: create or replace, after the source checks below.
+ *          409 reserved_item_id if the cube collection holds an item
+ *          `_cube`. Once the repository exists (`last_snapshot_id`), the
+ *          layout (parser, append_dim, variables, loadable_variables) and
+ *          the source are locked (409 cube_layout_locked). Before that, a
+ *          source change resets the old source's prefixes, error and ledger.
+ * PATCH  — operator+: { enabled }. Enabling re-runs the source checks;
+ *          disabling never does.
+ * DELETE — operator+: only while no repository exists (else 409
+ *          cube_repository_exists). Afterwards the row carries the layout
+ *          lock and the ledger, so it goes with the cube collection; disable
+ *          the sink to stop appends.
+ *
+ * Source checks (§7, §13), shared by PUT and enabling: the caller manages
+ * the source (one they can't reads exactly like a missing one), both
+ * collections exist, the source has an enabled reference-mode ingest
+ * association, and every such association reads anonymously — else 422 with
+ * a `code`.
  *
  * Group rule (§14.1): the sink follows the cube collection's ownership
  * (`canManageCollection`). Outside the caller's groups every verb is a 404.
- * PUT also requires the caller to manage the SOURCE collection; one they
- * can't is reported exactly like a missing one (422
- * source_collection_not_found).
  * Role + audit (`cube_sink`) live in the guard; re-checked here.
  */
 import type { APIRoute } from "astro";
@@ -60,6 +66,36 @@ async function preamble(
   return { identity: auth.identity, collectionId };
 }
 
+/** The source checks shared by PUT and enabling (see the module doc).
+ * Returns the refusal, or null when the source qualifies. */
+async function refuseSource(
+  identity: CanonicalIdentity,
+  cube: string,
+  source: string,
+): Promise<Response | null> {
+  const sourceNotFound = () =>
+    refuse(422, "source_collection_not_found", `Source collection '${source}' does not exist`);
+  // Before any lookup, so nothing about a foreign collection is disclosed.
+  if (!(await canManageCollection(identity, source))) return sourceNotFound();
+  const [existing, refs] = await Promise.all([
+    existingCollections([cube, source]),
+    referenceIngestSources(source),
+  ]);
+  if (!existing.has(cube)) {
+    return refuse(422, "cube_collection_not_found", `Collection '${cube}' does not exist`);
+  }
+  if (!existing.has(source)) return sourceNotFound();
+  if (refs.length === 0) {
+    return refuse(422, "no_reference_ingest",
+      `Source collection '${source}' has no enabled reference-mode ingest association`);
+  }
+  if (refs.some((r) => !r.anonymous)) {
+    return refuse(422, "signed_source_unsupported",
+      "Cube sinks support anonymous (public) source connections only in v1");
+  }
+  return null;
+}
+
 function failure(err: unknown): Response {
   return jsonResponse(500, { error: err instanceof Error ? err.message : "Unknown error" });
 }
@@ -90,43 +126,28 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     if (source === cube) {
       return jsonResponse(400, { error: "source_collection_id must differ from the cube collection" });
     }
-    // The source must be manageable too, so a sink cannot hitch another
-    // group's ingest flow. Same answer as a missing source: a collection
-    // outside the caller's groups is not disclosed.
-    const sourceNotFound = () =>
-      refuse(422, "source_collection_not_found", `Source collection '${source}' does not exist`);
-    if (!(await canManageCollection(pre.identity, source))) return sourceNotFound();
+    const refused = await refuseSource(pre.identity, cube, source);
+    if (refused) return refused;
 
-    const existing = await existingCollections([cube, source]);
-    if (!existing.has(cube)) {
-      return refuse(422, "cube_collection_not_found", `Collection '${cube}' does not exist`);
-    }
-    if (!existing.has(source)) return sourceNotFound();
-    const refs = await referenceIngestSources(source);
-    if (refs.length === 0) {
-      return refuse(422, "no_reference_ingest",
-        `Source collection '${source}' has no enabled reference-mode ingest association`);
-    }
-    if (refs.some((r) => !r.anonymous)) {
-      return refuse(422, "signed_source_unsupported",
-        "Cube sinks support anonymous (public) source connections only in v1");
-    }
-
+    const [hasCubeItem, current] = await Promise.all([
+      collectionHasItem(cube, CUBE_ITEM_ID),
+      getCubeSink(cube),
+    ]);
     // `_cube` is the repository's prefix: an existing item of that id would
     // own it for GC and serving (ADR 0022), so it must go first.
-    if (await collectionHasItem(cube, CUBE_ITEM_ID)) {
+    if (hasCubeItem) {
       return refuse(409, "reserved_item_id",
         `Collection '${cube}' already holds an item named '${CUBE_ITEM_ID}'; delete or rename it first`);
     }
-
-    const current = await getCubeSink(cube);
-    if (current?.last_snapshot_id && layoutChanged(current.config, config)) {
+    const sourceChanged = current !== null && current.source_collection_id !== source;
+    if (current?.last_snapshot_id && (sourceChanged || layoutChanged(current.config, config))) {
       return refuse(409, "cube_layout_locked",
-        "The cube repository already exists; parser, append_dim, variables and loadable_variables cannot change");
+        "The cube repository already exists; its source, parser, append_dim, variables and loadable_variables cannot change");
     }
 
     const { sink, created } = await upsertCubeSink({
-      cubeCollectionId: cube, sourceCollectionId: source, config, enabled, createdBy: pre.identity.sub,
+      cubeCollectionId: cube, sourceCollectionId: source, config, enabled,
+      createdBy: pre.identity.sub, resetSourceState: sourceChanged,
     });
     return jsonResponse(created ? 201 : 200, { sink });
   } catch (err) {
@@ -142,6 +163,12 @@ export const PATCH: APIRoute = async ({ params, request, locals }) => {
     if (!parsed.success) {
       return jsonResponse(400, { error: "Validation failed", details: parsed.error.issues });
     }
+    const current = await getCubeSink(pre.collectionId);
+    if (!current) return notFound();
+    if (parsed.data.enabled) {
+      const refused = await refuseSource(pre.identity, pre.collectionId, current.source_collection_id);
+      if (refused) return refused;
+    }
     const sink = await setCubeSinkEnabled(pre.collectionId, parsed.data.enabled);
     return sink ? jsonResponse(200, { sink }) : notFound();
   } catch (err) {
@@ -153,7 +180,15 @@ export const DELETE: APIRoute = async ({ params, locals }) => {
   try {
     const pre = await preamble(locals.auth, params.id, true);
     if ("response" in pre) return pre.response;
-    return (await deleteCubeSink(pre.collectionId)) ? jsonResponse(200, { deleted: true }) : notFound();
+    const current = await getCubeSink(pre.collectionId);
+    if (!current) return notFound();
+    // The row holds the repository's layout lock and ledger; the guarded
+    // DELETE also covers a first commit landing after this read.
+    if (current.last_snapshot_id || !(await deleteCubeSink(pre.collectionId))) {
+      return refuse(409, "cube_repository_exists",
+        "The cube repository exists; disable the sink instead, or delete the cube collection to remove both");
+    }
+    return jsonResponse(200, { deleted: true });
   } catch (err) {
     return failure(err);
   }

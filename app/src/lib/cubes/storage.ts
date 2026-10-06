@@ -95,95 +95,124 @@ export async function upsertCubeSink(input: {
   config: CubeSinkConfig;
   enabled: boolean;
   createdBy: string;
+  /** The source changed and no repository exists yet: clear the previous
+   * source's prefixes, last error and ledger in the same statement. */
+  resetSourceState?: boolean;
 }): Promise<{ sink: ApiCubeSink; created: boolean }> {
   await runMigrations();
   const result = await query<CubeSinkRow & { created: boolean }>(
-    `INSERT INTO stac_higher.cube_sinks
-       (cube_collection_id, source_collection_id, config, enabled, created_by)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (cube_collection_id) DO UPDATE
-       SET source_collection_id = EXCLUDED.source_collection_id,
-           config = EXCLUDED.config,
-           enabled = EXCLUDED.enabled,
-           updated_at = now()
-     RETURNING ${COLUMNS}, (xmax = 0) AS created`,
-    [input.cubeCollectionId, input.sourceCollectionId, JSON.stringify(input.config), input.enabled, input.createdBy],
+    `WITH up AS (
+       INSERT INTO stac_higher.cube_sinks
+         (cube_collection_id, source_collection_id, config, enabled, created_by)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (cube_collection_id) DO UPDATE
+         SET source_collection_id = EXCLUDED.source_collection_id,
+             config = EXCLUDED.config,
+             enabled = EXCLUDED.enabled,
+             source_prefixes = CASE WHEN $6::boolean THEN '{}'::text[] ELSE cube_sinks.source_prefixes END,
+             last_error = CASE WHEN $6::boolean THEN NULL ELSE cube_sinks.last_error END,
+             updated_at = now()
+       RETURNING ${COLUMNS}, (xmax = 0) AS created
+     ), purge AS (
+       DELETE FROM stac_higher.cube_appends a USING up
+        WHERE $6::boolean AND a.cube_sink_id = up.id
+     )
+     SELECT * FROM up`,
+    [
+      input.cubeCollectionId,
+      input.sourceCollectionId,
+      JSON.stringify(input.config),
+      input.enabled,
+      input.createdBy,
+      input.resetSourceState === true,
+    ],
   );
   const { created, ...row } = result.rows[0];
   return { sink: toApi(row as CubeSinkRow), created };
 }
 
+/** Enabling clears a stale `last_error` (e.g. `source_collection_deleted`
+ * after the source came back); disabling keeps it. */
 export async function setCubeSinkEnabled(
   cubeCollectionId: string,
   enabled: boolean,
 ): Promise<ApiCubeSink | null> {
   await runMigrations();
   const result = await query<CubeSinkRow>(
-    `UPDATE stac_higher.cube_sinks SET enabled = $2, updated_at = now()
+    `UPDATE stac_higher.cube_sinks
+        SET enabled = $2,
+            last_error = CASE WHEN $2 THEN NULL ELSE last_error END,
+            updated_at = now()
       WHERE cube_collection_id = $1 RETURNING ${COLUMNS}`,
     [cubeCollectionId, enabled],
   );
   return result.rows[0] ? toApi(result.rows[0]) : null;
 }
 
-/** The repository stays until the collection is deleted (asset_gc), so a
- * delete is reversible by re-creating the sink while the window holds. */
+/** Deletes only while no repository exists. Once one does, the row holds
+ * its layout lock and ledger, so it goes only with the cube collection. */
 export async function deleteCubeSink(cubeCollectionId: string): Promise<boolean> {
   await runMigrations();
   const result = await query(
-    `DELETE FROM stac_higher.cube_sinks WHERE cube_collection_id = $1`,
+    `DELETE FROM stac_higher.cube_sinks
+      WHERE cube_collection_id = $1 AND last_snapshot_id IS NULL`,
     [cubeCollectionId],
   );
   return (result.rowCount ?? 0) > 0;
 }
 
-export async function deleteCubeSinksForCollection(collectionId: string): Promise<number> {
+/** Collection delete: the sink whose CUBE it was goes (its repository rides
+ * the collection's GC mark); sinks it SOURCED are disabled with
+ * `last_error = source_collection_deleted`, keeping their lock and ledger. */
+export async function cubeSinksOnCollectionDelete(
+  collectionId: string,
+): Promise<{ deleted: number; disabled: number }> {
   await runMigrations();
-  const result = await query(
-    `DELETE FROM stac_higher.cube_sinks
-      WHERE source_collection_id = $1 OR cube_collection_id = $1`,
+  const result = await query<{ deleted: string; disabled: string }>(
+    `WITH gone AS (
+       DELETE FROM stac_higher.cube_sinks WHERE cube_collection_id = $1 RETURNING id
+     ), orphaned AS (
+       UPDATE stac_higher.cube_sinks
+          SET enabled = false, last_error = 'source_collection_deleted', updated_at = now()
+        WHERE source_collection_id = $1
+       RETURNING id
+     )
+     SELECT (SELECT count(*) FROM gone) AS deleted, (SELECT count(*) FROM orphaned) AS disabled`,
     [collectionId],
   );
-  return result.rowCount ?? 0;
+  const row = result.rows[0];
+  return { deleted: Number(row?.deleted ?? 0), disabled: Number(row?.disabled ?? 0) };
 }
 
-/** Collection-delete hook: never fails a delete the catalog already applied. */
-export async function deleteCubeSinksForCollectionTolerant(collectionId: string): Promise<void> {
+/** Never fails a collection delete the catalog already applied. */
+export async function cubeSinksOnCollectionDeleteTolerant(collectionId: string): Promise<void> {
   try {
-    await deleteCubeSinksForCollection(collectionId);
+    await cubeSinksOnCollectionDelete(collectionId);
   } catch (err) {
     console.error(
-      `[cubes] failed to delete cube sinks for deleted collection ${collectionId}:`,
+      `[cubes] failed to update cube sinks for deleted collection ${collectionId}:`,
       err instanceof Error ? err.message : err,
     );
   }
 }
 
-/** Whether `_cube` is a reserved item id here: any sink, enabled or not. */
-export async function isCubeCollection(collectionId: string): Promise<boolean> {
-  await runMigrations();
-  const result = await query<{ exists: boolean }>(
-    `SELECT EXISTS (SELECT 1 FROM stac_higher.cube_sinks WHERE cube_collection_id = $1) AS exists`,
-    [collectionId],
-  );
-  return result.rows[0]?.exists === true;
-}
-
 export async function cubeLedgerSummary(sinkId: string): Promise<CubeLedgerSummary> {
   await runMigrations();
   const counts = Object.fromEntries(CUBE_APPEND_STATUSES.map((s) => [s, 0])) as Record<CubeAppendStatus, number>;
-  const grouped = await query<{ status: CubeAppendStatus; count: string }>(
-    `SELECT status, count(*) AS count FROM stac_higher.cube_appends
-      WHERE cube_sink_id = $1 GROUP BY status`,
-    [sinkId],
-  );
+  const [grouped, recent] = await Promise.all([
+    query<{ status: CubeAppendStatus; count: string }>(
+      `SELECT status, count(*) AS count FROM stac_higher.cube_appends
+        WHERE cube_sink_id = $1 GROUP BY status`,
+      [sinkId],
+    ),
+    query<Omit<CubeLedgerRow, "item_datetime" | "updated_at"> & { item_datetime: Date; updated_at: Date }>(
+      `SELECT item_id, item_datetime, status, reason, snapshot_id, attempts, updated_at
+         FROM stac_higher.cube_appends WHERE cube_sink_id = $1
+        ORDER BY item_datetime DESC LIMIT 20`,
+      [sinkId],
+    ),
+  ]);
   for (const r of grouped.rows) counts[r.status] = Number(r.count);
-  const recent = await query<Omit<CubeLedgerRow, "item_datetime" | "updated_at"> & { item_datetime: Date; updated_at: Date }>(
-    `SELECT item_id, item_datetime, status, reason, snapshot_id, attempts, updated_at
-       FROM stac_higher.cube_appends WHERE cube_sink_id = $1
-      ORDER BY item_datetime DESC LIMIT 20`,
-    [sinkId],
-  );
   return {
     counts,
     recent: recent.rows.map((r) => ({ ...r, item_datetime: iso(r.item_datetime), updated_at: iso(r.updated_at) })),
