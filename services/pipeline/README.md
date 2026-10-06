@@ -245,10 +245,11 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   second enqueue while one is waiting comes back `Enqueued(coalesced=True)`,
   never an exception. `pipeline.cube_kick` (`*/5 * * * *`) first requeues any
   `cube_append` a dead worker left `doing` (`QueueBackend.retry_stalled`;
-  heartbeat silent 300 s), which would otherwise hold its sink's lock forever,
-  then re-enqueues sinks with `pending` rows older than 2 minutes. Until Z-4, `cube_append` is a stub
-  that marks pending rows `failed: not_implemented`. The pipeline never writes
-  `cube_sinks.updated_at` (the app's version, #98).
+  heartbeat silent 300 s, the workers' prune horizon too; gives up after 3
+  recoveries), which would otherwise hold its sink's lock forever, then
+  re-enqueues sinks with `pending` rows older than 2 minutes. Until Z-4,
+  `cube_append` is a stub that marks pending rows `failed: not_implemented`.
+  The pipeline never writes `cube_sinks.updated_at` (the app's version, #98).
 - **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
   the `pipeline.deliver` task loads the destination connection, builds its
   adapter, and runs each item through `deliver_item`: resolve each asset's

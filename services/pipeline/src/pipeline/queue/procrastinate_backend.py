@@ -17,9 +17,9 @@ from collections.abc import Sequence
 
 import procrastinate
 import psycopg
-from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
-from procrastinate.jobs import Status
-from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
+from procrastinate.exceptions import AlreadyEnqueued, ConnectorException, UniqueViolation
+from procrastinate.jobs import Job, Status
+from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT, JobManager
 
 from pipeline.config import DEFAULT_WORKER_CONCURRENCY
 from pipeline.metrics import instrument_handler
@@ -44,10 +44,20 @@ logger = logging.getLogger(__name__)
 SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS = 25.0
 
 #: A worker whose heartbeat (every 10 s) is older than this is taken for dead,
-#: and its running jobs for stalled. Generous on purpose: a job that blocks
-#: the event loop also stops its worker's heartbeat, and requeueing a job that
-#: is in fact still running would run it twice under one lock.
+#: and its running jobs for stalled. The one horizon for both checks: every
+#: worker passes it as ``stalled_worker_timeout`` (at start-up it deletes the
+#: worker rows silent this long, which orphans their 'doing' jobs) and
+#: ``retry_stalled`` as ``seconds_since_heartbeat`` — so a live worker is
+#: never pruned, nor its jobs requeued, before 300 s of silence. Generous on
+#: purpose: a job that blocks the event loop also stops its worker's
+#: heartbeat, and requeueing a job that is in fact still running would run it
+#: twice under one lock.
 STALLED_WORKER_SECONDS = 300
+
+#: Recoveries before ``retry_stalled`` gives up on a job (finishes it failed):
+#: each retry_job bumps Procrastinate's ``attempts``, so a job that kills its
+#: worker every run cannot take the worker down every kick forever.
+MAX_STALLED_ATTEMPTS = 3
 
 
 class ProcrastinateQueue(QueueBackend):
@@ -155,35 +165,40 @@ class ProcrastinateQueue(QueueBackend):
     async def retry_stalled(self, job_name: str) -> int:
         await self._ensure_open()
         manager = self.app.job_manager
-        # Heartbeat-based: 'doing' jobs whose worker row is gone (pruned) or
-        # silent for STALLED_WORKER_SECONDS.
-        # list(): the manager types its result Iterable, and we take its len.
+        # Heartbeat-based: 'doing' jobs whose worker row is gone (pruned —
+        # also after STALLED_WORKER_SECONDS, see run_worker) or silent for
+        # STALLED_WORKER_SECONDS. Returns the jobs requeued or closed failed;
+        # a skipped job (ConnectorException) does not count.
         stalled = list(
             await manager.get_stalled_jobs(
                 task_name=job_name, seconds_since_heartbeat=STALLED_WORKER_SECONDS
             )
         )
+        handled = 0
         for job in stalled:
             try:
-                await manager.retry_job(job)
-                outcome = "requeued"
-            except UniqueViolation as exc:
-                if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
-                    raise
-                # A job holding the same queueing_lock is already waiting and
-                # does the same work; requeueing this one would collide with it.
-                await manager.finish_job(job, status=Status.FAILED, delete_job=False)
-                outcome = "failed"
+                outcome = await _recover_stalled_job(manager, job)
+                handled += 1
+            except UniqueViolation:
+                # Only a violation of some OTHER constraint escapes the helper
+                # (it handles the queueing-lock one) — unexpected, so loud.
+                raise
+            except ConnectorException:
+                # e.g. the job left 'doing' between the select and the retry
+                # ("Job was not found or has an invalid status to retry"):
+                # nothing to recover, and the remaining jobs still need it.
+                outcome = "skipped"
             logger.warning(
                 "stalled job recovered",
                 extra={
                     "job_name": job_name,
                     "job_id": job.id,
                     "lock": job.lock,
+                    "attempts": job.attempts,
                     "outcome": outcome,
                 },
             )
-        return len(stalled)
+        return handled
 
     async def setup(self) -> None:
         """Create the schema and apply Procrastinate's DDL, idempotently.
@@ -300,6 +315,7 @@ class ProcrastinateQueue(QueueBackend):
                     name=QUEUE_DEFAULT,
                     install_signal_handlers=False,
                     shutdown_graceful_timeout=SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS,
+                    stalled_worker_timeout=STALLED_WORKER_SECONDS,
                 )
             )
             bytes_task = asyncio.create_task(
@@ -309,6 +325,7 @@ class ProcrastinateQueue(QueueBackend):
                     name=QUEUE_BYTES,
                     install_signal_handlers=False,
                     shutdown_graceful_timeout=SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS,
+                    stalled_worker_timeout=STALLED_WORKER_SECONDS,
                 )
             )
 
@@ -376,3 +393,28 @@ class ProcrastinateQueue(QueueBackend):
                     )
         except psycopg.Error as exc:
             raise QueueConnectionError(f"cannot reach queue database: {exc}") from exc
+
+
+async def _recover_stalled_job(manager: JobManager, job: Job) -> str:
+    """Requeue one stalled job, or close it failed; returns the outcome.
+
+    Raises ``ConnectorException`` when the job cannot be touched (it left
+    'doing' meanwhile), and ``UniqueViolation`` for any constraint other than
+    the queueing lock.
+    """
+    if job.attempts >= MAX_STALLED_ATTEMPTS:
+        # Recovered MAX_STALLED_ATTEMPTS times already (retry_job bumps
+        # attempts; the worker's fetch does not) and stalled again: it most
+        # likely kills its worker. Stop instead of crash-looping it.
+        await manager.finish_job(job, status=Status.FAILED, delete_job=False)
+        return "gave_up"
+    try:
+        await manager.retry_job(job)
+    except UniqueViolation as exc:
+        if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
+            raise
+        # A job holding the same queueing_lock is already waiting and does
+        # the same work; requeueing this one would collide with it.
+        await manager.finish_job(job, status=Status.FAILED, delete_job=False)
+        return "failed"
+    return "requeued"

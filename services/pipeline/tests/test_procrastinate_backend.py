@@ -126,6 +126,13 @@ async def test_run_worker_starts_one_worker_per_queue(queue: ProcrastinateQueue,
     assert 0 < SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS < 30
     assert by_name["default"]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
     assert by_name["bytes"]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+    # Z-3 final review: a booting worker prunes worker rows silent longer than
+    # this, which makes their running jobs look stalled to retry_stalled at
+    # once — it must be the same horizon retry_stalled checks, not 30 s.
+    from pipeline.queue.procrastinate_backend import STALLED_WORKER_SECONDS
+
+    assert by_name["default"]["stalled_worker_timeout"] == STALLED_WORKER_SECONDS
+    assert by_name["bytes"]["stalled_worker_timeout"] == STALLED_WORKER_SECONDS
 
 
 async def test_run_worker_stop_signal_cancels_both_workers(
@@ -433,10 +440,12 @@ async def test_already_enqueued_comes_back_coalesced(queue, monkeypatch):
 class _FakeJobManager:
     """Stands in for app.job_manager: records calls, collides on demand."""
 
-    def __init__(self, stalled, collide=(), other_violation=False):
+    def __init__(self, stalled, collide=(), other_violation=False, gone=()):
         self.stalled = stalled
         self.collide = set(collide)
         self.other_violation = other_violation
+        #: jobs that left 'doing' between the select and the retry
+        self.gone = set(gone)
         self.calls: list[tuple] = []
 
     async def get_stalled_jobs(self, **kwargs):
@@ -444,10 +453,14 @@ class _FakeJobManager:
         return self.stalled
 
     async def retry_job(self, job):
-        from procrastinate.exceptions import UniqueViolation
+        from procrastinate.exceptions import ConnectorException, UniqueViolation
         from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
 
         self.calls.append(("retry", job.id))
+        if job.id in self.gone:
+            raise ConnectorException(
+                f"Job was not found or has an invalid status to retry (job id: {job.id})"
+            )
         if self.other_violation:
             raise UniqueViolation(constraint_name="some_other_idx", queueing_lock=None)
         if job.id in self.collide:
@@ -459,7 +472,7 @@ class _FakeJobManager:
         self.calls.append(("finish", job.id, status, delete_job))
 
 
-def _stalled_job(job_id: int):
+def _stalled_job(job_id: int, attempts: int = 0):
     from procrastinate.jobs import Job
 
     return Job(
@@ -468,6 +481,7 @@ def _stalled_job(job_id: int):
         lock="cube:s",
         queueing_lock="cube:s",
         task_name="pipeline.cube_append",
+        attempts=attempts,
     )
 
 
@@ -512,3 +526,66 @@ async def test_retry_stalled_with_nothing_stalled_is_a_no_op(queue, monkeypatch)
     _wire_manager(queue, monkeypatch, manager)
     assert await queue.retry_stalled("pipeline.cube_append") == 0
     assert [c[0] for c in manager.calls] == ["get"]
+
+
+def _recovery_outcomes(caplog) -> dict[int, str]:
+    return {
+        record.job_id: record.outcome
+        for record in caplog.records
+        if record.getMessage() == "stalled job recovered"
+    }
+
+
+async def test_retry_stalled_gives_up_on_a_job_at_the_attempt_cap(queue, monkeypatch, caplog):
+    """Z-3 final review: Procrastinate's retry_job bumps ``attempts`` on every
+    recovery, so a job that kills its worker each run reaches the cap and is
+    closed failed instead of crash-looping its worker every kick."""
+    import logging
+
+    from procrastinate.jobs import Status
+
+    from pipeline.queue.procrastinate_backend import MAX_STALLED_ATTEMPTS
+
+    manager = _FakeJobManager(
+        [
+            _stalled_job(1, attempts=MAX_STALLED_ATTEMPTS),
+            _stalled_job(2, attempts=MAX_STALLED_ATTEMPTS - 1),
+        ]
+    )
+    _wire_manager(queue, monkeypatch, manager)
+    with caplog.at_level(logging.WARNING, logger="pipeline.queue.procrastinate_backend"):
+        assert await queue.retry_stalled("pipeline.cube_append") == 2
+    assert manager.calls[1:] == [
+        ("finish", 1, Status.FAILED, False),
+        ("retry", 2),
+    ]
+    assert _recovery_outcomes(caplog) == {1: "gave_up", 2: "requeued"}
+
+
+async def test_retry_stalled_skips_a_job_it_cannot_recover(queue, monkeypatch, caplog):
+    """Z-3 final review: a job that left 'doing' between the select and the
+    retry must not abort the loop (nor the kick's stale-sink enqueue)."""
+    import logging
+
+    manager = _FakeJobManager([_stalled_job(1), _stalled_job(2)], gone={1})
+    _wire_manager(queue, monkeypatch, manager)
+    with caplog.at_level(logging.WARNING, logger="pipeline.queue.procrastinate_backend"):
+        assert await queue.retry_stalled("pipeline.cube_append") == 1
+    assert manager.calls[1:] == [("retry", 1), ("retry", 2)]
+    assert _recovery_outcomes(caplog) == {1: "skipped", 2: "requeued"}
+
+
+async def test_retry_stalled_skips_a_job_it_cannot_close(queue, monkeypatch):
+    """The collision path's finish_job can fail the same way (the job left
+    'doing' meanwhile): skipped, and the loop goes on."""
+    from procrastinate.exceptions import ConnectorException
+
+    class _FinishFails(_FakeJobManager):
+        async def finish_job(self, job, status, delete_job):
+            await super().finish_job(job, status, delete_job)
+            raise ConnectorException('Job was not found or not in "doing" or "todo" status')
+
+    manager = _FinishFails([_stalled_job(1), _stalled_job(2)], collide={1})
+    _wire_manager(queue, monkeypatch, manager)
+    assert await queue.retry_stalled("pipeline.cube_append") == 1
+    assert [c[:2] for c in manager.calls[1:]] == [("retry", 1), ("finish", 1), ("retry", 2)]
