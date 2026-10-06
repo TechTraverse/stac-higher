@@ -31,6 +31,12 @@ vi.mock("@/lib/collections/settings", () => ({
 vi.mock("@/lib/gc/marks", () => ({
   markAssetGcTolerant: vi.fn(async () => {}),
 }));
+// Z-2 hooks (the _cube reservation, sink cleanup on collection delete):
+// never let them reach a real DB.
+vi.mock("@/lib/cubes/storage", () => ({
+  isCubeCollection: vi.fn(async () => false),
+  deleteCubeSinksForCollectionTolerant: vi.fn(async () => {}),
+}));
 // The ledger layer is mocked — an unmocked DB lookup 500s with the Docker
 // stack down (the api-assets lesson).
 vi.mock("@/lib/uploads/storage", () => ({

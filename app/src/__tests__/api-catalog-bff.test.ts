@@ -21,12 +21,21 @@ vi.mock("@/lib/collections/settings", () => ({
 vi.mock("@/lib/gc/marks", () => ({
   markAssetGcTolerant: vi.fn(async () => {}),
 }));
+// Z-2 hooks: the _cube reservation lookup and sink cleanup on collection delete.
+vi.mock("@/lib/cubes/storage", () => ({
+  isCubeCollection: vi.fn(async () => false),
+  deleteCubeSinksForCollectionTolerant: vi.fn(async () => {}),
+}));
 
 import { safeFetch } from "@/lib/http/safe-fetch";
 import { getAuthConfig } from "@/lib/auth/config";
 import { readSession } from "@/lib/auth/session";
 import { getCollectionSettings } from "@/lib/collections/settings";
 import { markAssetGcTolerant } from "@/lib/gc/marks";
+import {
+  deleteCubeSinksForCollectionTolerant,
+  isCubeCollection,
+} from "@/lib/cubes/storage";
 import { makeCollectionSettings } from "./helpers/settings-fixtures";
 import { builtinCatalogUrl } from "@/lib/catalog/transactions";
 import {
@@ -84,6 +93,8 @@ beforeEach(() => {
   vi.mocked(getCollectionSettings).mockResolvedValue(
     makeCollectionSettings({ collectionId: "c1" }),
   );
+  vi.mocked(isCubeCollection).mockResolvedValue(false);
+  vi.mocked(deleteCubeSinksForCollectionTolerant).mockResolvedValue(undefined);
 });
 
 describe("path scoping", () => {
@@ -237,5 +248,82 @@ describe("retention & GC hooks (M2-F, ADR 0011)", () => {
         })
       ).ok,
     ).toBe(true);
+  });
+});
+
+describe("reserved item id _cube (Z-2, virtual cube spec §7)", () => {
+  const item = (id: string) => ({
+    type: "Feature", id, collection: "cube", geometry: null, properties: {}, links: [], assets: {},
+  });
+  const handlers = { POST: postRoute, PUT: putRoute, DELETE: deleteRoute } as const;
+  const send = (method: keyof typeof handlers, path: string, body?: unknown) =>
+    call(handlers[method], path, { method, body });
+
+  it("refuses POSTing item _cube into a cube collection (422, not forwarded)", async () => {
+    vi.mocked(isCubeCollection).mockResolvedValue(true);
+    const res = await send("POST", "collections/cube/items", item("_cube"));
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe("reserved_item_id");
+    expect(isCubeCollection).toHaveBeenCalledWith("cube");
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses _cube inside a FeatureCollection body", async () => {
+    vi.mocked(isCubeCollection).mockResolvedValue(true);
+    const res = await send("POST", "collections/cube/items", {
+      type: "FeatureCollection",
+      features: [item("a"), item("_cube")],
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it("checks the body id as well as the path id", async () => {
+    vi.mocked(isCubeCollection).mockResolvedValue(true);
+    expect((await send("PUT", "collections/cube/items/_cube", item("other"))).status).toBe(422);
+    expect((await send("PUT", "collections/cube/items/other", item("_cube"))).status).toBe(422);
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("allows _cube in a collection that is not a cube", async () => {
+    const res = await send("POST", "collections/plain/items", item("_cube"));
+    expect(res.status).toBe(201);
+    expect(safeFetch).toHaveBeenCalled();
+  });
+
+  it("never queries the sink table for ordinary ids", async () => {
+    await send("POST", "collections/cube/items", item("a"));
+    expect(isCubeCollection).not.toHaveBeenCalled();
+  });
+
+  it("fails closed (503) when the sink lookup errors", async () => {
+    vi.mocked(isCubeCollection).mockRejectedValue(new Error("db down"));
+    expect((await send("POST", "collections/cube/items", item("_cube"))).status).toBe(503);
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("still allows deleting an item named _cube", async () => {
+    vi.mocked(isCubeCollection).mockResolvedValue(true);
+    vi.mocked(safeFetch).mockResolvedValue(upstream(200) as never);
+    expect((await send("DELETE", "collections/cube/items/_cube")).status).toBe(200);
+  });
+});
+
+describe("collection delete removes cube sinks (Z-2)", () => {
+  it("deletes sink rows naming the collection after a successful delete", async () => {
+    vi.mocked(safeFetch).mockResolvedValue(upstream(200) as never);
+    await call(deleteRoute, "collections/goes19-cmipc", { method: "DELETE" });
+    expect(deleteCubeSinksForCollectionTolerant).toHaveBeenCalledWith("goes19-cmipc");
+  });
+
+  it("does not touch sinks when the upstream delete failed", async () => {
+    vi.mocked(safeFetch).mockResolvedValue(upstream(500) as never);
+    await call(deleteRoute, "collections/goes19-cmipc", { method: "DELETE" });
+    expect(deleteCubeSinksForCollectionTolerant).not.toHaveBeenCalled();
+  });
+
+  it("does not touch sinks on an item delete", async () => {
+    vi.mocked(safeFetch).mockResolvedValue(upstream(200) as never);
+    await call(deleteRoute, "collections/goes19-cmipc/items/i1", { method: "DELETE" });
+    expect(deleteCubeSinksForCollectionTolerant).not.toHaveBeenCalled();
   });
 });

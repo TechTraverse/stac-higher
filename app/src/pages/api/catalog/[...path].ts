@@ -51,6 +51,11 @@ import {
   matchCatalogTransaction,
 } from "@/lib/catalog/transactions";
 import { getCollectionSettings } from "@/lib/collections/settings";
+import { CUBE_ITEM_ID, writtenItemIds } from "@/lib/cubes/reserved";
+import {
+  deleteCubeSinksForCollectionTolerant,
+  isCubeCollection,
+} from "@/lib/cubes/storage";
 import { markAssetGcTolerant } from "@/lib/gc/marks";
 import { forwardUpstream } from "@/lib/http/forward";
 import { jsonResponse } from "@/lib/http/response";
@@ -214,6 +219,26 @@ const handler: APIRoute = async ({ params, request, cookies, locals }) => {
     } catch {
       doc = undefined;
     }
+    // Z-2 (virtual cube spec §7): `_cube` is reserved in a cube collection.
+    // The sink table is consulted only when a written id IS `_cube`, and a
+    // failed lookup fails closed — the alternative is an item that owns the
+    // repository's prefix.
+    if (isItemWrite && ids && writtenItemIds(ids.item, doc).includes(CUBE_ITEM_ID)) {
+      let reserved: boolean;
+      try {
+        reserved = await isCubeCollection(ids.collection);
+      } catch {
+        return jsonResponse(503, {
+          error: "Cube sinks are unavailable — an item named _cube cannot be checked",
+        });
+      }
+      if (reserved) {
+        return jsonResponse(422, {
+          error: `Item id '${CUBE_ITEM_ID}' is reserved in cube collection '${ids.collection}'`,
+          code: "reserved_item_id",
+        });
+      }
+    }
     if (doc !== undefined && hasStagedHrefs(doc)) {
       const verdict = await preValidateStagedWrite(doc, {
         method,
@@ -259,6 +284,11 @@ const handler: APIRoute = async ({ params, request, cookies, locals }) => {
       reason:
         txn.resourceType === "catalog_item" ? "item_delete" : "collection_delete",
     });
+    // Z-2: a deleted collection takes its cube sinks with it, as source or
+    // cube. The repository bytes ride the collection_delete GC mark above.
+    if (txn.resourceType === "catalog_collection") {
+      await deleteCubeSinksForCollectionTolerant(ids.collection);
+    }
   }
 
   return response;
