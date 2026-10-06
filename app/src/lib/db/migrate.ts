@@ -1584,6 +1584,61 @@ const MIGRATIONS = [
         WHERE runtime->'image'->>'id' IS NOT NULL;
     `,
   },
+  {
+    // Z-2 (virtual cube spec §4, ADR 0022): a cube sink binds a source
+    // collection (fed by a reference-mode ingest association) to the cube
+    // collection that owns the virtual Icechunk repository at
+    // assets/{cube_collection_id}/_cube/. Ownership follows the CUBE
+    // collection's group (spec §14.1), so there is no group column.
+    // Collections live in pgstac: no FK; the BFF collection delete removes
+    // sink rows naming the deleted collection. source_prefixes,
+    // last_snapshot_id and the last_* fields are pipeline-written;
+    // updated_at is app-maintained. 029 (K-3) and 031 (K-4) are reserved
+    // elsewhere; migrations apply by name, so the gap is harmless.
+    name: "032_cube_sinks",
+    sql: `
+      CREATE TABLE IF NOT EXISTS stac_higher.cube_sinks (
+        id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        source_collection_id text NOT NULL,
+        cube_collection_id   text NOT NULL UNIQUE,
+        enabled              boolean NOT NULL DEFAULT true,
+        config               jsonb NOT NULL,
+        source_prefixes      text[] NOT NULL DEFAULT '{}',
+        last_snapshot_id     text,
+        last_appended_at     timestamptz,
+        last_maintained_at   timestamptz,
+        last_maintenance     jsonb,
+        last_error           text,
+        created_by           text NOT NULL,
+        created_at           timestamptz NOT NULL DEFAULT now(),
+        updated_at           timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT cube_sinks_distinct_collections_check CHECK (source_collection_id <> cube_collection_id)
+      );
+      CREATE INDEX IF NOT EXISTS cube_sinks_source_enabled_idx
+        ON stac_higher.cube_sinks (source_collection_id) WHERE enabled;
+
+      -- The append ledger. UNIQUE (cube_sink_id, item_id) makes the
+      -- dispatcher's insert idempotent (ON CONFLICT DO NOTHING): a
+      -- transaction-API PUT arrives as delete + insert (ADR 0007).
+      CREATE TABLE IF NOT EXISTS stac_higher.cube_appends (
+        id            bigserial PRIMARY KEY,
+        cube_sink_id  uuid NOT NULL REFERENCES stac_higher.cube_sinks(id) ON DELETE CASCADE,
+        item_id       text NOT NULL,
+        item_datetime timestamptz NOT NULL,
+        status        text NOT NULL DEFAULT 'pending'
+          CONSTRAINT cube_appends_status_check CHECK (status IN ('pending','appended','skipped','failed')),
+        reason        text,
+        snapshot_id   text,
+        attempts      int NOT NULL DEFAULT 0,
+        created_at    timestamptz NOT NULL DEFAULT now(),
+        updated_at    timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (cube_sink_id, item_id)
+      );
+      CREATE INDEX IF NOT EXISTS cube_appends_pending_idx
+        ON stac_higher.cube_appends (cube_sink_id, item_datetime)
+        WHERE status = 'pending';
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that
