@@ -77,3 +77,53 @@ async def test_queueing_lock_coalesces_and_lock_reaches_the_row(queue):
             (int(first.job_id),),
         )
         assert await cur.fetchone() == ("cube:a", "cube:a")
+
+
+async def test_retry_stalled_against_real_procrastinate(queue):
+    """Decision 14 against real Procrastinate. A 'doing' job with no worker row
+    (a dead worker, pruned) is requeued. One whose queueing_lock a waiting job
+    already holds is closed as failed. A job on a live worker is left alone."""
+    import psycopg
+
+    await queue.setup()
+
+    async def handler(**kw):
+        pass
+
+    queue.register_task(handler, name="jobs.locked")
+    lone = await queue.enqueue("jobs.locked", {"n": 1}, lock="cube:a", queueing_lock="cube:a")
+    covered = await queue.enqueue("jobs.locked", {"n": 2}, lock="cube:b", queueing_lock="cube:b")
+    live = await queue.enqueue("jobs.locked", {"n": 3}, lock="cube:c", queueing_lock="cube:c")
+    jobs = f'"{SCHEMA}".procrastinate_jobs'
+    # Procrastinate's status trigger names its enum type unqualified, so the
+    # raw connection needs the queue's search_path, like the backend's pool.
+    async with await psycopg.AsyncConnection.connect(
+        DATABASE_URL, autocommit=True, options=f"-c search_path={SCHEMA},public"
+    ) as conn:
+        await conn.execute(
+            f"UPDATE {jobs} SET status = 'doing', worker_id = NULL WHERE id = ANY(%s)",
+            ([int(lone.job_id), int(covered.job_id)],),
+        )
+        cur = await conn.execute(
+            f'INSERT INTO "{SCHEMA}".procrastinate_workers DEFAULT VALUES RETURNING id'
+        )
+        worker_id = (await cur.fetchone())[0]
+        await conn.execute(
+            f"UPDATE {jobs} SET status = 'doing', worker_id = %s WHERE id = %s",
+            (worker_id, int(live.job_id)),
+        )
+    # 'covered' is doing, so it holds no queueing lock: a new wake is accepted.
+    waiting = await queue.enqueue("jobs.locked", {"n": 4}, lock="cube:b", queueing_lock="cube:b")
+    assert waiting.coalesced is False
+
+    assert await queue.retry_stalled("jobs.locked") == 2
+    await queue.aclose()
+
+    by_name = {"lone": lone, "covered": covered, "live": live, "waiting": waiting}
+    ids = {int(result.job_id): name for name, result in by_name.items()}
+    async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+        cur = await conn.execute(
+            f"SELECT id, status::text FROM {jobs} WHERE id = ANY(%s)", (list(ids),)
+        )
+        statuses = {ids[row[0]]: row[1] for row in await cur.fetchall()}
+    assert statuses == {"lone": "todo", "covered": "failed", "live": "doing", "waiting": "todo"}

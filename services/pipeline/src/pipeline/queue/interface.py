@@ -131,6 +131,18 @@ class QueueBackend(abc.ABC):
         """Enqueue many jobs of the same task in one backend round trip."""
 
     @abc.abstractmethod
+    async def retry_stalled(self, job_name: str) -> int:
+        """Hand ``job_name`` jobs that a dead worker left running back to the
+        queue; returns how many were handled.
+
+        A dead worker's job keeps its ``lock`` forever otherwise, so every
+        later same-lock job waits behind it. If a waiting job already holds
+        the stalled job's ``queueing_lock``, the stalled job is closed as
+        failed instead: the waiting job does the same work, and requeueing
+        would collide with it.
+        """
+
+    @abc.abstractmethod
     async def setup(self) -> None:
         """Idempotently provision backend infrastructure (schema, queues)."""
 

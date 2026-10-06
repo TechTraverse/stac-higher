@@ -181,3 +181,55 @@ async def test_same_lock_jobs_run_one_at_a_time(queue: InMemoryQueue):
     await queue.enqueue("jobs.lock", {"name": "c"}, lock="M")
     await queue.run_pending()
     assert order == ["start a", "start c", "end c", "end a", "start b", "end b"]
+
+
+async def test_a_stranded_job_holds_its_lock(queue: InMemoryQueue):
+    ran: list[int] = []
+    queue.register_task(lambda n: ran.append(n), name="jobs.lock")
+    first = await queue.enqueue("jobs.lock", {"n": 1}, lock="L", queueing_lock="L")
+    queue.strand(first.job_id)  # its worker was SIGKILLed mid-job
+    await queue.enqueue("jobs.lock", {"n": 2}, lock="L", queueing_lock="L")
+    third = await queue.enqueue("jobs.lock", {"n": 3}, lock="L", queueing_lock="L")
+    await queue.run_pending()
+    assert third.coalesced is True
+    assert ran == []  # the wedge retry_stalled exists to clear
+
+
+async def test_retry_stalled_requeues_a_stranded_job(queue: InMemoryQueue):
+    ran: list[int] = []
+    queue.register_task(lambda n: ran.append(n), name="jobs.lock")
+    first = await queue.enqueue("jobs.lock", {"n": 1}, lock="L", queueing_lock="L")
+    queue.strand(first.job_id)
+    assert await queue.retry_stalled("jobs.lock") == 1
+    await queue.run_pending()
+    assert ran == [1]
+
+
+async def test_retry_stalled_fails_a_stranded_job_a_waiting_one_covers(queue: InMemoryQueue):
+    # Requeueing it would break the waiting job's queueing_lock (Procrastinate's
+    # unique index on status='todo'); the waiting job does the same work.
+    ran: list[int] = []
+    queue.register_task(lambda n: ran.append(n), name="jobs.lock")
+    first = await queue.enqueue("jobs.lock", {"n": 1}, lock="L", queueing_lock="L")
+    queue.strand(first.job_id)
+    await queue.enqueue("jobs.lock", {"n": 2}, lock="L", queueing_lock="L")
+    assert await queue.retry_stalled("jobs.lock") == 1
+    await queue.run_pending()
+    assert ran == [2]
+    assert [j.status for j in queue.jobs] == ["failed", "done"]
+
+
+async def test_retry_stalled_skips_live_jobs_and_other_tasks(queue: InMemoryQueue):
+    seen: list[int] = []
+
+    async def handler() -> None:
+        seen.append(await queue.retry_stalled("jobs.live"))
+
+    queue.register_task(handler, name="jobs.live")
+    queue.register_task(lambda **kw: None, name="jobs.other")
+    other = await queue.enqueue("jobs.other", {})
+    queue.strand(other.job_id)
+    await queue.enqueue("jobs.live", {}, lock="L")
+    await queue.run_pending()
+    assert seen == [0]  # neither itself (live) nor another task's stranded job
+    assert [j.status for j in queue.jobs] == ["running", "done"]

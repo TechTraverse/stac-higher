@@ -34,6 +34,8 @@ class Job:
     status: str = "pending"  # pending | running | done | failed
     lock: str | None = None
     queueing_lock: str | None = None
+    #: set by strand(): running on a worker that died (retry_stalled's target)
+    stalled: bool = False
 
 
 @dataclass
@@ -121,6 +123,20 @@ class InMemoryQueue(QueueBackend):
         self.jobs.append(job)
         return job
 
+    async def retry_stalled(self, job_name: str) -> int:
+        recovered = 0
+        for job in self.jobs:
+            if job.name != job_name or not job.stalled:
+                continue
+            job.stalled = False
+            covered = job.queueing_lock is not None and any(
+                other.queueing_lock == job.queueing_lock and other.status == "pending"
+                for other in self.jobs
+            )
+            job.status = "failed" if covered else "pending"
+            recovered += 1
+        return recovered
+
     async def setup(self) -> None:
         self.is_set_up = True
 
@@ -134,6 +150,12 @@ class InMemoryQueue(QueueBackend):
             raise QueueConnectionError("in-memory queue marked disconnected")
 
     # -- test drivers ------------------------------------------------------
+
+    def strand(self, job_id: str) -> None:
+        """Leave a job ``running`` on a worker that died (a SIGKILL mid-job).
+        It keeps its lock until :meth:`retry_stalled` recovers it."""
+        job = next(j for j in self.jobs if j.id == job_id)
+        job.status, job.stalled = "running", True
 
     async def run_pending(self) -> int:
         """Execute all pending jobs; returns how many ran.

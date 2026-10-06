@@ -17,7 +17,9 @@ from collections.abc import Sequence
 
 import procrastinate
 import psycopg
-from procrastinate.exceptions import AlreadyEnqueued
+from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
+from procrastinate.jobs import Status
+from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
 
 from pipeline.config import DEFAULT_WORKER_CONCURRENCY
 from pipeline.metrics import instrument_handler
@@ -40,6 +42,12 @@ logger = logging.getLogger(__name__)
 #: (docker-compose.yml: 30 s), or Docker's SIGKILL wins and the abort, the
 #: worker unregistration and `main.run()`'s pool cleanup never run.
 SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS = 25.0
+
+#: A worker whose heartbeat (every 10 s) is older than this is taken for dead,
+#: and its running jobs for stalled. Generous on purpose: a job that blocks
+#: the event loop also stops its worker's heartbeat, and requeueing a job that
+#: is in fact still running would run it twice under one lock.
+STALLED_WORKER_SECONDS = 300
 
 
 class ProcrastinateQueue(QueueBackend):
@@ -143,6 +151,39 @@ class ProcrastinateQueue(QueueBackend):
         await self._ensure_open()
         job_ids = await self.app.tasks[job_name].batch_defer_async(*[dict(p) for p in payloads])
         return [str(job_id) for job_id in job_ids]
+
+    async def retry_stalled(self, job_name: str) -> int:
+        await self._ensure_open()
+        manager = self.app.job_manager
+        # Heartbeat-based: 'doing' jobs whose worker row is gone (pruned) or
+        # silent for STALLED_WORKER_SECONDS.
+        # list(): the manager types its result Iterable, and we take its len.
+        stalled = list(
+            await manager.get_stalled_jobs(
+                task_name=job_name, seconds_since_heartbeat=STALLED_WORKER_SECONDS
+            )
+        )
+        for job in stalled:
+            try:
+                await manager.retry_job(job)
+                outcome = "requeued"
+            except UniqueViolation as exc:
+                if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
+                    raise
+                # A job holding the same queueing_lock is already waiting and
+                # does the same work; requeueing this one would collide with it.
+                await manager.finish_job(job, status=Status.FAILED, delete_job=False)
+                outcome = "failed"
+            logger.warning(
+                "stalled job recovered",
+                extra={
+                    "job_name": job_name,
+                    "job_id": job.id,
+                    "lock": job.lock,
+                    "outcome": outcome,
+                },
+            )
+        return len(stalled)
 
     async def setup(self) -> None:
         """Create the schema and apply Procrastinate's DDL, idempotently.

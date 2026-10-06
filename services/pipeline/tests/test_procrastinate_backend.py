@@ -428,3 +428,87 @@ async def test_already_enqueued_comes_back_coalesced(queue, monkeypatch):
         "jobs.locked", {"cube_sink_id": "s"}, lock="cube:s", queueing_lock="cube:s"
     )
     assert result == Enqueued(job_id=None, coalesced=True)
+
+
+class _FakeJobManager:
+    """Stands in for app.job_manager: records calls, collides on demand."""
+
+    def __init__(self, stalled, collide=(), other_violation=False):
+        self.stalled = stalled
+        self.collide = set(collide)
+        self.other_violation = other_violation
+        self.calls: list[tuple] = []
+
+    async def get_stalled_jobs(self, **kwargs):
+        self.calls.append(("get", kwargs))
+        return self.stalled
+
+    async def retry_job(self, job):
+        from procrastinate.exceptions import UniqueViolation
+        from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
+
+        self.calls.append(("retry", job.id))
+        if self.other_violation:
+            raise UniqueViolation(constraint_name="some_other_idx", queueing_lock=None)
+        if job.id in self.collide:
+            raise UniqueViolation(
+                constraint_name=QUEUEING_LOCK_CONSTRAINT, queueing_lock=job.queueing_lock
+            )
+
+    async def finish_job(self, job, status, delete_job):
+        self.calls.append(("finish", job.id, status, delete_job))
+
+
+def _stalled_job(job_id: int):
+    from procrastinate.jobs import Job
+
+    return Job(
+        id=job_id,
+        queue="default",
+        lock="cube:s",
+        queueing_lock="cube:s",
+        task_name="pipeline.cube_append",
+    )
+
+
+def _wire_manager(queue: ProcrastinateQueue, monkeypatch, manager: _FakeJobManager) -> None:
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+    monkeypatch.setattr(queue.app, "job_manager", manager)
+
+
+async def test_retry_stalled_requeues_and_closes_covered_jobs(queue, monkeypatch):
+    from procrastinate.jobs import Status
+
+    from pipeline.queue.procrastinate_backend import STALLED_WORKER_SECONDS
+
+    manager = _FakeJobManager([_stalled_job(1), _stalled_job(2)], collide={2})
+    _wire_manager(queue, monkeypatch, manager)
+    assert await queue.retry_stalled("pipeline.cube_append") == 2
+    get_kwargs = {
+        "task_name": "pipeline.cube_append",
+        "seconds_since_heartbeat": STALLED_WORKER_SECONDS,
+    }
+    assert manager.calls == [
+        ("get", get_kwargs),
+        ("retry", 1),
+        ("retry", 2),
+        ("finish", 2, Status.FAILED, False),
+    ]
+
+
+async def test_retry_stalled_reraises_any_other_unique_violation(queue, monkeypatch):
+    from procrastinate.exceptions import UniqueViolation
+
+    _wire_manager(queue, monkeypatch, _FakeJobManager([_stalled_job(1)], other_violation=True))
+    with pytest.raises(UniqueViolation):
+        await queue.retry_stalled("pipeline.cube_append")
+
+
+async def test_retry_stalled_with_nothing_stalled_is_a_no_op(queue, monkeypatch):
+    manager = _FakeJobManager([])
+    _wire_manager(queue, monkeypatch, manager)
+    assert await queue.retry_stalled("pipeline.cube_append") == 0
+    assert [c[0] for c in manager.calls] == ["get"]
