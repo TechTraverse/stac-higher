@@ -4,7 +4,7 @@
 
 **Goal:** Get each new source item into the cube ledger and one single-writer `pipeline.cube_append` job queued per sink. The append itself is Z-4; Z-3's `cube_append` is a stub that marks its pending rows `failed: not_implemented`.
 
-**Architecture:** The queue interface gains `lock` / `queueing_lock` on `enqueue` and returns an `Enqueued` result whose `coalesced` flag replaces Procrastinate's `AlreadyEnqueued` exception (caught in the backend, spec §14.2). A new `cubes/repo.py` (`CubeRepo` ABC + `PgCubeRepo`) holds every `cube_sinks` / `cube_appends` statement the pipeline runs in this slice. `jobs/cubes.py` owns the lock name, the enqueue helper, the 5-minute `cube_kick` backstop and the stub. The dispatcher loop matches `insert` events only, buffers ledger rows for the claim, and writes them and enqueues one job per sink **before** draining the outbox.
+**Architecture:** The queue interface gains `lock` / `queueing_lock` on `enqueue` and returns an `Enqueued` result whose `coalesced` flag replaces Procrastinate's `AlreadyEnqueued` exception (caught in the backend, spec §14.2). A new `cubes/repo.py` (`CubeRepo` ABC + `PgCubeRepo`) holds every `cube_sinks` / `cube_appends` statement the pipeline runs in this slice. The queue also gains `retry_stalled(job_name)`, which hands a job a dead worker left `doing` back to the queue; otherwise that job holds its lock forever. `jobs/cubes.py` owns the lock name, the enqueue helper, the 5-minute `cube_kick` backstop (stalled-job recovery first, then stale sinks) and the stub. The dispatcher loop matches `insert` events only, buffers ledger rows for the claim, and writes them and enqueues one job per sink **before** draining the outbox.
 
 **Tech Stack:** Python 3.12, Procrastinate 3.9.0, psycopg 3 (async pool), pytest (asyncio auto mode), ruff. No app change, no migration, no new dependency.
 
@@ -33,21 +33,24 @@
 4. **No-datetime rows still need an `item_datetime`** (the column is `NOT NULL`). They take the event's `occurred_at`, else `now()`. The row is terminal (`skipped`) and never ordered for an append.
 5. **A datetime that does not parse counts as missing** (`skipped: no_datetime`), parsed in Python inside the per-event isolation. Passing the raw string to Postgres would let one bad value fail the whole claim's insert. pgstac refuses such items anyway, so this is defensive.
 6. **The cube step runs first among the post-loop writes** (ledger insert → cube enqueues → finalize → process runs → deliveries → drain). The cube step is fully idempotent (`ON CONFLICT DO NOTHING` + `queueing_lock`), so if it raises nothing non-idempotent has been queued for the claim yet. In-loop, the matching still happens after process and deliver matching, as §5.2 says.
-7. **A sink lookup that raises drops that event's cube row, logged at ERROR, and the event still drains.** It does not defer the event: by then its delivery and process matches are already batched, and redriving the event would queue a duplicate process run. A missing table (pipeline newer than the DB) must not stall deliveries. The consequence is a gap in the cube for that step, which v1 already allows (late files are skipped).
+7. **A sink lookup that raises drops that event's cube row, logged at ERROR, and the event still drains.** It does not defer the event: by then its delivery and process matches are already batched, and redriving the event would queue a duplicate process run. A missing table (pipeline newer than the DB) must not stall deliveries. The failure is cached as "no sinks" for that collection for the rest of the claim, so a missing table costs one query and one traceback per claim, not one per event. The consequence is a gap in the cube for that claim's items from that collection, which v1 already allows (late files are skipped).
 8. **A ledger insert that raises leaves the claim unprocessed** (the existing enqueue-before-drain rule); the redrive is a no-op thanks to `ON CONFLICT`.
 9. **The ledger insert joins `cube_sinks … AND enabled`**, so a sink deleted or disabled between the lookup and the insert is skipped instead of raising an FK error that would stall the outbox.
 10. **One job per sink per claim, and only for sinks that got at least one `pending` row.** A claim of 500 inserts enqueues once per sink. A sink whose only rows were `skipped: no_datetime` is not woken.
 11. **`main.py` registers `jobs/cubes.py`.** `main.py` is not in #89's file list, but every job module registers there; the alternative (registering from `dispatch.register`) hides it.
 12. **The stub registers no retry.** §6 says "retry 3, exponential"; `RetrySpec` has only a fixed wait, and the stub cannot fail usefully. Z-4 adds the retry (and, if it wants exponential, the `RetrySpec` field).
 13. **Staged inserts never match a sink.** The staged gate `continue`s before matching, and finalize's upsert emits an `update`, which §5.2 excludes. Cube sources are reference-mode ingest items, never staged; Z-4 would mark a staged item `no_source_connection` anyway. A test pins the behaviour so it is a choice, not an accident.
+14. **`cube_kick` also recovers stalled `cube_append` jobs (beyond spec §5.3).** Procrastinate will not start a job while a same-`lock` job is `doing` (`procrastinate_fetch_job_v2`), and nothing in the pipeline recovers stalled jobs today. A worker killed mid-append (SIGKILL, OOM, host loss) would leave its row `doing` and wedge the sink. Every later wake would coalesce into one `todo` job that never starts, and the kick's own enqueue would coalesce into it too. A graceful stop is already safe: the 25 s abort ends the job `failed` and releases the lock. `QueueBackend.retry_stalled(job_name)` (Task 2) uses Procrastinate's heartbeat-based `get_stalled_jobs` + `retry_job`. If a waiting job already holds the stalled job's `queueing_lock`, the requeue would hit the unique index, so the stalled job is finished `failed` instead; the waiting job does the same work.
+15. **The stall threshold is 300 s of missed heartbeats (`STALLED_WORKER_SECONDS`), not Procrastinate's 30 s default.** Workers heartbeat every 10 s from the event loop, so a job that blocks the loop also stops the heartbeat. Requeueing a job that is still running would run two appends under one lock. Recovery therefore takes up to 5 min of silence plus the next tick. One false positive remains: a worker starting up prunes any worker row whose heartbeat is older than 30 s, which nulls `worker_id` on that worker's jobs and makes them look stalled at once. Z-4 stays safe because a double run is detected: Icechunk commits are optimistic (`ConflictError` → reopen and redo, spec §6.2 step 7), and a redo finds the steps already present (`appended`, duplicate no-op). The Z-4 issue (#90) must keep that property.
 
 ## Review Focus
 
-1. **A bulk ingest of hundreds of items into a source collection** must enqueue one `cube_append` per sink per claim, not one per item (Task 4, "one job per sink however many items").
-2. **GOES item datetimes carry nanoseconds** (`2026-10-03T17:02:36.714359936Z`) and must land as microsecond timestamps, not as `no_datetime` (Task 4, "nanosecond datetime").
-3. **The cube tables missing or the lookup erroring** must not stop that item's deliveries or process runs (Task 4, "a sink lookup failure keeps the item's deliveries").
-4. **A sink deleted or disabled between the lookup and the insert** must not stall the outbox on an FK error (Task 2, DB-gated "skips a sink deleted or disabled after the lookup").
+1. **A bulk ingest of hundreds of items into a source collection** must enqueue one `cube_append` per sink per claim, not one per item (Task 5, "one job per sink however many items").
+2. **GOES item datetimes carry nanoseconds** (`2026-10-03T17:02:36.714359936Z`) and must land as microsecond timestamps, not as `no_datetime` (Task 5, "nanosecond datetime").
+3. **The cube tables missing or the lookup erroring** must not stop that item's deliveries or process runs (Task 5, "a sink lookup failure keeps the item's deliveries").
+4. **A sink deleted or disabled between the lookup and the insert** must not stall the outbox on an FK error (Task 3, DB-gated "skips a sink deleted or disabled after the lookup").
 5. **A running `cube_append` that re-enqueues itself** must be accepted, not coalesced away, or Z-4's 50-row cap would strand the backlog until the next kick (Task 1, "a running job can enqueue its successor").
+6. **A `cube_append` left `doing` by a killed worker** must not wedge its sink. The next `cube_kick` requeues it, or closes it as `failed` when a waiting job already covers the sink (Task 2, DB-gated "retry_stalled against real Procrastinate"; Task 4, "kick recovers a stranded append").
 
 ---
 
@@ -55,17 +58,17 @@
 
 | File | Responsibility |
 |---|---|
-| `services/pipeline/src/pipeline/queue/interface.py` | `Enqueued`; `enqueue(..., *, lock=None, queueing_lock=None) -> Enqueued` |
-| `services/pipeline/src/pipeline/queue/procrastinate_backend.py` | `configure(lock, queueing_lock)`; `AlreadyEnqueued` → `Enqueued(coalesced=True)` |
-| `services/pipeline/src/pipeline/queue/memory.py` | test double: coalesce waiting same-`queueing_lock` jobs; run same-`lock` jobs one at a time |
+| `services/pipeline/src/pipeline/queue/interface.py` | `Enqueued`; `enqueue(..., *, lock=None, queueing_lock=None) -> Enqueued`; `retry_stalled(job_name) -> int` |
+| `services/pipeline/src/pipeline/queue/procrastinate_backend.py` | `configure(lock, queueing_lock)`; `AlreadyEnqueued` → `Enqueued(coalesced=True)`; `retry_stalled` via `get_stalled_jobs` + `retry_job` / `finish_job` |
+| `services/pipeline/src/pipeline/queue/memory.py` | test double: coalesce waiting same-`queueing_lock` jobs; run same-`lock` jobs one at a time; `strand(job_id)` + `retry_stalled` |
 | `services/pipeline/src/pipeline/cubes/repo.py` (new) | `CubeSinkRef`, `LedgerEntry`, `CubeRepo` ABC, `PgCubeRepo` |
 | `services/pipeline/src/pipeline/jobs/cubes.py` (new) | job names, `cube_lock`, `enqueue_cube_append`, `cube_append_enqueuer`, `kick_stale_sinks`, `fail_pending_stub`, `register` |
 | `services/pipeline/src/pipeline/dispatcher/loop.py` | insert-only sink matching, ledger buffer, post-loop write + enqueue |
 | `services/pipeline/src/pipeline/jobs/dispatch.py` | wire `PgCubeRepo` + `cube_append_enqueuer` into the drain |
 | `services/pipeline/src/pipeline/main.py` | `cubes.register(queue, settings)` |
-| `services/pipeline/tests/test_queue_interface.py` | `Enqueued`, memory lock semantics |
-| `services/pipeline/tests/test_procrastinate_backend.py` | `configure` options, coalescing |
-| `services/pipeline/tests/test_integration_db.py` | DB-gated: real Procrastinate lock + coalesce |
+| `services/pipeline/tests/test_queue_interface.py` | `Enqueued`, memory lock semantics, stalled recovery |
+| `services/pipeline/tests/test_procrastinate_backend.py` | `configure` options, coalescing, `retry_stalled` |
+| `services/pipeline/tests/test_integration_db.py` | DB-gated: real Procrastinate lock + coalesce + stalled recovery |
 | `services/pipeline/tests/_cube_fake.py` (new) | `FakeCubeRepo` |
 | `services/pipeline/tests/test_cube_jobs.py` (new) | kick, stub, registration |
 | `services/pipeline/tests/test_dispatch_cubes.py` (new) | dispatcher matching |
@@ -214,7 +217,7 @@ Replace the abstract `enqueue`:
 
 - [ ] **Step 4: Implement the memory backend** (`queue/memory.py`).
 
-Import `Enqueued` from the interface. `Job` gains:
+Import `Enqueued` from the interface (after `QUEUE_DEFAULT`, ruff's isort order). `Job` gains:
 
 ```python
 @dataclass
@@ -227,12 +230,7 @@ class Job:
     queueing_lock: str | None = None
 ```
 
-`InMemoryQueue` gains a field after `_next_id`:
-
-```python
-    #: locks held by running jobs (same-lock jobs run one at a time)
-    _held_locks: set[str] = field(default_factory=set)
-```
+A lock counts as held while any job carrying it is `running`, which is how Procrastinate decides (`status = 'doing'`). Task 2 relies on this: a job stranded `running` by a dead worker keeps its lock.
 
 Replace `enqueue`, `enqueue_batch` and `run_pending`:
 
@@ -291,24 +289,24 @@ Replace `enqueue`, `enqueue_batch` and `run_pending`:
         """
         ran = 0
         for job in self.jobs:
-            if job.status != "pending":
-                continue
-            if job.lock is not None and job.lock in self._held_locks:
+            if job.status != "pending" or self._lock_held(job.lock):
                 continue
             job.status = "running"
-            if job.lock is not None:
-                self._held_locks.add(job.lock)
             try:
                 await _call(self.tasks[job.name], **job.payload)
                 job.status = "done"
             except Exception:
                 job.status = "failed"
                 raise
-            finally:
-                if job.lock is not None:
-                    self._held_locks.discard(job.lock)
             ran += 1
         return ran
+
+    def _lock_held(self, lock: str | None) -> bool:
+        # Procrastinate: a 'doing' job holds its lock until it finishes, even
+        # when its worker has died (retry_stalled releases those).
+        return lock is not None and any(
+            job.lock == lock and job.status == "running" for job in self.jobs
+        )
 ```
 
 Update the module docstring's last line to mention the lock semantics:
@@ -447,11 +445,11 @@ Imports: add `from procrastinate.exceptions import AlreadyEnqueued` and `Enqueue
 
 - [ ] **Step 9: Update the DB-gated queue test** (`tests/test_integration_db.py`).
 
-In `test_setup_is_idempotent_and_enqueue_works`, replace `assert job_id.isdigit()` with:
+In `test_setup_is_idempotent_and_enqueue_works`, rename `job_id` to `result` (it is an `Enqueued` now) and replace `assert job_id.isdigit()` with:
 
 ```python
-    assert job_id.job_id is not None and job_id.job_id.isdigit()
-    assert job_id.coalesced is False
+    assert result.job_id is not None and result.job_id.isdigit()
+    assert result.coalesced is False
 ```
 
 Append:
@@ -491,7 +489,7 @@ async def test_queueing_lock_coalesces_and_lock_reaches_the_row(queue):
 - [ ] **Step 10: Run the queue tests and the whole suite**
 
 Run: `uv run pytest tests/test_procrastinate_backend.py tests/test_queue_interface.py -q`, then `uv run pytest -q`
-Expected: PASS (the DB-gated file skips without `DATABASE_URL`; it runs in Task 5).
+Expected: PASS (the DB-gated file skips without `DATABASE_URL`; it runs in Task 6).
 
 - [ ] **Step 11: Commit**
 
@@ -504,7 +502,342 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: `cubes/repo.py` — the cube SQL seam
+### Task 2: Stalled-job recovery — `retry_stalled`
+
+Decisions 14 and 15. A job a dead worker left `doing` holds its `lock` forever, and nothing in the pipeline recovers stalled jobs today. Before Z-3 no job had a lock, so such a row was harmless (the ledger sweeps re-drive the work); with `cube:{id}` it wedges the sink.
+
+**Files:**
+- Modify: `services/pipeline/src/pipeline/queue/interface.py`, `queue/memory.py`, `queue/procrastinate_backend.py`
+- Test: `services/pipeline/tests/test_queue_interface.py`, `tests/test_procrastinate_backend.py`, `tests/test_integration_db.py`
+
+**Interfaces:**
+- Consumes: Task 1's `Job.lock` / `queueing_lock` and the status-derived `_lock_held`.
+- Produces: `QueueBackend.retry_stalled(job_name: str) -> int` (abstract; returns the stalled jobs handled); `pipeline.queue.procrastinate_backend.STALLED_WORKER_SECONDS = 300`; `InMemoryQueue.strand(job_id: str) -> None` (test helper); `Job.stalled: bool = False`.
+
+- [ ] **Step 1: Write the failing memory-backend tests** — append to `tests/test_queue_interface.py`:
+
+```python
+async def test_a_stranded_job_holds_its_lock(queue: InMemoryQueue):
+    ran: list[int] = []
+    queue.register_task(lambda n: ran.append(n), name="jobs.lock")
+    first = await queue.enqueue("jobs.lock", {"n": 1}, lock="L", queueing_lock="L")
+    queue.strand(first.job_id)  # its worker was SIGKILLed mid-job
+    await queue.enqueue("jobs.lock", {"n": 2}, lock="L", queueing_lock="L")
+    third = await queue.enqueue("jobs.lock", {"n": 3}, lock="L", queueing_lock="L")
+    await queue.run_pending()
+    assert third.coalesced is True
+    assert ran == []  # the wedge retry_stalled exists to clear
+
+
+async def test_retry_stalled_requeues_a_stranded_job(queue: InMemoryQueue):
+    ran: list[int] = []
+    queue.register_task(lambda n: ran.append(n), name="jobs.lock")
+    first = await queue.enqueue("jobs.lock", {"n": 1}, lock="L", queueing_lock="L")
+    queue.strand(first.job_id)
+    assert await queue.retry_stalled("jobs.lock") == 1
+    await queue.run_pending()
+    assert ran == [1]
+
+
+async def test_retry_stalled_fails_a_stranded_job_a_waiting_one_covers(queue: InMemoryQueue):
+    # Requeueing it would break the waiting job's queueing_lock (Procrastinate's
+    # unique index on status='todo'); the waiting job does the same work.
+    ran: list[int] = []
+    queue.register_task(lambda n: ran.append(n), name="jobs.lock")
+    first = await queue.enqueue("jobs.lock", {"n": 1}, lock="L", queueing_lock="L")
+    queue.strand(first.job_id)
+    await queue.enqueue("jobs.lock", {"n": 2}, lock="L", queueing_lock="L")
+    assert await queue.retry_stalled("jobs.lock") == 1
+    await queue.run_pending()
+    assert ran == [2]
+    assert [j.status for j in queue.jobs] == ["failed", "done"]
+
+
+async def test_retry_stalled_skips_live_jobs_and_other_tasks(queue: InMemoryQueue):
+    seen: list[int] = []
+
+    async def handler() -> None:
+        seen.append(await queue.retry_stalled("jobs.live"))
+
+    queue.register_task(handler, name="jobs.live")
+    queue.register_task(lambda **kw: None, name="jobs.other")
+    other = await queue.enqueue("jobs.other", {})
+    queue.strand(other.job_id)
+    await queue.enqueue("jobs.live", {}, lock="L")
+    await queue.run_pending()
+    assert seen == [0]  # neither itself (live) nor another task's stranded job
+    assert [j.status for j in queue.jobs] == ["running", "done"]
+```
+
+- [ ] **Step 2: Run them to see them fail**
+
+Run: `uv run pytest tests/test_queue_interface.py -q`
+Expected: FAIL — `AttributeError: 'InMemoryQueue' object has no attribute 'strand'`.
+
+- [ ] **Step 3: Add the abstract method** to `QueueBackend` in `queue/interface.py`, after `enqueue_batch`:
+
+```python
+    @abc.abstractmethod
+    async def retry_stalled(self, job_name: str) -> int:
+        """Hand ``job_name`` jobs that a dead worker left running back to the
+        queue; returns how many were handled.
+
+        A dead worker's job keeps its ``lock`` forever otherwise, so every
+        later same-lock job waits behind it. If a waiting job already holds
+        the stalled job's ``queueing_lock``, the stalled job is closed as
+        failed instead: the waiting job does the same work, and requeueing
+        would collide with it.
+        """
+```
+
+- [ ] **Step 4: Implement the memory backend** (`queue/memory.py`). `Job` gains, after `queueing_lock`:
+
+```python
+    #: set by strand(): running on a worker that died (retry_stalled's target)
+    stalled: bool = False
+```
+
+Add after `enqueue_batch`/`_add_job`:
+
+```python
+    async def retry_stalled(self, job_name: str) -> int:
+        recovered = 0
+        for job in self.jobs:
+            if job.name != job_name or not job.stalled:
+                continue
+            job.stalled = False
+            covered = job.queueing_lock is not None and any(
+                other.queueing_lock == job.queueing_lock and other.status == "pending"
+                for other in self.jobs
+            )
+            job.status = "failed" if covered else "pending"
+            recovered += 1
+        return recovered
+```
+
+and with the test drivers:
+
+```python
+    def strand(self, job_id: str) -> None:
+        """Leave a job ``running`` on a worker that died (a SIGKILL mid-job).
+        It keeps its lock until :meth:`retry_stalled` recovers it."""
+        job = next(j for j in self.jobs if j.id == job_id)
+        job.status, job.stalled = "running", True
+```
+
+- [ ] **Step 5: Run the memory tests**
+
+Run: `uv run pytest tests/test_queue_interface.py -q`
+Expected: PASS.
+
+- [ ] **Step 6: Write the failing Procrastinate tests** — append to `tests/test_procrastinate_backend.py`:
+
+```python
+class _FakeJobManager:
+    """Stands in for app.job_manager: records calls, collides on demand."""
+
+    def __init__(self, stalled, collide=(), other_violation=False):
+        self.stalled = stalled
+        self.collide = set(collide)
+        self.other_violation = other_violation
+        self.calls: list[tuple] = []
+
+    async def get_stalled_jobs(self, **kwargs):
+        self.calls.append(("get", kwargs))
+        return self.stalled
+
+    async def retry_job(self, job):
+        from procrastinate.exceptions import UniqueViolation
+        from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
+
+        self.calls.append(("retry", job.id))
+        if self.other_violation:
+            raise UniqueViolation(constraint_name="some_other_idx", queueing_lock=None)
+        if job.id in self.collide:
+            raise UniqueViolation(
+                constraint_name=QUEUEING_LOCK_CONSTRAINT, queueing_lock=job.queueing_lock
+            )
+
+    async def finish_job(self, job, status, delete_job):
+        self.calls.append(("finish", job.id, status, delete_job))
+
+
+def _stalled_job(job_id: int):
+    from procrastinate.jobs import Job
+
+    return Job(
+        id=job_id,
+        queue="default",
+        lock="cube:s",
+        queueing_lock="cube:s",
+        task_name="pipeline.cube_append",
+    )
+
+
+def _wire_manager(queue: ProcrastinateQueue, monkeypatch, manager: _FakeJobManager) -> None:
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+    monkeypatch.setattr(queue.app, "job_manager", manager)
+
+
+async def test_retry_stalled_requeues_and_closes_covered_jobs(queue, monkeypatch):
+    from procrastinate.jobs import Status
+
+    from pipeline.queue.procrastinate_backend import STALLED_WORKER_SECONDS
+
+    manager = _FakeJobManager([_stalled_job(1), _stalled_job(2)], collide={2})
+    _wire_manager(queue, monkeypatch, manager)
+    assert await queue.retry_stalled("pipeline.cube_append") == 2
+    get_kwargs = {
+        "task_name": "pipeline.cube_append",
+        "seconds_since_heartbeat": STALLED_WORKER_SECONDS,
+    }
+    assert manager.calls == [
+        ("get", get_kwargs),
+        ("retry", 1),
+        ("retry", 2),
+        ("finish", 2, Status.FAILED, False),
+    ]
+
+
+async def test_retry_stalled_reraises_any_other_unique_violation(queue, monkeypatch):
+    from procrastinate.exceptions import UniqueViolation
+
+    _wire_manager(queue, monkeypatch, _FakeJobManager([_stalled_job(1)], other_violation=True))
+    with pytest.raises(UniqueViolation):
+        await queue.retry_stalled("pipeline.cube_append")
+
+
+async def test_retry_stalled_with_nothing_stalled_is_a_no_op(queue, monkeypatch):
+    manager = _FakeJobManager([])
+    _wire_manager(queue, monkeypatch, manager)
+    assert await queue.retry_stalled("pipeline.cube_append") == 0
+    assert [c[0] for c in manager.calls] == ["get"]
+```
+
+- [ ] **Step 7: Run them to see them fail**
+
+Run: `uv run pytest tests/test_procrastinate_backend.py -q`
+Expected: FAIL — `TypeError: Can't instantiate abstract class ProcrastinateQueue … retry_stalled` (the fixture), or `ImportError: STALLED_WORKER_SECONDS`.
+
+- [ ] **Step 8: Implement the Procrastinate backend** (`queue/procrastinate_backend.py`).
+
+Imports: extend to `from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation`, and add `from procrastinate.jobs import Status` and `from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT`. After `SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS`:
+
+```python
+#: A worker whose heartbeat (every 10 s) is older than this is taken for dead,
+#: and its running jobs for stalled. Generous on purpose: a job that blocks
+#: the event loop also stops its worker's heartbeat, and requeueing a job that
+#: is in fact still running would run it twice under one lock.
+STALLED_WORKER_SECONDS = 300
+```
+
+After `enqueue_batch`:
+
+```python
+    async def retry_stalled(self, job_name: str) -> int:
+        await self._ensure_open()
+        manager = self.app.job_manager
+        # Heartbeat-based: 'doing' jobs whose worker row is gone (pruned) or
+        # silent for STALLED_WORKER_SECONDS.
+        stalled = await manager.get_stalled_jobs(
+            task_name=job_name, seconds_since_heartbeat=STALLED_WORKER_SECONDS
+        )
+        for job in stalled:
+            try:
+                await manager.retry_job(job)
+                outcome = "requeued"
+            except UniqueViolation as exc:
+                if exc.constraint_name != QUEUEING_LOCK_CONSTRAINT:
+                    raise
+                # A job holding the same queueing_lock is already waiting and
+                # does the same work; requeueing this one would collide with it.
+                await manager.finish_job(job, status=Status.FAILED, delete_job=False)
+                outcome = "failed"
+            logger.warning(
+                "stalled job recovered",
+                extra={
+                    "job_name": job_name,
+                    "job_id": job.id,
+                    "lock": job.lock,
+                    "outcome": outcome,
+                },
+            )
+        return len(stalled)
+```
+
+- [ ] **Step 9: Write the DB-gated test** — append to `tests/test_integration_db.py`:
+
+```python
+async def test_retry_stalled_against_real_procrastinate(queue):
+    """Decision 14 against real Procrastinate. A 'doing' job with no worker row
+    (a dead worker, pruned) is requeued. One whose queueing_lock a waiting job
+    already holds is closed as failed. A job on a live worker is left alone."""
+    import psycopg
+
+    await queue.setup()
+
+    async def handler(**kw):
+        pass
+
+    queue.register_task(handler, name="jobs.locked")
+    lone = await queue.enqueue("jobs.locked", {"n": 1}, lock="cube:a", queueing_lock="cube:a")
+    covered = await queue.enqueue("jobs.locked", {"n": 2}, lock="cube:b", queueing_lock="cube:b")
+    live = await queue.enqueue("jobs.locked", {"n": 3}, lock="cube:c", queueing_lock="cube:c")
+    jobs = f'"{SCHEMA}".procrastinate_jobs'
+    # Procrastinate's status trigger names its enum type unqualified, so the
+    # raw connection needs the queue's search_path, like the backend's pool.
+    async with await psycopg.AsyncConnection.connect(
+        DATABASE_URL, autocommit=True, options=f"-c search_path={SCHEMA},public"
+    ) as conn:
+        await conn.execute(
+            f"UPDATE {jobs} SET status = 'doing', worker_id = NULL WHERE id = ANY(%s)",
+            ([int(lone.job_id), int(covered.job_id)],),
+        )
+        cur = await conn.execute(
+            f'INSERT INTO "{SCHEMA}".procrastinate_workers DEFAULT VALUES RETURNING id'
+        )
+        worker_id = (await cur.fetchone())[0]
+        await conn.execute(
+            f"UPDATE {jobs} SET status = 'doing', worker_id = %s WHERE id = %s",
+            (worker_id, int(live.job_id)),
+        )
+    # 'covered' is doing, so it holds no queueing lock: a new wake is accepted.
+    waiting = await queue.enqueue("jobs.locked", {"n": 4}, lock="cube:b", queueing_lock="cube:b")
+    assert waiting.coalesced is False
+
+    assert await queue.retry_stalled("jobs.locked") == 2
+    await queue.aclose()
+
+    by_name = {"lone": lone, "covered": covered, "live": live, "waiting": waiting}
+    ids = {int(result.job_id): name for name, result in by_name.items()}
+    async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+        cur = await conn.execute(
+            f"SELECT id, status::text FROM {jobs} WHERE id = ANY(%s)", (list(ids),)
+        )
+        statuses = {ids[row[0]]: row[1] for row in await cur.fetchall()}
+    assert statuses == {"lone": "todo", "covered": "failed", "live": "doing", "waiting": "todo"}
+```
+
+- [ ] **Step 10: Run the queue tests and the whole suite**
+
+Run: `uv run pytest tests/test_procrastinate_backend.py tests/test_queue_interface.py -q`, then `uv run pytest -q && uv run ruff check .`
+Expected: PASS (the DB-gated test runs in Task 6).
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add services/pipeline/src/pipeline/queue services/pipeline/tests/test_queue_interface.py services/pipeline/tests/test_procrastinate_backend.py services/pipeline/tests/test_integration_db.py
+git commit -m "Z-3: retry_stalled, so a dead worker's job cannot hold its lock forever
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 3: `cubes/repo.py` — the cube SQL seam
 
 **Files:**
 - Create: `services/pipeline/src/pipeline/cubes/repo.py`
@@ -710,7 +1043,7 @@ async def test_fail_pending_touches_pending_rows_only_and_never_the_sink(db):
 - [ ] **Step 3: Run them to see them fail**
 
 Run: `uv run pytest tests/test_cube_config.py tests/test_integration_cubes_repo.py -q`
-Expected: the vocabulary test FAILS with `ModuleNotFoundError: pipeline.cubes.repo`; the DB file skips (no `DATABASE_URL`; it runs in Task 5).
+Expected: the vocabulary test FAILS with `ModuleNotFoundError: pipeline.cubes.repo`; the DB file skips (no `DATABASE_URL`; it runs in Task 6).
 
 - [ ] **Step 4: Implement `cubes/repo.py`**
 
@@ -977,7 +1310,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 3: `jobs/cubes.py` — lock helper, `cube_kick`, the `cube_append` stub
+### Task 4: `jobs/cubes.py` — lock helper, `cube_kick`, the `cube_append` stub
 
 **Files:**
 - Create: `services/pipeline/src/pipeline/jobs/cubes.py`
@@ -985,7 +1318,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Test: `services/pipeline/tests/test_cube_jobs.py` (new), `services/pipeline/tests/test_main_jobs.py`
 
 **Interfaces:**
-- Consumes: `Enqueued`, `QueueBackend.enqueue(..., lock=, queueing_lock=)` (Task 1); `CubeRepo`, `PgCubeRepo` (Task 2).
+- Consumes: `Enqueued`, `QueueBackend.enqueue(..., lock=, queueing_lock=)` (Task 1); `QueueBackend.retry_stalled`, `InMemoryQueue.strand` (Task 2); `CubeRepo`, `PgCubeRepo` (Task 3).
 - Produces: `JOB_CUBE_APPEND = "pipeline.cube_append"`, `JOB_CUBE_KICK = "pipeline.cube_kick"`, `KICK_CRON = "*/5 * * * *"`, `KICK_STALE_SECONDS = 120`, `REASON_NOT_IMPLEMENTED = "not_implemented"`; `cube_lock(cube_sink_id: str) -> str`; `async enqueue_cube_append(queue: QueueBackend, cube_sink_id: str) -> Enqueued`; `cube_append_enqueuer(queue: QueueBackend) -> Callable[[list[str]], Awaitable[None]]`; `async kick_stale_sinks(repo: CubeRepo, queue: QueueBackend) -> int`; `register(queue: QueueBackend, settings: Settings, *, repo: CubeRepo | None = None) -> None`.
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_cube_jobs.py`:
@@ -1103,6 +1436,30 @@ async def test_kick_against_a_waiting_job_coalesces(queue: InMemoryQueue, repo: 
     assert len(queue.jobs) == 1
 
 
+async def test_kick_recovers_a_stranded_append_a_waiting_job_covers(
+    queue: InMemoryQueue, repo: FakeCubeRepo
+):
+    await repo.record_appends([LedgerEntry("s1", "a", T0)])
+    repo.backdate("s1", "a", KICK_STALE_SECONDS + 1)
+    stranded = await enqueue_cube_append(queue, "s1")
+    queue.strand(stranded.job_id)  # its worker was SIGKILLed: holds cube:s1
+    await enqueue_cube_append(queue, "s1")  # a later wake: waiting, blocked
+    await queue.run_pending()
+    assert repo.rows("s1")[0].status == "pending"  # wedged
+
+    await queue.run_periodic(JOB_CUBE_KICK, timestamp=1_700_000_000)
+    await queue.run_pending()
+    assert [j.status for j in queue.jobs] == ["failed", "done"]
+    assert repo.rows("s1")[0].status == "failed"  # the stub ran: unwedged
+
+
+async def test_kick_requeues_a_stranded_append_with_nothing_waiting(queue: InMemoryQueue):
+    stranded = await enqueue_cube_append(queue, "s1")
+    queue.strand(stranded.job_id)
+    await queue.run_periodic(JOB_CUBE_KICK, timestamp=1_700_000_000)
+    assert [j.status for j in queue.jobs] == ["pending"]
+
+
 async def test_stub_marks_pending_rows_failed_not_implemented(
     queue: InMemoryQueue, repo: FakeCubeRepo
 ):
@@ -1150,9 +1507,11 @@ drains every pending ledger row when it runs (§5.1).
 
 - The dispatcher (``dispatcher/loop.py``) writes the ledger rows and wakes the
   sink through :func:`cube_append_enqueuer` (§5.2).
-- ``pipeline.cube_kick`` (every 5 minutes) re-enqueues sinks holding
-  ``pending`` rows older than 2 minutes, recovering a job lost between the
-  ledger insert and the enqueue (§5.3).
+- ``pipeline.cube_kick`` (every 5 minutes) first hands any ``cube_append`` a
+  dead worker left running back to the queue (``QueueBackend.retry_stalled``),
+  since it would hold its sink's lock forever. It then re-enqueues sinks
+  holding ``pending`` rows older than 2 minutes, recovering a job lost between
+  the ledger insert and the enqueue (§5.3).
 - ``pipeline.cube_append`` is a **Z-3 stub**: it marks the sink's pending rows
   ``failed`` with reason ``not_implemented``. Z-4 (#90) replaces it with the
   real append. It writes nothing to ``cube_sinks``.
@@ -1212,7 +1571,12 @@ def cube_append_enqueuer(queue: QueueBackend) -> Callable[[list[str]], Awaitable
 
 async def kick_stale_sinks(repo: CubeRepo, queue: QueueBackend) -> int:
     """§5.3 backstop: re-enqueue every enabled sink with a stale pending row.
-    Returns how many sinks were kicked (coalesced or not)."""
+    Returns how many sinks were kicked (coalesced or not).
+
+    First, any ``cube_append`` a dead worker left running goes back to the
+    queue (plan decision 14). Until then it holds its sink's lock, and the
+    enqueue below would only coalesce into a job that can never start."""
+    await queue.retry_stalled(JOB_CUBE_APPEND)
     cube_sink_ids = await repo.sinks_with_stale_pending(KICK_STALE_SECONDS)
     await cube_append_enqueuer(queue)(cube_sink_ids)
     return len(cube_sink_ids)
@@ -1275,7 +1639,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Dispatcher matching — insert-only, ledger before drain
+### Task 5: Dispatcher matching — insert-only, ledger before drain
 
 **Files:**
 - Modify: `services/pipeline/src/pipeline/dispatcher/loop.py`
@@ -1283,7 +1647,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Test: `services/pipeline/tests/test_dispatch_cubes.py` (new)
 
 **Interfaces:**
-- Consumes: `CubeRepo`, `LedgerEntry`, `REASON_NO_DATETIME` (Task 2); `cube_append_enqueuer`, `JOB_CUBE_APPEND` (Task 3).
+- Consumes: `CubeRepo`, `LedgerEntry`, `REASON_NO_DATETIME` (Task 3); `cube_append_enqueuer`, `JOB_CUBE_APPEND` (Task 4).
 - Produces: `dispatch_once(..., cube_repo: CubeRepo | None = None, enqueue_cube_appends: EnqueueCubeAppends | None = None)` and the same two kwargs on `dispatch_until_empty`; `EnqueueCubeAppends = Callable[[list[str]], Awaitable[None]]`; `DispatchResult.cube_rows: int` and `DispatchResult.cube_sinks: int`.
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_dispatch_cubes.py`:
@@ -1348,20 +1712,32 @@ class Harness:
         self.queue = InMemoryQueue()
         register_cube_jobs(self.queue, Settings.from_env(env={}), repo=self.cubes)
         self.deliveries: list[list[dict]] = []
+        self.finalizes: list[dict] = []
 
     def add(self, event, item=None):
         self.repo.events.append(event)
         if item is not None:
             self.repo.items[(event.collection_id, event.item_id)] = item
 
+    def deliver_to(self, association_id="d1"):
+        # match_item needs a parseable config: path_template is required.
+        self.repo.associations["src"] = [
+            DeliverAssociation(
+                id=association_id, collection_id="src", config={"path_template": "{filename}"}
+            )
+        ]
+
     async def _deliver(self, batches):
         self.deliveries.append(batches)
+
+    async def _finalize(self, payloads):
+        self.finalizes.extend(payloads)
 
     async def dispatch(self):
         return await dispatch_once(
             self.repo,
             self._deliver,
-            enqueue_finalize=_noop,
+            enqueue_finalize=self._finalize,
             mark_delete_gc=_noop,
             cube_repo=self.cubes,
             enqueue_cube_appends=cube_append_enqueuer(self.queue),
@@ -1477,31 +1853,45 @@ async def test_a_staged_insert_does_not_match():
     h.add(_event(1, "a"), item)
     await h.dispatch()
     # Decision 13: the staged gate routes it to finalize, whose upsert emits
-    # an update, which never feeds a cube.
+    # an update, which never feeds a cube. Asserting the finalize proves it
+    # took the gate, not the poison-drain.
+    assert [p["item_id"] for p in h.finalizes] == ["a"]
     assert h.cubes.ledger == {}
 
 
 async def test_a_sink_lookup_failure_keeps_the_items_deliveries():
     h = Harness()
     h.cubes.lookup_error = RuntimeError('relation "stac_higher.cube_sinks" does not exist')
-    h.repo.associations["src"] = [DeliverAssociation(id="d1", collection_id="src", config={})]
+    h.deliver_to("d1")
     h.add(_event(1, "a"), _item("a"))
+    h.add(_event(2, "b"), _item("b"))
     await h.dispatch()
     assert [b["association_id"] for b in h.deliveries[0]] == ["d1"]
+    assert [i["item_id"] for i in h.deliveries[0][0]["items"]] == ["a", "b"]
+    assert h.cubes.sink_calls == 1  # the failure is cached for the claim (decision 7)
     assert h.cubes.ledger == {}
-    assert h.repo.processed == [1]
+    assert h.repo.processed == [1, 2]
 
 
 async def test_a_ledger_insert_failure_leaves_the_claim_for_a_redrive():
     h = Harness()
     h.cubes.record_error = RuntimeError("db down")
-    h.repo.associations["src"] = [DeliverAssociation(id="d1", collection_id="src", config={})]
+    h.deliver_to("d1")
     h.add(_event(1, "a"), _item("a"))
     with pytest.raises(RuntimeError):
         await h.dispatch()
     assert h.repo.processed == []
-    assert h.deliveries == []  # the cube step runs first, nothing else queued yet
+    # Decision 6: the cube step runs first. The association matches, so an
+    # empty list here means nothing else was queued yet.
+    assert h.deliveries == []
     assert h.cube_jobs() == []
+    # The redrive (the next wake) delivers once the insert works.
+    h.cubes.record_error = None
+    h.repo.claimed.clear()
+    await h.dispatch()
+    assert [b["association_id"] for b in h.deliveries[0]] == ["d1"]
+    assert h.cube_jobs() == ["s1"]
+    assert h.repo.processed == [1]
 
 
 async def test_without_a_cube_repo_nothing_changes():
@@ -1525,8 +1915,6 @@ async def test_dispatch_until_empty_passes_the_cube_hooks_through():
     )
     assert h.cube_jobs() == ["s1"]
 ```
-
-Check that `match_item` with `config={}` matches every item (no `item_filter`, all assets). If `DeliverAssociation` requires a different config to match, copy the minimal matching config from `tests/test_dispatch_loop.py`.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -1612,22 +2000,26 @@ Inside the per-event `try`, after `matches.extend(item_matches)`:
             # process runs are already batched. The event still drains and
             # this step is missing from the cube (decision 7 in the plan).
             if cubes is not None and event.op == "insert":
-                try:
-                    if event.collection_id not in sink_cache:
+                if event.collection_id not in sink_cache:
+                    try:
                         sink_cache[event.collection_id] = (
                             await cubes.enabled_sinks_for_source(event.collection_id)
                         )
-                    sinks = sink_cache[event.collection_id]
-                except Exception:
-                    logger.exception(
-                        "dispatch: cube sink lookup failed; item not queued for its cubes",
-                        extra={
-                            "event_id": event.id,
-                            "collection_id": event.collection_id,
-                            "item_id": event.item_id,
-                        },
-                    )
-                    sinks = []
+                    except Exception:
+                        # Cached as "no sinks" for the rest of the claim: a
+                        # missing table costs one query and one traceback per
+                        # claim, not one per event.
+                        sink_cache[event.collection_id] = []
+                        logger.exception(
+                            "dispatch: cube sink lookup failed; this claim's items"
+                            " from the collection are not queued for their cubes",
+                            extra={
+                                "event_id": event.id,
+                                "collection_id": event.collection_id,
+                                "item_id": event.item_id,
+                            },
+                        )
+                sinks = sink_cache[event.collection_id]
                 if sinks:
                     when = _cube_item_datetime(item)
                     for sink in sinks:
@@ -1721,7 +2113,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Docs, real-DB check, gates, PR
+### Task 6: Docs, real-DB check, gates, PR
 
 **Files:**
 - Modify: `services/pipeline/README.md` (the dispatch paragraph, around line 232)
@@ -1736,8 +2128,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   `skipped: no_datetime`) and enqueues `pipeline.cube_append {cube_sink_id}`
   with `lock` = `queueing_lock` = `cube:{id}`, before the event drains. A
   second enqueue while one is waiting comes back `Enqueued(coalesced=True)`,
-  never an exception. `pipeline.cube_kick` (`*/5 * * * *`) re-enqueues sinks
-  with `pending` rows older than 2 minutes. Until Z-4, `cube_append` is a stub
+  never an exception. `pipeline.cube_kick` (`*/5 * * * *`) first requeues any
+  `cube_append` a dead worker left `doing` (`QueueBackend.retry_stalled`;
+  heartbeat silent 300 s), which would otherwise hold its sink's lock forever,
+  then re-enqueues sinks with `pending` rows older than 2 minutes. Until Z-4, `cube_append` is a stub
   that marks pending rows `failed: not_implemented`. The pipeline never writes
   `cube_sinks.updated_at` (the app's version, #98).
 ```
@@ -1745,7 +2139,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - [ ] **Step 2: FEATURES.md** — after the Z-2 row:
 
 ```markdown
-| Z-3 · Queue lock seam, dispatcher matching, `cube_kick` | ✅ | `QueueBackend.enqueue(..., lock=, queueing_lock=) -> Enqueued`; Procrastinate's `AlreadyEnqueued` becomes `Enqueued(coalesced=True)` inside the backend; the in-memory backend coalesces waiting jobs and runs same-lock jobs one at a time. The dispatcher feeds `cube_appends` from **insert** events only (`PgCubeRepo.enabled_sinks_for_source`, cached per claim; no datetime → `skipped: no_datetime`) and enqueues one `pipeline.cube_append` per sink under `cube:{id}` before the drain. `pipeline.cube_kick` (5 min) re-enqueues sinks with pending rows older than 2 min. `cube_append` is a stub (`failed: not_implemented`) until Z-4 |
+| Z-3 · Queue lock seam, dispatcher matching, `cube_kick` | ✅ | `QueueBackend.enqueue(..., lock=, queueing_lock=) -> Enqueued`; Procrastinate's `AlreadyEnqueued` becomes `Enqueued(coalesced=True)` inside the backend; the in-memory backend coalesces waiting jobs and runs same-lock jobs one at a time. The dispatcher feeds `cube_appends` from **insert** events only (`PgCubeRepo.enabled_sinks_for_source`, cached per claim; no datetime → `skipped: no_datetime`) and enqueues one `pipeline.cube_append` per sink under `cube:{id}` before the drain. `pipeline.cube_kick` (5 min) first requeues a `cube_append` a dead worker left `doing` (`QueueBackend.retry_stalled`, or closes it `failed` when a waiting job covers the sink), then re-enqueues sinks with pending rows older than 2 min. `cube_append` is a stub (`failed: not_implemented`) until Z-4 |
 ```
 
 - [ ] **Step 3: Throwaway Postgres on :5499** (scratchpad; `$SP` = the session scratchpad directory). One command per call:
@@ -1756,7 +2150,14 @@ pg_ctl -D $SP/z3-pg -o "-p 5499 -c listen_addresses=localhost -c unix_socket_dir
 createdb -h localhost -p 5499 -U postgres z3
 ```
 
-Apply the app migrations to it the way Z-2 did (run `runMigrations()` from `app/` with `DATABASE_URL=postgresql://postgres@localhost:5499/z3`; check `app/src/lib/db/migrate.ts` for the entry point and whether it needs pgstac; the cube tables do not). Confirm `SELECT to_regclass('stac_higher.cube_appends')` is not null.
+Apply the app migrations, from the worktree root. This is Z-2's recipe; a bare cluster migrates through 032 without pgstac (#97: 30 migrations applied):
+
+```bash
+DATABASE_URL=postgresql://postgres@localhost:5499/z3 npx tsx -e "import('./app/src/lib/db/migrate.ts').then(m=>m.runMigrations()).then(()=>process.exit(0),e=>{console.error(e);process.exit(1)})"
+psql -h localhost -p 5499 -U postgres -d z3 -Atc "SELECT to_regclass('stac_higher.cube_appends')"
+```
+
+Expected: the second command prints `stac_higher.cube_appends`.
 
 - [ ] **Step 4: Run the DB-gated tests against it** (from `services/pipeline/`):
 
@@ -1764,10 +2165,10 @@ Apply the app migrations to it the way Z-2 did (run `runMigrations()` from `app/
 DATABASE_URL=postgresql://postgres@localhost:5499/z3 uv run pytest tests/test_integration_cubes_repo.py tests/test_integration_db.py -q
 ```
 
-Expected: PASS (not skipped). Then stop and delete the cluster:
+Expected: PASS (not skipped), including `test_retry_stalled_against_real_procrastinate`. Then stop and delete the cluster:
 
 ```bash
-pg_ctl -D $SP/z3-pg stop
+pg_ctl -D $SP/z3-pg stop && rm -rf $SP/z3-pg $SP/z3-pg.log
 ```
 
 - [ ] **Step 5: Gates**
@@ -1789,4 +2190,8 @@ git commit -m "Z-3: docs (pipeline README, FEATURES row)
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 7: PR** — `git push -u origin feat/z3-cube-dispatch`, then `gh pr create --base main --title "Z-3: queue lock seam, dispatcher matching and cube_kick"` with a body starting `Closes #89`, listing the gates run (with counts), the real-DB check, "Lead-only steps: none", and the plan's decisions 1–13 as deviations/choices. On merge: flip #90 from `blocked` to `ready` if #89 was its only blocker, and remove the worktree.
+- [ ] **Step 7: PR** — `git push -u origin feat/z3-cube-dispatch`, then `gh pr create --base main --title "Z-3: queue lock seam, dispatcher matching and cube_kick"` with a body starting `Closes #89`, listing the gates run (with counts), the real-DB check, "Lead-only steps: none", and the plan's decisions 1–15 as deviations/choices (14 goes beyond spec §5.3). The body also says:
+  - **Coalescing writes an ERROR to the Postgres server log.** Each coalesced enqueue is an INSERT that hits `procrastinate_jobs_queueing_lock_idx_v1`, so the server logs it, about once per sink per claim at steady load. Procrastinate's periodic scheduler already does the same; accepted.
+  - **The stub's `failed` rows are terminal.** A sink created on a live stack before Z-4 merges gets `failed: not_implemented` rows that nothing revisits (the kick ignores `failed`).
+
+  Then comment on #90 with what Z-4 inherits: (a) either reset `failed`/`not_implemented` rows to `pending` on first run, or state that no sink may exist before Z-4; (b) decision 15: a stalled-job false positive can run two appends for one sink, so the append must stay safe under that (optimistic Icechunk commit, conflict → reopen and redo, duplicates → `appended`); (c) when it adds `RetrySpec` to `cube_append`, `retry_stalled`'s `retry_job` counts as an attempt. On merge: flip #90 from `blocked` to `ready` if #89 was its only blocker, and remove the worktree.
