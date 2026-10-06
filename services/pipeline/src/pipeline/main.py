@@ -26,6 +26,7 @@ from pipeline.health import create_health_app
 from pipeline.ingest.repo import PgIngestRepo
 from pipeline.jobs import (
     backfill,
+    cubes,
     dispatch,
     drain,
     finalize,
@@ -95,6 +96,10 @@ def build_queue(settings: Settings) -> ProcrastinateQueue:
     # M3-A: drain pgstac.query_queue (partition stats deferred by the writer's
     # `use_queue` session GUC) — or only sample it where pg_cron drains.
     pgstac_drain.register(queue, settings)
+    # Z-3 (virtual cube spec §5, ADR 0022): the per-sink cube_append (a stub
+    # until Z-4) and the 5-minute cube_kick backstop. The dispatcher's
+    # insert-only matching wakes the sinks.
+    cubes.register(queue, settings)
     return queue
 
 
