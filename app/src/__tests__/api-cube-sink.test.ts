@@ -137,6 +137,15 @@ describe("PUT", () => {
     expect((await res.json()).code).toBe(code);
     expect(upsertCubeSink).not.toHaveBeenCalled();
   });
+  it("treats a source outside the caller's groups as not found, before any lookup", async () => {
+    vi.mocked(canManageCollection).mockImplementation(async (_identity, id) => id === CUBE);
+    const res = await put({ source_collection_id: SOURCE, config });
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe("source_collection_not_found");
+    expect(existingCollections).not.toHaveBeenCalled();
+    expect(referenceIngestSources).not.toHaveBeenCalled();
+    expect(upsertCubeSink).not.toHaveBeenCalled();
+  });
   it("refuses when any reference association is signed", async () => {
     vi.mocked(referenceIngestSources).mockResolvedValue([
       { association_id: "a1", connection_id: "c1", anonymous: true },

@@ -15,10 +15,13 @@
  *
  * Group rule (§14.1): the sink follows the cube collection's ownership
  * (`canManageCollection`). Outside the caller's groups every verb is a 404.
+ * PUT also requires the caller to manage the SOURCE collection; one they
+ * can't is reported exactly like a missing one (422
+ * source_collection_not_found).
  * Role + audit (`cube_sink`) live in the guard; re-checked here.
  */
 import type { APIRoute } from "astro";
-import type { AuthContext } from "@/lib/auth/types";
+import type { AuthContext, CanonicalIdentity } from "@/lib/auth/types";
 import { authzError } from "@/lib/authz/guard";
 import { canMutate } from "@/lib/authz/permissions";
 import { canManageCollection } from "@/lib/associations/access";
@@ -37,12 +40,12 @@ import {
 const notFound = () => jsonResponse(404, { error: "Cube sink not found" });
 const refuse = (status: number, code: string, error: string) => jsonResponse(status, { error, code });
 
-/** 401 / 403 / 404 preamble shared by every verb. Returns the caller's sub. */
+/** 401 / 403 / 404 preamble shared by every verb. Returns the caller. */
 async function preamble(
   auth: AuthContext | undefined,
   collectionId: string | undefined,
   requireOperator: boolean,
-): Promise<{ sub: string; collectionId: string } | { response: Response }> {
+): Promise<{ identity: CanonicalIdentity; collectionId: string } | { response: Response }> {
   if (!auth?.authenticated) {
     return { response: authzError(401, "unauthenticated", "Authentication required for this action") };
   }
@@ -52,7 +55,7 @@ async function preamble(
   if (!collectionId || !(await canManageCollection(auth.identity, collectionId))) {
     return { response: notFound() };
   }
-  return { sub: auth.identity.sub, collectionId };
+  return { identity: auth.identity, collectionId };
 }
 
 function failure(err: unknown): Response {
@@ -85,14 +88,18 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     if (source === cube) {
       return jsonResponse(400, { error: "source_collection_id must differ from the cube collection" });
     }
+    // The source must be manageable too, so a sink cannot hitch another
+    // group's ingest flow. Same answer as a missing source: a collection
+    // outside the caller's groups is not disclosed.
+    const sourceNotFound = () =>
+      refuse(422, "source_collection_not_found", `Source collection '${source}' does not exist`);
+    if (!(await canManageCollection(pre.identity, source))) return sourceNotFound();
 
     const existing = await existingCollections([cube, source]);
     if (!existing.has(cube)) {
       return refuse(422, "cube_collection_not_found", `Collection '${cube}' does not exist`);
     }
-    if (!existing.has(source)) {
-      return refuse(422, "source_collection_not_found", `Source collection '${source}' does not exist`);
-    }
+    if (!existing.has(source)) return sourceNotFound();
     const refs = await referenceIngestSources(source);
     if (refs.length === 0) {
       return refuse(422, "no_reference_ingest",
@@ -110,7 +117,7 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     }
 
     const { sink, created } = await upsertCubeSink({
-      cubeCollectionId: cube, sourceCollectionId: source, config, enabled, createdBy: pre.sub,
+      cubeCollectionId: cube, sourceCollectionId: source, config, enabled, createdBy: pre.identity.sub,
     });
     return jsonResponse(created ? 201 : 200, { sink });
   } catch (err) {
