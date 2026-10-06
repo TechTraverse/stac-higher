@@ -9,7 +9,7 @@ import asyncio
 import pytest
 
 from pipeline.jobs import heartbeat
-from pipeline.queue.interface import RetrySpec
+from pipeline.queue.interface import Enqueued, RetrySpec
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
 
 DSN = "postgresql://username:password@localhost:5433/postgis"
@@ -358,3 +358,73 @@ async def test_run_worker_outer_cancellation_does_not_recancel_a_draining_worker
 
     assert state["interrupted"] == set()
     assert state["drained"] == {"bytes"}
+
+
+class _FakeDeferrer:
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.payloads: list[dict] = []
+
+    async def defer_async(self, **payload):
+        self.payloads.append(payload)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def _wire(queue: ProcrastinateQueue, monkeypatch, outcome):
+    """Register jobs.locked and capture what enqueue hands Procrastinate."""
+
+    async def handler(**kw):
+        pass
+
+    async def fake_open():
+        pass
+
+    queue.register_task(handler, name="jobs.locked")
+    task = queue.app.tasks["jobs.locked"]
+    deferrer = _FakeDeferrer(outcome)
+    configured: list[dict] = []
+
+    def fake_configure(**options):
+        configured.append(options)
+        return deferrer
+
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+    monkeypatch.setattr(task, "configure", fake_configure)
+    monkeypatch.setattr(task, "defer_async", deferrer.defer_async)
+    return deferrer, configured
+
+
+async def test_enqueue_passes_both_locks_to_configure(queue, monkeypatch):
+    deferrer, configured = _wire(queue, monkeypatch, 42)
+    result = await queue.enqueue(
+        "jobs.locked", {"cube_sink_id": "s"}, lock="cube:s", queueing_lock="cube:s"
+    )
+    assert result == Enqueued(job_id="42")
+    assert configured == [{"lock": "cube:s", "queueing_lock": "cube:s"}]
+    assert deferrer.payloads == [{"cube_sink_id": "s"}]
+
+
+async def test_enqueue_passes_only_the_options_given(queue, monkeypatch):
+    _deferrer, configured = _wire(queue, monkeypatch, 7)
+    await queue.enqueue("jobs.locked", {}, lock="cube:s")
+    assert configured == [{"lock": "cube:s"}]
+
+
+async def test_enqueue_without_locks_skips_configure(queue, monkeypatch):
+    deferrer, configured = _wire(queue, monkeypatch, 7)
+    result = await queue.enqueue("jobs.locked", {"n": 1})
+    assert result == Enqueued(job_id="7")
+    assert configured == []
+    assert deferrer.payloads == [{"n": 1}]
+
+
+async def test_already_enqueued_comes_back_coalesced(queue, monkeypatch):
+    from procrastinate.exceptions import AlreadyEnqueued
+
+    _wire(queue, monkeypatch, AlreadyEnqueued("cube:s"))
+    result = await queue.enqueue(
+        "jobs.locked", {"cube_sink_id": "s"}, lock="cube:s", queueing_lock="cube:s"
+    )
+    assert result == Enqueued(job_id=None, coalesced=True)

@@ -17,12 +17,14 @@ from collections.abc import Sequence
 
 import procrastinate
 import psycopg
+from procrastinate.exceptions import AlreadyEnqueued
 
 from pipeline.config import DEFAULT_WORKER_CONCURRENCY
 from pipeline.metrics import instrument_handler
 from pipeline.queue.interface import (
     QUEUE_BYTES,
     QUEUE_DEFAULT,
+    Enqueued,
     JobHandler,
     JobPayload,
     QueueBackend,
@@ -105,10 +107,35 @@ class ProcrastinateQueue(QueueBackend):
             await self.app.open_async()
             self._opened = True
 
-    async def enqueue(self, job_name: str, payload: JobPayload | None = None) -> str:
+    async def enqueue(
+        self,
+        job_name: str,
+        payload: JobPayload | None = None,
+        *,
+        lock: str | None = None,
+        queueing_lock: str | None = None,
+    ) -> Enqueued:
         await self._ensure_open()
-        job_id = await self.app.tasks[job_name].defer_async(**dict(payload or {}))
-        return str(job_id)
+        task = self.app.tasks[job_name]
+        # Only the options given: configure(queueing_lock=None) could clear a
+        # task-level default.
+        options = {
+            key: value
+            for key, value in (("lock", lock), ("queueing_lock", queueing_lock))
+            if value is not None
+        }
+        deferrer = task.configure(**options) if options else task
+        try:
+            job_id = await deferrer.defer_async(**dict(payload or {}))
+        except AlreadyEnqueued:
+            # Spec §14.2: coalescing is success. A job holding this
+            # queueing_lock is already waiting and will see the new work.
+            logger.debug(
+                "enqueue coalesced",
+                extra={"job_name": job_name, "queueing_lock": queueing_lock},
+            )
+            return Enqueued(job_id=None, coalesced=True)
+        return Enqueued(job_id=str(job_id))
 
     async def enqueue_batch(self, job_name: str, payloads: Sequence[JobPayload]) -> list[str]:
         if not payloads:

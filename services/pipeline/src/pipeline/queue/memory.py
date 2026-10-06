@@ -1,7 +1,10 @@
 """In-memory queue backend for unit tests.
 
 Executes nothing on its own: tests call :meth:`run_pending` (or
-:meth:`run_periodic`) to drive handlers deterministically.
+:meth:`run_periodic`) to drive handlers deterministically. ``queueing_lock``
+and ``lock`` follow Procrastinate's semantics (virtual cube spec §5.1): a
+second enqueue while a same-``queueing_lock`` job is waiting is coalesced,
+and same-``lock`` jobs never run at once.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from typing import Any
 
 from pipeline.queue.interface import (
     QUEUE_DEFAULT,
+    Enqueued,
     JobHandler,
     JobPayload,
     QueueBackend,
@@ -27,7 +31,9 @@ class Job:
     id: str
     name: str
     payload: dict[str, Any]
-    status: str = "pending"  # pending | done | failed
+    status: str = "pending"  # pending | running | done | failed
+    lock: str | None = None
+    queueing_lock: str | None = None
 
 
 @dataclass
@@ -72,16 +78,48 @@ class InMemoryQueue(QueueBackend):
             raise QueueError(f"task already registered: {name}")
         self.periodic[name] = PeriodicSpec(func=func, cron=cron)
 
-    async def enqueue(self, job_name: str, payload: JobPayload | None = None) -> str:
+    async def enqueue(
+        self,
+        job_name: str,
+        payload: JobPayload | None = None,
+        *,
+        lock: str | None = None,
+        queueing_lock: str | None = None,
+    ) -> Enqueued:
         if job_name not in self.tasks:
             raise QueueError(f"unknown task: {job_name}")
-        job = Job(id=str(self._next_id), name=job_name, payload=dict(payload or {}))
-        self._next_id += 1
-        self.jobs.append(job)
-        return job.id
+        if queueing_lock is not None and any(
+            job.queueing_lock == queueing_lock and job.status == "pending"
+            for job in self.jobs
+        ):
+            # Procrastinate refuses only while the holder is waiting ('todo').
+            return Enqueued(job_id=None, coalesced=True)
+        job = self._add_job(job_name, payload, lock=lock, queueing_lock=queueing_lock)
+        return Enqueued(job_id=job.id)
 
     async def enqueue_batch(self, job_name: str, payloads: Sequence[JobPayload]) -> list[str]:
-        return [await self.enqueue(job_name, payload) for payload in payloads]
+        return [self._add_job(job_name, payload).id for payload in payloads]
+
+    def _add_job(
+        self,
+        job_name: str,
+        payload: JobPayload | None,
+        *,
+        lock: str | None = None,
+        queueing_lock: str | None = None,
+    ) -> Job:
+        if job_name not in self.tasks:
+            raise QueueError(f"unknown task: {job_name}")
+        job = Job(
+            id=str(self._next_id),
+            name=job_name,
+            payload=dict(payload or {}),
+            lock=lock,
+            queueing_lock=queueing_lock,
+        )
+        self._next_id += 1
+        self.jobs.append(job)
+        return job
 
     async def setup(self) -> None:
         self.is_set_up = True
@@ -98,11 +136,17 @@ class InMemoryQueue(QueueBackend):
     # -- test drivers ------------------------------------------------------
 
     async def run_pending(self) -> int:
-        """Execute all pending jobs; returns how many ran."""
+        """Execute all pending jobs; returns how many ran.
+
+        A job whose ``lock`` is held by a running job is left pending for a
+        later pass (re-entrant drives see this; a sequential pass never
+        overlaps anyway).
+        """
         ran = 0
         for job in self.jobs:
-            if job.status != "pending":
+            if job.status != "pending" or self._lock_held(job.lock):
                 continue
+            job.status = "running"
             try:
                 await _call(self.tasks[job.name], **job.payload)
                 job.status = "done"
@@ -111,6 +155,13 @@ class InMemoryQueue(QueueBackend):
                 raise
             ran += 1
         return ran
+
+    def _lock_held(self, lock: str | None) -> bool:
+        # Procrastinate: a 'doing' job holds its lock until it finishes, even
+        # when its worker has died (retry_stalled releases those).
+        return lock is not None and any(
+            job.lock == lock and job.status == "running" for job in self.jobs
+        )
 
     async def run_periodic(self, name: str, timestamp: int) -> None:
         """Simulate one scheduled tick of a periodic task."""

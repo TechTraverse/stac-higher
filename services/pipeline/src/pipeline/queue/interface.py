@@ -44,6 +44,21 @@ class RetrySpec:
     wait_seconds: int = 0
 
 
+@dataclass(frozen=True)
+class Enqueued:
+    """What one ``enqueue`` did (virtual cube spec §5.1, decision §14.2).
+
+    ``coalesced`` means a job with the same ``queueing_lock`` was already
+    waiting, so nothing new was queued. That is success: the waiting job
+    will see whatever the caller just wrote. Backends return it instead of
+    raising, so no caller can turn coalescing into a retry loop.
+    """
+
+    #: the backend-scoped id of the new job; None when coalesced
+    job_id: str | None
+    coalesced: bool = False
+
+
 #: Procrastinate's own default queue name — every task and periodic that does
 #: not say otherwise. Runs with WORKER_CONCURRENCY - WORKER_BYTES_CONCURRENCY slots.
 QUEUE_DEFAULT = "default"
@@ -93,8 +108,23 @@ class QueueBackend(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def enqueue(self, job_name: str, payload: JobPayload | None = None) -> str:
-        """Enqueue one job; returns a backend-scoped job id."""
+    async def enqueue(
+        self,
+        job_name: str,
+        payload: JobPayload | None = None,
+        *,
+        lock: str | None = None,
+        queueing_lock: str | None = None,
+    ) -> Enqueued:
+        """Enqueue one job.
+
+        ``lock``: jobs sharing it never run at the same time (one writer per
+        cube repository). ``queueing_lock``: while a job holding it is still
+        waiting, another enqueue with it is refused and comes back as
+        ``Enqueued(job_id=None, coalesced=True)``. A job that is already
+        running does not hold its ``queueing_lock``, so it can enqueue its own
+        successor.
+        """
 
     @abc.abstractmethod
     async def enqueue_batch(self, job_name: str, payloads: Sequence[JobPayload]) -> list[str]:
