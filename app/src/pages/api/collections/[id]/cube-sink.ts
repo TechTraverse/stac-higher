@@ -27,7 +27,9 @@ import { canMutate } from "@/lib/authz/permissions";
 import { canManageCollection } from "@/lib/associations/access";
 import { jsonResponse } from "@/lib/http/response";
 import { cubeSinkPatchSchema, cubeSinkPutSchema, layoutChanged } from "@/lib/cubes/schemas";
+import { CUBE_ITEM_ID } from "@/lib/cubes/reserved";
 import {
+  collectionHasItem,
   cubeLedgerSummary,
   deleteCubeSink,
   existingCollections,
@@ -108,6 +110,13 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     if (refs.some((r) => !r.anonymous)) {
       return refuse(422, "signed_source_unsupported",
         "Cube sinks support anonymous (public) source connections only in v1");
+    }
+
+    // `_cube` is the repository's prefix: an existing item of that id would
+    // own it for GC and serving (ADR 0022), so it must go first.
+    if (await collectionHasItem(cube, CUBE_ITEM_ID)) {
+      return refuse(409, "reserved_item_id",
+        `Collection '${cube}' already holds an item named '${CUBE_ITEM_ID}'; delete or rename it first`);
     }
 
     const current = await getCubeSink(cube);

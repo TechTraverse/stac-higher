@@ -7,6 +7,7 @@ vi.mock("@/lib/db/migrate", () => ({ runMigrations: vi.fn(async () => {}) }));
 
 import { query } from "@/lib/db/connection";
 import {
+  collectionHasItem,
   cubeLedgerSummary,
   deleteCubeSinksForCollection,
   deleteCubeSinksForCollectionTolerant,
@@ -81,6 +82,13 @@ describe("cube sink storage", () => {
     const summary = await cubeLedgerSummary(SINK_ID);
     expect(summary.counts).toEqual({ pending: 0, appended: 3, skipped: 0, failed: 0 });
     expect(mockQuery.mock.calls[1][0]).toContain("LIMIT 20");
+  });
+
+  it("checks for one item in pgstac by collection and id", async () => {
+    mockQuery.mockResolvedValueOnce(result([{ exists: true }]));
+    expect(await collectionHasItem("cube", "_cube")).toBe(true);
+    expect(mockQuery.mock.calls[0][0]).toContain("pgstac.items WHERE collection = $1 AND id = $2");
+    expect(mockQuery.mock.calls[0][1]).toEqual(["cube", "_cube"]);
   });
 
   it("checks collection existence in pgstac in one query", async () => {

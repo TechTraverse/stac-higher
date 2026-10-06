@@ -190,6 +190,14 @@ export async function cubeLedgerSummary(sinkId: string): Promise<CubeLedgerSumma
   };
 }
 
+export async function collectionHasItem(collectionId: string, itemId: string): Promise<boolean> {
+  const result = await query<{ exists: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM pgstac.items WHERE collection = $1 AND id = $2) AS exists`,
+    [collectionId, itemId],
+  );
+  return result.rows[0]?.exists === true;
+}
+
 export async function existingCollections(ids: string[]): Promise<Set<string>> {
   const result = await query<{ id: string }>(
     `SELECT id FROM pgstac.collections WHERE id = ANY($1::text[])`,

@@ -306,6 +306,18 @@ describe("reserved item id _cube (Z-2, virtual cube spec §7)", () => {
     vi.mocked(safeFetch).mockResolvedValue(upstream(200) as never);
     expect((await send("DELETE", "collections/cube/items/_cube")).status).toBe(200);
   });
+
+  it("never GC-marks the _cube prefix on an item delete (it is the repository's)", async () => {
+    // Even with no sink row (sink deleted, repository kept): the item_delete
+    // mark for `_cube` would be assets/{c}/_cube/ — the whole repository.
+    vi.mocked(safeFetch).mockResolvedValue(upstream(200) as never);
+    await send("DELETE", "collections/cube/items/_cube");
+    expect(markAssetGcTolerant).not.toHaveBeenCalled();
+    await send("DELETE", "collections/cube/items/other");
+    expect(markAssetGcTolerant).toHaveBeenCalledWith(
+      expect.objectContaining({ collectionId: "cube", itemId: "other", reason: "item_delete" }),
+    );
+  });
 });
 
 describe("collection delete removes cube sinks (Z-2)", () => {

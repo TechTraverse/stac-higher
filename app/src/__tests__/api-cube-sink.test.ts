@@ -14,6 +14,7 @@ vi.mock("@/lib/cubes/storage", () => ({
   cubeLedgerSummary: vi.fn(),
   existingCollections: vi.fn(),
   referenceIngestSources: vi.fn(),
+  collectionHasItem: vi.fn(),
 }));
 vi.mock("@/lib/associations/access", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/associations/access")>()),
@@ -25,6 +26,7 @@ vi.mock("@/lib/db/connection", () => ({ query: vi.fn(), getClient: vi.fn() }));
 import type { AuthContext, CanonicalRole } from "@/lib/auth/types";
 import { canManageCollection } from "@/lib/associations/access";
 import {
+  collectionHasItem,
   cubeLedgerSummary,
   deleteCubeSink,
   existingCollections,
@@ -84,6 +86,7 @@ beforeEach(() => {
   vi.mocked(cubeLedgerSummary).mockReset().mockResolvedValue({ counts: { pending: 0, appended: 0, skipped: 0, failed: 0 }, recent: [] });
   vi.mocked(existingCollections).mockReset().mockResolvedValue(new Set([CUBE, SOURCE]));
   vi.mocked(referenceIngestSources).mockReset().mockResolvedValue([{ association_id: "a1", connection_id: "c1", anonymous: true }]);
+  vi.mocked(collectionHasItem).mockReset().mockResolvedValue(false);
 });
 
 describe("GET", () => {
@@ -144,6 +147,14 @@ describe("PUT", () => {
     expect((await res.json()).code).toBe("source_collection_not_found");
     expect(existingCollections).not.toHaveBeenCalled();
     expect(referenceIngestSources).not.toHaveBeenCalled();
+    expect(upsertCubeSink).not.toHaveBeenCalled();
+  });
+  it("409s when the cube collection already holds an item named _cube", async () => {
+    vi.mocked(collectionHasItem).mockResolvedValue(true);
+    const res = await put({ source_collection_id: SOURCE, config });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("reserved_item_id");
+    expect(collectionHasItem).toHaveBeenCalledWith(CUBE, "_cube");
     expect(upsertCubeSink).not.toHaveBeenCalled();
   });
   it("refuses when any reference association is signed", async () => {

@@ -277,7 +277,12 @@ const handler: APIRoute = async ({ params, request, cookies, locals }) => {
   // collection delete the whole-collection prefix (closes I-51's GC half).
   // Best-effort AFTER upstream success; a failed mark never fails the
   // request the catalog already applied.
-  if (response.ok && txn.action === "delete" && ids) {
+  // Z-2: an item named `_cube` is never marked — its prefix is
+  // assets/{c}/_cube/, a cube repository's (ADR 0022), which may outlive its
+  // sink row. Orphaned item bytes are the lesser harm; the repository goes
+  // with the collection delete's whole-prefix mark.
+  const isCubePrefix = txn.resourceType === "catalog_item" && ids?.item === CUBE_ITEM_ID;
+  if (response.ok && txn.action === "delete" && ids && !isCubePrefix) {
     await markAssetGcTolerant({
       collectionId: ids.collection,
       itemId: txn.resourceType === "catalog_item" ? ids.item : null,
