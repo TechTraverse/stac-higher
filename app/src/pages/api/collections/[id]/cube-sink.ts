@@ -129,7 +129,7 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     const refused = await refuseSource(pre.identity, cube, source);
     if (refused) return refused;
 
-    const [hasCubeItem, current] = await Promise.all([
+    const [hasCubeItem, firstRead] = await Promise.all([
       collectionHasItem(cube, CUBE_ITEM_ID),
       getCubeSink(cube),
     ]);
@@ -139,17 +139,35 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
       return refuse(409, "reserved_item_id",
         `Collection '${cube}' already holds an item named '${CUBE_ITEM_ID}'; delete or rename it first`);
     }
-    const sourceChanged = current !== null && current.source_collection_id !== source;
-    if (current?.last_snapshot_id && (sourceChanged || layoutChanged(current.config, config))) {
-      return refuse(409, "cube_layout_locked",
+    const locked = () =>
+      refuse(409, "cube_layout_locked",
         "The cube repository already exists; its source, parser, append_dim, variables and loadable_variables cannot change");
-    }
 
-    const { sink, created } = await upsertCubeSink({
-      cubeCollectionId: cube, sourceCollectionId: source, config, enabled,
-      createdBy: pre.identity.sub, resetSourceState: sourceChanged,
-    });
-    return jsonResponse(created ? 201 : 200, { sink });
+    // The checks and the write are one optimistic step (#98): the upsert
+    // applies only if the row is still the one checked here — same app
+    // version (no concurrent PUT/PATCH, no concurrent create) and same
+    // repository existence (the first append didn't land in between). On a
+    // refusal, re-read and re-check once: a window-only edit still lands, a
+    // layout or source change after the first append is locked, and a
+    // concurrent source switch is reset properly.
+    let current = firstRead;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) current = await getCubeSink(cube);
+      const hasRepository = Boolean(current?.last_snapshot_id);
+      const sourceChanged = current !== null && current.source_collection_id !== source;
+      if (current && hasRepository && (sourceChanged || layoutChanged(current.config, config))) {
+        return locked();
+      }
+      const written = await upsertCubeSink({
+        cubeCollectionId: cube, sourceCollectionId: source, config, enabled,
+        createdBy: pre.identity.sub, resetSourceState: sourceChanged,
+        expected: { version: current?.version ?? null, hasRepository },
+      });
+      if (written) return jsonResponse(written.created ? 201 : 200, { sink: written.sink });
+    }
+    // Lost twice to other writers. The lock didn't refuse this edit; retry.
+    return refuse(409, "cube_sink_conflict",
+      "The cube sink changed while this request was being applied; reload it and retry");
   } catch (err) {
     return failure(err);
   }

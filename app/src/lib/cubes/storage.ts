@@ -25,6 +25,10 @@ export interface ApiCubeSink {
   created_by: string;
   created_at: string;
   updated_at: string;
+  /** Opaque row version for optimistic writes: `updated_at` at full
+   * (microsecond) precision, which the ISO `updated_at` drops. Only the app
+   * writes `updated_at` — pipeline writes must leave it alone. */
+  version: string;
 }
 
 interface CubeSinkRow extends Omit<ApiCubeSink, "last_appended_at" | "last_maintained_at" | "created_at" | "updated_at"> {
@@ -57,7 +61,8 @@ export interface ReferenceIngestSource {
 
 const COLUMNS = `id, source_collection_id, cube_collection_id, enabled, config,
   source_prefixes, last_snapshot_id, last_appended_at, last_maintained_at,
-  last_maintenance, last_error, created_by, created_at, updated_at`;
+  last_maintenance, last_error, created_by, created_at, updated_at,
+  updated_at::text AS version`;
 
 function toApi(row: CubeSinkRow): ApiCubeSink {
   return {
@@ -75,6 +80,7 @@ function toApi(row: CubeSinkRow): ApiCubeSink {
     created_by: row.created_by,
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at),
+    version: row.version,
   };
 }
 
@@ -88,7 +94,16 @@ export async function getCubeSink(cubeCollectionId: string): Promise<ApiCubeSink
 }
 
 /** Create or replace. A replace keeps the id, the creator, the ledger and
- * everything the pipeline wrote. */
+ * everything the pipeline wrote.
+ *
+ * Optimistic (#98): the write applies only if the row is still what the
+ * caller read and ran its checks against —
+ *   - `expected.version`: no other app write since (null = no row yet, so a
+ *     concurrent create is caught too); and
+ *   - `expected.hasRepository`: whether a repository existed. This flips
+ *     once, on the first append; later appends move `last_snapshot_id` but
+ *     must not refuse edits the layout lock allows.
+ * Otherwise nothing is written or purged and this returns null. */
 export async function upsertCubeSink(input: {
   cubeCollectionId: string;
   sourceCollectionId: string;
@@ -98,7 +113,8 @@ export async function upsertCubeSink(input: {
   /** The source changed and no repository exists yet: clear the previous
    * source's prefixes, last error and ledger in the same statement. */
   resetSourceState?: boolean;
-}): Promise<{ sink: ApiCubeSink; created: boolean }> {
+  expected: { version: string | null; hasRepository: boolean };
+}): Promise<{ sink: ApiCubeSink; created: boolean } | null> {
   await runMigrations();
   const result = await query<CubeSinkRow & { created: boolean }>(
     `WITH up AS (
@@ -112,6 +128,8 @@ export async function upsertCubeSink(input: {
              source_prefixes = CASE WHEN $6::boolean THEN '{}'::text[] ELSE cube_sinks.source_prefixes END,
              last_error = CASE WHEN $6::boolean THEN NULL ELSE cube_sinks.last_error END,
              updated_at = now()
+         WHERE cube_sinks.updated_at IS NOT DISTINCT FROM $7::timestamptz
+           AND (cube_sinks.last_snapshot_id IS NOT NULL) = $8::boolean
        RETURNING ${COLUMNS}, (xmax = 0) AS created
      ), purge AS (
        DELETE FROM stac_higher.cube_appends a USING up
@@ -125,8 +143,11 @@ export async function upsertCubeSink(input: {
       input.enabled,
       input.createdBy,
       input.resetSourceState === true,
+      input.expected.version,
+      input.expected.hasRepository,
     ],
   );
+  if (!result.rows[0]) return null;
   const { created, ...row } = result.rows[0];
   return { sink: toApi(row as CubeSinkRow), created };
 }
