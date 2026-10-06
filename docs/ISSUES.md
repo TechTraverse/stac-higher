@@ -1590,6 +1590,32 @@ the GHSA in `.npm-audit-allow.json` (`scripts/npm-audit-gate.mjs`). When a
 fixed release lands, the gate warns that the entry is stale. Remove it then.
 - Found in: the Security workflow going red on main (2026-10-03).
 
+## Virtual cube (Z queue, epic #83)
+
+### I-143 · A cube repository's Icechunk bookkeeping grows without bound 🟡
+Every commit to a rolling Icechunk cube leaves two objects that expiry plus garbage collection never remove:
+- a **transaction log** (`transactions/`, about 17 KB once the window trims, because each `shift_array` records every moved chunk reference);
+- a **backup copy of the `repo` object** (`overwritten/`, written before each update).
+
+Snapshots, manifests and inline chunks stay flat. Measured in the Z-1 soak (288 commits, 72-step window, hourly expiry + GC): after every GC, `transaction_logs_deleted: 0` and the `overwritten/` count rose by one per commit. The repo grew from 0.25 MB to 6.3 MB over 20 h.
+
+The backup copies are by design (the Icechunk spec keeps them for recovery and as the operations-log chain), and their size tracks the `repo` object's. Setting `num_updates_per_repo_info_file = 100` (default 1,000) keeps that object near 10 KB instead of ~75 KB. With it, the projected growth is about **8 MB per day per cube** (~3 GB a year at a 5-minute cadence): ~5 MB of transaction logs and ~3 MB of backups. That is small next to copying the data (~1.1 GB a day for CMIPC C13).
+
+Whether Icechunk *intends* transaction logs to outlive expired snapshots is unknown. The spec says they are not needed to read data and mentions `pruned_ancestor_tx_logs` on expiry, but 2.2.2 exposes no cleanup. Accepted for v1 (decided 2026-10-04): the sink sets the history limit to 100, and `cube_maintain` records per-kind object counts and bytes and warns above a threshold.
+
+Not done, deliberately:
+- **No upstream question or issue yet.** Ask Icechunk first, before building anything; the answer decides between waiting for an upstream cleanup and a platform-side fix.
+- **No deleting of Icechunk internals ourselves.** The object layout is format-private.
+- **No periodic rebuild** of the repository from its current window. That is the fallback if upstream says "working as intended": it bounds everything using only the public API, at the cost of re-parsing the window's headers and swapping the repo under the cube server.
+
+Revisit when any of these happens:
+- a cube's repository passes ~1 GB;
+- the platform runs more than a handful of cubes, or cubes on a faster cadence;
+- an Icechunk release mentions transaction-log or `overwritten/` cleanup.
+- Tracked in: [Z-1 results §4](research/2026-10-03-virtual-cube-spike.md#4-soak); [ADR 0022](decisions/0022-virtual-cube-sink.md) (the GC exception it scopes).
+
+---
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
