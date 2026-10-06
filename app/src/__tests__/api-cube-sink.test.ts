@@ -169,7 +169,53 @@ describe("PUT", () => {
     expect(res.status).toBe(201);
     expect(upsertCubeSink).toHaveBeenCalledWith({
       cubeCollectionId: CUBE, sourceCollectionId: SOURCE, config: parsedConfig, enabled: true,
-      createdBy: "user-1", resetSourceState: false,
+      createdBy: "user-1", resetSourceState: false, expectedSnapshotId: null,
+    });
+  });
+  describe("the first commit landing mid-request (#98)", () => {
+    const changedLayout = { ...config, variables: ["CMI", "DQF"] };
+
+    it("409s a layout change, and writes nothing", async () => {
+      vi.mocked(getCubeSink)
+        .mockResolvedValueOnce(sink()) // read before the commit
+        .mockResolvedValueOnce(sink({ last_snapshot_id: "SNAP1" })); // re-read after
+      vi.mocked(upsertCubeSink).mockResolvedValueOnce(null); // guard refused
+      const res = await put({ source_collection_id: SOURCE, config: changedLayout });
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe("cube_layout_locked");
+      expect(upsertCubeSink).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(upsertCubeSink).mock.calls[0][0].expectedSnapshotId).toBeNull();
+    });
+
+    it("409s a source change, so the just-committed ledger is not purged", async () => {
+      vi.mocked(getCubeSink)
+        .mockResolvedValueOnce(sink({ source_collection_id: "old-source" }))
+        .mockResolvedValueOnce(sink({ source_collection_id: "old-source", last_snapshot_id: "SNAP1" }));
+      vi.mocked(upsertCubeSink).mockResolvedValueOnce(null);
+      const res = await put({ source_collection_id: SOURCE, config });
+      expect((await res.json()).code).toBe("cube_layout_locked");
+      expect(upsertCubeSink).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-checks and applies a window-only change against the new snapshot", async () => {
+      vi.mocked(getCubeSink)
+        .mockResolvedValueOnce(sink())
+        .mockResolvedValueOnce(sink({ last_snapshot_id: "SNAP1" }));
+      vi.mocked(upsertCubeSink)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ sink: sink(), created: false });
+      const res = await put({ source_collection_id: SOURCE, config: { ...config, window: { max_steps: 72 } } });
+      expect(res.status).toBe(200);
+      expect(vi.mocked(upsertCubeSink).mock.calls[1][0].expectedSnapshotId).toBe("SNAP1");
+    });
+
+    it("gives up with 409 if the snapshot keeps moving", async () => {
+      vi.mocked(getCubeSink).mockResolvedValue(sink({ last_snapshot_id: "SNAP1" }));
+      vi.mocked(upsertCubeSink).mockResolvedValue(null);
+      const res = await put({ source_collection_id: SOURCE, config });
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe("cube_layout_locked");
+      expect(upsertCubeSink).toHaveBeenCalledTimes(2);
     });
   });
   it("replaces (200) an existing sink", async () => {

@@ -129,7 +129,7 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     const refused = await refuseSource(pre.identity, cube, source);
     if (refused) return refused;
 
-    const [hasCubeItem, current] = await Promise.all([
+    const [hasCubeItem, firstRead] = await Promise.all([
       collectionHasItem(cube, CUBE_ITEM_ID),
       getCubeSink(cube),
     ]);
@@ -139,17 +139,29 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
       return refuse(409, "reserved_item_id",
         `Collection '${cube}' already holds an item named '${CUBE_ITEM_ID}'; delete or rename it first`);
     }
-    const sourceChanged = current !== null && current.source_collection_id !== source;
-    if (current?.last_snapshot_id && (sourceChanged || layoutChanged(current.config, config))) {
-      return refuse(409, "cube_layout_locked",
+    const locked = () =>
+      refuse(409, "cube_layout_locked",
         "The cube repository already exists; its source, parser, append_dim, variables and loadable_variables cannot change");
-    }
 
-    const { sink, created } = await upsertCubeSink({
-      cubeCollectionId: cube, sourceCollectionId: source, config, enabled,
-      createdBy: pre.identity.sub, resetSourceState: sourceChanged,
-    });
-    return jsonResponse(created ? 201 : 200, { sink });
+    // The lock check and the write are one optimistic step (#98): the upsert
+    // applies only if last_snapshot_id is still what this check read. If the
+    // first append committed in between, re-read and re-check once — a
+    // window-only edit still lands; a layout or source change is refused.
+    let current = firstRead;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) current = await getCubeSink(cube);
+      const sourceChanged = current !== null && current.source_collection_id !== source;
+      if (current?.last_snapshot_id && (sourceChanged || layoutChanged(current.config, config))) {
+        return locked();
+      }
+      const written = await upsertCubeSink({
+        cubeCollectionId: cube, sourceCollectionId: source, config, enabled,
+        createdBy: pre.identity.sub, resetSourceState: sourceChanged,
+        expectedSnapshotId: current?.last_snapshot_id ?? null,
+      });
+      if (written) return jsonResponse(written.created ? 201 : 200, { sink: written.sink });
+    }
+    return locked();
   } catch (err) {
     return failure(err);
   }

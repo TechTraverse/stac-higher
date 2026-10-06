@@ -88,7 +88,12 @@ export async function getCubeSink(cubeCollectionId: string): Promise<ApiCubeSink
 }
 
 /** Create or replace. A replace keeps the id, the creator, the ledger and
- * everything the pipeline wrote. */
+ * everything the pipeline wrote.
+ *
+ * Optimistic: the replace applies only while `last_snapshot_id` still equals
+ * `expectedSnapshotId` (what the caller read and ran the layout lock
+ * against). If the pipeline committed in between, nothing is written or
+ * purged and this returns null (#98). */
 export async function upsertCubeSink(input: {
   cubeCollectionId: string;
   sourceCollectionId: string;
@@ -98,7 +103,8 @@ export async function upsertCubeSink(input: {
   /** The source changed and no repository exists yet: clear the previous
    * source's prefixes, last error and ledger in the same statement. */
   resetSourceState?: boolean;
-}): Promise<{ sink: ApiCubeSink; created: boolean }> {
+  expectedSnapshotId: string | null;
+}): Promise<{ sink: ApiCubeSink; created: boolean } | null> {
   await runMigrations();
   const result = await query<CubeSinkRow & { created: boolean }>(
     `WITH up AS (
@@ -112,6 +118,7 @@ export async function upsertCubeSink(input: {
              source_prefixes = CASE WHEN $6::boolean THEN '{}'::text[] ELSE cube_sinks.source_prefixes END,
              last_error = CASE WHEN $6::boolean THEN NULL ELSE cube_sinks.last_error END,
              updated_at = now()
+         WHERE cube_sinks.last_snapshot_id IS NOT DISTINCT FROM $7
        RETURNING ${COLUMNS}, (xmax = 0) AS created
      ), purge AS (
        DELETE FROM stac_higher.cube_appends a USING up
@@ -125,8 +132,10 @@ export async function upsertCubeSink(input: {
       input.enabled,
       input.createdBy,
       input.resetSourceState === true,
+      input.expectedSnapshotId,
     ],
   );
+  if (!result.rows[0]) return null;
   const { created, ...row } = result.rows[0];
   return { sink: toApi(row as CubeSinkRow), created };
 }

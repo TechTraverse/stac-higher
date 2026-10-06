@@ -46,10 +46,10 @@ describe("cube sink storage", () => {
     mockQuery.mockResolvedValueOnce(result([{ ...row, created: true }]));
     const out = await upsertCubeSink({
       cubeCollectionId: "goes19-c13-cube", sourceCollectionId: "goes19-cmipc",
-      config: config as never, enabled: true, createdBy: "user-1",
+      config: config as never, enabled: true, createdBy: "user-1", expectedSnapshotId: null,
     });
-    expect(out.created).toBe(true);
-    expect(out.sink).not.toHaveProperty("created");
+    expect(out?.created).toBe(true);
+    expect(out?.sink).not.toHaveProperty("created");
     const sql = mockQuery.mock.calls[0][0] as string;
     expect(sql).toContain("ON CONFLICT (cube_collection_id) DO UPDATE");
     expect(sql).toContain("(xmax = 0) AS created");
@@ -62,12 +62,35 @@ describe("cube sink storage", () => {
     await upsertCubeSink({
       cubeCollectionId: "goes19-c13-cube", sourceCollectionId: "goes19-cmipc-2",
       config: config as never, enabled: true, createdBy: "user-1", resetSourceState: true,
+      expectedSnapshotId: null,
     });
     const sql = mockQuery.mock.calls[0][0] as string;
     expect(sql).toMatch(/source_prefixes = CASE WHEN \$6::boolean THEN '\{\}'::text\[\]/);
     expect(sql).toMatch(/last_error = CASE WHEN \$6::boolean THEN NULL/);
     expect(sql).toMatch(/DELETE FROM stac_higher\.cube_appends a USING up\s+WHERE \$6::boolean AND a\.cube_sink_id = up\.id/);
     expect(mockQuery.mock.calls[0][1]?.[5]).toBe(true);
+  });
+
+  it("applies the update only if last_snapshot_id is still what the caller read (#98)", async () => {
+    mockQuery.mockResolvedValueOnce(result([{ ...row, created: false }]));
+    await upsertCubeSink({
+      cubeCollectionId: "goes19-c13-cube", sourceCollectionId: "goes19-cmipc",
+      config: config as never, enabled: true, createdBy: "user-1", expectedSnapshotId: "SNAP1",
+    });
+    const sql = mockQuery.mock.calls[0][0] as string;
+    expect(sql).toMatch(/updated_at = now\(\)\s+WHERE cube_sinks\.last_snapshot_id IS NOT DISTINCT FROM \$7/);
+    expect(mockQuery.mock.calls[0][1]?.[6]).toBe("SNAP1");
+  });
+
+  it("returns null when the snapshot moved, so nothing was written or purged", async () => {
+    // DO UPDATE … WHERE false → no row from `up`, and `purge` joins on `up`.
+    mockQuery.mockResolvedValueOnce(result([]));
+    const out = await upsertCubeSink({
+      cubeCollectionId: "goes19-c13-cube", sourceCollectionId: "goes19-cmipc-2",
+      config: config as never, enabled: true, createdBy: "user-1",
+      resetSourceState: true, expectedSnapshotId: null,
+    });
+    expect(out).toBeNull();
   });
 
   it("on collection delete: deletes the sink whose CUBE it was, disables those it SOURCED", async () => {
