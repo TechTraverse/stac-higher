@@ -335,6 +335,17 @@ export function matchGatedRoute(
     };
   }
 
+  // Z-2 (virtual cube spec §7): the cube sink on the cube collection [id].
+  // Group ownership (the cube collection's, §14.1) is enforced in-route.
+  const cubeSink = path.match(/^\/api\/collections\/([^/]+)\/cube-sink$/);
+  if (cubeSink && (m === "PUT" || m === "PATCH" || m === "DELETE")) {
+    return {
+      action: m === "DELETE" ? "delete" : "update",
+      resourceType: "cube_sink",
+      resourceId: cubeSink[1],
+    };
+  }
+
   const collConnId = path.match(
     /^\/api\/collections\/([^/]+)\/connections\/([^/]+)$/,
   );
