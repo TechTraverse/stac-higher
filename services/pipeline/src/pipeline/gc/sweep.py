@@ -59,7 +59,8 @@ async def retention_tick(repo: GcRepo, *, batch_limit: int) -> RetentionTickResu
             retention_max_items=c.retention_max_items,
         )
         for item_id in items:
-            # Mark BEFORE delete — see module docstring.
+            # Mark BEFORE delete — see module docstring. (The repository's
+            # shared insert refuses a cube repository's prefix — ADR 0022.)
             if await repo.mark_asset_prefix(
                 item_prefix(c.collection_id, item_id),
                 c.collection_id,

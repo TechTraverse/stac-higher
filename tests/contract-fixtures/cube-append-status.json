@@ -1,0 +1,7 @@
+{
+  "$comment": "Z-2 (virtual cube spec §3.2, §5.2): the stac_higher.cube_appends.status vocabulary and the closed skip-reason set. Consumed by app/src/lib/cubes/status.ts (whose label maps must cover every entry), pipeline/cubes/config.py, and migration 032's CHECK constraint (cubes-migration.test.ts). `no_datetime` is written by the dispatcher (§5.2) for an item with neither datetime nor start_datetime.",
+  "style": "pinned-enum",
+  "statuses": ["pending", "appended", "skipped", "failed"],
+  "terminal": ["appended", "skipped", "failed"],
+  "skip_reasons": ["late", "duplicate", "no_source_connection", "unsupported_layout", "source_missing", "no_datetime"]
+}

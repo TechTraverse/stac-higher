@@ -23,9 +23,10 @@ regexes = [
   # tests/contract-fixtures/ and docs/superpowers/plans/, and exempting
   # either directory wholesale would hide a real credential committed there
   # later.
+  # `(C\d+)?` admits single-band products (`…-M6C13_G19_…`, Z-1/#86).
   # The `.nc` suffix is optional: the manifest fixture's `asset_key` is the
   # bare granule id, while `href`/`key` carry the filename.
-  '''OR_ABI-L2-[A-Za-z0-9]+-M\d+_G\d+_s\d+_e\d+_c\d+(\.nc)?''',
+  '''OR_ABI-L2-[A-Za-z0-9]+-M\d+(C\d+)?_G\d+_s\d+_e\d+_c\d+(\.nc)?''',
   # The suites' fixed dummy CREDENTIALS_MASTER_KEY: base64 of the ASCII
   # "0123456789abcdef" twice. Plans under docs/superpowers/plans/ quote test
   # code verbatim, so it appears outside the allowlisted test paths too.

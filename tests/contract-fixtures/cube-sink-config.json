@@ -1,0 +1,38 @@
+{
+  "$comment": "Z-2 (virtual cube spec §3.1, ADR 0022): stac_higher.cube_sinks.config. Writer: app/src/lib/cubes/schemas.ts cubeSinkConfigSchema (strict, rejects unknown keys). Reader: services/pipeline/src/pipeline/cubes/config.py parse_cube_sink_config (lenient: ignores unknown keys, de-duplicates names). `window` absent means no trim and NO GC (ADR 0011 safety). `grib` is a reserved parser value both sides refuse until a GRIB parser exists.",
+  "minimal": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"] },
+  "defaults": {
+    "parser": "hdf5",
+    "append_dim": "t",
+    "variables": ["CMI"],
+    "loadable_variables": ["t"],
+    "asset_key": "cube",
+    "on_late": "skip"
+  },
+  "cases": [
+    { "name": "minimal", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"] }, "app": "accept", "pipeline": "accept" },
+    { "name": "full config (spec example)", "config": { "parser": "hdf5", "append_dim": "t", "variables": ["CMI", "DQF"], "loadable_variables": ["t", "x", "y", "goes_imager_projection"], "asset_key": "cube", "window": { "max_steps": 288, "max_age": "24h" }, "on_late": "skip" }, "app": "accept", "pipeline": "accept" },
+    { "name": "window absent: no trim, GC never runs", "config": { "parser": "hdf5", "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"] }, "app": "accept", "pipeline": "accept" },
+    { "name": "window with max_age only", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_age": "6h" } }, "app": "accept", "pipeline": "accept" },
+    { "name": "max_age at the 30-day limit in hours", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_age": "720h" } }, "app": "accept", "pipeline": "accept" },
+    { "name": "grib is reserved", "config": { "parser": "grib", "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"] }, "app": "reject", "pipeline": "reject" },
+    { "name": "unknown parser", "config": { "parser": "netcdf3", "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"] }, "app": "reject", "pipeline": "reject" },
+    { "name": "append_dim missing from loadable_variables", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["x", "y"] }, "app": "reject", "pipeline": "reject" },
+    { "name": "blank append_dim", "config": { "append_dim": " ", "variables": ["CMI"], "loadable_variables": [" "] }, "app": "reject", "pipeline": "reject" },
+    { "name": "no variables", "config": { "append_dim": "t", "variables": [], "loadable_variables": ["t"] }, "app": "reject", "pipeline": "reject" },
+    { "name": "blank variable name", "config": { "append_dim": "t", "variables": ["CMI", ""], "loadable_variables": ["t"] }, "app": "reject", "pipeline": "reject" },
+    { "name": "duplicate variable (writer rejects, reader de-duplicates)", "config": { "append_dim": "t", "variables": ["CMI", "CMI"], "loadable_variables": ["t"] }, "app": "reject", "pipeline": "accept" },
+    { "name": "empty window", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": {} }, "app": "reject", "pipeline": "reject" },
+    { "name": "max_steps of 0", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_steps": 0 } }, "app": "reject", "pipeline": "reject" },
+    { "name": "max_steps above 10000", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_steps": 10001 } }, "app": "reject", "pipeline": "reject" },
+    { "name": "max_steps not an integer", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_steps": 1.5 } }, "app": "reject", "pipeline": "reject" },
+    { "name": "max_age of zero", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_age": "0h" } }, "app": "reject", "pipeline": "reject" },
+    { "name": "max_age over 30 days", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_age": "721h" } }, "app": "reject", "pipeline": "reject" },
+    { "name": "max_age not a duration", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_age": "24 hours" } }, "app": "reject", "pipeline": "reject" },
+    { "name": "asset_key outside the grammar", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "asset_key": "Cube!" }, "app": "reject", "pipeline": "reject" },
+    { "name": "on_late other than skip", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "on_late": "region_write" }, "app": "reject", "pipeline": "reject" },
+    { "name": "variables not a list", "config": { "append_dim": "t", "variables": "CMI", "loadable_variables": ["t"] }, "app": "reject", "pipeline": "reject" },
+    { "name": "unknown top-level key", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "chunking": "auto" }, "app": "reject", "pipeline": "accept" },
+    { "name": "unknown window key", "config": { "append_dim": "t", "variables": ["CMI"], "loadable_variables": ["t"], "window": { "max_steps": 72, "keep": "latest" } }, "app": "reject", "pipeline": "accept" }
+  ]
+}

@@ -28,6 +28,7 @@ from pipeline.finalize.status import (
     STATUS_PENDING,
     STATUS_REJECTED,
 )
+from pipeline.gc.repo import insert_asset_gc_mark
 
 
 @dataclass(frozen=True)
@@ -277,17 +278,11 @@ class PgFinalizeRepo(FinalizeRepo):
         reason: str,
         grace_days: int,
     ) -> bool:
+        # The shared insert refuses a cube repository's prefix (ADR 0022).
         async with await self._connect() as conn:
-            cur = await conn.execute(
-                "INSERT INTO stac_higher.asset_gc"
-                " (object_key, collection_id, item_id, reason, collect_after)"
-                " VALUES (%s, %s, %s, %s, now() + make_interval(days => %s))"
-                " ON CONFLICT (object_key) WHERE collected_at IS NULL DO NOTHING",
-                (prefix, collection_id, item_id, reason, grace_days),
+            return await insert_asset_gc_mark(
+                conn, prefix, collection_id, item_id, reason, grace_days
             )
-            created = (cur.rowcount or 0) > 0
-            await conn.commit()
-        return created
 
     async def gc_grace_days(self, collection_id: str) -> int:  # pragma: no cover
         async with await self._connect() as conn:

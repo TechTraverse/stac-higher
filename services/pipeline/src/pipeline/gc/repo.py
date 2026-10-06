@@ -14,8 +14,51 @@ intent) into the same table.
 from __future__ import annotations
 
 import abc
+import logging
+import re
 from dataclasses import dataclass
 from typing import Any
+
+from pipeline.cubes.config import CUBE_ITEM_ID
+
+logger = logging.getLogger(__name__)
+
+#: ``assets/{collection}/_cube/`` — a cube repository's prefix (ADR 0022).
+_CUBE_REPOSITORY_PREFIX = re.compile(rf"^assets/[^/]+/{re.escape(CUBE_ITEM_ID)}/?$")
+
+
+async def insert_asset_gc_mark(
+    conn: Any,
+    prefix: str,
+    collection_id: str,
+    item_id: str | None,
+    reason: str,
+    grace_days: int,
+) -> bool:
+    """The ONE ``asset_gc`` mark insert, shared by every Pg repository.
+
+    Idempotent via the open-key unique index; True for a NEW mark. A cube
+    repository's prefix is never marked here, whatever the caller (retention,
+    the dispatcher's delete handler, the push rollback): Icechunk GC inside
+    ``_cube/`` is the only byte deletion there, and the whole-collection mark
+    is the only way the repository goes (ADR 0022, amending ADR 0011).
+    """
+    if item_id == CUBE_ITEM_ID or _CUBE_REPOSITORY_PREFIX.match(prefix):
+        logger.warning(
+            "refused an asset_gc mark on a cube repository prefix",
+            extra={"prefix": prefix, "collection_id": collection_id, "reason": reason},
+        )
+        return False
+    cur = await conn.execute(
+        "INSERT INTO stac_higher.asset_gc"
+        " (object_key, collection_id, item_id, reason, collect_after)"
+        " VALUES (%s, %s, %s, %s, now() + make_interval(days => %s))"
+        " ON CONFLICT (object_key) WHERE collected_at IS NULL DO NOTHING",
+        (prefix, collection_id, item_id, reason, grace_days),
+    )
+    created = (cur.rowcount or 0) > 0
+    await conn.commit()
+    return created
 
 
 @dataclass(frozen=True)
@@ -194,16 +237,9 @@ class PgGcRepo(GcRepo):
         grace_days: int,
     ) -> bool:
         async with await self._connect() as conn:
-            cur = await conn.execute(
-                "INSERT INTO stac_higher.asset_gc"
-                " (object_key, collection_id, item_id, reason, collect_after)"
-                " VALUES (%s, %s, %s, %s, now() + make_interval(days => %s))"
-                " ON CONFLICT (object_key) WHERE collected_at IS NULL DO NOTHING",
-                (prefix, collection_id, item_id, reason, grace_days),
+            return await insert_asset_gc_mark(
+                conn, prefix, collection_id, item_id, reason, grace_days
             )
-            created = (cur.rowcount or 0) > 0
-            await conn.commit()
-        return created
 
     async def delete_item(self, item_id: str, collection_id: str) -> bool:  # pragma: no cover
         async with await self._connect() as conn:

@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import quote
 
+from pipeline.cubes.config import CUBE_ITEM_ID
+
 CANONICAL_PREFIX = "assets"
 STAGING_PREFIX = "staging"
 #: Phase 9 §9 — a `logs/` sibling of assets/ and staging/ in the §5.3 layout.
@@ -39,6 +41,10 @@ def _safe_segment(value: str, *, field: str) -> str:
         raise InvalidKeySegment(f"{field} must be a non-empty, non-traversal segment")
     if "/" in value or "\\" in value:
         raise InvalidKeySegment(f"{field} must not contain a path separator: {value!r}")
+    if field == "item_id" and value == CUBE_ITEM_ID:
+        # assets/{c}/_cube/ is a cube repository's prefix (ADR 0022). The
+        # app's SAFE_SEGMENT refuses a leading `_` for the same reason.
+        raise InvalidKeySegment(f"item_id {value!r} is reserved for cube repositories")
     return value
 
 

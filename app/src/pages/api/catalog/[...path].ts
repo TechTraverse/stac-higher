@@ -51,6 +51,8 @@ import {
   matchCatalogTransaction,
 } from "@/lib/catalog/transactions";
 import { getCollectionSettings } from "@/lib/collections/settings";
+import { CUBE_ITEM_ID, isCubeItemId, writtenItemIds } from "@/lib/cubes/reserved";
+import { cubeSinksOnCollectionDeleteTolerant } from "@/lib/cubes/storage";
 import { markAssetGcTolerant } from "@/lib/gc/marks";
 import { forwardUpstream } from "@/lib/http/forward";
 import { jsonResponse } from "@/lib/http/response";
@@ -214,6 +216,15 @@ const handler: APIRoute = async ({ params, request, cookies, locals }) => {
     } catch {
       doc = undefined;
     }
+    // Z-2 (ADR 0022): `_cube` is reserved in every collection — it is a cube
+    // repository's prefix, and a repository can outlive its sink row, so the
+    // reservation does not depend on one (and cannot race a sink PUT).
+    if (isItemWrite && ids && writtenItemIds(ids.item, doc).some(isCubeItemId)) {
+      return jsonResponse(422, {
+        error: `Item id '${CUBE_ITEM_ID}' is reserved for cube repositories`,
+        code: "reserved_item_id",
+      });
+    }
     if (doc !== undefined && hasStagedHrefs(doc)) {
       const verdict = await preValidateStagedWrite(doc, {
         method,
@@ -252,6 +263,8 @@ const handler: APIRoute = async ({ params, request, cookies, locals }) => {
   // collection delete the whole-collection prefix (closes I-51's GC half).
   // Best-effort AFTER upstream success; a failed mark never fails the
   // request the catalog already applied.
+  // (markAssetGc never marks an item `_cube`: that prefix is a cube
+  // repository's, collected only with the whole collection — Z-2.)
   if (response.ok && txn.action === "delete" && ids) {
     await markAssetGcTolerant({
       collectionId: ids.collection,
@@ -259,6 +272,12 @@ const handler: APIRoute = async ({ params, request, cookies, locals }) => {
       reason:
         txn.resourceType === "catalog_item" ? "item_delete" : "collection_delete",
     });
+    // Z-2: a deleted cube collection takes its sink with it (its repository
+    // rides the collection_delete GC mark above); a deleted SOURCE only
+    // disables the sinks it fed, so the cube keeps its lock and ledger.
+    if (txn.resourceType === "catalog_collection") {
+      await cubeSinksOnCollectionDeleteTolerant(ids.collection);
+    }
   }
 
   return response;

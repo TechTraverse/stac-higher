@@ -21,12 +21,17 @@ vi.mock("@/lib/collections/settings", () => ({
 vi.mock("@/lib/gc/marks", () => ({
   markAssetGcTolerant: vi.fn(async () => {}),
 }));
+// Z-2 hook: cube sinks on collection delete.
+vi.mock("@/lib/cubes/storage", () => ({
+  cubeSinksOnCollectionDeleteTolerant: vi.fn(async () => {}),
+}));
 
 import { safeFetch } from "@/lib/http/safe-fetch";
 import { getAuthConfig } from "@/lib/auth/config";
 import { readSession } from "@/lib/auth/session";
 import { getCollectionSettings } from "@/lib/collections/settings";
 import { markAssetGcTolerant } from "@/lib/gc/marks";
+import { cubeSinksOnCollectionDeleteTolerant } from "@/lib/cubes/storage";
 import { makeCollectionSettings } from "./helpers/settings-fixtures";
 import { builtinCatalogUrl } from "@/lib/catalog/transactions";
 import {
@@ -84,6 +89,7 @@ beforeEach(() => {
   vi.mocked(getCollectionSettings).mockResolvedValue(
     makeCollectionSettings({ collectionId: "c1" }),
   );
+  vi.mocked(cubeSinksOnCollectionDeleteTolerant).mockResolvedValue(undefined);
 });
 
 describe("path scoping", () => {
@@ -237,5 +243,68 @@ describe("retention & GC hooks (M2-F, ADR 0011)", () => {
         })
       ).ok,
     ).toBe(true);
+  });
+});
+
+describe("reserved item id _cube (Z-2, virtual cube spec §7)", () => {
+  const item = (id: string) => ({
+    type: "Feature", id, collection: "cube", geometry: null, properties: {}, links: [], assets: {},
+  });
+  const handlers = { POST: postRoute, PUT: putRoute, DELETE: deleteRoute } as const;
+  const send = (method: keyof typeof handlers, path: string, body?: unknown) =>
+    call(handlers[method], path, { method, body });
+
+  it("refuses POSTing item _cube into any collection (422, not forwarded)", async () => {
+    for (const collection of ["cube", "plain"]) {
+      const res = await send("POST", `collections/${collection}/items`, item("_cube"));
+      expect(res.status).toBe(422);
+      expect((await res.json()).code).toBe("reserved_item_id");
+    }
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses _cube inside a FeatureCollection body", async () => {
+    const res = await send("POST", "collections/cube/items", {
+      type: "FeatureCollection",
+      features: [item("a"), item("_cube")],
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it("checks the body id as well as the path id, raw or percent-encoded", async () => {
+    expect((await send("PUT", "collections/cube/items/_cube", item("other"))).status).toBe(422);
+    expect((await send("PUT", "collections/cube/items/%5Fcube", item("other"))).status).toBe(422);
+    expect((await send("PUT", "collections/cube/items/other", item("_cube"))).status).toBe(422);
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards ordinary ids", async () => {
+    expect((await send("POST", "collections/cube/items", item("a"))).status).toBe(201);
+    expect(safeFetch).toHaveBeenCalled();
+  });
+
+  it("still allows deleting an item named _cube (the GC helper skips its prefix)", async () => {
+    vi.mocked(safeFetch).mockResolvedValue(upstream(200) as never);
+    expect((await send("DELETE", "collections/cube/items/_cube")).status).toBe(200);
+  });
+});
+
+describe("collection delete and cube sinks (Z-2)", () => {
+  it("hands the deleted collection to the sink hook after a successful delete", async () => {
+    vi.mocked(safeFetch).mockResolvedValue(upstream(200) as never);
+    await call(deleteRoute, "collections/goes19-cmipc", { method: "DELETE" });
+    expect(cubeSinksOnCollectionDeleteTolerant).toHaveBeenCalledWith("goes19-cmipc");
+  });
+
+  it("does not touch sinks when the upstream delete failed", async () => {
+    vi.mocked(safeFetch).mockResolvedValue(upstream(500) as never);
+    await call(deleteRoute, "collections/goes19-cmipc", { method: "DELETE" });
+    expect(cubeSinksOnCollectionDeleteTolerant).not.toHaveBeenCalled();
+  });
+
+  it("does not touch sinks on an item delete", async () => {
+    vi.mocked(safeFetch).mockResolvedValue(upstream(200) as never);
+    await call(deleteRoute, "collections/goes19-cmipc/items/i1", { method: "DELETE" });
+    expect(cubeSinksOnCollectionDeleteTolerant).not.toHaveBeenCalled();
   });
 });
