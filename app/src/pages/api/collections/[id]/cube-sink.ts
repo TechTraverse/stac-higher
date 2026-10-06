@@ -143,25 +143,31 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
       refuse(409, "cube_layout_locked",
         "The cube repository already exists; its source, parser, append_dim, variables and loadable_variables cannot change");
 
-    // The lock check and the write are one optimistic step (#98): the upsert
-    // applies only if last_snapshot_id is still what this check read. If the
-    // first append committed in between, re-read and re-check once — a
-    // window-only edit still lands; a layout or source change is refused.
+    // The checks and the write are one optimistic step (#98): the upsert
+    // applies only if the row is still the one checked here — same app
+    // version (no concurrent PUT/PATCH, no concurrent create) and same
+    // repository existence (the first append didn't land in between). On a
+    // refusal, re-read and re-check once: a window-only edit still lands, a
+    // layout or source change after the first append is locked, and a
+    // concurrent source switch is reset properly.
     let current = firstRead;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) current = await getCubeSink(cube);
+      const hasRepository = Boolean(current?.last_snapshot_id);
       const sourceChanged = current !== null && current.source_collection_id !== source;
-      if (current?.last_snapshot_id && (sourceChanged || layoutChanged(current.config, config))) {
+      if (current && hasRepository && (sourceChanged || layoutChanged(current.config, config))) {
         return locked();
       }
       const written = await upsertCubeSink({
         cubeCollectionId: cube, sourceCollectionId: source, config, enabled,
         createdBy: pre.identity.sub, resetSourceState: sourceChanged,
-        expectedSnapshotId: current?.last_snapshot_id ?? null,
+        expected: { version: current?.version ?? null, hasRepository },
       });
       if (written) return jsonResponse(written.created ? 201 : 200, { sink: written.sink });
     }
-    return locked();
+    // Lost twice to other writers. The lock didn't refuse this edit; retry.
+    return refuse(409, "cube_sink_conflict",
+      "The cube sink changed while this request was being applied; reload it and retry");
   } catch (err) {
     return failure(err);
   }

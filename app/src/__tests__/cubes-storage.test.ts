@@ -28,17 +28,22 @@ const row = {
   enabled: true, config, source_prefixes: [], last_snapshot_id: null, last_appended_at: null,
   last_maintained_at: null, last_maintenance: null, last_error: null, created_by: "user-1",
   created_at: new Date("2026-10-05T00:00:00Z"), updated_at: new Date("2026-10-05T01:00:00Z"),
+  version: "2026-10-05 01:00:00.123456+00",
 };
+const NEW = { version: null, hasRepository: false } as const;
 
 const result = (rows: unknown[]) => ({ rows, rowCount: rows.length }) as never;
 
 beforeEach(() => mockQuery.mockReset());
 
 describe("cube sink storage", () => {
-  it("maps timestamps to ISO strings", async () => {
+  it("maps timestamps to ISO strings and carries the full-precision row version", async () => {
     mockQuery.mockResolvedValueOnce(result([row]));
     const sink = await getCubeSink("goes19-c13-cube");
     expect(sink?.created_at).toBe("2026-10-05T00:00:00.000Z");
+    // The ISO updated_at drops microseconds; the version must not.
+    expect(sink?.version).toBe("2026-10-05 01:00:00.123456+00");
+    expect(mockQuery.mock.calls[0][0]).toContain("updated_at::text AS version");
     expect(mockQuery.mock.calls[0][1]).toEqual(["goes19-c13-cube"]);
   });
 
@@ -46,7 +51,7 @@ describe("cube sink storage", () => {
     mockQuery.mockResolvedValueOnce(result([{ ...row, created: true }]));
     const out = await upsertCubeSink({
       cubeCollectionId: "goes19-c13-cube", sourceCollectionId: "goes19-cmipc",
-      config: config as never, enabled: true, createdBy: "user-1", expectedSnapshotId: null,
+      config: config as never, enabled: true, createdBy: "user-1", expected: NEW,
     });
     expect(out?.created).toBe(true);
     expect(out?.sink).not.toHaveProperty("created");
@@ -62,7 +67,7 @@ describe("cube sink storage", () => {
     await upsertCubeSink({
       cubeCollectionId: "goes19-c13-cube", sourceCollectionId: "goes19-cmipc-2",
       config: config as never, enabled: true, createdBy: "user-1", resetSourceState: true,
-      expectedSnapshotId: null,
+      expected: { version: row.version, hasRepository: false },
     });
     const sql = mockQuery.mock.calls[0][0] as string;
     expect(sql).toMatch(/source_prefixes = CASE WHEN \$6::boolean THEN '\{\}'::text\[\]/);
@@ -71,24 +76,30 @@ describe("cube sink storage", () => {
     expect(mockQuery.mock.calls[0][1]?.[5]).toBe(true);
   });
 
-  it("applies the update only if last_snapshot_id is still what the caller read (#98)", async () => {
+  it("guards the replace on the row version AND on whether a repository exists (#98)", async () => {
     mockQuery.mockResolvedValueOnce(result([{ ...row, created: false }]));
     await upsertCubeSink({
       cubeCollectionId: "goes19-c13-cube", sourceCollectionId: "goes19-cmipc",
-      config: config as never, enabled: true, createdBy: "user-1", expectedSnapshotId: "SNAP1",
+      config: config as never, enabled: true, createdBy: "user-1",
+      expected: { version: row.version, hasRepository: true },
     });
     const sql = mockQuery.mock.calls[0][0] as string;
-    expect(sql).toMatch(/updated_at = now\(\)\s+WHERE cube_sinks\.last_snapshot_id IS NOT DISTINCT FROM \$7/);
-    expect(mockQuery.mock.calls[0][1]?.[6]).toBe("SNAP1");
+    // Not the snapshot id: appends move it every few minutes, but the lock
+    // only cares whether a repository exists, which flips once.
+    expect(sql).not.toMatch(/last_snapshot_id IS NOT DISTINCT FROM/);
+    expect(sql).toMatch(
+      /WHERE cube_sinks\.updated_at IS NOT DISTINCT FROM \$7::timestamptz\s+AND \(cube_sinks\.last_snapshot_id IS NOT NULL\) = \$8::boolean/,
+    );
+    expect(mockQuery.mock.calls[0][1]?.slice(6)).toEqual([row.version, true]);
   });
 
-  it("returns null when the snapshot moved, so nothing was written or purged", async () => {
+  it("returns null when the guard refused, so nothing was written or purged", async () => {
     // DO UPDATE … WHERE false → no row from `up`, and `purge` joins on `up`.
     mockQuery.mockResolvedValueOnce(result([]));
     const out = await upsertCubeSink({
       cubeCollectionId: "goes19-c13-cube", sourceCollectionId: "goes19-cmipc-2",
       config: config as never, enabled: true, createdBy: "user-1",
-      resetSourceState: true, expectedSnapshotId: null,
+      resetSourceState: true, expected: NEW,
     });
     expect(out).toBeNull();
   });

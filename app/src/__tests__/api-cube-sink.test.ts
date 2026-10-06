@@ -56,6 +56,7 @@ function sink(overrides: Partial<ApiCubeSink> = {}): ApiCubeSink {
     last_snapshot_id: null, last_appended_at: null, last_maintained_at: null,
     last_maintenance: null, last_error: null, created_by: "user-1",
     created_at: "2026-10-05T00:00:00.000Z", updated_at: "2026-10-05T00:00:00.000Z",
+    version: "V1",
     ...overrides,
   };
 }
@@ -169,13 +170,21 @@ describe("PUT", () => {
     expect(res.status).toBe(201);
     expect(upsertCubeSink).toHaveBeenCalledWith({
       cubeCollectionId: CUBE, sourceCollectionId: SOURCE, config: parsedConfig, enabled: true,
-      createdBy: "user-1", resetSourceState: false, expectedSnapshotId: null,
+      createdBy: "user-1", resetSourceState: false,
+      expected: { version: null, hasRepository: false },
     });
   });
-  describe("the first commit landing mid-request (#98)", () => {
+  describe("concurrent writes (#98)", () => {
     const changedLayout = { ...config, variables: ["CMI", "DQF"] };
 
-    it("409s a layout change, and writes nothing", async () => {
+    it("guards on the row version and repository existence it read", async () => {
+      vi.mocked(getCubeSink).mockResolvedValue(sink({ version: "V7", last_snapshot_id: "SNAP9" }));
+      vi.mocked(upsertCubeSink).mockResolvedValue({ sink: sink(), created: false });
+      expect((await put({ source_collection_id: SOURCE, config })).status).toBe(200);
+      expect(vi.mocked(upsertCubeSink).mock.calls[0][0].expected).toEqual({ version: "V7", hasRepository: true });
+    });
+
+    it("first commit mid-request + layout change → 409 cube_layout_locked, nothing written", async () => {
       vi.mocked(getCubeSink)
         .mockResolvedValueOnce(sink()) // read before the commit
         .mockResolvedValueOnce(sink({ last_snapshot_id: "SNAP1" })); // re-read after
@@ -184,20 +193,26 @@ describe("PUT", () => {
       expect(res.status).toBe(409);
       expect((await res.json()).code).toBe("cube_layout_locked");
       expect(upsertCubeSink).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(upsertCubeSink).mock.calls[0][0].expectedSnapshotId).toBeNull();
+      expect(vi.mocked(upsertCubeSink).mock.calls[0][0].expected).toEqual({ version: "V1", hasRepository: false });
     });
 
-    it("409s a source change, so the just-committed ledger is not purged", async () => {
+    it("first commit mid-request + source change → 409, and the purge rode on the refused write", async () => {
       vi.mocked(getCubeSink)
         .mockResolvedValueOnce(sink({ source_collection_id: "old-source" }))
         .mockResolvedValueOnce(sink({ source_collection_id: "old-source", last_snapshot_id: "SNAP1" }));
       vi.mocked(upsertCubeSink).mockResolvedValueOnce(null);
       const res = await put({ source_collection_id: SOURCE, config });
+      expect(res.status).toBe(409);
       expect((await res.json()).code).toBe("cube_layout_locked");
       expect(upsertCubeSink).toHaveBeenCalledTimes(1);
+      // The only write that carried the ledger purge was the one the guard refused.
+      expect(vi.mocked(upsertCubeSink).mock.calls[0][0]).toMatchObject({
+        resetSourceState: true,
+        expected: { version: "V1", hasRepository: false },
+      });
     });
 
-    it("re-checks and applies a window-only change against the new snapshot", async () => {
+    it("first commit mid-request + window-only change → re-checked and applied", async () => {
       vi.mocked(getCubeSink)
         .mockResolvedValueOnce(sink())
         .mockResolvedValueOnce(sink({ last_snapshot_id: "SNAP1" }));
@@ -206,15 +221,44 @@ describe("PUT", () => {
         .mockResolvedValueOnce({ sink: sink(), created: false });
       const res = await put({ source_collection_id: SOURCE, config: { ...config, window: { max_steps: 72 } } });
       expect(res.status).toBe(200);
-      expect(vi.mocked(upsertCubeSink).mock.calls[1][0].expectedSnapshotId).toBe("SNAP1");
+      expect(vi.mocked(upsertCubeSink).mock.calls[1][0].expected).toEqual({ version: "V1", hasRepository: true });
     });
 
-    it("gives up with 409 if the snapshot keeps moving", async () => {
-      vi.mocked(getCubeSink).mockResolvedValue(sink({ last_snapshot_id: "SNAP1" }));
+    it("a concurrent PUT switched the source: re-read, so this PUT resets that source's state", async () => {
+      // PUT X read source A; PUT Y switched it to B first. X must not put A
+      // back while keeping B's prefixes and ledger.
+      vi.mocked(getCubeSink)
+        .mockResolvedValueOnce(sink({ source_collection_id: SOURCE }))
+        .mockResolvedValueOnce(sink({ source_collection_id: "source-b", version: "V2" }));
+      vi.mocked(upsertCubeSink)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ sink: sink(), created: false });
+      expect((await put({ source_collection_id: SOURCE, config })).status).toBe(200);
+      expect(vi.mocked(upsertCubeSink).mock.calls[0][0].resetSourceState).toBe(false);
+      expect(vi.mocked(upsertCubeSink).mock.calls[1][0]).toMatchObject({
+        resetSourceState: true,
+        expected: { version: "V2", hasRepository: false },
+      });
+    });
+
+    it("two first-time creates: the loser re-reads the winner's row and replaces it (200)", async () => {
+      vi.mocked(getCubeSink)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(sink({ source_collection_id: "source-b", version: "V2" }));
+      vi.mocked(upsertCubeSink)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ sink: sink(), created: false });
+      expect((await put({ source_collection_id: SOURCE, config })).status).toBe(200);
+      expect(vi.mocked(upsertCubeSink).mock.calls[0][0].expected).toEqual({ version: null, hasRepository: false });
+      expect(vi.mocked(upsertCubeSink).mock.calls[1][0].resetSourceState).toBe(true);
+    });
+
+    it("still losing after the re-check → 409 cube_sink_conflict (retryable), not a lock error", async () => {
+      vi.mocked(getCubeSink).mockResolvedValue(sink());
       vi.mocked(upsertCubeSink).mockResolvedValue(null);
       const res = await put({ source_collection_id: SOURCE, config });
       expect(res.status).toBe(409);
-      expect((await res.json()).code).toBe("cube_layout_locked");
+      expect((await res.json()).code).toBe("cube_sink_conflict");
       expect(upsertCubeSink).toHaveBeenCalledTimes(2);
     });
   });
