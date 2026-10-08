@@ -3456,6 +3456,21 @@ async def test_a_storage_outage_hands_the_attempts_back(h):
     assert h.sink().last_error is None
 
 
+async def test_a_failed_release_keeps_the_original_exception(h, monkeypatch):
+    await h.pend(0)
+
+    async def db_blip(cube_sink_id, row_ids):
+        raise ConnectionError("database unreachable")
+
+    def down(sink):
+        raise OSError("platform store unreachable")
+
+    monkeypatch.setattr(h.repo, "release_rows", db_blip)
+    with pytest.raises(OSError, match="platform store"):
+        await run_cube_append(SINK, h.deps(storage_for=down))
+    assert h.repo.rows(SINK)[0].attempts == 1  # kept: the conservative direction
+
+
 async def test_rows_older_than_max_age_are_skipped_without_parsing(h):
     h.sink().config = {**GOES_CONFIG, "window": {"max_age": "10m"}}
     h.now = scan(10)
@@ -3611,9 +3626,16 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
         # An exception is an outage or a bug, not a crash loop: give the
         # attempts back, so a platform-store outage cannot fail rows
         # `crash_loop`. A worker that dies mid-job never gets here, so real
-        # crashes still count (#90).
-        await deps.repo.release_rows(sink.id, [r.id for r in rows])
-        await deps.repo.record_error(sink.id, error_text(exc))
+        # crashes still count (#90). A cleanup failure (likely the same DB
+        # blip) is logged and must not replace the original exception: the
+        # rows then keep their bump, which is the conservative direction.
+        try:
+            await deps.repo.release_rows(sink.id, [r.id for r in rows])
+            await deps.repo.record_error(sink.id, error_text(exc))
+        except Exception:
+            logger.exception(
+                "cube_append: could not release rows", extra={"cube_sink_id": sink.id}
+            )
         raise
     return report
 
