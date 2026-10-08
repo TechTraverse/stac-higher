@@ -44,7 +44,7 @@ Tests run offline. The "fake NODD" is GOES-shaped HDF5 files written with h5py i
 
 1. **More modules than #90's file list.** It lists `cubes/source.py` and `cubes/append.py`. This plan adds `cubes/steps.py`, `cubes/icerepo.py`, `cubes/write.py` and `cubes/resolve.py`, so each piece has one job and its own tests. `append.py` stays the entry point.
 2. **`obspec-utils` becomes a direct dependency.** VirtualiZarr 2.7.3 deprecates re-exporting `ObjectStoreRegistry` and names `obspec_utils.registry` as the home. It is already a transitive dependency, so the image doesn't grow.
-3. **Signed sources are refused in the writer too** (`failed: signed_source_unsupported`), not decrypted. The sink PUT already refuses them (422) and §13 limits v1 to anonymous prefixes. A connection flipped to signed after the PUT would otherwise give the cube references the cube server can't read.
+3. **Signed sources are refused in the writer too** (`failed` with reason `SourceConnectionError: signed_source_unsupported`), not decrypted. The sink PUT already refuses them (422) and §13 limits v1 to anonymous prefixes. A connection flipped to signed after the PUT would otherwise give the cube references the cube server can't read.
 4. **obstore dials the pinned endpoint, and the Icechunk container keeps the hostname.** A plaintext endpoint is rewritten to its validated IP for obstore, which is what `S3Adapter` and `pinned_endpoint_url` already do. The container config is persisted in the repository and only readers dial it, so it records the hostname. Always path style: the host that `resolve_pinned` vets is then the host obstore dials.
 5. **LastModified comes from one HEAD per row** (`obstore.head_async`), because `ingest_files` records only an etag fingerprint. The HEAD runs **before** the parse. A rewrite after the HEAD then makes later reads fail loudly; a HEAD after the parse could pair new bytes with old offsets.
 6. **The first-commit race (#90) and crash recovery share one rule: an unrecorded repository is provisional.** While `cube_sinks.last_snapshot_id` is NULL, a job that finds data in the repository resets `main` to the root snapshot (compare-and-swap on the tip) before writing. It replaces the container set with exactly the current sources. Its first `record_commit` applies only `WHERE updated_at = <version read> AND last_snapshot_id IS NULL` (#90 option 1). If that updates 0 rows and the reloaded sink still has no snapshot, an app write won the race. The rows then stay pending and the job re-enqueues, so the next job rebuilds under the new config. Nothing is deleted. The same rule covers a crash between commit and record: those rows are still pending, so resetting loses nothing.
@@ -58,13 +58,23 @@ Tests run offline. The "fake NODD" is GOES-shaped HDF5 files written with h5py i
    - `EgressBlocked`, a refused connection, or any other parse or write error → `failed` with `"{ExceptionType}: {message}"` (≤ 500 chars).
    - An error on one file never fails the batch.
 8. **Which source file is an item's header:** exactly one of the item's reference source hrefs whose filename ends `.nc`, `.nc4`, `.h5`, `.hdf5` or `.he5`. No hrefs at all → `source_missing`; zero or several HDF hrefs → `unsupported_layout`.
-9. **Crash-loop protection on the ledger (#90 comment).** `take_pending` bumps `attempts` on every row it claims, before anything is parsed. Rows whose `attempts` exceed **6** (`MAX_ROW_ATTEMPTS`) are failed `crash_loop` without being parsed. Retry is `RetrySpec(max_attempts=3, wait_seconds=30)`. `RetrySpec` has no exponential form, and Procrastinate's `attempts` is shared with the stall cap (3).
-10. **Z-3's stub rows are revisited.** `cube_kick` first returns every `failed` / `not_implemented` row to `pending` with `attempts = 0` (`CubeRepo.reset_stub_failures`). Their `created_at` is old, so the same tick wakes their sinks. The statement is cheap and idempotent, so it stays.
+9. **Crash-loop protection on the ledger (#90 comment).** `take_pending` bumps `attempts` on every row it claims, before anything is parsed. Rows whose `attempts` exceed **6** (`MAX_ROW_ATTEMPTS`) are failed `crash_loop` without being parsed. **Only real crashes count:** any exception that reaches `run_cube_append` gives the attempts back (`CubeRepo.release_rows`), records `last_error` and re-raises. Without that, a platform-store outage of a few minutes would push the oldest 50 rows to `crash_loop` (3 job tries plus 3 from the next kick). A worker that is SIGKILLed, OOM-killed, segfaulted or requeued as stalled never reaches that handler, so its attempts still count. A deterministic bug therefore leaves the rows pending and the sink's `last_error` set, rather than failing them. Retry is `RetrySpec(max_attempts=3, wait_seconds=30)`. `RetrySpec` has no exponential form, and Procrastinate's `attempts` is shared with the stall cap (3).
+10. **Z-3's stub rows are revisited.** `cube_kick` first returns every `failed` / `not_implemented` row to `pending` with `attempts = 0` (`CubeRepo.reset_stub_failures`). Their `created_at` is old, so the same tick wakes their sinks. **The lead's call (#90 allows either), flagged in the PR:** this is a whole-table `UPDATE` every 5 minutes, forever, for a one-time leftover. The alternative is to drop it and state that no sink may exist before Z-4 ships.
 11. **A step whose write raises is failed and the batch is redone without it** in a fresh session (the half-written session is dropped, never committed).
-12. **`window.max_age` on a non-datetime `append_dim` is ignored** (only `max_steps` applies). A window may trim the cube to **zero** steps, the same thing §10's age trim does to a stopped source. The next append still works (verified on icechunk 2.3.0).
+12. **`window.max_age` on a non-datetime `append_dim` is ignored by the trim** (only `max_steps` applies). **Rows whose `item_datetime` is already older than `now − max_age` are skipped `late` before they are resolved or parsed.** After a long outage, every 50-row job would otherwise parse 50 headers, append them, trim the cube to empty, and commit, again and again. This cutoff uses the item's datetime (GOES: scan start), not `t` (scan midpoint), so a step straddling the cutoff can be skipped; that is one step at the window's edge. A window may trim the cube to **zero** steps, the same thing §10's age trim does to a stopped source. The next append still works (verified on icechunk 2.3.0).
 13. **A disabled or deleted sink's job does nothing.** A disabled sink's rows wait, and `cube_kick` wakes them once re-enabled. A missing `CREDENTIALS_MASTER_KEY` makes the job a logged no-op (`load_key_or_skip`), and the rows wait.
 14. **`record_commit` writes `source_prefixes`** = the repository config's container prefixes whenever the tip or that set differs from the sink row. It also clears `last_error`.
-15. **Double-run residual (accepted, recorded as an ISSUES entry).** If a stalled-job requeue runs a second writer during a provisional first append, ledger rows can name a snapshot the other run reset away. The data is still correct, and the next commit records the true tip.
+15. **Double-run residuals (accepted, recorded as I-144).**
+    - If a stalled-job requeue runs a second writer during a provisional first append, ledger rows can name a snapshot the other run reset away.
+    - After the first commit, `record_commit` is unconditional, so in a double run the slower recorder can move `last_snapshot_id` back to an older snapshot until the next commit.
+    - Rows appended and trimmed in the same commit read `appended` with a snapshot that no longer holds them. After crash recovery, such rows read `late`.
+    - A sink deleted while its repository is provisional leaves the repository in storage until the cube collection is deleted.
+    In every case the cube's data is correct.
+16. **The layout check covers the grid, not only the arrays.**
+    - Each step's non-time loadable variables (`x`, `y`, the grid mapping) must equal the cube's: decoded values compared exactly, plus the attributes of scalar variables (the grid mapping) in canonical JSON. A mismatch → `skipped: unsupported_layout`. This is proven necessary: on icechunk 2.3.0 / VirtualiZarr 2.7.3, an append **overwrites** the cube's `x`/`y` with the new step's values, so a sector or satellite change would silently re-georeference every earlier step.
+    - A step array whose time chunk is not 1 is a layout error (spec §6.2 step 5).
+    - `_trim` refuses to shift an array whose time chunk is not 1 (`RuntimeError`), because it shifts by chunks.
+17. **The Z-5 hook is `after_batch`, not "after commit".** It is awaited after **every** batch that reached the repository: the ledger is written and the tip is recorded, or was already recorded. That includes a batch that committed nothing (duplicates or lates after a crash), so the collection asset converges after a crash between commit and finish. Z-5's writer must therefore be idempotent. If the hook itself raises, the job retries. Its rows are already finished, so the asset catches up at the next batch (≤ 5 min at the GOES cadence).
 
 ## Review Focus
 
@@ -72,7 +82,8 @@ Tests run offline. The "fake NODD" is GOES-shaped HDF5 files written with h5py i
 2. **One unreadable file in a batch** (a transient NODD error, a corrupt header): that row is `failed` with the error text and the other steps still commit (Task 9, "one bad file fails only its row").
 3. **A source that stops past `max_age` and later resumes:** the cube trims to zero steps and the next file appends normally (Task 7, "a cube trimmed to empty still appends").
 4. **The sink is deleted or disabled while a job runs:** the job must end quietly without raising or writing ledger errors, and must not leave the repository recorded against a sink that no longer exists (Task 9, "a sink deleted mid-job").
-5. **A reprocessed NODD file** (new item, same scan `t`): the cube is unchanged and the row reads `appended` / `duplicate` (Task 7, "a step already present"; Task 9, "redone steps are duplicates").
+5. **The platform store (Silo) is down for a few minutes:** jobs fail and retry, but no row may end `crash_loop`. When the store returns, the rows append normally (Task 9, "a storage outage hands the attempts back").
+6. **A step from another grid** (sector or satellite-position change, same array shapes) must be skipped `unsupported_layout`, and must not rewrite the cube's `x`/`y` (Task 7, "a step on another grid").
 
 ---
 
@@ -158,7 +169,13 @@ uv add 'icechunk>=2.2.2,<3' 'virtualizarr[hdf]>=2.7.3,<3' 'zarr>=3.4,<4' \
   'obstore>=0.11.1' 'h5py>=3.16.0' 'xarray>=2026.7.0' 'obspec-utils>=0.9.0'
 ```
 
-Expected: `uv` resolves (about 150 packages, up from 133) and adds the seven lines to `[project] dependencies`. A dry run on 2026-10-07 resolved icechunk 2.3.0, virtualizarr 2.7.3, zarr 3.4.0, xarray 2026.7.0, obstore 0.11.1, h5py 3.16.0, numpy 2.5.1. If the resolver reports a conflict with an existing pin (rasterio, the `stactools` extra), stop and report it; don't loosen another pin. The Dockerfile needs no change: every new package ships manylinux wheels, and h5py bundles libhdf5.
+Then add `"h5py"` and `"icechunk"` to `[tool.uv] no-build-package` next to `"rasterio"` (`no-build-package = ["rasterio", "h5py", "icechunk"]`), so a missing wheel fails at lock time, not in the image build. Re-run `uv lock`, and restore the extras that `uv add` dropped by exact-syncing:
+
+```bash
+uv lock && uv sync --extra dev --extra stactools
+```
+
+Expected: `uv` resolves (about 150 packages, up from 133) and adds the seven lines to `[project] dependencies`. rasterio 1.5.0 and numpy 2.5.1 are unchanged. A dry run on 2026-10-07 resolved icechunk 2.3.0, virtualizarr 2.7.3, zarr 3.4.0, xarray 2026.7.0, obstore 0.11.1, h5py 3.16.0, numpy 2.5.1. If the resolver reports a conflict with an existing pin (rasterio, the `stactools` extra), stop and report it; don't loosen another pin. The Dockerfile needs no change: every new package ships manylinux wheels, and h5py bundles libhdf5.
 
 - [ ] **Step 4: Run the tests to see them pass, and run the whole suite**
 
@@ -665,6 +682,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `CubeRepo` abstract methods:
     - `load_sink(cube_sink_id) -> CubeSink | None`
     - `take_pending(cube_sink_id, limit) -> list[PendingRow]`
+    - `release_rows(cube_sink_id, row_ids) -> int`
     - `finish_rows(cube_sink_id, outcomes) -> int`
     - `has_pending(cube_sink_id) -> bool`
     - `record_commit(cube_sink_id, *, snapshot_id, appended_at, source_prefixes, first_commit_version) -> bool`
@@ -718,6 +736,26 @@ async def test_take_pending_orders_by_item_datetime_and_bumps_attempts(db):
     assert [(r.item_id, r.attempts) for r in taken] == [("early", 1), ("mid", 1)]
     again = await repo.take_pending(sink, 50)
     assert [(r.item_id, r.attempts) for r in again] == [("early", 2), ("mid", 2), ("late", 1)]
+
+
+async def test_release_rows_undoes_the_take_on_pending_rows_only(db):
+    from pipeline.cubes.repo import LedgerEntry, PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    await repo.record_appends([LedgerEntry(sink, "a", T0), LedgerEntry(sink, "b", T0)])
+    ids = {r.item_id: r.id for r in await repo.take_pending(sink, 50)}
+    await conn.execute(
+        "UPDATE stac_higher.cube_appends SET status = 'appended'"
+        " WHERE cube_sink_id = %s AND item_id = 'b'",
+        (sink,),
+    )
+    assert await repo.release_rows(sink, list(ids.values())) == 1
+    assert [(r[0], r[2], r[4]) for r in await _rows(conn, sink)] == [
+        ("a", "pending", 0),
+        ("b", "appended", 1),
+    ]
 
 
 async def test_finish_rows_changes_pending_rows_only(db):
@@ -844,6 +882,8 @@ async def test_take_finish_and_record_commit():
     )
     taken = await repo.take_pending("s1", 50)
     assert [(r.item_id, r.attempts) for r in taken] == [("a", 1), ("b", 1)]
+    assert await repo.release_rows("s1", [taken[1].id]) == 1
+    assert repo.rows("s1")[1].attempts == 0
     assert await repo.finish_rows("s1", [RowOutcome(taken[0].id, "appended", None, "S1")]) == 1
     assert await repo.has_pending("s1")
     kw = {"appended_at": T0, "source_prefixes": ["s3://b/"]}
@@ -870,7 +910,16 @@ Expected: FAIL with `ImportError: cannot import name 'RowOutcome'`. The DB-gated
 
 - [ ] **Step 4: Add the types and abstract methods to `cubes/repo.py`**
 
-Update the module docstring's ownership paragraph to read: "The pipeline reads `cube_sinks` and writes `cube_appends` rows, plus the pipeline-owned `cube_sinks` columns `source_prefixes`, `last_snapshot_id`, `last_appended_at` and `last_error` (Z-4). It never writes `cube_sinks.updated_at`: that column is the app's optimistic-lock version (#98)."
+Replace the module docstring's ownership paragraph with:
+
+```
+Ownership (ADR 0001): the app owns the DDL (migration 032). The pipeline
+reads ``cube_sinks`` and writes ``cube_appends`` rows, plus the
+pipeline-owned ``cube_sinks`` columns ``source_prefixes``,
+``last_snapshot_id``, ``last_appended_at`` and ``last_error`` (Z-4). It
+never writes ``cube_sinks.updated_at``: that column is the app's
+optimistic-lock version (#98).
+```
 
 Add `from typing import Any` to the imports. Add after `REASON_NO_DATETIME`:
 
@@ -930,6 +979,12 @@ Abstract methods on `CubeRepo` (after `fail_pending`):
         """Up to ``limit`` pending rows in ``(item_datetime, id)`` order, each
         with ``attempts`` bumped by one BEFORE the job parses anything, so a
         row that keeps killing its worker is counted (#90 comment)."""
+
+    @abc.abstractmethod
+    async def release_rows(self, cube_sink_id: str, row_ids: Sequence[int]) -> int:
+        """Undo ``take_pending``'s bump on rows still ``pending``: the job
+        failed with an exception (an outage or a bug), which is not a crash
+        loop. Returns the rows changed."""
 
     @abc.abstractmethod
     async def finish_rows(self, cube_sink_id: str, outcomes: Sequence[RowOutcome]) -> int:
@@ -1011,6 +1066,22 @@ Abstract methods on `CubeRepo` (after `fail_pending`):
             await conn.commit()
         taken = [PendingRow(id=r[0], item_id=r[1], item_datetime=r[2], attempts=r[3]) for r in rows]
         return sorted(taken, key=lambda r: (r.item_datetime, r.id))
+
+    async def release_rows(  # pragma: no cover
+        self, cube_sink_id: str, row_ids: Sequence[int]
+    ) -> int:
+        if not row_ids:
+            return 0
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.cube_appends"
+                "   SET attempts = GREATEST(attempts - 1, 0), updated_at = now()"
+                " WHERE cube_sink_id = %s AND id = ANY(%s::bigint[]) AND status = 'pending'",
+                (cube_sink_id, list(row_ids)),
+            )
+            changed = cur.rowcount
+            await conn.commit()
+        return changed
 
     async def finish_rows(  # pragma: no cover
         self, cube_sink_id: str, outcomes: Sequence[RowOutcome]
@@ -1246,6 +1317,15 @@ class FakeCubeRepo(CubeRepo):
             r.attempts += 1
         return [PendingRow(r.id, r.item_id, r.item_datetime, r.attempts) for r in rows]
 
+    async def release_rows(self, cube_sink_id: str, row_ids: Sequence[int]) -> int:
+        wanted = set(row_ids)
+        changed = 0
+        for r in self.ledger.values():
+            if r.cube_sink_id == cube_sink_id and r.id in wanted and r.status == "pending":
+                r.attempts = max(r.attempts - 1, 0)
+                changed += 1
+        return changed
+
     async def finish_rows(self, cube_sink_id: str, outcomes: Sequence[RowOutcome]) -> int:
         if self.finish_error is not None:
             exc, self.finish_error = self.finish_error, None
@@ -1373,12 +1453,16 @@ If `grep` found `record_error =` hits in Step 6, add those test files to this co
   - `step_value(step, append_dim) -> np.generic`.
   - `step_specs(step, config) -> dict[str, ArraySpec]`.
   - `check_layout(step_specs, cube_specs) -> None` (raises `LayoutError`).
+  - `StaticSpec(values: np.ndarray, attrs: str | None)` with `.same_as(other) -> bool`.
+  - `canonical_attrs(attrs) -> str`, `static_spec(var: xr.DataArray) -> StaticSpec`.
+  - `step_statics(step, config) -> dict[str, StaticSpec]`.
+  - `check_statics(step_statics, cube_statics) -> None` (raises `LayoutError`).
   - `trim_count(values: np.ndarray, window: CubeWindow | None, now: dt.datetime) -> int`.
 - Produces (in `tests/_cube_sources.py`):
   - constants `T0`, `SOURCE_MTIME`, `SOURCE_LAST_MODIFIED`, `GOES_CONFIG`
   - `scan(n) -> dt.datetime`
   - `as_ns(when) -> np.datetime64`
-  - `write_goes_file(path, *, when, value=0.0, shape=(4, 6), chunks=(2, 3), variables=("CMI", "DQF"), mtime=SOURCE_MTIME) -> Path`
+  - `write_goes_file(path, *, when, value=0.0, shape=(4, 6), chunks=(2, 3), variables=("CMI", "DQF"), mtime=SOURCE_MTIME, x0=0.0, perspective_point_height=35786023.0) -> Path`
   - `local_libs(root) -> SourceLibs`
   - `registry_for(*libs) -> ObjectStoreRegistry`
 
@@ -1440,13 +1524,15 @@ def write_goes_file(
     chunks: tuple[int, int] = (2, 3),
     variables: tuple[str, ...] = ("CMI", "DQF"),
     mtime: int = SOURCE_MTIME,
+    x0: float = 0.0,
+    perspective_point_height: float = 35786023.0,
 ) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:
         y = f.create_dataset("y", data=np.arange(shape[0], dtype="f4") * -1e-4)
         y.make_scale("y")
-        x = f.create_dataset("x", data=np.arange(shape[1], dtype="f4") * 1e-4)
+        x = f.create_dataset("x", data=np.arange(shape[1], dtype="f4") * 1e-4 + x0)
         x.make_scale("x")
         for name in variables:
             dtype = "i1" if name == "DQF" else "f4"
@@ -1459,7 +1545,7 @@ def write_goes_file(
         t.attrs["units"] = "seconds since 2000-01-01 12:00:00"
         proj = f.create_dataset("goes_imager_projection", data=np.int32(-2147483647))
         proj.attrs["grid_mapping_name"] = "geostationary"
-        proj.attrs["perspective_point_height"] = 35786023.0
+        proj.attrs["perspective_point_height"] = perspective_point_height
     os.utime(path, (mtime, mtime))
     return path
 
@@ -1500,9 +1586,12 @@ from pipeline.cubes.steps import (
     ArraySpec,
     LayoutError,
     build_step,
+    canonical_attrs,
     check_layout,
+    check_statics,
     parse_header,
     step_specs,
+    step_statics,
     step_value,
     trim_count,
 )
@@ -1566,6 +1655,31 @@ def test_step_specs_and_the_layout_check(tmp_path):
         check_layout(specs, {"CMI": specs["CMI"]})
 
 
+def test_a_step_with_more_than_one_time_per_chunk_is_a_layout_error():
+    step = build_step(_plain(as_ns(scan(0))), CONFIG)
+    doubled = xr.concat([step, step], dim="t")  # numpy-backed: one chunk of 2 along t
+    with pytest.raises(LayoutError, match="time chunk 2"):
+        step_specs(doubled, CONFIG)
+
+
+def test_statics_compare_the_grid_values_and_the_grid_mapping_attrs(tmp_path):
+    base = step_statics(_parse(tmp_path, "a.nc"), CONFIG)
+    assert set(base) == {"x", "y", "goes_imager_projection"}
+    check_statics(base, base)
+    shifted = step_statics(_parse(tmp_path, "b.nc", x0=0.5), CONFIG)
+    with pytest.raises(LayoutError, match="x differs"):
+        check_statics(shifted, base)
+    moved = step_statics(_parse(tmp_path, "c.nc", perspective_point_height=1.0), CONFIG)
+    with pytest.raises(LayoutError, match="goes_imager_projection differs"):
+        check_statics(moved, base)
+
+
+def test_canonical_attrs_ignores_the_hdf5_array_wrapping():
+    hdf5 = {"h": np.array([35786023.0]), "name": np.bytes_(b"geostationary")}
+    zarr_json = {"name": "geostationary", "h": 35786023.0}
+    assert canonical_attrs(hdf5) == canonical_attrs(zarr_json)
+
+
 VALUES = np.array([as_ns(scan(i)) for i in range(5)])
 
 
@@ -1614,8 +1728,10 @@ never bytes. It is blocking, so the job runs it through ``asyncio.to_thread``.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import xarray as xr
@@ -1681,13 +1797,77 @@ def step_value(step: xr.Dataset, append_dim: str) -> np.generic:
 
 
 def step_specs(step: xr.Dataset, config: CubeSinkConfig) -> dict[str, ArraySpec]:
+    """Raises :class:`LayoutError` for an array whose time chunk is not 1: the
+    window shifts by chunks (spec §6.2 step 5)."""
     specs: dict[str, ArraySpec] = {}
     for name in config.variables:
         data = step[name].data
         metadata = getattr(data, "metadata", None)
         chunks = tuple(getattr(metadata, "chunks", None) or data.shape)
+        if chunks[0] != 1:
+            raise LayoutError(f"{name} has time chunk {chunks[0]}; a cube step needs 1")
         specs[name] = ArraySpec(tuple(data.shape[1:]), chunks[1:], str(step[name].dtype))
     return specs
+
+
+@dataclass(frozen=True, eq=False)
+class StaticSpec:
+    """A variable without the append axis (``x``, ``y``, the grid mapping): its
+    decoded values and, for a scalar, its attributes in canonical JSON."""
+
+    values: np.ndarray
+    attrs: str | None
+
+    def same_as(self, other: StaticSpec) -> bool:
+        if self.values.shape != other.values.shape or self.attrs != other.attrs:
+            return False
+        try:
+            return bool(np.array_equal(self.values, other.values, equal_nan=True))
+        except TypeError:  # a dtype without NaN (strings, objects)
+            return bool(np.array_equal(self.values, other.values))
+
+
+def canonical_attrs(attrs: Mapping[str, Any]) -> str:
+    """Attributes as JSON, so a file's HDF5 attributes compare equal to the
+    same attributes after a round trip through the Zarr metadata (numpy to
+    plain, bytes to str, a one-element array to its element)."""
+
+    def plain(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            value = value.tolist()
+        elif isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, bytes):
+            value = value.decode()
+        if isinstance(value, list) and len(value) == 1:
+            value = value[0]
+        return value
+
+    return json.dumps({k: plain(v) for k, v in attrs.items()}, sort_keys=True, default=str)
+
+
+def static_spec(var: xr.DataArray) -> StaticSpec:
+    return StaticSpec(np.asarray(var.values), canonical_attrs(var.attrs) if var.ndim == 0 else None)
+
+
+def step_statics(step: xr.Dataset, config: CubeSinkConfig) -> dict[str, StaticSpec]:
+    return {
+        name: static_spec(step[name])
+        for name in config.loadable_variables
+        if name != config.append_dim
+    }
+
+
+def check_statics(step: Mapping[str, StaticSpec], cube: Mapping[str, StaticSpec]) -> None:
+    """The step's grid must be the cube's. An append rewrites the cube's
+    non-time variables with the step's, so a step from another grid would
+    silently re-georeference every earlier step."""
+    for name, spec in step.items():
+        have = cube.get(name)
+        if have is None:
+            raise LayoutError(f"{name} is not a variable of this cube")
+        if not spec.same_as(have):
+            raise LayoutError(f"{name} differs from the cube's (grid or projection changed)")
 
 
 def check_layout(step: Mapping[str, ArraySpec], cube: Mapping[str, ArraySpec]) -> None:
@@ -1748,7 +1928,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `cube_prefix(cube_collection_id) -> str` → `"assets/{c}/_cube"`.
   - `cube_storage(settings, cube_collection_id) -> ic.Storage`.
   - `open_repository(storage, libs: Sequence[SourceLibs], *, replace_containers: bool) -> ic.Repository`.
-  - `CubeState(values: np.ndarray, specs: dict[str, ArraySpec], time_arrays: tuple[str, ...], initialised: bool)`.
+  - `CubeState(values: np.ndarray, specs: dict[str, ArraySpec], time_arrays: tuple[str, ...], initialised: bool, statics: dict[str, StaticSpec])`.
   - `read_state(session, append_dim) -> CubeState`.
   - `reset_to_root(repo, *, from_snapshot_id: str) -> None` (raises `ic.ConflictError` if the branch moved).
 
@@ -1784,7 +1964,7 @@ from pipeline.cubes.icerepo import (
     read_state,
     reset_to_root,
 )
-from pipeline.cubes.steps import ArraySpec, parse_header
+from pipeline.cubes.steps import ArraySpec, check_statics, parse_header, step_statics
 
 CONFIG = parse_cube_sink_config(GOES_CONFIG)
 
@@ -1841,6 +2021,10 @@ def test_state_after_a_write(tmp_path):
     assert list(state.values) == [as_ns(scan(0)), as_ns(scan(1))]
     assert state.time_arrays == ("CMI", "DQF", "t")
     assert state.specs["CMI"] == ArraySpec((4, 6), (2, 3), "float32")
+    # The grid read back from the cube equals the grid of the file it came from.
+    assert set(state.statics) == {"x", "y", "goes_imager_projection"}
+    fresh = parse_header(libs.url("a.nc"), registry_for(libs), CONFIG)
+    check_statics(step_statics(fresh, CONFIG), state.statics)
 
 
 def test_reset_to_root_empties_the_branch_and_is_compare_and_swap(tmp_path):
@@ -1903,7 +2087,7 @@ from zarr.errors import GroupNotFoundError
 from pipeline.config import Settings
 from pipeline.cubes.config import CUBE_ITEM_ID
 from pipeline.cubes.source import SourceLibs
-from pipeline.cubes.steps import ArraySpec
+from pipeline.cubes.steps import ArraySpec, StaticSpec, static_spec
 from pipeline.storage.platform import platform_s3_access
 
 BRANCH = "main"
@@ -1980,6 +2164,8 @@ class CubeState:
     time_arrays: tuple[str, ...] = ()
     #: the cube has its ``append_dim`` array (it may hold zero steps)
     initialised: bool = False
+    #: every variable without the append axis (``x``, ``y``, the grid mapping)
+    statics: dict[str, StaticSpec] = field(default_factory=dict)
 
 
 def read_state(session: ic.Session, append_dim: str) -> CubeState:
@@ -2009,6 +2195,9 @@ def read_state(session: ic.Session, append_dim: str) -> CubeState:
         specs=specs,
         time_arrays=tuple(time_arrays),
         initialised=True,
+        statics={
+            str(name): static_spec(ds[name]) for name in ds.variables if name not in time_arrays
+        },
     )
 
 
@@ -2048,7 +2237,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `ParsedStep(row_id: int, item_id: str, step: xr.Dataset, value: np.generic, last_modified: dt.datetime)` (frozen).
   - `BatchResult(outcomes: dict[int, tuple[str, str | None]], snapshot_id: str, committed: bool, values: np.ndarray, trimmed: int, initialised: bool)`.
   - `write_batch(repo, parsed: Sequence[ParsedStep], config, now) -> BatchResult` (blocking; raises `ic.ConflictError` after the one redo).
-  - `classify(parsed, state, config, exclude=frozenset()) -> tuple[dict[int, Outcome], list[ParsedStep]]`.
+  - `classify(parsed, state, config, exclude=frozenset()) -> tuple[dict[int, Outcome], list[ParsedStep]]`. It checks array layout (`check_layout`) and the grid (`check_statics`) against the cube, or against the batch's first step for a new cube.
   - `error_text(exc) -> str`.
   - Seams patched by tests: `write_step(session, parsed, append_dim)` and `commit_session(session, message) -> str`.
   - Constants: `REASON_DUPLICATE`, `REASON_LATE`, `REASON_UNSUPPORTED_LAYOUT`, `MAX_ERROR_CHARS = 500`.
@@ -2068,6 +2257,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import icechunk as ic
+import numpy as np
 import pytest
 import xarray as xr
 
@@ -2167,6 +2357,21 @@ def test_a_mismatched_layout_is_skipped_and_the_rest_append(cube):
     result = cube.write(cube.parsed(2, 1, chunks=(4, 6)), cube.parsed(3, 2))
     assert result.outcomes == {2: ("skipped", "unsupported_layout"), 3: ("appended", None)}
     assert cube.times() == [as_ns(scan(0)), as_ns(scan(2))]
+
+
+def test_a_step_on_another_grid_is_skipped_and_the_cube_grid_kept(cube):
+    cube.write(cube.parsed(1, 0))
+    before = cube.read()["x"].values.copy()
+    result = cube.write(cube.parsed(2, 1, x0=0.5), cube.parsed(3, 2))
+    assert result.outcomes == {2: ("skipped", "unsupported_layout"), 3: ("appended", None)}
+    # An append rewrites the non-time variables, so this is what the check protects.
+    assert np.array_equal(cube.read()["x"].values, before)
+
+
+def test_a_step_with_another_grid_mapping_is_skipped(cube):
+    cube.write(cube.parsed(1, 0))
+    result = cube.write(cube.parsed(2, 1, perspective_point_height=35786000.0))
+    assert result.outcomes == {2: ("skipped", "unsupported_layout")}
 
 
 def test_the_first_step_of_a_new_cube_sets_the_layout(cube):
@@ -2344,7 +2549,14 @@ import zarr
 
 from pipeline.cubes.config import CubeSinkConfig
 from pipeline.cubes.icerepo import BRANCH, CubeState, read_state
-from pipeline.cubes.steps import LayoutError, check_layout, step_specs, trim_count
+from pipeline.cubes.steps import (
+    LayoutError,
+    check_layout,
+    check_statics,
+    step_specs,
+    step_statics,
+    trim_count,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2433,6 +2645,7 @@ def classify(
     present = set(state.values)
     tip = state.values[-1] if len(state.values) else None
     specs = dict(state.specs) if state.initialised else None
+    statics = dict(state.statics) if state.initialised else None
     for p in sorted(parsed, key=lambda p: (p.value, p.row_id)):
         if p.row_id in exclude:
             continue
@@ -2442,19 +2655,20 @@ def classify(
         if tip is not None and p.value <= tip:
             outcomes[p.row_id] = ("skipped", REASON_LATE)
             continue
-        mine = step_specs(p.step, config)
-        if specs is None:
-            specs = mine  # the first step of a new cube sets its layout
-        else:
-            try:
+        try:
+            mine, grid = step_specs(p.step, config), step_statics(p.step, config)
+            if specs is None or statics is None:
+                specs, statics = mine, grid  # the first step of a new cube sets its layout
+            else:
                 check_layout(mine, specs)
-            except LayoutError as exc:
-                logger.warning(
-                    "cube step skipped: unsupported layout",
-                    extra={"item_id": p.item_id, "detail": str(exc)},
-                )
-                outcomes[p.row_id] = ("skipped", REASON_UNSUPPORTED_LAYOUT)
-                continue
+                check_statics(grid, statics)
+        except LayoutError as exc:
+            logger.warning(
+                "cube step skipped: unsupported layout",
+                extra={"item_id": p.item_id, "detail": str(exc)},
+            )
+            outcomes[p.row_id] = ("skipped", REASON_UNSUPPORTED_LAYOUT)
+            continue
         accepted.append(p)
         present.add(p.value)
         tip = p.value
@@ -2515,6 +2729,11 @@ def _trim(session: ic.Session, state: CubeState, k: int) -> None:
     soak.py): shift the chunk grid down, then shrink. Every time array has
     time chunk 1, so a shift of ``k`` chunks is ``k`` steps."""
     group = zarr.open_group(session.store, mode="r+")
+    for name in state.time_arrays:
+        if group[name].chunks[0] != 1:
+            raise RuntimeError(
+                f"{name} has time chunk {group[name].chunks[0]}; the window shift needs 1"
+            )
     for name in state.time_arrays:
         array = group[name]
         session.shift_array(f"/{name}", (-k,) + (0,) * (array.ndim - 1))
@@ -2601,7 +2820,9 @@ def _assoc(config: dict | None = None) -> IngestAssociation:
         config=config or {"bucket": "noaa-goes19", "region": "us-east-1", "anonymous": True},
         credentials=seal("{}", KEY), host_key=None,
     )
-    return IngestAssociation(id="a1", collection_id="src", config={"storage_mode": "reference"}, connection=conn)
+    return IngestAssociation(
+        id="a1", collection_id="src", config={"storage_mode": "reference"}, connection=conn
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -2831,10 +3052,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Consumes: Tasks 4–8 (`CubeRepo` and its types, `parse_header`, `step_value`, `LayoutError`, `open_repository`, `read_state`, `reset_to_root`, `BRANCH`, `write_batch`, `ParsedStep`, `BatchResult`, `error_text`, `SourceResolver`, `ResolvedSource`, `SourceUnavailable`), `parse_cube_sink_config`.
 - Produces (in `pipeline.cubes.append`):
   - `BATCH_LIMIT = 50`, `PARSE_CONCURRENCY = 4`, `MAX_ROW_ATTEMPTS = 6`, `REASON_CRASH_LOOP = "crash_loop"`.
-  - `AppendDeps(repo, resolver, storage_for, enqueue_next, after_commit=None, now=<utcnow>, batch_limit=BATCH_LIMIT, parse=parse_header)`.
+  - `AppendDeps(repo, resolver, storage_for, enqueue_next, after_batch=None, now=<utcnow>, batch_limit=BATCH_LIMIT, parse=parse_header)`.
+  - Exceptions: any exception after `take_pending` gives the attempts back (`release_rows`), sets `last_error` to `error_text(exc)`, and re-raises.
   - `AppendReport(taken, appended, skipped, failed, snapshot_id, committed, recorded, requeued)`.
   - `async run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport`.
-  - The Z-5 hook: `after_commit(sink: CubeSink, config: CubeSinkConfig, result: BatchResult)` is awaited once per recorded commit, after the ledger write.
+  - The Z-5 hook: `after_batch(sink: CubeSink, config: CubeSinkConfig, result: BatchResult)` is awaited after every batch that reached the repository, once the tip is recorded and the ledger written. `result.snapshot_id` is the recorded tip. It must be idempotent.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3184,18 +3406,70 @@ async def test_an_invalid_config_records_an_error_and_leaves_rows(h):
     assert h.ledger() == {"i0": ("pending", None)}
 
 
-async def test_after_commit_runs_once_per_recorded_commit(h):
+async def test_after_batch_runs_after_every_batch_that_reached_the_cube(h):
     calls = []
 
     async def hook(sink, config, result):
         calls.append((sink.id, config.asset_key, result.snapshot_id))
 
     await h.pend(0)
-    await run_cube_append(SINK, h.deps(after_commit=hook))
-    assert calls == [(SINK, "cube", h.sink().last_snapshot_id)]
-    await h.pend(-1)  # late: nothing committed
-    await run_cube_append(SINK, h.deps(after_commit=hook))
-    assert len(calls) == 1
+    await run_cube_append(SINK, h.deps(after_batch=hook))
+    first = h.sink().last_snapshot_id
+    assert calls == [(SINK, "cube", first)]
+    await h.pend(-1)  # late: nothing committed, and the hook re-confirms the tip
+    await run_cube_append(SINK, h.deps(after_batch=hook))
+    assert calls == [(SINK, "cube", first), (SINK, "cube", first)]
+
+
+async def test_the_asset_hook_catches_up_after_a_crash(h):
+    tips: list[str] = []
+
+    async def hook(sink, config, result):
+        tips.append(result.snapshot_id)
+
+    await h.pend(0)
+    await run_cube_append(SINK, h.deps(after_batch=hook))
+    await h.pend(1)
+    h.repo.finish_error = RuntimeError("worker killed")  # recorded, hook not reached
+    with pytest.raises(RuntimeError):
+        await run_cube_append(SINK, h.deps(after_batch=hook))
+    tip = h.sink().last_snapshot_id
+    assert tips[-1] != tip
+    await run_cube_append(SINK, h.deps(after_batch=hook))  # the redo: duplicates only
+    assert tips[-1] == tip
+
+
+async def test_a_storage_outage_hands_the_attempts_back(h):
+    await h.pend(0)
+
+    def down(sink):
+        raise OSError("platform store unreachable")
+
+    for _ in range(MAX_ROW_ATTEMPTS + 2):
+        with pytest.raises(OSError):
+            await run_cube_append(SINK, h.deps(storage_for=down))
+    row = h.repo.rows(SINK)[0]
+    assert (row.status, row.attempts) == ("pending", 0)  # never crash_loop
+    assert h.sink().last_error == "OSError: platform store unreachable"
+    await run_cube_append(SINK, h.deps())  # the store is back
+    assert h.ledger() == {"i0": ("appended", None)}
+    assert h.sink().last_error is None
+
+
+async def test_rows_older_than_max_age_are_skipped_without_parsing(h):
+    h.sink().config = {**GOES_CONFIG, "window": {"max_age": "10m"}}
+    h.now = scan(10)
+    await h.pend(0, 9)
+    parsed: list[str] = []
+
+    def tracked(url, registry, config):
+        parsed.append(url.rsplit("/", 1)[1])
+        return parse_header(url, registry, config)
+
+    await run_cube_append(SINK, h.deps(parse=tracked))
+    assert h.ledger() == {"i0": ("skipped", "late"), "i9": ("appended", None)}
+    assert parsed == ["9.nc"]
+    assert h.times() == ns(9)
 
 
 async def test_parse_does_not_block_the_event_loop(h):
@@ -3272,10 +3546,11 @@ PARSE_CONCURRENCY = 4
 #: a row claimed more often than this is failed instead of parsed (#90)
 MAX_ROW_ATTEMPTS = 6
 REASON_CRASH_LOOP = "crash_loop"
+REASON_LATE = "late"
 REASON_SOURCE_MISSING = "source_missing"
 REASON_UNSUPPORTED_LAYOUT = "unsupported_layout"
 
-AfterCommit = Callable[[CubeSink, CubeSinkConfig, BatchResult], Awaitable[None]]
+AfterBatch = Callable[[CubeSink, CubeSinkConfig, BatchResult], Awaitable[None]]
 Parse = Callable[[str, ObjectStoreRegistry, CubeSinkConfig], Any]
 
 
@@ -3291,8 +3566,9 @@ class AppendDeps:
     storage_for: Callable[[CubeSink], Any]
     #: wake the sink's next job (``jobs.cubes.enqueue_cube_append``: same locks)
     enqueue_next: Callable[[str], Awaitable[object]]
-    #: Z-5's collection asset writer: awaited after each recorded commit
-    after_commit: AfterCommit | None = None
+    #: Z-5's collection asset writer: awaited after every batch that reached
+    #: the repository (recorded tip, ledger written); must be idempotent
+    after_batch: AfterBatch | None = None
     now: Callable[[], dt.datetime] = _utcnow
     batch_limit: int = BATCH_LIMIT
     parse: Parse = parse_header
@@ -3329,6 +3605,26 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
     report.taken = len(rows)
     if not rows:
         return report
+    try:
+        await _append_rows(sink, config, rows, deps, report)
+    except Exception as exc:
+        # An exception is an outage or a bug, not a crash loop: give the
+        # attempts back, so a platform-store outage cannot fail rows
+        # `crash_loop`. A worker that dies mid-job never gets here, so real
+        # crashes still count (#90).
+        await deps.repo.release_rows(sink.id, [r.id for r in rows])
+        await deps.repo.record_error(sink.id, error_text(exc))
+        raise
+    return report
+
+
+async def _append_rows(
+    sink: CubeSink,
+    config: CubeSinkConfig,
+    rows: Sequence[PendingRow],
+    deps: AppendDeps,
+    report: AppendReport,
+) -> None:
     looping = [
         RowOutcome(r.id, "failed", REASON_CRASH_LOOP) for r in rows if r.attempts > MAX_ROW_ATTEMPTS
     ]
@@ -3341,6 +3637,12 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
     live = [r for r in rows if r.attempts <= MAX_ROW_ATTEMPTS]
 
     outcomes: dict[int, RowOutcome] = {}
+    cutoff = _age_cutoff(config, deps.now())
+    if cutoff is not None:
+        # Already outside the window: skip before any header is read.
+        for row in [r for r in live if r.item_datetime < cutoff]:
+            outcomes[row.id] = RowOutcome(row.id, "skipped", REASON_LATE)
+        live = [r for r in live if r.item_datetime >= cutoff]
     sources: list[tuple[PendingRow, ResolvedSource]] = []
     for row in live:
         try:
@@ -3371,7 +3673,7 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
         if needs_record and not await _record(deps.repo, sink, result, prefixes, deps.now()):
             await deps.enqueue_next(sink.id)
             report.requeued = True
-            return report
+            return
         report.recorded = True
         for row_id, (status, reason) in result.outcomes.items():
             snapshot = result.snapshot_id if status == "appended" else None
@@ -3385,12 +3687,18 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
             report.skipped += 1
         else:
             report.failed += 1
-    if result is not None and result.committed and deps.after_commit is not None:
-        await deps.after_commit(sink, config, result)
+    if result is not None and result.initialised and deps.after_batch is not None:
+        await deps.after_batch(sink, config, result)
     if await deps.repo.has_pending(sink.id):
         await deps.enqueue_next(sink.id)
         report.requeued = True
-    return report
+
+
+def _age_cutoff(config: CubeSinkConfig, now: dt.datetime) -> dt.datetime | None:
+    window = config.window
+    if window is None or window.max_age_seconds is None:
+        return None
+    return now - dt.timedelta(seconds=window.max_age_seconds)
 
 
 async def _parse_all(
@@ -3558,7 +3866,7 @@ DEPS = object()  # what deps_factory hands the (patched) run_cube_append
 KEY_B64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 ```
 
-2. Replace the `queue` fixture with these three fixtures (`repo` stays as it is):
+2. Replace the `queue` fixture with these two fixtures (`repo` stays as it is):
 
 ```python
 @pytest.fixture
@@ -3586,7 +3894,7 @@ def queue(repo: FakeCubeRepo, ran: list[str]) -> InMemoryQueue:
 
 ```python
     assert queue.retry_specs[JOB_CUBE_APPEND] == CUBE_APPEND_RETRY
-    assert CUBE_APPEND_RETRY == RetrySpec(max_attempts=3, wait_seconds=30)
+    assert RetrySpec(max_attempts=3, wait_seconds=30) == CUBE_APPEND_RETRY
 ```
 
 4. In `test_kick_recovers_a_stranded_append_a_waiting_job_covers`, add `ran: list[str]` to the parameters. Replace `assert repo.rows("s1")[0].status == "pending"  # wedged` with `assert ran == []  # wedged`, and the final `assert repo.rows("s1")[0].status == "failed"  # the stub ran: unwedged` with `assert ran == ["s1"]  # unwedged`.
@@ -3895,6 +4203,8 @@ async def test_nodd_files_append_virtually_and_read_back():
     )
     repo = open_repository(storage, [libs], replace_containers=True)
     result = write_batch(repo, parsed, CONFIG, dt.datetime.now(dt.UTC))
+    # Real files from one sector share the grid check: none is skipped.
+    assert set(result.outcomes.values()) == {("appended", None)}
     assert result.committed and result.trimmed == 1
     assert list(ic.Repository.fetch_config(storage).virtual_chunk_containers) == ["s3://noaa-goes19/"]
 
@@ -3931,7 +4241,7 @@ Expected: `1 skipped` (no `CUBE_IT`). Running it for real is lead-only (#90 "Lea
 In `docs/FEATURES.md`, under "Virtual Icechunk cube sink (Z queue)", add after the Z-3 row:
 
 ```markdown
-| Z-4 · `cube_append` + pipeline deps | ✅ | `pipeline.cube_append` (default queue, retry 3 × 30 s) claims ≤ 50 pending rows (`attempts` bumped first; > 6 → `failed: crash_loop`), resolves each item's one HDF source href through its reference association (`connections/sources.py::association_for_href`, shared with process staging), HEADs then parses 4 headers at a time off the event loop, and appends them virtually to `assets/{cube}/_cube/` (Icechunk, `num_updates_per_repo_info_file = 100`, one container per source bucket, explicit path-style endpoint after `resolve_pinned`). Duplicate `t` → `appended/duplicate`, late → `skipped`, layout mismatch → `skipped: unsupported_layout`; window trimmed in the same commit; `ConflictError` redone once. The first commit is recorded only while the sink keeps the app version read (#90); an unrecorded repository is provisional and reset to its root snapshot before writing. `cube_kick` returns Z-3 stub rows to pending. Deps: icechunk, virtualizarr[hdf], zarr, xarray, obstore, h5py, obspec-utils. Z-5's asset writer plugs into `AppendDeps.after_commit` |
+| Z-4 · `cube_append` + pipeline deps | ✅ | `pipeline.cube_append` (default queue, retry 3 × 30 s) claims ≤ 50 pending rows (`attempts` bumped first; > 6 → `failed: crash_loop`), resolves each item's one HDF source href through its reference association (`connections/sources.py::association_for_href`, shared with process staging), HEADs then parses 4 headers at a time off the event loop, and appends them virtually to `assets/{cube}/_cube/` (Icechunk, `num_updates_per_repo_info_file = 100`, one container per source bucket, explicit path-style endpoint after `resolve_pinned`). Duplicate `t` → `appended/duplicate`, late → `skipped`, layout mismatch → `skipped: unsupported_layout`; window trimmed in the same commit; `ConflictError` redone once. The first commit is recorded only while the sink keeps the app version read (#90); an unrecorded repository is provisional and reset to its root snapshot before writing. `cube_kick` returns Z-3 stub rows to pending. Deps: icechunk, virtualizarr[hdf], zarr, xarray, obstore, h5py, obspec-utils. Z-5's asset writer plugs into `AppendDeps.after_batch` (after every batch that reached the cube; must be idempotent). A grid or projection change is `skipped: unsupported_layout` (an append would rewrite `x`/`y`). An exception gives the claimed attempts back, so outages never become `crash_loop` |
 ```
 
 Also edit the Z-3 row's last sentence, "`cube_append` is a stub (`failed: not_implemented`) until Z-4", to "`cube_append` was a stub until Z-4".
@@ -3939,7 +4249,7 @@ Also edit the Z-3 row's last sentence, "`cube_append` is a stub (`failed: not_im
 In `docs/ISSUES.md`, add the next free I-number (I-144 if still free; check the last entry first):
 
 ```markdown
-### I-144 · A double run during a cube's first append can stamp ledger rows with a reset snapshot 🟢
+### I-144 · Cube ledger rows can name a snapshot that no longer holds them 🟢
 
 Tracked in: —
 
@@ -3950,8 +4260,20 @@ first is still committing (a job blocking its event loop > 300 s, #90), the
 first run's rows can be finished `appended` with a snapshot id the second run
 then reset away. The cube's data and `cube_sinks.last_snapshot_id` are
 correct: the second run rewrites the steps and records its own tip. Only
-those rows' `snapshot_id` names an orphaned snapshot. Accepted for v1;
-revisit if the ledger's `snapshot_id` ever drives a reader.
+those rows' `snapshot_id` names an orphaned snapshot.
+
+Related, same severity:
+- After the first commit, `record_commit` is unconditional. In a double run,
+  the slower recorder can move `cube_sinks.last_snapshot_id` back to an older
+  snapshot until the next commit records the tip.
+- Rows appended and trimmed in the same commit read `appended` with a
+  snapshot that no longer holds them. After crash recovery, such rows read
+  `late`.
+- A sink deleted while its repository is provisional (no recorded snapshot)
+  leaves the repository in storage until the cube collection is deleted
+  (`asset_gc`).
+
+Accepted for v1; revisit if the ledger's `snapshot_id` ever drives a reader.
 ```
 
 - [ ] **Step 3: The gates**
@@ -3982,11 +4304,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 `git push -u origin feat/z4-cube-append`, then `gh pr create --base main --title "Z-4: cube_append: virtual appends with a rolling window"` with a body that:
 - starts `Closes #90`;
 - lists the gates run (pytest, ruff, verify, and the DB-gated cubes repo tests against a throwaway Postgres);
-- lists every item under "Decisions this plan takes" as the deviations to review;
+- lists every item under "Decisions this plan takes" as the deviations to review, and asks the lead to decide decision 10 (keep or drop the stub-row reset);
 - lists the lead-only steps left:
   1. `CUBE_IT=1` against a throwaway, `z4`-prefixed Silo (#90).
   2. The pipeline image size delta: `docker image ls` before/after on the CI-built image, or `docker compose build pipeline` locally. Record it in the PR body (spec §11).
   3. The image passes the C-queue scan in CI (`containers.yml`, Trivy HIGH/CRITICAL, informational).
+  4. An import and parse smoke test **in the built Linux image**. h5py and rasterio each bundle their own libhdf5, and one worker process loads both: `docker compose run --rm pipeline python -c "import rasterio, h5py, virtualizarr, icechunk; print('ok')"`, then parse one live GOES header with `pipeline.cubes.steps.parse_header`. The unit suite ran on macOS only.
 - ends with the attribution line `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 
 On merge: flip #91 (Z-5) and #92 (Z-6) from `blocked` to `ready` if Z-4 was their last blocker, and remove the worktree.
@@ -4019,4 +4342,4 @@ On merge: flip #91 (Z-5) and #92 (Z-6) from `blocked` to `ready` if Z-4 was thei
   | #90 comments: double-run safety | 7, 9 |
   | `CUBE_IT` integration test | 11 |
 
-- **Not in this slice:** the collection asset writer (Z-5; only the `after_commit` hook), `cube_maintain` / GC / expiry (Z-6), the cube server (Z-7), the UI (Z-8).
+- **Not in this slice:** the collection asset writer (Z-5; only the `after_batch` hook), `cube_maintain` / GC / expiry (Z-6), the cube server (Z-7), the UI (Z-8).
