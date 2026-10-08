@@ -175,6 +175,10 @@ def _attempt(
                 try:
                     write_step(session, step, dim if state.initialised or i > 0 else None)
                 except Exception as exc:
+                    # Decision 9: a platform-store outage fails the job (retry),
+                    # not the row; the rows append once the store returns.
+                    if _is_storage_error(exc):
+                        raise
                     raise _StepWriteFailed(step.row_id, error_text(exc)) from exc
         except _StepWriteFailed as err:
             logger.warning(
@@ -204,6 +208,16 @@ def _attempt(
         trimmed=trimmed,
         initialised=after.initialised,
     )
+
+
+def _is_storage_error(exc: BaseException | None) -> bool:
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, ic.StorageError):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
 
 
 def _trim(session: ic.Session, state: CubeState, k: int) -> None:

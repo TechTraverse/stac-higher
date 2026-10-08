@@ -226,6 +226,22 @@ def test_a_step_whose_write_fails_is_failed_and_the_rest_commit(cube, monkeypatc
     assert cube.commits() == 1
 
 
+@pytest.mark.parametrize("chained", [False, True])
+def test_a_storage_error_fails_the_job_not_the_row(cube, monkeypatch, chained):
+    first = cube.write(cube.parsed(1, 0))
+
+    def down(session, parsed, append_dim):
+        if chained:
+            raise RuntimeError("write failed") from ic.StorageError("silo is down")
+        raise ic.StorageError("silo is down")
+
+    monkeypatch.setattr(write_mod, "write_step", down)
+    with pytest.raises(Exception, match=r"silo is down|write failed"):
+        cube.write(cube.parsed(2, 1), cube.parsed(3, 2))
+    assert cube.repo.lookup_branch(BRANCH) == first.snapshot_id
+    assert cube.times() == [as_ns(scan(0))]
+
+
 def test_a_failing_first_step_lets_the_next_one_create_the_cube(cube, monkeypatch):
     real = write_mod.write_step
 
