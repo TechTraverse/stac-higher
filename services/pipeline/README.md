@@ -237,6 +237,21 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   job **per association**. It enqueues **before** marking the outbox rows
   processed (at-least-once; a failed enqueue leaves them pending). Slice C swaps
   the poll for a `LISTEN`-woken loop.
+- **cube sinks** (`jobs/cubes.py`, `cubes/repo.py`; virtual cube spec §5) —
+  an `insert` event on a collection with enabled cube sinks writes one
+  `cube_appends` ledger row per sink (`ON CONFLICT DO NOTHING`; no datetime →
+  `skipped: no_datetime`) and enqueues `pipeline.cube_append {cube_sink_id}`
+  with `lock` = `queueing_lock` = `cube:{id}`, before the event drains. A
+  second enqueue while one is waiting comes back `Enqueued(coalesced=True)`,
+  never an exception. `pipeline.cube_kick` (`*/5 * * * *`) first requeues any
+  `cube_append` a dead worker left `doing` (`QueueBackend.retry_stalled`;
+  heartbeat silent 300 s, the workers' prune horizon too; one job is
+  requeued at most 3 times), which would otherwise hold its sink's lock
+  forever, then re-enqueues sinks with `pending` rows older than 2 minutes.
+  The cap is per job, not per sink: crash-loop protection for a sink's work
+  belongs on its ledger rows (`cube_appends.attempts`, Z-4). Until Z-4,
+  `cube_append` is a stub that marks pending rows `failed: not_implemented`.
+  The pipeline never writes `cube_sinks.updated_at` (the app's version, #98).
 - **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
   the `pipeline.deliver` task loads the destination connection, builds its
   adapter, and runs each item through `deliver_item`: resolve each asset's

@@ -9,7 +9,7 @@ import asyncio
 import pytest
 
 from pipeline.jobs import heartbeat
-from pipeline.queue.interface import RetrySpec
+from pipeline.queue.interface import Enqueued, RetrySpec
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
 
 DSN = "postgresql://username:password@localhost:5433/postgis"
@@ -126,6 +126,13 @@ async def test_run_worker_starts_one_worker_per_queue(queue: ProcrastinateQueue,
     assert 0 < SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS < 30
     assert by_name["default"]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
     assert by_name["bytes"]["shutdown_graceful_timeout"] == SHUTDOWN_GRACEFUL_TIMEOUT_SECONDS
+    # Z-3 final review: a booting worker prunes worker rows silent longer than
+    # this, which makes their running jobs look stalled to retry_stalled at
+    # once — it must be the same horizon retry_stalled checks, not 30 s.
+    from pipeline.queue.procrastinate_backend import STALLED_WORKER_SECONDS
+
+    assert by_name["default"]["stalled_worker_timeout"] == STALLED_WORKER_SECONDS
+    assert by_name["bytes"]["stalled_worker_timeout"] == STALLED_WORKER_SECONDS
 
 
 async def test_run_worker_stop_signal_cancels_both_workers(
@@ -358,3 +365,235 @@ async def test_run_worker_outer_cancellation_does_not_recancel_a_draining_worker
 
     assert state["interrupted"] == set()
     assert state["drained"] == {"bytes"}
+
+
+class _FakeDeferrer:
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.payloads: list[dict] = []
+
+    async def defer_async(self, **payload):
+        self.payloads.append(payload)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def _wire(queue: ProcrastinateQueue, monkeypatch, outcome):
+    """Register jobs.locked and capture what enqueue hands Procrastinate."""
+
+    async def handler(**kw):
+        pass
+
+    async def fake_open():
+        pass
+
+    queue.register_task(handler, name="jobs.locked")
+    task = queue.app.tasks["jobs.locked"]
+    deferrer = _FakeDeferrer(outcome)
+    configured: list[dict] = []
+
+    def fake_configure(**options):
+        configured.append(options)
+        return deferrer
+
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+    monkeypatch.setattr(task, "configure", fake_configure)
+    monkeypatch.setattr(task, "defer_async", deferrer.defer_async)
+    return deferrer, configured
+
+
+async def test_enqueue_passes_both_locks_to_configure(queue, monkeypatch):
+    deferrer, configured = _wire(queue, monkeypatch, 42)
+    result = await queue.enqueue(
+        "jobs.locked", {"cube_sink_id": "s"}, lock="cube:s", queueing_lock="cube:s"
+    )
+    assert result == Enqueued(job_id="42")
+    assert configured == [{"lock": "cube:s", "queueing_lock": "cube:s"}]
+    assert deferrer.payloads == [{"cube_sink_id": "s"}]
+
+
+async def test_enqueue_passes_only_the_options_given(queue, monkeypatch):
+    _deferrer, configured = _wire(queue, monkeypatch, 7)
+    await queue.enqueue("jobs.locked", {}, lock="cube:s")
+    assert configured == [{"lock": "cube:s"}]
+
+
+async def test_enqueue_without_locks_skips_configure(queue, monkeypatch):
+    deferrer, configured = _wire(queue, monkeypatch, 7)
+    result = await queue.enqueue("jobs.locked", {"n": 1})
+    assert result == Enqueued(job_id="7")
+    assert configured == []
+    assert deferrer.payloads == [{"n": 1}]
+
+
+async def test_already_enqueued_comes_back_coalesced(queue, monkeypatch):
+    from procrastinate.exceptions import AlreadyEnqueued
+
+    _wire(queue, monkeypatch, AlreadyEnqueued("cube:s"))
+    result = await queue.enqueue(
+        "jobs.locked", {"cube_sink_id": "s"}, lock="cube:s", queueing_lock="cube:s"
+    )
+    assert result == Enqueued(job_id=None, coalesced=True)
+
+
+class _FakeJobManager:
+    """Stands in for app.job_manager: records calls, collides on demand."""
+
+    def __init__(self, stalled, collide=(), other_violation=False, gone=()):
+        self.stalled = stalled
+        self.collide = set(collide)
+        self.other_violation = other_violation
+        #: jobs that left 'doing' between the select and the retry
+        self.gone = set(gone)
+        self.calls: list[tuple] = []
+
+    async def get_stalled_jobs(self, **kwargs):
+        self.calls.append(("get", kwargs))
+        return self.stalled
+
+    async def retry_job(self, job):
+        from procrastinate.exceptions import ConnectorException, UniqueViolation
+        from procrastinate.manager import QUEUEING_LOCK_CONSTRAINT
+
+        self.calls.append(("retry", job.id))
+        if job.id in self.gone:
+            raise ConnectorException(
+                f"Job was not found or has an invalid status to retry (job id: {job.id})"
+            )
+        if self.other_violation:
+            raise UniqueViolation(constraint_name="some_other_idx", queueing_lock=None)
+        if job.id in self.collide:
+            raise UniqueViolation(
+                constraint_name=QUEUEING_LOCK_CONSTRAINT, queueing_lock=job.queueing_lock
+            )
+
+    async def finish_job(self, job, status, delete_job):
+        self.calls.append(("finish", job.id, status, delete_job))
+
+
+def _stalled_job(job_id: int, attempts: int = 0):
+    from procrastinate.jobs import Job
+
+    return Job(
+        id=job_id,
+        queue="default",
+        lock="cube:s",
+        queueing_lock="cube:s",
+        task_name="pipeline.cube_append",
+        attempts=attempts,
+    )
+
+
+def _wire_manager(queue: ProcrastinateQueue, monkeypatch, manager: _FakeJobManager) -> None:
+    async def fake_open():
+        pass
+
+    monkeypatch.setattr(queue, "_ensure_open", fake_open)
+    monkeypatch.setattr(queue.app, "job_manager", manager)
+
+
+async def test_retry_stalled_requeues_and_closes_covered_jobs(queue, monkeypatch):
+    from procrastinate.jobs import Status
+
+    from pipeline.queue.procrastinate_backend import STALLED_WORKER_SECONDS
+
+    manager = _FakeJobManager([_stalled_job(1), _stalled_job(2)], collide={2})
+    _wire_manager(queue, monkeypatch, manager)
+    assert await queue.retry_stalled("pipeline.cube_append") == 2
+    get_kwargs = {
+        "task_name": "pipeline.cube_append",
+        "seconds_since_heartbeat": STALLED_WORKER_SECONDS,
+    }
+    assert manager.calls == [
+        ("get", get_kwargs),
+        ("retry", 1),
+        ("retry", 2),
+        ("finish", 2, Status.FAILED, False),
+    ]
+
+
+async def test_retry_stalled_reraises_any_other_unique_violation(queue, monkeypatch):
+    from procrastinate.exceptions import UniqueViolation
+
+    _wire_manager(queue, monkeypatch, _FakeJobManager([_stalled_job(1)], other_violation=True))
+    with pytest.raises(UniqueViolation):
+        await queue.retry_stalled("pipeline.cube_append")
+
+
+async def test_retry_stalled_with_nothing_stalled_is_a_no_op(queue, monkeypatch):
+    manager = _FakeJobManager([])
+    _wire_manager(queue, monkeypatch, manager)
+    assert await queue.retry_stalled("pipeline.cube_append") == 0
+    assert [c[0] for c in manager.calls] == ["get"]
+
+
+def _recovery_outcomes(caplog) -> dict[int, str]:
+    return {
+        record.job_id: record.outcome
+        for record in caplog.records
+        if record.getMessage() == "stalled job recovered"
+    }
+
+
+async def test_retry_stalled_gives_up_on_a_job_at_the_attempt_cap(queue, monkeypatch, caplog):
+    """Z-3 final review: Procrastinate's retry_job bumps ``attempts`` on every
+    recovery, so a job that kills its worker each run reaches the cap and is
+    closed failed instead of being requeued again. (This bounds one job's
+    requeues; crash-loop protection for re-enqueued work is the ledger's.)"""
+    import logging
+
+    from procrastinate.jobs import Status
+
+    from pipeline.queue.procrastinate_backend import MAX_STALLED_ATTEMPTS
+
+    manager = _FakeJobManager(
+        [
+            _stalled_job(1, attempts=MAX_STALLED_ATTEMPTS),
+            _stalled_job(2, attempts=MAX_STALLED_ATTEMPTS - 1),
+        ]
+    )
+    _wire_manager(queue, monkeypatch, manager)
+    with caplog.at_level(logging.WARNING, logger="pipeline.queue.procrastinate_backend"):
+        assert await queue.retry_stalled("pipeline.cube_append") == 2
+    assert manager.calls[1:] == [
+        ("finish", 1, Status.FAILED, False),
+        ("retry", 2),
+    ]
+    assert _recovery_outcomes(caplog) == {1: "gave_up", 2: "requeued"}
+
+
+async def test_retry_stalled_skips_a_job_it_cannot_recover(queue, monkeypatch, caplog):
+    """Z-3 final review: a job that left 'doing' between the select and the
+    retry must not abort the loop (nor the kick's stale-sink enqueue)."""
+    import logging
+
+    manager = _FakeJobManager([_stalled_job(1), _stalled_job(2)], gone={1})
+    _wire_manager(queue, monkeypatch, manager)
+    with caplog.at_level(logging.WARNING, logger="pipeline.queue.procrastinate_backend"):
+        assert await queue.retry_stalled("pipeline.cube_append") == 1
+    assert manager.calls[1:] == [("retry", 1), ("retry", 2)]
+    assert _recovery_outcomes(caplog) == {2: "requeued"}
+    # A skip is not a recovery: its own message, with the exception attached,
+    # so a DB outage mid-loop doesn't read as N "recovered" warnings.
+    [skip] = [
+        r for r in caplog.records if r.getMessage() == "stalled job not recovered; skipped"
+    ]
+    assert (skip.job_id, skip.outcome) == (1, "skipped")
+    assert skip.exc_info is not None
+
+
+async def test_retry_stalled_skips_a_job_it_cannot_close(queue, monkeypatch):
+    """The collision path's finish_job can fail the same way (the job left
+    'doing' meanwhile): skipped, and the loop goes on."""
+    from procrastinate.exceptions import ConnectorException
+
+    class _FinishFails(_FakeJobManager):
+        async def finish_job(self, job, status, delete_job):
+            await super().finish_job(job, status, delete_job)
+            raise ConnectorException('Job was not found or not in "doing" or "todo" status')
+
+    manager = _FinishFails([_stalled_job(1), _stalled_job(2)], collide={1})
+    _wire_manager(queue, monkeypatch, manager)
+    assert await queue.retry_stalled("pipeline.cube_append") == 1
+    assert [c[:2] for c in manager.calls[1:]] == [("retry", 1), ("finish", 1), ("retry", 2)]

@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from pipeline.config import Settings
+from pipeline.jobs.cubes import JOB_CUBE_APPEND, JOB_CUBE_KICK
 from pipeline.jobs.dispatch import JOB_DISPATCH_POLL
 from pipeline.jobs.drain import JOB_NAME as DRAIN_JOB
 from pipeline.jobs.gc import COLLECT_JOB_NAME, RETENTION_JOB_NAME
@@ -48,6 +49,9 @@ def test_build_queue_registers_all_periodic_jobs():
     assert IMAGE_SCAN_JOB in registered
     # C-4: the hourly rescan tick (exception expiry + rescan requests).
     assert IMAGE_RESCAN_JOB in registered
+    # Z-3: the cube append job (a stub until Z-4) and its 5-minute backstop.
+    assert {JOB_CUBE_APPEND, JOB_CUBE_KICK} <= registered
+    assert queue.app.tasks[JOB_CUBE_APPEND].queue == "default"
 
 
 async def test_run_closes_both_pools_before_the_queue(monkeypatch):

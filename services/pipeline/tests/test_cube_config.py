@@ -43,3 +43,10 @@ def test_bool_is_not_an_integer_step_count():
 def test_not_an_object():
     with pytest.raises(CubeSinkConfigError):
         parse_cube_sink_config(["t"])
+
+
+def test_dispatcher_skip_reason_is_in_the_contract():
+    from pipeline.cubes.config import SKIP_REASONS
+    from pipeline.cubes.repo import REASON_NO_DATETIME
+
+    assert REASON_NO_DATETIME in SKIP_REASONS

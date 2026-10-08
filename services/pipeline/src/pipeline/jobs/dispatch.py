@@ -4,7 +4,9 @@ The outbox drains through ``dispatch_until_empty``, which groups matches per
 association and enqueues a batched ``pipeline.deliver`` job (Phase 7 §7:
 staged items route to ``pipeline.finalize`` instead, and delete events mark
 ``asset_gc`` — reason ``item_delete``, grace from collection_settings —
-before draining). Two wake paths
+before draining). Insert events on a cube sink's source collection also write
+``cube_appends`` rows and wake ``pipeline.cube_append`` (Z-3, ``jobs/cubes.py``).
+Two wake paths
 share that drain (overlap is safe — the outbox claim is atomic, I-40):
 ``build_notify_listener`` returns the LISTEN-woken primary loop (run by
 main.py alongside the worker), and ``dispatch_poll`` keeps the minute cron as
@@ -32,6 +34,7 @@ from typing import Any
 from pipeline.config import Settings
 from pipeline.connections.build import AdapterBuildError, build_adapter
 from pipeline.connections.repo import ConnectionRow
+from pipeline.cubes.repo import PgCubeRepo
 from pipeline.delivery.config import DeliveryConfig, parse_delivery_config
 from pipeline.delivery.repo import PgDeliveryRepo
 from pipeline.delivery.transfer import can_server_side_copy
@@ -42,6 +45,7 @@ from pipeline.dispatcher.repo import PgDispatchRepo
 from pipeline.gc.repo import PgGcRepo
 from pipeline.gc.sweep import item_prefix
 from pipeline.jobs._common import load_key_or_skip
+from pipeline.jobs.cubes import cube_append_enqueuer
 from pipeline.jobs.finalize import JOB_FINALIZE
 from pipeline.jobs.process import JOB_TRIGGER as JOB_PROCESS_TRIGGER
 from pipeline.queue.interface import QUEUE_BYTES, QueueBackend, RetrySpec
@@ -93,6 +97,7 @@ def build_dispatch_drain(
     async def run_dispatch(wake_path: str) -> None:
         repo = PgDispatchRepo(settings.database_url)
         gc_repo = PgGcRepo(settings.database_url)
+        cube_repo = PgCubeRepo(settings.database_url)
 
         async def _enqueue(batches: list[dict[str, Any]]) -> None:
             await queue.enqueue_batch(JOB_DELIVER, batches)
@@ -127,6 +132,8 @@ def build_dispatch_drain(
             enqueue_finalize=_enqueue_finalize,
             mark_delete_gc=_mark_delete_gc,
             enqueue_process_runs=_enqueue_process_runs,
+            cube_repo=cube_repo,
+            enqueue_cube_appends=cube_append_enqueuer(queue),
         )
         if matches:
             logger.info(

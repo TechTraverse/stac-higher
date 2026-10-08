@@ -24,15 +24,23 @@ otherwise leave. A mark failure is routed through the I-38 defer path
 (release with cool-off) rather than the I-39 poison-drain, so the event is
 not drained until the mark commits or the bounded retry budget is spent.
 Delete events still never match delivery associations.
+
+Cube sinks (Z-3, virtual cube spec §5.2): an ``insert`` event on a source
+collection with enabled cube sinks writes one ``cube_appends`` row per sink
+(``ON CONFLICT DO NOTHING``; a PUT's delete + insert yields one row) and wakes
+each sink's single writer under its ``cube:{id}`` lock before the drain.
+Update and delete events never feed a cube.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from pipeline.cubes.repo import REASON_NO_DATETIME, CubeRepo, CubeSinkRef, LedgerEntry
 from pipeline.delivery.matcher import DeliverAssociation, Match, match_item
 from pipeline.dispatcher.repo import DispatchRepo
 from pipeline.process.matcher import ProcessSource, match_process_sources
@@ -57,6 +65,11 @@ MarkDeleteGc = Callable[[str, str], Awaitable[None]]
 #: items, so a bulk upsert into a watched collection produces one run, not N.
 EnqueueProcessRuns = Callable[[list[dict[str, Any]]], Awaitable[None]]
 
+#: Z-3 (virtual cube spec §5.2): wake each listed cube sink's single writer.
+#: Wired to ``jobs.cubes.cube_append_enqueuer`` (per-sink lock + queueing
+#: lock; a coalesced enqueue is success).
+EnqueueCubeAppends = Callable[[list[str]], Awaitable[None]]
+
 #: I-38 bounded visibility retry: an event whose item is not yet visible is
 #: released (cool-off below) up to this many times before it drains for good.
 #: The retry is driven by the next wake (NOTIFY or the minute poll), so the
@@ -79,6 +92,9 @@ class DispatchResult:
     finalizes: int = 0
     #: process-source batches enqueued this pass (Phase 9 §6).
     process_runs: int = 0
+    #: cube ledger rows offered this pass, and sinks woken (Z-3).
+    cube_rows: int = 0
+    cube_sinks: int = 0
 
 
 def _first_staged_href(item: dict[str, Any]) -> str | None:
@@ -91,6 +107,23 @@ def _first_staged_href(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _cube_item_datetime(item: dict[str, Any]) -> dt.datetime | None:
+    """The item's time for the cube ledger (spec §5.2): ``datetime``, else
+    ``start_datetime``. A value that does not parse counts as missing.
+    Nanosecond strings truncate to microseconds (Postgres precision)."""
+    properties = item.get("properties") or {}
+    for key in ("datetime", "start_datetime"):
+        value = properties.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            parsed = dt.datetime.fromisoformat(value)
+        except ValueError:
+            continue
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=dt.UTC)
+    return None
+
+
 async def dispatch_once(
     repo: DispatchRepo,
     enqueue: EnqueueDeliveries,
@@ -98,6 +131,8 @@ async def dispatch_once(
     enqueue_finalize: EnqueueFinalizes,
     mark_delete_gc: MarkDeleteGc,
     enqueue_process_runs: EnqueueProcessRuns | None = None,
+    cube_repo: CubeRepo | None = None,
+    enqueue_cube_appends: EnqueueCubeAppends | None = None,
     batch_size: int = 100,
 ) -> DispatchResult:
     """Claim a batch of outbox rows, route staged items to finalize and mark
@@ -108,6 +143,12 @@ async def dispatch_once(
     Enqueue-before-drain gives at-least-once delivery/finalize: if either
     enqueue raises, the outbox rows stay pending and a later tick re-drives
     them (finalize's ledger claim makes the duplicate a no-op).
+
+    Cube sinks (Z-3, virtual cube spec §5.2): an ``insert`` event on a
+    collection with enabled sinks queues one ledger row per sink, written with
+    ``ON CONFLICT DO NOTHING`` and followed by one ``cube_append`` per sink
+    with a pending row, all before the drain. The cube step runs first among
+    the post-loop writes because it is fully idempotent.
     """
     events = await repo.claim_pending_events(batch_size)
     if not events:
@@ -128,6 +169,13 @@ async def dispatch_once(
     finalizes: list[dict[str, Any]] = []
     # I-38: events released for a later visibility retry instead of drained.
     deferred: set[int] = set()
+    # Z-3: enabled cube sinks per source collection, cached per batch like
+    # process sources; ledger rows keyed (sink, item) so a replace pair or a
+    # repeated insert in one claim offers one row.
+    sink_cache: dict[str, list[CubeSinkRef]] = {}
+    cube_entries: dict[tuple[str, str], LedgerEntry] = {}
+    # Cube matching runs only with both hooks wired (tests may pass neither).
+    cubes = cube_repo if enqueue_cube_appends is not None else None
 
     for event in events:
         # Per-event isolation (ISSUES I-39): one poison event must never abort
@@ -291,6 +339,47 @@ async def dispatch_once(
                     }
                 )
             matches.extend(item_matches)
+            # Z-3 (spec §5.2): only an INSERT feeds a cube; update and delete
+            # never do (ADR 0022). Its own try: a lookup failure must not
+            # mislabel the event as dead-lettered when its deliveries and
+            # process runs are already batched. The event still drains and
+            # this step is missing from the cube (decision 7 in the plan).
+            if cubes is not None and event.op == "insert":
+                if event.collection_id not in sink_cache:
+                    try:
+                        sink_cache[event.collection_id] = (
+                            await cubes.enabled_sinks_for_source(event.collection_id)
+                        )
+                    except Exception:
+                        # Cached as "no sinks" for the rest of the claim: a
+                        # missing table costs one query and one traceback per
+                        # claim, not one per event.
+                        sink_cache[event.collection_id] = []
+                        logger.exception(
+                            "dispatch: cube sink lookup failed; this claim's items"
+                            " from the collection are not queued for their cubes",
+                            extra={
+                                "event_id": event.id,
+                                "collection_id": event.collection_id,
+                                "item_id": event.item_id,
+                            },
+                        )
+                sinks = sink_cache[event.collection_id]
+                if sinks:
+                    when = _cube_item_datetime(item)
+                    for sink in sinks:
+                        cube_entries.setdefault(
+                            (sink.id, event.item_id),
+                            LedgerEntry(
+                                cube_sink_id=sink.id,
+                                item_id=event.item_id,
+                                item_datetime=when
+                                or event.occurred_at
+                                or dt.datetime.now(dt.UTC),
+                                status="pending" if when is not None else "skipped",
+                                reason=None if when is not None else REASON_NO_DATETIME,
+                            ),
+                        )
         except Exception:
             logger.exception(
                 "dispatch: event dead-lettered (drained without dispatching)",
@@ -304,6 +393,20 @@ async def dispatch_once(
     # Enqueue-before-drain (both queues): a raise here leaves the whole claim
     # unprocessed for a redrive — at-least-once, with finalize's ledger claim
     # and delivery's delivery_log absorbing the duplicates.
+    #
+    # Z-3: ledger rows, then one cube_append per sink with a pending row,
+    # before the drain (spec §5.2). First among the post-loop writes: both are
+    # idempotent (ON CONFLICT DO NOTHING, queueing_lock), so a raise here has
+    # queued nothing for this claim yet, and the redrive repeats harmlessly.
+    cube_sink_ids: list[str] = []
+    if cube_entries and cubes is not None and enqueue_cube_appends is not None:
+        entries = list(cube_entries.values())
+        await cubes.record_appends(entries)
+        cube_sink_ids = list(
+            dict.fromkeys(e.cube_sink_id for e in entries if e.status == "pending")
+        )
+        if cube_sink_ids:
+            await enqueue_cube_appends(cube_sink_ids)
     if finalizes:
         await enqueue_finalize(finalizes)
     if process_batches and enqueue_process_runs is not None:
@@ -318,6 +421,8 @@ async def dispatch_once(
         matches=matches,
         finalizes=len(finalizes),
         process_runs=len(process_batches),
+        cube_rows=len(cube_entries),
+        cube_sinks=len(cube_sink_ids),
     )
 
 
@@ -328,6 +433,8 @@ async def dispatch_until_empty(
     enqueue_finalize: EnqueueFinalizes,
     mark_delete_gc: MarkDeleteGc,
     enqueue_process_runs: EnqueueProcessRuns | None = None,
+    cube_repo: CubeRepo | None = None,
+    enqueue_cube_appends: EnqueueCubeAppends | None = None,
     batch_size: int = 100,
     max_batches: int = 1000,
 ) -> int:
@@ -347,6 +454,8 @@ async def dispatch_until_empty(
             enqueue_finalize=enqueue_finalize,
             mark_delete_gc=mark_delete_gc,
             enqueue_process_runs=enqueue_process_runs,
+            cube_repo=cube_repo,
+            enqueue_cube_appends=enqueue_cube_appends,
             batch_size=batch_size,
         )
         if not result.claimed:
