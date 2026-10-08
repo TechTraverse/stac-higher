@@ -152,6 +152,52 @@ async def test_a_first_commit_that_loses_to_an_app_write_stays_provisional(h):
     assert h.times() == ns(0, 1)
 
 
+async def test_a_double_run_during_the_first_commit_keeps_both_runs_steps(h, monkeypatch):
+    # B loads the sink before any snapshot is recorded; A then runs to the end
+    # (commits S1, records it, finishes i0/i1); B's claim returns the next rows.
+    await h.pend(0, 1, 2, 3)
+    real_take = h.repo.take_pending
+    a_ran = False
+
+    async def take_after_a(cube_sink_id, limit):
+        nonlocal a_ran
+        if not a_ran:
+            a_ran = True
+            first = await run_cube_append(SINK, h.deps(batch_limit=2))  # run A
+            assert first.recorded and h.sink().last_snapshot_id is not None
+        return await real_take(cube_sink_id, limit)
+
+    monkeypatch.setattr(h.repo, "take_pending", take_after_a)
+    second = await run_cube_append(SINK, h.deps(batch_limit=2))  # run B
+    assert a_ran and second.recorded
+    assert h.times() == ns(0, 1, 2, 3)
+    assert set(h.ledger().values()) == {("appended", None)}
+    cube = set(h.times())
+    assert {as_ns(r.item_datetime) for r in h.repo.rows(SINK) if r.status == "appended"} <= cube
+    assert h.sink().last_snapshot_id == second.snapshot_id
+
+
+async def test_a_sink_disabled_or_deleted_before_the_write_ends_quietly(h):
+    for gone in (False, True):
+        await h.pend(0)
+
+        def vanish(url, registry, config, gone=gone):
+            if gone:
+                h.repo.sinks.clear()
+            else:
+                h.sink().enabled = False
+            return parse_header(url, registry, config)
+
+        report = await run_cube_append(SINK, h.deps(parse=vanish))
+        assert (report.taken, report.committed, report.recorded) == (1, False, False)
+        if not gone:
+            assert h.ledger() == {"i0": ("pending", None)}
+            assert h.sink().last_error is None
+            assert h.sink().last_snapshot_id is None
+            h.sink().enabled = True
+    assert h.enqueued == []
+
+
 async def test_unrecorded_data_from_a_crash_is_reset_before_writing(h):
     await h.pend(0)
     h.repo.record_commit_error = RuntimeError("worker killed")
@@ -290,6 +336,20 @@ async def test_parsing_runs_off_the_loop_at_most_four_at_a_time(h):
     assert peak <= PARSE_CONCURRENCY
 
 
+async def test_the_storage_is_resolved_off_the_loop(h):
+    # cube_storage resolves the platform endpoint (DNS): never on the event loop
+    await h.pend(0)
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def storage_for(sink):
+        seen.append(threading.get_ident())
+        return h.storage
+
+    await run_cube_append(SINK, h.deps(storage_for=storage_for))
+    assert len(seen) == 1 and loop_thread not in seen
+
+
 async def test_the_head_comes_before_the_parse_and_its_time_is_passed(h, monkeypatch):
     await h.pend(0)
     order: list[str] = []
@@ -404,6 +464,33 @@ async def test_a_failed_release_keeps_the_original_exception(h, monkeypatch):
     with pytest.raises(OSError, match="platform store"):
         await run_cube_append(SINK, h.deps(storage_for=down))
     assert h.repo.rows(SINK)[0].attempts == 1  # kept: the conservative direction
+    assert h.sink().last_error == "OSError: platform store unreachable"  # still recorded
+
+
+async def test_a_storage_error_in_the_write_phase_fails_the_job_not_the_rows(h, monkeypatch):
+    await h.pend(0)
+    await run_cube_append(SINK, h.deps())  # one committed step
+    tip = h.sink().last_snapshot_id
+    await h.pend(1, 2)
+    real_write = write_mod.write_step
+
+    def silo_down(session, parsed, append_dim):
+        raise ic.StorageError("silo is down")
+
+    monkeypatch.setattr(write_mod, "write_step", silo_down)
+    for _ in range(MAX_ROW_ATTEMPTS + 2):
+        with pytest.raises(ic.StorageError):
+            await run_cube_append(SINK, h.deps())
+    pending = [r for r in h.repo.rows(SINK) if r.item_id != "i0"]
+    assert [(r.status, r.attempts) for r in pending] == [("pending", 0)] * 2  # never crash_loop
+    assert "StorageError" in h.sink().last_error
+    assert h.sink().last_snapshot_id == tip
+
+    monkeypatch.setattr(write_mod, "write_step", real_write)  # the store is back
+    await run_cube_append(SINK, h.deps())
+    assert h.ledger() == {f"i{n}": ("appended", None) for n in (0, 1, 2)}
+    assert h.times() == ns(0, 1, 2)
+    assert h.sink().last_error is None
 
 
 async def test_rows_older_than_max_age_are_skipped_without_parsing(h):

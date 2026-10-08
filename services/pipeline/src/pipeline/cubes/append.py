@@ -11,7 +11,9 @@ first run is still alive, #90):
 Until the sink records a snapshot (``last_snapshot_id``), its repository is
 PROVISIONAL, because the app may still change the source and layout (#98):
 - A job that finds unrecorded data resets ``main`` to the root snapshot
-  before writing. Those rows are still pending, so nothing is lost.
+  before writing. Those rows are still pending, so nothing is lost. The
+  sink is read again just before the write, so a run never resets a
+  snapshot another run has already recorded.
 - The first commit is recorded only while the sink still has the app
   version the job read. If the race is lost, the rows stay pending and the
   next job rebuilds under the new config.
@@ -116,10 +118,15 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
         # rows then keep their bump, which is the conservative direction.
         try:
             await deps.repo.release_rows(sink.id, [r.id for r in rows])
-            await deps.repo.record_error(sink.id, error_text(exc))
         except Exception:
             logger.exception(
                 "cube_append: could not release rows", extra={"cube_sink_id": sink.id}
+            )
+        try:
+            await deps.repo.record_error(sink.id, error_text(exc))
+        except Exception:
+            logger.exception(
+                "cube_append: could not record the error", extra={"cube_sink_id": sink.id}
             )
         raise
     return report
@@ -162,15 +169,24 @@ async def _append_rows(
 
     result: BatchResult | None = None
     if parsed:
+        # Re-read the sink just before writing: another run may have recorded
+        # the first snapshot since this job started, and resetting it then
+        # would drop that run's finished steps. The first-commit compare-and-
+        # swap in `_record` still uses the version read at job start (the
+        # config this job parsed with).
+        fresh = await deps.repo.load_sink(sink.id)
+        if fresh is None or not fresh.enabled:
+            return  # as at job start: a disabled sink's rows wait
         libs = list({source.libs.prefix: source.libs for _, source in sources}.values())
         result, prefixes = await asyncio.to_thread(
             _write,
-            deps.storage_for(sink),
+            deps.storage_for,
+            sink,
             libs,
             parsed,
             config,
             deps.now(),
-            sink.last_snapshot_id is None,
+            fresh.last_snapshot_id is None,
         )
         report.snapshot_id, report.committed = result.snapshot_id, result.committed
         needs_record = result.initialised and (
@@ -252,15 +268,16 @@ async def _parse_all(
 
 
 def _write(
-    storage: Any,
+    storage_for: Callable[[CubeSink], Any],
+    sink: CubeSink,
     libs: Sequence[SourceLibs],
     parsed: Sequence[ParsedStep],
     config: CubeSinkConfig,
     now: dt.datetime,
     provisional: bool,
 ) -> tuple[BatchResult, list[str]]:
-    """Blocking: open, reset unrecorded data, write the batch."""
-    repo = open_repository(storage, libs, replace_containers=provisional)
+    """Blocking: resolve the storage (DNS), open, reset unrecorded data, write."""
+    repo = open_repository(storage_for(sink), libs, replace_containers=provisional)
     if provisional:
         tip = repo.lookup_branch(BRANCH)
         if read_state(repo.readonly_session(BRANCH), config.append_dim).initialised:

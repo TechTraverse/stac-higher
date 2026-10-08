@@ -83,7 +83,8 @@ def test_step_specs_and_the_layout_check(tmp_path):
 
 def test_a_step_with_more_than_one_time_per_chunk_is_a_layout_error():
     step = build_step(_plain(as_ns(scan(0))), CONFIG)
-    doubled = xr.concat([step, step], dim="t")  # numpy-backed: one chunk of 2 along t
+    # numpy-backed: one chunk of 2 along t
+    doubled = xr.concat([step, step], dim="t", data_vars="all")
     with pytest.raises(LayoutError, match="time chunk 2"):
         step_specs(doubled, CONFIG)
 
