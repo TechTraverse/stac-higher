@@ -93,11 +93,6 @@ class CubeRepo(abc.ABC):
         ``older_than_seconds`` ago (the §5.3 backstop), sorted."""
 
     @abc.abstractmethod
-    async def fail_pending(self, cube_sink_id: str, reason: str) -> int:
-        """Mark every ``pending`` row of the sink ``failed`` with ``reason``
-        (the Z-3 stub). Returns the rows changed."""
-
-    @abc.abstractmethod
     async def load_sink(self, cube_sink_id: str) -> CubeSink | None:
         """The sink row, or ``None`` when it is gone."""
 
@@ -209,21 +204,6 @@ class PgCubeRepo(CubeRepo):
             )
             rows = await cur.fetchall()
         return [r[0] for r in rows]
-
-    async def fail_pending(  # pragma: no cover
-        self, cube_sink_id: str, reason: str
-    ) -> int:
-        async with await self._connect() as conn:
-            cur = await conn.execute(
-                "UPDATE stac_higher.cube_appends"
-                " SET status = 'failed', reason = %s,"
-                "     attempts = attempts + 1, updated_at = now()"
-                " WHERE cube_sink_id = %s AND status = 'pending'",
-                (reason, cube_sink_id),
-            )
-            changed = cur.rowcount
-            await conn.commit()
-        return changed
 
     async def load_sink(self, cube_sink_id: str) -> CubeSink | None:  # pragma: no cover
         async with await self._connect() as conn:

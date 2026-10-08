@@ -108,15 +108,6 @@ class FakeCubeRepo(CubeRepo):
             }
         )
 
-    async def fail_pending(self, cube_sink_id: str, reason: str) -> int:
-        changed = 0
-        for r in self.ledger.values():
-            if r.cube_sink_id == cube_sink_id and r.status == "pending":
-                r.status, r.reason = "failed", reason
-                r.attempts += 1
-                changed += 1
-        return changed
-
     async def load_sink(self, cube_sink_id: str) -> CubeSink | None:
         s = self._sink(cube_sink_id)
         if s is None:

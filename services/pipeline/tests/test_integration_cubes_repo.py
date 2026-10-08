@@ -144,34 +144,6 @@ async def test_sinks_with_stale_pending(db):
     assert not found & {fresh, done, off}
 
 
-async def test_fail_pending_touches_pending_rows_only_and_never_the_sink(db):
-    from pipeline.cubes.repo import LedgerEntry, PgCubeRepo
-
-    conn, make_sink = db
-    sink = await make_sink(_source())
-    cur = await conn.execute(
-        "SELECT updated_at FROM stac_higher.cube_sinks WHERE id = %s", (sink,)
-    )
-    version = (await cur.fetchone())[0]
-    repo = PgCubeRepo(DATABASE_URL)
-    await repo.record_appends([LedgerEntry(sink, "a", T0), LedgerEntry(sink, "b", T0)])
-    await conn.execute(
-        "UPDATE stac_higher.cube_appends SET status = 'appended'"
-        " WHERE cube_sink_id = %s AND item_id = 'b'",
-        (sink,),
-    )
-    assert await repo.fail_pending(sink, "not_implemented") == 1
-    assert await _rows(conn, sink) == [
-        ("a", T0, "failed", "not_implemented", 1),
-        ("b", T0, "appended", None, 0),
-    ]
-    # #98/#99: updated_at is the app's version; the pipeline never writes it.
-    cur = await conn.execute(
-        "SELECT updated_at FROM stac_higher.cube_sinks WHERE id = %s", (sink,)
-    )
-    assert (await cur.fetchone())[0] == version
-
-
 async def test_load_sink_reads_the_app_version_and_the_prefixes(db):
     from pipeline.cubes.repo import PgCubeRepo
 
