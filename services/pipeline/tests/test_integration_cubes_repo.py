@@ -170,3 +170,145 @@ async def test_fail_pending_touches_pending_rows_only_and_never_the_sink(db):
         "SELECT updated_at FROM stac_higher.cube_sinks WHERE id = %s", (sink,)
     )
     assert (await cur.fetchone())[0] == version
+
+
+async def test_load_sink_reads_the_app_version_and_the_prefixes(db):
+    from pipeline.cubes.repo import PgCubeRepo
+
+    conn, make_sink = db
+    sink_id = await make_sink(_source())
+    await conn.execute(
+        "UPDATE stac_higher.cube_sinks SET source_prefixes = ARRAY['s3://noaa-goes19/']"
+        " WHERE id = %s",
+        (sink_id,),
+    )
+    cur = await conn.execute(
+        "SELECT updated_at::text FROM stac_higher.cube_sinks WHERE id = %s", (sink_id,)
+    )
+    version = (await cur.fetchone())[0]
+    repo = PgCubeRepo(DATABASE_URL)
+    sink = await repo.load_sink(sink_id)
+    assert sink is not None
+    assert sink.version == version
+    assert sink.source_prefixes == ("s3://noaa-goes19/",)
+    assert (sink.config, sink.last_snapshot_id, sink.enabled) == ({}, None, True)
+    assert await repo.load_sink(str(uuid.uuid4())) is None
+
+
+async def test_take_pending_orders_by_item_datetime_and_bumps_attempts(db):
+    from pipeline.cubes.repo import LedgerEntry, PgCubeRepo
+
+    _, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    await repo.record_appends(
+        [
+            LedgerEntry(sink, "late", T0 + dt.timedelta(minutes=10)),
+            LedgerEntry(sink, "early", T0),
+            LedgerEntry(sink, "mid", T0 + dt.timedelta(minutes=5)),
+            LedgerEntry(sink, "done", T0, status="skipped", reason="no_datetime"),
+        ]
+    )
+    taken = await repo.take_pending(sink, 2)
+    assert [(r.item_id, r.attempts) for r in taken] == [("early", 1), ("mid", 1)]
+    again = await repo.take_pending(sink, 50)
+    assert [(r.item_id, r.attempts) for r in again] == [("early", 2), ("mid", 2), ("late", 1)]
+
+
+async def test_release_rows_undoes_the_take_on_pending_rows_only(db):
+    from pipeline.cubes.repo import LedgerEntry, PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    await repo.record_appends([LedgerEntry(sink, "a", T0), LedgerEntry(sink, "b", T0)])
+    ids = {r.item_id: r.id for r in await repo.take_pending(sink, 50)}
+    await conn.execute(
+        "UPDATE stac_higher.cube_appends SET status = 'appended'"
+        " WHERE cube_sink_id = %s AND item_id = 'b'",
+        (sink,),
+    )
+    assert await repo.release_rows(sink, list(ids.values())) == 1
+    assert [(r[0], r[2], r[4]) for r in await _rows(conn, sink)] == [
+        ("a", "pending", 0),
+        ("b", "appended", 1),
+    ]
+
+
+async def test_finish_rows_changes_pending_rows_only(db):
+    from pipeline.cubes.repo import LedgerEntry, PgCubeRepo, RowOutcome
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    await repo.record_appends([LedgerEntry(sink, "a", T0), LedgerEntry(sink, "b", T0)])
+    ids = {r.item_id: r.id for r in await repo.take_pending(sink, 50)}
+    await conn.execute(
+        "UPDATE stac_higher.cube_appends SET status = 'appended'"
+        " WHERE cube_sink_id = %s AND item_id = 'b'",
+        (sink,),
+    )
+    changed = await repo.finish_rows(
+        sink,
+        [
+            RowOutcome(ids["a"], "appended", "duplicate", "SNAP"),
+            RowOutcome(ids["b"], "skipped", "late"),  # a second writer: no effect
+        ],
+    )
+    assert changed == 1
+    cur = await conn.execute(
+        "SELECT item_id, status, reason, snapshot_id FROM stac_higher.cube_appends"
+        " WHERE cube_sink_id = %s ORDER BY item_id",
+        (sink,),
+    )
+    assert await cur.fetchall() == [
+        ("a", "appended", "duplicate", "SNAP"),
+        ("b", "appended", None, None),
+    ]
+    assert not await repo.has_pending(sink)
+
+
+async def test_record_commit_first_commit_is_conditional_and_never_writes_updated_at(db):
+    from pipeline.cubes.repo import PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    loaded = await repo.load_sink(sink)
+    kw = {"appended_at": T0, "source_prefixes": ["s3://b/"]}
+    await repo.record_error(sink, "boom")
+    # An app write moved the version: the first commit loses (#90).
+    assert not await repo.record_commit(
+        sink, snapshot_id="S0", first_commit_version="2000-01-01 00:00:00+00", **kw
+    )
+    assert await repo.record_commit(
+        sink, snapshot_id="S1", first_commit_version=loaded.version, **kw
+    )
+    # Only one first commit: a second run that also read NULL loses.
+    assert not await repo.record_commit(
+        sink, snapshot_id="S2", first_commit_version=loaded.version, **kw
+    )
+    assert await repo.record_commit(sink, snapshot_id="S3", first_commit_version=None, **kw)
+    after = await repo.load_sink(sink)
+    assert (after.last_snapshot_id, after.source_prefixes) == ("S3", ("s3://b/",))
+    assert after.version == loaded.version  # the pipeline never writes updated_at
+    cur = await conn.execute(
+        "SELECT last_error, last_appended_at FROM stac_higher.cube_sinks WHERE id = %s",
+        (sink,),
+    )
+    assert await cur.fetchone() == (None, T0)
+
+
+async def test_record_error_keeps_the_app_version(db):
+    from pipeline.cubes.repo import PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    before = (await repo.load_sink(sink)).version
+    await repo.record_error(sink, "invalid config: unsupported parser 'grib'")
+    cur = await conn.execute(
+        "SELECT last_error FROM stac_higher.cube_sinks WHERE id = %s", (sink,)
+    )
+    assert (await cur.fetchone())[0] == "invalid config: unsupported parser 'grib'"
+    assert (await repo.load_sink(sink)).version == before
