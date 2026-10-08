@@ -1616,20 +1616,29 @@ Revisit when any of these happens:
 - an Icechunk release mentions transaction-log or `overwritten/` cleanup.
 - Tracked in: [Z-1 results §4](research/2026-10-03-virtual-cube-spike.md#4-soak); [ADR 0022](decisions/0022-virtual-cube-sink.md) (the GC exception it scopes).
 
-### I-144 · Cube ledger rows can name a snapshot that no longer holds them 🟢
-
-Tracked in: —
+### I-144 · A double run during a cube's first commit can mislabel ledger rows 🟡
 
 While a sink has no recorded snapshot, its repository is provisional (Z-4): a
 job that finds unrecorded data resets `main` to the root snapshot before
-writing. If a stalled-job requeue starts a second `cube_append` while the
-first is still committing (a job blocking its event loop > 300 s, #90), the
-first run's rows can be finished `appended` with a snapshot id the second run
-then reset away. The cube's data and `cube_sinks.last_snapshot_id` are
-correct: the second run rewrites the steps and records its own tip. Only
-those rows' `snapshot_id` names an orphaned snapshot.
+writing. The job reads the sink again just before that write, so it never
+resets a snapshot another run has already recorded. A second `cube_append`
+still overlaps the first when a stalled-job requeue starts it while the first
+is committing (a job blocking its event loop > 300 s, #90). If the second run
+re-reads the sink after the first committed but before it recorded, it resets
+the first run's snapshot and writes its own:
+- **Usually only labels are wrong.** Both runs claimed the same oldest pending
+  rows, so the second run rewrites every step of the first. The cube's data and
+  `cube_sinks.last_snapshot_id` end correct; the first run's rows are finished
+  `appended` with a snapshot id the reset orphaned.
+- **One narrower window loses data.** If older rows were inserted between the
+  two claims (late-arriving items), they can push some of the first run's rows
+  out of the second run's 50. Those rows are finished `appended` by the first
+  run, but the second run's reset dropped their steps, so the cube does not
+  hold them. Nothing re-appends them. The window needs a stalled-job requeue,
+  during the sink's very first commit, with a full batch and an older item
+  landing between the two claims.
 
-Related, same severity:
+Related:
 - After the first commit, `record_commit` is unconditional. In a double run,
   the slower recorder can move `cube_sinks.last_snapshot_id` back to an older
   snapshot until the next commit records the tip.
@@ -1640,7 +1649,8 @@ Related, same severity:
   leaves the repository in storage until the cube collection is deleted
   (`asset_gc`).
 
-Accepted for v1; revisit if the ledger's `snapshot_id` ever drives a reader.
+Accepted for v1; revisit if the ledger's `snapshot_id` ever drives a reader, or
+if a requeued `cube_append` is ever seen during a sink's first commit.
 
 ---
 
