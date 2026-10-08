@@ -12,11 +12,10 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from urllib.parse import unquote
 
 from pipeline.config import Settings
-from pipeline.connections.build import AdapterBuildError, build_adapter
 from pipeline.connections.http_fetch import fetch_public_url
+from pipeline.connections.sources import association_for_href
 from pipeline.ingest.repo import PgIngestRepo
 from pipeline.process.inputs import InputPlan
 from pipeline.storage import platform
@@ -82,23 +81,14 @@ def build_remote_fetcher(settings: Settings, master_key: bytes | None) -> Remote
 
     async def fetch(href: str) -> bytes:
         if master_key is not None:
-            for assoc in await repo.list_enabled_ingest_associations():
-                if (assoc.config or {}).get("storage_mode") != "reference":
-                    continue
-                try:
-                    adapter = build_adapter(
-                        assoc.connection, master_key, settings.egress_allow_hosts
-                    )
-                except AdapterBuildError:
-                    continue
-                try:
-                    base = adapter.public_object_url("")
-                except NotImplementedError:
-                    # Only S3 publishes stable object URLs (reference mode is
-                    # s3-only); other protocols cannot have produced the href.
-                    continue
-                if href.startswith(base):
-                    return await adapter.get(unquote(href[len(base) :]))
+            match = association_for_href(
+                href,
+                await repo.list_enabled_ingest_associations(),
+                master_key,
+                settings.egress_allow_hosts,
+            )
+            if match is not None:
+                return await match.adapter.get(match.key)
         return await asyncio.to_thread(fetch_public_url, href, settings.egress_allow_hosts)
 
     return fetch
