@@ -59,7 +59,7 @@ Tests run offline. The "fake NODD" is GOES-shaped HDF5 files written with h5py i
    - An error on one file never fails the batch.
 8. **Which source file is an item's header:** exactly one of the item's reference source hrefs whose filename ends `.nc`, `.nc4`, `.h5`, `.hdf5` or `.he5`. No hrefs at all → `source_missing`; zero or several HDF hrefs → `unsupported_layout`.
 9. **Crash-loop protection on the ledger (#90 comment).** `take_pending` bumps `attempts` on every row it claims, before anything is parsed. Rows whose `attempts` exceed **6** (`MAX_ROW_ATTEMPTS`) are failed `crash_loop` without being parsed. **Only real crashes count:** any exception that reaches `run_cube_append` gives the attempts back (`CubeRepo.release_rows`), records `last_error` and re-raises. Without that, a platform-store outage of a few minutes would push the oldest 50 rows to `crash_loop` (3 job tries plus 3 from the next kick). A worker that is SIGKILLed, OOM-killed, segfaulted or requeued as stalled never reaches that handler, so its attempts still count. A deterministic bug therefore leaves the rows pending and the sink's `last_error` set, rather than failing them. Retry is `RetrySpec(max_attempts=3, wait_seconds=30)`. `RetrySpec` has no exponential form, and Procrastinate's `attempts` is shared with the stall cap (3).
-10. **Z-3's stub rows are revisited.** `cube_kick` first returns every `failed` / `not_implemented` row to `pending` with `attempts = 0` (`CubeRepo.reset_stub_failures`). Their `created_at` is old, so the same tick wakes their sinks. **The lead's call (#90 allows either), flagged in the PR:** this is a whole-table `UPDATE` every 5 minutes, forever, for a one-time leftover. The alternative is to drop it and state that no sink may exist before Z-4 ships.
+10. **No stub-row reset.** Z-3's stub marks pending rows `failed: not_implemented` and nothing revisits them. The lead decided on 2026-10-07 that no cube sink will be used before Z-4 ships, so there are no such rows to recover (#90 allows either route), and Z-4 adds no reset code. A lead-only check before merge confirms it: `SELECT count(*) FROM stac_higher.cube_appends WHERE reason = 'not_implemented'` is 0 on the stack. If it isn't, set those rows back to `pending` by hand.
 11. **A step whose write raises is failed and the batch is redone without it** in a fresh session (the half-written session is dropped, never committed).
 12. **`window.max_age` on a non-datetime `append_dim` is ignored by the trim** (only `max_steps` applies). **Rows whose `item_datetime` is already older than `now − max_age` are skipped `late` before they are resolved or parsed.** After a long outage, every 50-row job would otherwise parse 50 headers, append them, trim the cube to empty, and commit, again and again. This cutoff uses the item's datetime (GOES: scan start), not `t` (scan midpoint), so a step straddling the cutoff can be skipped; that is one step at the window's edge. A window may trim the cube to **zero** steps, the same thing §10's age trim does to a stopped source. The next append still works (verified on icechunk 2.3.0).
 13. **A disabled or deleted sink's job does nothing.** A disabled sink's rows wait, and `cube_kick` wakes them once re-enabled. A missing `CREDENTIALS_MASTER_KEY` makes the job a logged no-op (`load_key_or_skip`), and the rows wait.
@@ -95,18 +95,18 @@ Tests run offline. The "fake NODD" is GOES-shaped HDF5 files written with h5py i
 | `src/pipeline/connections/sources.py` (new) | `association_for_href`: href → the reference association, adapter and key (Task 2) |
 | `src/pipeline/process/staging.py` | `build_remote_fetcher` uses `association_for_href` (Task 2) |
 | `src/pipeline/cubes/source.py` (new) | `SourceLibs`, `libs_from_connection`, `explicit_endpoint` (Task 3) |
-| `src/pipeline/cubes/repo.py` | `CubeSink`, `PendingRow`, `RowOutcome`; `load_sink`, `take_pending`, `finish_rows`, `has_pending`, `record_commit`, `record_error`, `reset_stub_failures` (Task 4); `fail_pending` removed (Task 10) |
+| `src/pipeline/cubes/repo.py` | `CubeSink`, `PendingRow`, `RowOutcome`; `load_sink`, `take_pending`, `finish_rows`, `has_pending`, `record_commit`, `record_error` (Task 4); `fail_pending` removed (Task 10) |
 | `src/pipeline/cubes/steps.py` (new) | `parse_header`, `build_step`, `step_value`, `ArraySpec`, `step_specs`, `check_layout`, `trim_count`, `LayoutError` (Task 5) |
 | `src/pipeline/cubes/icerepo.py` (new) | `cube_storage`, `open_repository`, `CubeState`, `read_state`, `reset_to_root` (Task 6) |
 | `src/pipeline/cubes/write.py` (new) | `ParsedStep`, `BatchResult`, `classify`, `write_batch`, the `write_step` / `commit_session` seams (Task 7) |
 | `src/pipeline/cubes/resolve.py` (new) | `SourceResolver`, `PgSourceResolver`, `ResolvedSource`, `SourceUnavailable`, `pick_hdf_href` (Task 8) |
 | `src/pipeline/cubes/append.py` (new) | `AppendDeps`, `AppendReport`, `run_cube_append` (Task 9) |
-| `src/pipeline/jobs/cubes.py` | the real handler, `CUBE_APPEND_RETRY`, `production_append_deps`, stub rows reset in `cube_kick` (Task 10) |
+| `src/pipeline/jobs/cubes.py` | the real handler, `CUBE_APPEND_RETRY`, `production_append_deps` (Task 10) |
 | `tests/_cube_fake.py` | fake sink rows, ledger ids, Z-4 methods, one-shot failure hooks (Task 4) |
 | `tests/_cube_sources.py` (new) | GOES-shaped HDF5 writer, local `SourceLibs`, registry helper (Task 5) |
 | `tests/test_cube_deps.py`, `test_connection_sources.py`, `test_cube_source.py`, `test_cube_steps.py`, `test_cube_icerepo.py`, `test_cube_write.py`, `test_cube_resolve.py`, `test_cube_append.py`, `test_cube_it.py` (new) | unit tests per module; `test_cube_it.py` is skipped unless `CUBE_IT=1` |
 | `tests/test_integration_cubes_repo.py` | DB-gated tests of the new SQL (Task 4; the `fail_pending` test goes in Task 10) |
-| `tests/test_cube_jobs.py` | the stub test replaced; retry, wiring and stub reset tests (Task 10) |
+| `tests/test_cube_jobs.py` | the stub test replaced; retry and wiring tests (Task 10) |
 | `docs/FEATURES.md`, `docs/ISSUES.md` | Z-4 row; the double-run residual (Task 11) |
 
 All `src/` and `tests/` paths are under `services/pipeline/`. Run every `uv` command from `services/pipeline/`.
@@ -675,7 +675,6 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Produces (in `pipeline.cubes.repo`):
-  - `STUB_REASON_NOT_IMPLEMENTED = "not_implemented"`.
   - `CubeSink(id, source_collection_id, cube_collection_id, enabled: bool, config: dict, source_prefixes: tuple[str, ...], last_snapshot_id: str | None, version: str)`.
   - `PendingRow(id: int, item_id: str, item_datetime: dt.datetime, attempts: int)` (`attempts` is after this take's bump).
   - `RowOutcome(id: int, status: str, reason: str | None = None, snapshot_id: str | None = None)`.
@@ -687,7 +686,6 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
     - `has_pending(cube_sink_id) -> bool`
     - `record_commit(cube_sink_id, *, snapshot_id, appended_at, source_prefixes, first_commit_version) -> bool`
     - `record_error(cube_sink_id, message) -> None`
-    - `reset_stub_failures() -> int`
 - `fail_pending` stays until Task 10 removes it with the stub.
 
 - [ ] **Step 1: Write the failing DB-gated tests**
@@ -835,29 +833,6 @@ async def test_record_error_keeps_the_app_version(db):
     )
     assert (await cur.fetchone())[0] == "invalid config: unsupported parser 'grib'"
     assert (await repo.load_sink(sink)).version == before
-
-
-async def test_reset_stub_failures_returns_z3_stub_rows_to_pending(db):
-    from pipeline.cubes.repo import LedgerEntry, PgCubeRepo
-
-    conn, make_sink = db
-    sink = await make_sink(_source())
-    repo = PgCubeRepo(DATABASE_URL)
-    await repo.record_appends(
-        [LedgerEntry(sink, "stub", T0), LedgerEntry(sink, "real", T0), LedgerEntry(sink, "p", T0)]
-    )
-    await conn.execute(
-        "UPDATE stac_higher.cube_appends SET status = 'failed', attempts = 1,"
-        " reason = CASE item_id WHEN 'stub' THEN 'not_implemented' ELSE 'EgressBlocked: x' END"
-        " WHERE cube_sink_id = %s AND item_id IN ('stub', 'real')",
-        (sink,),
-    )
-    assert await repo.reset_stub_failures() >= 1  # whole-table: other sinks may have some
-    assert await _rows(conn, sink) == [
-        ("p", T0, "pending", None, 0),
-        ("real", T0, "failed", "EgressBlocked: x", 1),
-        ("stub", T0, "pending", None, 0),
-    ]
 ```
 
 - [ ] **Step 2: Write the failing fake tests**
@@ -893,14 +868,6 @@ async def test_take_finish_and_record_commit():
     sink = await repo.load_sink("s1")
     assert (sink.last_snapshot_id, sink.source_prefixes, sink.version) == ("S1", ("s3://b/",), "v1")
 
-
-async def test_reset_stub_failures():
-    repo = FakeCubeRepo(sinks=[FakeSink("s1", "src", "cube")])
-    await repo.record_appends([LedgerEntry("s1", "a", T0)])
-    row = repo.rows("s1")[0]
-    row.status, row.reason, row.attempts = "failed", "not_implemented", 1
-    assert await repo.reset_stub_failures() == 1
-    assert (row.status, row.reason, row.attempts) == ("pending", None, 0)
 ```
 
 - [ ] **Step 3: Run them to see them fail**
@@ -921,15 +888,7 @@ never writes ``cube_sinks.updated_at``: that column is the app's
 optimistic-lock version (#98).
 ```
 
-Add `from typing import Any` to the imports. Add after `REASON_NO_DATETIME`:
-
-```python
-#: Z-3's stub reason. ``reset_stub_failures`` hands those rows back to the
-#: real append (#90 comment); nothing writes it any more.
-STUB_REASON_NOT_IMPLEMENTED = "not_implemented"
-```
-
-After `LedgerEntry`:
+Add `from typing import Any` to the imports. After `LedgerEntry`:
 
 ```python
 @dataclass(frozen=True)
@@ -1014,11 +973,6 @@ Abstract methods on `CubeRepo` (after `fail_pending`):
     @abc.abstractmethod
     async def record_error(self, cube_sink_id: str, message: str) -> None:
         """Set ``last_error`` (never ``updated_at``)."""
-
-    @abc.abstractmethod
-    async def reset_stub_failures(self) -> int:
-        """Return Z-3 stub rows (``failed`` / ``not_implemented``) to
-        ``pending`` with ``attempts = 0``. Returns the rows changed."""
 ```
 
 - [ ] **Step 5: Implement them on `PgCubeRepo`**
@@ -1156,17 +1110,6 @@ Abstract methods on `CubeRepo` (after `fail_pending`):
             )
             await conn.commit()
 
-    async def reset_stub_failures(self) -> int:  # pragma: no cover
-        async with await self._connect() as conn:
-            cur = await conn.execute(
-                "UPDATE stac_higher.cube_appends"
-                "   SET status = 'pending', reason = NULL, attempts = 0, updated_at = now()"
-                " WHERE status = 'failed' AND reason = %s",
-                (STUB_REASON_NOT_IMPLEMENTED,),
-            )
-            changed = cur.rowcount
-            await conn.commit()
-        return changed
 ```
 
 - [ ] **Step 6: Replace `tests/_cube_fake.py`**
@@ -1188,7 +1131,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.cubes.repo import (
-    STUB_REASON_NOT_IMPLEMENTED,
     CubeRepo,
     CubeSink,
     CubeSinkRef,
@@ -1378,13 +1320,6 @@ class FakeCubeRepo(CubeRepo):
         if s is not None:
             s.last_error = message
 
-    async def reset_stub_failures(self) -> int:
-        changed = 0
-        for r in self.ledger.values():
-            if r.status == "failed" and r.reason == STUB_REASON_NOT_IMPLEMENTED:
-                r.status, r.reason, r.attempts = "pending", None, 0
-                changed += 1
-        return changed
 
     def backdate(self, cube_sink_id: str, item_id: str, seconds: int) -> None:
         """Test helper: age one ledger row's created_at."""
@@ -3833,7 +3768,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 10: `jobs/cubes.py` — the real handler, retry, stub rows revisited
+### Task 10: `jobs/cubes.py` — the real handler and its retry
 
 **Files:**
 - Modify: `services/pipeline/src/pipeline/jobs/cubes.py`
@@ -3842,12 +3777,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Modify: `services/pipeline/tests/test_cube_jobs.py`, `services/pipeline/tests/test_integration_cubes_repo.py`
 
 **Interfaces:**
-- Consumes: `run_cube_append`, `AppendDeps`, `AppendReport` (Task 9); `PgSourceResolver` (Task 8); `cube_storage` (Task 6); `load_key_or_skip` (`jobs/_common.py`); `CubeRepo.reset_stub_failures` (Task 4).
+- Consumes: `run_cube_append`, `AppendDeps`, `AppendReport` (Task 9); `PgSourceResolver` (Task 8); `cube_storage` (Task 6); `load_key_or_skip` (`jobs/_common.py`).
 - Produces (in `pipeline.jobs.cubes`):
   - `CUBE_APPEND_RETRY = RetrySpec(max_attempts=3, wait_seconds=30)`.
   - `production_append_deps(settings, queue, repo) -> AppendDeps | None`.
   - `register(queue, settings, *, repo=None, deps_factory=None)`.
-  - `REASON_NOT_IMPLEMENTED` is removed (now `STUB_REASON_NOT_IMPLEMENTED` in `cubes/repo.py`).
+  - `REASON_NOT_IMPLEMENTED` is removed with the stub.
 
 - [ ] **Step 1: Update the tests to the real handler**
 
@@ -3866,7 +3801,7 @@ import pipeline.jobs.cubes as cubes_jobs
 from _cube_fake import FakeCubeRepo, FakeLedgerRow, FakeSink
 from pipeline.config import Settings
 from pipeline.cubes.append import AppendDeps, AppendReport
-from pipeline.cubes.repo import STUB_REASON_NOT_IMPLEMENTED, LedgerEntry
+from pipeline.cubes.repo import LedgerEntry
 from pipeline.cubes.resolve import PgSourceResolver
 from pipeline.jobs.cubes import (
     CUBE_APPEND_RETRY,
@@ -3955,21 +3890,9 @@ async def test_production_deps_wire_the_real_seams(repo: FakeCubeRepo):
     await deps.enqueue_next("s1")
     assert q.jobs[0].lock == q.jobs[0].queueing_lock == "cube:s1"
 
-
-async def test_kick_returns_z3_stub_failures_to_pending(
-    queue: InMemoryQueue, repo: FakeCubeRepo
-):
-    repo.ledger[("s1", "stub")] = FakeLedgerRow(
-        "s1", "stub", T0, "failed", STUB_REASON_NOT_IMPLEMENTED, attempts=1, id=99
-    )
-    repo.backdate("s1", "stub", KICK_STALE_SECONDS + 1)
-    await queue.run_periodic(JOB_CUBE_KICK, timestamp=1_700_000_000)
-    row = repo.rows("s1")[0]
-    assert (row.status, row.reason, row.attempts) == ("pending", None, 0)
-    assert [j.payload for j in queue.jobs] == [{"cube_sink_id": "s1"}]  # woken the same tick
 ```
 
-In `tests/test_integration_cubes_repo.py`, delete `test_fail_pending_touches_pending_rows_only_and_never_the_sink`. `test_reset_stub_failures_returns_z3_stub_rows_to_pending` and `test_record_commit_first_commit_is_conditional_and_never_writes_updated_at` (Task 4) now carry its two assertions: pending-only, and never `updated_at`.
+In `tests/test_integration_cubes_repo.py`, delete `test_fail_pending_touches_pending_rows_only_and_never_the_sink`. `test_finish_rows_changes_pending_rows_only` and `test_record_commit_first_commit_is_conditional_and_never_writes_updated_at` (Task 4) now carry its two assertions: pending-only, and never `updated_at`.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -3989,7 +3912,6 @@ Replace the module docstring's last bullet (the stub) with:
   budget with ``retry_stalled``'s cap of 3).
 ```
 
-and the `cube_kick` bullet's first sentence with: "``pipeline.cube_kick`` (every 5 minutes) first returns Z-3's stub rows (``failed: not_implemented``) to ``pending``, then hands any ``cube_append`` that a dead worker left running back to the queue (``QueueBackend.retry_stalled``), since otherwise it would hold its sink's lock forever."
 
 Then make these code changes:
 
@@ -4013,18 +3935,6 @@ Delete `REASON_NOT_IMPLEMENTED` and add:
 #: §6: three attempts. RetrySpec waits a fixed time (no exponential form), and
 #: Procrastinate counts retry_stalled requeues in the same attempts budget.
 CUBE_APPEND_RETRY = RetrySpec(max_attempts=3, wait_seconds=30)
-```
-
-In `kick_stale_sinks`, before the `retry_stalled` block:
-
-```python
-    try:
-        reset = await repo.reset_stub_failures()
-    except Exception:
-        logger.exception("cube_kick: resetting Z-3 stub rows failed")
-    else:
-        if reset:
-            logger.info("cube_kick returned Z-3 stub rows to pending", extra={"rows": reset})
 ```
 
 Add `production_append_deps` above `register`, and replace `register`:
@@ -4108,7 +4018,7 @@ Expected: all PASS.
 
 ```bash
 git add src/pipeline/jobs/cubes.py src/pipeline/cubes/repo.py tests/_cube_fake.py tests/test_cube_jobs.py tests/test_integration_cubes_repo.py
-git commit -m "Z-4: wire the real cube_append; cube_kick revisits Z-3 stub rows
+git commit -m "Z-4: wire the real cube_append with its retry
 
 Retry 3 x 30 s; a missing master key leaves rows waiting; fail_pending and
 the stub are gone.
@@ -4263,7 +4173,7 @@ Expected: `1 skipped` (no `CUBE_IT`). Running it for real is lead-only (#90 "Lea
 In `docs/FEATURES.md`, under "Virtual Icechunk cube sink (Z queue)", add after the Z-3 row:
 
 ```markdown
-| Z-4 · `cube_append` + pipeline deps | ✅ | `pipeline.cube_append` (default queue, retry 3 × 30 s) claims ≤ 50 pending rows (`attempts` bumped first; > 6 → `failed: crash_loop`), resolves each item's one HDF source href through its reference association (`connections/sources.py::association_for_href`, shared with process staging), HEADs then parses 4 headers at a time off the event loop, and appends them virtually to `assets/{cube}/_cube/` (Icechunk, `num_updates_per_repo_info_file = 100`, one container per source bucket, explicit path-style endpoint after `resolve_pinned`). Duplicate `t` → `appended/duplicate`, late → `skipped`, layout mismatch → `skipped: unsupported_layout`; window trimmed in the same commit; `ConflictError` redone once. The first commit is recorded only while the sink keeps the app version read (#90); an unrecorded repository is provisional and reset to its root snapshot before writing. `cube_kick` returns Z-3 stub rows to pending. Deps: icechunk, virtualizarr[hdf], zarr, xarray, obstore, h5py, obspec-utils. Z-5's asset writer plugs into `AppendDeps.after_batch` (after every batch that reached the cube; must be idempotent). A grid or projection change is `skipped: unsupported_layout` (an append would rewrite `x`/`y`). An exception gives the claimed attempts back, so outages never become `crash_loop` |
+| Z-4 · `cube_append` + pipeline deps | ✅ | `pipeline.cube_append` (default queue, retry 3 × 30 s) claims ≤ 50 pending rows (`attempts` bumped first; > 6 → `failed: crash_loop`), resolves each item's one HDF source href through its reference association (`connections/sources.py::association_for_href`, shared with process staging), HEADs then parses 4 headers at a time off the event loop, and appends them virtually to `assets/{cube}/_cube/` (Icechunk, `num_updates_per_repo_info_file = 100`, one container per source bucket, explicit path-style endpoint after `resolve_pinned`). Duplicate `t` → `appended/duplicate`, late → `skipped`, layout mismatch → `skipped: unsupported_layout`; window trimmed in the same commit; `ConflictError` redone once. The first commit is recorded only while the sink keeps the app version read (#90); an unrecorded repository is provisional and reset to its root snapshot before writing. Deps: icechunk, virtualizarr[hdf], zarr, xarray, obstore, h5py, obspec-utils. Z-5's asset writer plugs into `AppendDeps.after_batch` (after every batch that reached the cube; must be idempotent). A grid or projection change is `skipped: unsupported_layout` (an append would rewrite `x`/`y`). An exception gives the claimed attempts back, so outages never become `crash_loop` |
 ```
 
 Also edit the Z-3 row's last sentence, "`cube_append` is a stub (`failed: not_implemented`) until Z-4", to "`cube_append` was a stub until Z-4".
@@ -4326,12 +4236,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 `git push -u origin feat/z4-cube-append`, then `gh pr create --base main --title "Z-4: cube_append: virtual appends with a rolling window"` with a body that:
 - starts `Closes #90`;
 - lists the gates run (pytest, ruff, verify, and the DB-gated cubes repo tests against a throwaway Postgres);
-- lists every item under "Decisions this plan takes" as the deviations to review, and asks the lead to decide decision 10 (keep or drop the stub-row reset);
+- lists every item under "Decisions this plan takes" as the deviations to review;
 - lists the lead-only steps left:
   1. `CUBE_IT=1` against a throwaway, `z4`-prefixed Silo (#90).
   2. The pipeline image size delta: `docker image ls` before/after on the CI-built image, or `docker compose build pipeline` locally. Record it in the PR body (spec §11).
-  3. The image passes the C-queue scan in CI (`containers.yml`, Trivy HIGH/CRITICAL, informational).
-  4. An import and parse smoke test **in the built Linux image**. h5py and rasterio each bundle their own libhdf5, and one worker process loads both: `docker compose run --rm pipeline python -c "import rasterio, h5py, virtualizarr, icechunk; print('ok')"`, then parse one live GOES header with `pipeline.cubes.steps.parse_header`. The unit suite ran on macOS only.
+  3. Confirm no Z-3 stub rows exist on the stack (decision 10): `SELECT count(*) FROM stac_higher.cube_appends WHERE reason = 'not_implemented'` returns 0.
+  4. The image passes the C-queue scan in CI (`containers.yml`, Trivy HIGH/CRITICAL, informational).
+  5. An import and parse smoke test **in the built Linux image**. h5py and rasterio each bundle their own libhdf5, and one worker process loads both: `docker compose run --rm pipeline python -c "import rasterio, h5py, virtualizarr, icechunk; print('ok')"`, then parse one live GOES header with `pipeline.cubes.steps.parse_header`. The unit suite ran on macOS only.
 - ends with the attribution line `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 
 On merge: flip #91 (Z-5) and #92 (Z-6) from `blocked` to `ready` if Z-4 was their last blocker, and remove the worktree.
@@ -4358,7 +4269,7 @@ On merge: flip #91 (Z-5) and #92 (Z-6) from `blocked` to `ready` if Z-4 was thei
   | retry 3 | 10 |
   | §11 dependencies | 1 |
   | #90 comments: first-commit window | 4, 9 |
-  | #90 comments: stub rows | 10 |
+  | #90 comments: stub rows | decision 10 (none exist; lead check before merge) |
   | #90 comments: crash loop | 4, 9 |
   | #90 comments: off-loop parsing | 9 |
   | #90 comments: double-run safety | 7, 9 |
