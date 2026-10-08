@@ -1616,6 +1616,32 @@ Revisit when any of these happens:
 - an Icechunk release mentions transaction-log or `overwritten/` cleanup.
 - Tracked in: [Z-1 results §4](research/2026-10-03-virtual-cube-spike.md#4-soak); [ADR 0022](decisions/0022-virtual-cube-sink.md) (the GC exception it scopes).
 
+### I-144 · Cube ledger rows can name a snapshot that no longer holds them 🟢
+
+Tracked in: —
+
+While a sink has no recorded snapshot, its repository is provisional (Z-4): a
+job that finds unrecorded data resets `main` to the root snapshot before
+writing. If a stalled-job requeue starts a second `cube_append` while the
+first is still committing (a job blocking its event loop > 300 s, #90), the
+first run's rows can be finished `appended` with a snapshot id the second run
+then reset away. The cube's data and `cube_sinks.last_snapshot_id` are
+correct: the second run rewrites the steps and records its own tip. Only
+those rows' `snapshot_id` names an orphaned snapshot.
+
+Related, same severity:
+- After the first commit, `record_commit` is unconditional. In a double run,
+  the slower recorder can move `cube_sinks.last_snapshot_id` back to an older
+  snapshot until the next commit records the tip.
+- Rows appended and trimmed in the same commit read `appended` with a
+  snapshot that no longer holds them. After crash recovery, such rows read
+  `late`.
+- A sink deleted while its repository is provisional (no recorded snapshot)
+  leaves the repository in storage until the cube collection is deleted
+  (`asset_gc`).
+
+Accepted for v1; revisit if the ledger's `snapshot_id` ever drives a reader.
+
 ---
 
 ## Resolved — archived
