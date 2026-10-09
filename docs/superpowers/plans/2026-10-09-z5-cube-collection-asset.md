@@ -1227,6 +1227,13 @@ serves it as tiles and EDR is Z-7.
 | Z-5 · Collection asset writer | ✅ | `pipeline/cubes/collection.py`: after every batch that reached the repository, `cube_append` publishes the cube on its collection — `assets.{asset_key}` (spec §3.3: `application/vnd.zarr+icechunk`, `version` = snapshot id, `stac_higher:virtual_chunk_prefixes`, `stac_higher:cube_sink_id`, exact-ns `stac_higher:time_values`), `extent.temporal`, Datacube `cube:dimensions` (`x`/`y` in projected metres, geostationary PROJJSON via rasterio) and the Datacube v2.2.0 extension; every other key is the user's. One transaction on a plain pool connection: `SELECT … FOR UPDATE`, then only the sink's **recorded** tip (`cube_sinks.last_snapshot_id`, read under the lock; else `superseded`), merge, `pgstac.update_collection`; an unchanged document is not rewritten; no audit row, one `cube collection asset` log line. The hook (`AppendDeps.after_batch` = `production_after_batch(settings)`, shared with Z-6) now runs after the record and **before** the ledger, so a failed publish releases the rows and the retry republishes. Shape: `docs/serving.md` |
 ```
 
+- [ ] **Step 2b: Only if Z-6 (#92) is already on `main`, wire its maintenance publish with the grid.** First `git fetch origin main && git rebase origin/main`. Then make these three edits together (agreed with the Z-6 planner; Z-6 plan revision 122f533):
+  1. `jobs/cubes.py::production_maintain_deps(...)`: add `after_batch=production_after_batch(settings)`.
+  2. `cubes/maintain.py::_maintain`, in its `BatchResult(...)`: add `statics=rp.state.statics, spatial_dims=rp.state.spatial_dims` (there is a comment at that spot). Without them the writer falls back to the document's existing x/y dimensions. A form save drops `cube:dimensions`, and for a stopped source the maintenance republish is the only publish left, so x/y would stay missing for good.
+  3. In `test_the_recorded_tip_is_republished_on_every_run`, assert `set(result.statics) == {"x", "y", "goes_imager_projection"}` and `result.spatial_dims == ("y", "x")`.
+
+  Commit them as `Z-5: wire the maintenance republish with the cube's grid`. If Z-6 is not on `main`, skip this step: Z-6's PR makes the same three edits.
+
 - [ ] **Step 3: Gates.** From the repo root, `npm run verify`. From `services/pipeline/`, `uv run pytest -q` and `uv run ruff check .`. All must pass. Paste the summary lines into the PR body.
 
 - [ ] **Step 4: Commit and push (lead).**
@@ -1246,8 +1253,7 @@ git push -u origin feat/z5-cube-collection-asset
 
   On merge:
   - remove the worktree;
-  - flip #93 (Z-7) from `blocked` to `ready` if Z-5 was its last blocker (Z-2 is merged);
-  - if Z-6 has merged first, its `production_maintain_deps` gets `after_batch=production_after_batch(settings)` in this PR instead (agreed with the Z-6 planner).
+  - flip #93 (Z-7) from `blocked` to `ready` if Z-5 was its last blocker (Z-2 is merged).
 
 ---
 
