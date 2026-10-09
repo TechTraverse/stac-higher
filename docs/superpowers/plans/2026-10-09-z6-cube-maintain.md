@@ -60,7 +60,8 @@
    - An invalid sink config fails the run after the prune. The append records `last_error` for it too.
 8. **`cube_kick` recovers stalled maintenance jobs too** (`retry_stalled(JOB_CUBE_MAINTAIN_SINK)`). A maintenance job holds the same `cube:{id}` lock as the append, so a SIGKILLed one would otherwise wedge the sink's appends forever (the Z-3 lesson).
 9. **Maintenance opens the repository read-config-only.** `icerepo.open_existing(storage)` returns `None` when the repository is absent. Otherwise it opens with `_config()` and without virtual-chunk credentials, and never saves config.
-10. **Files touched beyond the issue's list** (all small seams):
+10. **Expiry spares every snapshot that was the tip within the retention** (added during execution, from Task 3's review). Icechunk ages a snapshot by when it was **written**, but a reader holds the snapshot that was the **tip** when it last looked. A trim commit, or an append after a quiet spell, would otherwise let the same pass expire the snapshot readers were on: the review reproduced `StorageError: object not found`. `maintain.expiry_cutoff` therefore lowers the cutoff to the write time of the newest ancestor written at or before `now − retention`. Provisional repositories keep the plain cutoff: nothing published them, and their reset moved `main` backwards. Pinned by `test_a_trim_keeps_the_snapshot_readers_were_on`. The cost is one extra snapshot and its manifests kept per sink.
+11. **Files touched beyond the issue's list** (all small seams):
     - `storage/platform.py`: `list_sizes`, next to `list_objects`.
     - `cubes/icerepo.py`: `open_existing`.
     - `cubes/write.py`: rename `_trim` → `trim_steps`, now shared.
@@ -1918,7 +1919,7 @@ Title `Z-6: cube_maintain: expiry, GC, ledger prune and size readout`. The body 
 - the gates run;
 - whether the DB-gated tests ran;
 - **lead-only steps: none**. Z-9 (#95) checks this live: after 7 h, `last_maintenance` shows deletions and a flat repository size.
-- the deviations: Decisions 1–3 and 10 above;
+- the deviations: Decisions 1–3, 10 (added in review) and 11 above;
 - the Z-5 wiring state: wired here, or left to Z-5's PR.
 
 On merge, flip nothing: #93 (Z-7) is blocked on Z-5, not Z-6.
