@@ -9,7 +9,7 @@ an app write landing just before ``record_commit``, and a crash inside
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,6 +36,8 @@ class FakeSink:
     version: str = "v1"
     last_error: str | None = None
     last_appended_at: dt.datetime | None = None
+    last_maintained_at: dt.datetime | None = None
+    last_maintenance: dict[str, Any] | None = None
 
 
 @dataclass
@@ -49,6 +51,7 @@ class FakeLedgerRow:
     created_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.UTC))
     id: int = 0
     snapshot_id: str | None = None
+    updated_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.UTC))
 
 
 @dataclass
@@ -153,6 +156,7 @@ class FakeCubeRepo(CubeRepo):
             if row is None or row.status != "pending":
                 continue
             row.status, row.reason, row.snapshot_id = o.status, o.reason, o.snapshot_id
+            row.updated_at = dt.datetime.now(dt.UTC)
             changed += 1
         return changed
 
@@ -194,6 +198,41 @@ class FakeCubeRepo(CubeRepo):
         if s is not None:
             s.last_error = message
 
+    async def maintainable_sinks(self) -> list[str]:
+        return sorted(s.id for s in self.sinks if s.enabled)
+
+    async def record_snapshot(
+        self, cube_sink_id: str, *, snapshot_id: str, from_snapshot_id: str
+    ) -> bool:
+        s = self._sink(cube_sink_id)
+        if s is None or s.last_snapshot_id != from_snapshot_id:
+            return False
+        s.last_snapshot_id = snapshot_id
+        return True
+
+    async def prune_ledger(self, cube_sink_id: str, older_than_days: int) -> int:
+        cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)
+        doomed = [
+            key
+            for key, r in self.ledger.items()
+            if r.cube_sink_id == cube_sink_id and r.status != "pending" and r.updated_at < cutoff
+        ]
+        for key in doomed:
+            del self.ledger[key]
+        return len(doomed)
+
+    async def record_maintenance(
+        self,
+        cube_sink_id: str,
+        *,
+        summary: Mapping[str, Any],
+        maintained_at: dt.datetime | None,
+    ) -> None:
+        s = self._sink(cube_sink_id)
+        if s is not None:
+            s.last_maintenance = dict(summary)
+            if maintained_at is not None:
+                s.last_maintained_at = maintained_at
 
     def backdate(self, cube_sink_id: str, item_id: str, seconds: int) -> None:
         """Test helper: age one ledger row's created_at."""
