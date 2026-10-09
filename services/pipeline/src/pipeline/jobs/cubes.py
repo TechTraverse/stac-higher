@@ -22,6 +22,13 @@ drains every pending ledger row when it runs (§5.1).
   transit ends the job without raising; this kick paces that retry (I-145).
   After the commit is recorded and before the ledger is written, it
   publishes the cube on its collection (``cubes.collection``, Z-5).
+- ``pipeline.cube_maintain`` (hourly, ``:23``) enqueues one
+  ``pipeline.cube_maintain_sink`` per enabled sink with the same ``lock``
+  (no ``queueing_lock``: that one is the append's), so maintenance never runs
+  alongside the sink's appends (spec §10, §14.4). ``cube_kick`` recovers a
+  stalled maintenance job too, since it would hold the same lock.
+  ``cube_maintain_sink`` runs ``cubes.maintain.run_cube_maintain``: expiry and
+  GC only on a sink with a window (ADR 0022). No retry: the next hour retries.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from pipeline.config import Settings
 from pipeline.cubes.append import AppendDeps, run_cube_append
 from pipeline.cubes.collection import production_after_batch
 from pipeline.cubes.icerepo import cube_storage
+from pipeline.cubes.maintain import MaintainDeps, platform_lister, run_cube_maintain
 from pipeline.cubes.repo import CubeRepo, PgCubeRepo
 from pipeline.cubes.resolve import PgSourceResolver
 from pipeline.jobs._common import load_key_or_skip
@@ -44,6 +52,11 @@ logger = logging.getLogger(__name__)
 JOB_CUBE_APPEND = "pipeline.cube_append"
 JOB_CUBE_KICK = "pipeline.cube_kick"
 KICK_CRON = "*/5 * * * *"
+JOB_CUBE_MAINTAIN = "pipeline.cube_maintain"
+JOB_CUBE_MAINTAIN_SINK = "pipeline.cube_maintain_sink"
+MAINTAIN_CRON = "23 * * * *"
+#: jobs holding a sink's lock: a dead worker's copy of either wedges the sink
+LOCKED_JOBS = (JOB_CUBE_APPEND, JOB_CUBE_MAINTAIN_SINK)
 #: §5.3: a pending row this old with no job in sight was probably stranded.
 KICK_STALE_SECONDS = 120
 #: §6: three attempts. RetrySpec waits a fixed time (no exponential form), and
@@ -83,22 +96,38 @@ def cube_append_enqueuer(queue: QueueBackend) -> Callable[[list[str]], Awaitable
     return _enqueue
 
 
+async def enqueue_cube_maintain(queue: QueueBackend, cube_sink_id: str) -> Enqueued:
+    """One sink's maintenance, under the append's ``lock`` (spec §10)."""
+    return await queue.enqueue(
+        JOB_CUBE_MAINTAIN_SINK, {"cube_sink_id": cube_sink_id}, lock=cube_lock(cube_sink_id)
+    )
+
+
+async def schedule_maintenance(repo: CubeRepo, queue: QueueBackend) -> int:
+    """The hourly fan-out: one ``cube_maintain_sink`` per enabled sink."""
+    cube_sink_ids = await repo.maintainable_sinks()
+    for cube_sink_id in cube_sink_ids:
+        await enqueue_cube_maintain(queue, cube_sink_id)
+    return len(cube_sink_ids)
+
+
 async def kick_stale_sinks(repo: CubeRepo, queue: QueueBackend) -> int:
     """§5.3 backstop: re-enqueue every enabled sink with a stale pending row.
     Returns how many sinks were kicked (coalesced or not).
 
-    First, any ``cube_append`` a dead worker left running goes back to the
-    queue (plan decision 14). Until then it holds its sink's lock, and the
-    enqueue below would only coalesce into a job that can never start. A
-    failed recovery is logged and the stale-sink kick still runs, so one bad
-    query cannot disable the backstop."""
-    try:
-        await queue.retry_stalled(JOB_CUBE_APPEND)
-    except Exception:
-        logger.exception(
-            "cube_kick: stalled-job recovery failed",
-            extra={"job_name": JOB_CUBE_APPEND},
-        )
+    First, any ``cube_append`` or ``cube_maintain_sink`` a dead worker left
+    running goes back to the queue (plan decision 14). Until then it holds
+    its sink's lock, and the enqueue below would only coalesce into a job
+    that can never start. A failed recovery is logged and the stale-sink kick
+    still runs, so one bad query cannot disable the backstop."""
+    for job_name in LOCKED_JOBS:
+        try:
+            await queue.retry_stalled(job_name)
+        except Exception:
+            logger.exception(
+                "cube_kick: stalled-job recovery failed",
+                extra={"job_name": job_name},
+            )
     cube_sink_ids = await repo.sinks_with_stale_pending(KICK_STALE_SECONDS)
     await cube_append_enqueuer(queue)(cube_sink_ids)
     return len(cube_sink_ids)
@@ -125,12 +154,24 @@ def production_append_deps(
     )
 
 
+def production_maintain_deps(settings: Settings, repo: CubeRepo) -> MaintainDeps:
+    """The real seams. No master key: maintenance never reads a source."""
+    return MaintainDeps(
+        repo=repo,
+        storage_for=lambda sink: cube_storage(settings, sink.cube_collection_id),
+        list_objects=platform_lister(settings),
+        retention_seconds=settings.cube_snapshot_retention_seconds,
+        warn_bytes=settings.cube_repo_warn_bytes,
+    )
+
+
 def register(
     queue: QueueBackend,
     settings: Settings,
     *,
     repo: CubeRepo | None = None,
     deps_factory: Callable[[], AppendDeps | None] | None = None,
+    maintain_deps_factory: Callable[[], MaintainDeps] | None = None,
 ) -> None:
     def _repo() -> CubeRepo:
         return repo if repo is not None else PgCubeRepo(settings.database_url)
@@ -157,6 +198,25 @@ def register(
                 extra={"sinks": kicked, "scheduled_timestamp": timestamp},
             )
 
+    async def cube_maintain(timestamp: int) -> None:
+        scheduled = await schedule_maintenance(_repo(), queue)
+        if scheduled:
+            logger.info(
+                "cube_maintain enqueued sink maintenance",
+                extra={"sinks": scheduled, "scheduled_timestamp": timestamp},
+            )
+
+    async def cube_maintain_sink(cube_sink_id: str) -> None:
+        deps = (
+            maintain_deps_factory()
+            if maintain_deps_factory is not None
+            else production_maintain_deps(settings, _repo())
+        )
+        await run_cube_maintain(cube_sink_id, deps)
+
     # Default queue: the append reads headers, not bytes (spec §6).
     queue.register_task(cube_append, name=JOB_CUBE_APPEND, retry=CUBE_APPEND_RETRY)
     queue.register_periodic(cube_kick, name=JOB_CUBE_KICK, cron=KICK_CRON)
+    # Maintenance lists and deletes small Icechunk objects: default queue too.
+    queue.register_task(cube_maintain_sink, name=JOB_CUBE_MAINTAIN_SINK)
+    queue.register_periodic(cube_maintain, name=JOB_CUBE_MAINTAIN, cron=MAINTAIN_CRON)
