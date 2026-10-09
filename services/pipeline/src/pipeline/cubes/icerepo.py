@@ -89,6 +89,16 @@ def open_repository(
     return repo
 
 
+def open_existing(storage: ic.Storage) -> ic.Repository | None:
+    """Open the repository for maintenance (Z-6), or ``None`` if it was never
+    created. Never creates it and never saves its config: only the writer
+    does either. No virtual chunk credentials: trimming, expiry and GC read
+    manifests, never source bytes."""
+    if not ic.Repository.exists(storage):
+        return None
+    return ic.Repository.open(storage, config=_config())
+
+
 @dataclass(frozen=True)
 class CubeState:
     #: ``append_dim`` values, ascending (datetime64[ns] for a time axis)

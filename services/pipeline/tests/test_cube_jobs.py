@@ -9,18 +9,24 @@ from _cube_fake import FakeCubeRepo, FakeLedgerRow, FakeSink
 from pipeline.config import Settings
 from pipeline.cubes.append import AppendDeps, AppendReport
 from pipeline.cubes.collection import PgCollectionPublisher
+from pipeline.cubes.maintain import MaintainDeps
 from pipeline.cubes.repo import LedgerEntry
 from pipeline.cubes.resolve import PgSourceResolver
 from pipeline.jobs.cubes import (
     CUBE_APPEND_RETRY,
     JOB_CUBE_APPEND,
     JOB_CUBE_KICK,
+    JOB_CUBE_MAINTAIN,
+    JOB_CUBE_MAINTAIN_SINK,
     KICK_CRON,
     KICK_STALE_SECONDS,
+    MAINTAIN_CRON,
     cube_append_enqueuer,
     cube_lock,
     enqueue_cube_append,
+    enqueue_cube_maintain,
     production_append_deps,
+    production_maintain_deps,
     register,
 )
 from pipeline.queue.interface import QUEUE_DEFAULT, Enqueued, RetrySpec
@@ -177,8 +183,9 @@ async def test_kick_still_kicks_stale_sinks_when_stalled_recovery_fails(
     assert [(j.name, j.payload) for j in queue.jobs] == [
         (JOB_CUBE_APPEND, {"cube_sink_id": "s1"})
     ]
-    assert [r.getMessage() for r in caplog.records] == [
-        "cube_kick: stalled-job recovery failed"
+    assert [(r.getMessage(), r.job_name) for r in caplog.records] == [
+        ("cube_kick: stalled-job recovery failed", JOB_CUBE_APPEND),
+        ("cube_kick: stalled-job recovery failed", JOB_CUBE_MAINTAIN_SINK),
     ]
 
 
@@ -218,3 +225,105 @@ async def test_production_deps_wire_the_real_seams(repo: FakeCubeRepo):
         settings.database_url,
         settings.staging_bucket,
     )
+
+
+@pytest.fixture
+def maintained(monkeypatch) -> list[str]:
+    """Sink ids the maintenance handler ran run_cube_maintain for."""
+    calls: list[str] = []
+
+    async def fake_run(cube_sink_id: str, deps) -> None:
+        assert deps is MAINTAIN_DEPS
+        calls.append(cube_sink_id)
+
+    monkeypatch.setattr(cubes_jobs, "run_cube_maintain", fake_run)
+    return calls
+
+
+MAINTAIN_DEPS = object()
+
+
+@pytest.fixture
+def mqueue(repo: FakeCubeRepo, maintained: list[str]) -> InMemoryQueue:
+    q = InMemoryQueue()
+    register(
+        q,
+        Settings.from_env(env={}),
+        repo=repo,
+        deps_factory=lambda: DEPS,
+        maintain_deps_factory=lambda: MAINTAIN_DEPS,
+    )
+    return q
+
+
+def test_maintenance_registration(mqueue: InMemoryQueue):
+    assert mqueue.queues[JOB_CUBE_MAINTAIN_SINK] == QUEUE_DEFAULT
+    assert mqueue.periodic[JOB_CUBE_MAINTAIN].cron == MAINTAIN_CRON == "23 * * * *"
+    assert mqueue.retry_specs.get(JOB_CUBE_MAINTAIN_SINK) is None
+
+
+async def test_maintenance_takes_the_sink_lock_and_no_queueing_lock(mqueue: InMemoryQueue):
+    await enqueue_cube_maintain(mqueue, "s1")
+    job = mqueue.jobs[0]
+    assert (job.name, job.payload) == (JOB_CUBE_MAINTAIN_SINK, {"cube_sink_id": "s1"})
+    assert (job.lock, job.queueing_lock) == ("cube:s1", None)
+
+
+async def test_the_hourly_tick_enqueues_every_enabled_sink(mqueue: InMemoryQueue):
+    await mqueue.run_periodic(JOB_CUBE_MAINTAIN, timestamp=1_700_000_000)
+    assert [(j.name, j.payload["cube_sink_id"], j.lock) for j in mqueue.jobs] == [
+        (JOB_CUBE_MAINTAIN_SINK, "s1", "cube:s1"),
+        (JOB_CUBE_MAINTAIN_SINK, "s2", "cube:s2"),
+    ]
+
+
+async def test_maintenance_waits_behind_a_running_append(
+    mqueue: InMemoryQueue, maintained: list[str], ran: list[str]
+):
+    append = await enqueue_cube_append(mqueue, "s1")
+    mqueue.strand(append.job_id)  # running (holds cube:s1) for this test
+    await enqueue_cube_maintain(mqueue, "s1")
+    await mqueue.run_pending()
+    assert maintained == []  # blocked by the append's lock
+
+    await mqueue.run_periodic(JOB_CUBE_KICK, timestamp=1_700_000_000)  # recovers it
+    await mqueue.run_pending()
+    assert ran == ["s1"]
+    assert maintained == ["s1"]
+
+
+async def test_kick_recovers_a_stranded_maintenance_job(mqueue: InMemoryQueue, ran: list[str]):
+    stranded = await enqueue_cube_maintain(mqueue, "s1")
+    mqueue.strand(stranded.job_id)  # its worker died: holds cube:s1 forever
+    await enqueue_cube_append(mqueue, "s1")
+    await mqueue.run_pending()
+    assert ran == []  # wedged behind the dead maintenance
+
+    await mqueue.run_periodic(JOB_CUBE_KICK, timestamp=1_700_000_000)
+    await mqueue.run_pending()
+    assert ran == ["s1"]
+
+
+async def test_cube_maintain_sink_runs_the_maintenance(
+    mqueue: InMemoryQueue, maintained: list[str]
+):
+    await enqueue_cube_maintain(mqueue, "s2")
+    await mqueue.run_pending()
+    assert maintained == ["s2"]
+    assert mqueue.jobs[0].status == "done"
+
+
+async def test_production_maintain_deps_wire_the_real_seams(repo: FakeCubeRepo):
+    settings = Settings.from_env(
+        env={
+            "EGRESS_ALLOW_HOSTS": "minio",
+            "CUBE_SNAPSHOT_RETENTION_SECONDS": "7200",
+            "CUBE_REPO_WARN_BYTES": "4096",
+        }
+    )
+    deps = production_maintain_deps(settings, repo)
+    assert isinstance(deps, MaintainDeps)
+    assert (deps.retention_seconds, deps.warn_bytes) == (7200, 4096)
+    assert deps.after_batch is not None
+    sink = await repo.load_sink("s1")
+    assert "prefix: assets/cube1/_cube" in repr(deps.storage_for(sink))

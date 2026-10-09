@@ -319,6 +319,17 @@ def list_objects(client: S3Like, bucket: str, prefix: str) -> list[tuple[str, dt
     return found
 
 
+def list_sizes(client: S3Like, bucket: str, prefix: str) -> list[tuple[str, int]]:
+    """Every ``(key, Size)`` under ``prefix``, paginated (Z-6: a cube
+    repository's per-kind size readout). Pure over an injected client;
+    synchronous boto3, so wrap it in ``asyncio.to_thread``."""
+    found: list[tuple[str, int]] = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        found.extend((obj["Key"], int(obj["Size"])) for obj in page.get("Contents", []))
+    return found
+
+
 def delete_keys(client: S3Like, bucket: str, keys: Sequence[str]) -> int:
     """Delete exactly these keys, 1000 per ``DeleteObjects`` call (its cap).
     Deleting a key that is already gone is not an error. Returns the number

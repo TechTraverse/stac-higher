@@ -59,6 +59,8 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `PGSTAC_QUEUE_DRAINER` | `pipeline` | Who runs `pgstac.query_queue` (M3-A). `pipeline`: the `pipeline.pgstac_queue_drain` tick `CALL`s `pgstac.run_queued_queries()` every minute. `database`: pg_cron owns the drain (RDS/Aurora — not in the local pgstac image) and the tick only samples depth/age, so the two never fight. `use_queue` and `update_collection_extent` are SESSION GUCs set automatically — the OPPOSITE pairing on each connection type: the writer's pool carries `use_queue` ON (queues the write); the drainer's connection carries `update_collection_extent` ON and `use_queue` explicitly FALSE (the nested extent refresh runs in whichever session drains the queue, not the one that writes). Neither pairing needs configuration anywhere. A new partition (new collection, or a new month on a `partition_trunc` collection) is invisible to datetime-ordered STAC search until this drain runs — a bounded ~1-minute blind window normally, unbounded if the drainer stops (I-114). |
 | `PGSTAC_QUEUE_STALE_SECONDS` | `300` | The queue's oldest entry older than this logs a WARNING — the staleness bound on partition statistics; a rising `pipeline_pgstac_query_queue_oldest_seconds` means whichever drainer is configured has stopped. |
 | `PGSTAC_QUEUE_HISTORY_DAYS` | `7` | `pgstac.query_queue_history` rows older than this are deleted by the same tick (pgstac never prunes that table). |
+| `CUBE_SNAPSHOT_RETENTION_SECONDS` | `3600` | `pipeline.cube_maintain_sink` expires cube snapshots older than this, then garbage-collects with the same cutoff, on sinks with a window only (Z-6, ADR 0022). At least `300`, so a mistyped `0` cannot pull a snapshot from under a reader. |
+| `CUBE_REPO_WARN_BYTES` | `1073741824` | A cube repository at or above this many bytes logs a WARNING and its sink's `last_maintenance.status` reads `attention` (I-143: Icechunk never deletes transaction logs or `overwritten/` backups). |
 | `FINALIZE_STALE_SECONDS` | `1800` | A `staged_uploads` row stranded `finalizing` this long is presumed crashed — the finalize sweep flips it back to `pending` and re-enqueues the job (Phase 7 §6.4). |
 | `WEBHOOK_MAX_ATTEMPTS` | `5` | Webhook notification attempts (including the first) before a `notification_deliveries` row dead-letters and raises a `webhook_failed` alert (M2-C, ADR 0010). |
 | `WEBHOOK_RETRY_SECONDS` | `60` | Cool-off before the notify sweep re-enqueues a `failed` webhook delivery. |
@@ -255,6 +257,13 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   fails in transit (NODD 5xx, timeout, DNS) stops the batch and ends the job
   without failing the row, and the next 5-minute `cube_kick` retries it (only
   the oldest failed row keeps its attempt, I-145).
+  `pipeline.cube_maintain` (`23 * * * *`) enqueues one
+  `pipeline.cube_maintain_sink` per enabled sink under the same `lock` (no
+  `queueing_lock`; `cube_kick` recovers a stalled one too). It prunes the
+  ledger (terminal rows > 7 days), and on a sink with a window it age-trims
+  a stopped source, then expires and garbage-collects snapshots
+  (`cubes/maintain.py`). It republishes the recorded tip and records per-kind
+  sizes in `last_maintenance` (`docs/monitoring.md`).
   The pipeline never writes `cube_sinks.updated_at` (the app's version, #98).
 - **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
   the `pipeline.deliver` task loads the destination connection, builds its
