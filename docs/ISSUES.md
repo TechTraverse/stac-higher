@@ -1652,6 +1652,35 @@ Related:
 Accepted for v1; revisit if the ledger's `snapshot_id` ever drives a reader, or
 if a requeued `cube_append` is ever seen during a sink's first commit.
 
+### I-145 · A NODD outage longer than a row's retry budget leaves a gap in the cube 🟡
+
+`cube_append` fails the job, rather than the row, when a source read fails in
+transit (NODD 5xx or throttling, timeouts, refused connections, DNS:
+`cubes/resolve.py::is_transport_error`; the lead's decision on PR #101). The
+job retries (3 × 30 s, then the 5-minute `cube_kick`) and an outage that clears
+appends every row with no gap. The rows that hit the error keep their attempt,
+so a file NODD never serves cannot fail every retry forever: the next take
+works the oldest row alone, and it ends `failed: crash_loop` after 6 reads.
+
+The cost: an outage longer than the oldest row's budget fails rows
+`crash_loop` **one at a time, oldest first**. Derived from the schedule (one
+job = the first run plus 3 retries 30 s apart; the next job comes from
+`cube_kick` ≤ 5 min later), the oldest row's 6 reads take about **3–8 minutes**
+when reads fail fast (obstore gives up on a 503 after ~5 s of its own retries,
+~4 s on a refused connection, measured locally), and each later row about as
+long. Reads that time out are slower: obstore retries one read for up to
+3 minutes by default, so a row's budget stretches to roughly 15–25 minutes,
+and the first 50-row run of such an outage alone can take ~40 minutes.
+
+A gap is a missing time step only. The `t` axis holds only the times that were
+appended, so the other steps, tiles and EDR series read normally, and the gap
+rolls off with the window. Nothing re-appends a `crash_loop` row.
+
+A per-sink choice (`on_source_error: retry | skip`) is not offered: it would be
+a change to the cross-runtime sink config (`cube-sink-config` fixture, Zod and
+Python). Accepted for v1; revisit if gaps after NODD incidents matter to users,
+or if the cube needs a backfill path.
+
 ---
 
 ## Resolved — archived

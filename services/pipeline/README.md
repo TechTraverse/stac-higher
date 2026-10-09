@@ -251,7 +251,9 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   The cap is per job, not per sink: crash-loop protection for a sink's work
   belongs on its ledger rows (`cube_appends.attempts`, Z-4). `cube_append`
   claims ≤ 50 pending rows and appends their headers virtually to the cube's
-  Icechunk repository in one commit (`cubes/append.py`).
+  Icechunk repository in one commit (`cubes/append.py`); a source read that
+  fails in transit (NODD 5xx, timeout, DNS) fails the job, which retries,
+  instead of failing the row (only that row keeps its attempt, I-145).
   The pipeline never writes `cube_sinks.updated_at` (the app's version, #98).
 - **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
   the `pipeline.deliver` task loads the destination connection, builds its
