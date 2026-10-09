@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from pathlib import Path
 
 import icechunk as ic
@@ -200,6 +201,27 @@ async def test_an_age_trim_commits_once_and_records_the_snapshot(tmp_path):
     again = await cube.run(now=now)
     assert again["trimmed"] == 0
     assert cube.commits() == before + 1  # nothing left to trim: no empty commit
+
+
+async def test_a_trim_keeps_the_snapshot_readers_were_on(tmp_path):
+    # Icechunk ages snapshots by write time; the old tip must outlive the
+    # trim that replaced it, or a reader still on it loses its manifests.
+    cube = Cube(tmp_path, window={"max_age": "30m"})
+    cube.append(0, 1, now=scan(1))
+    old_tip = cube.append(2, 3, now=scan(3))
+    repo = open_repository(cube.storage(), [cube.src], replace_containers=False)
+    reader = xr.open_zarr(
+        repo.readonly_session(snapshot_id=old_tip).store, consolidated=False, zarr_format=3
+    )
+    time.sleep(1.1)  # both appends are now older than the 1 s retention
+    deps = cube.deps(now=dt.datetime.now(dt.UTC))
+    deps.retention_seconds = 1
+
+    summary = await run_cube_maintain("s1", deps)
+
+    assert summary["trimmed"] == 4  # the 2026-10-03 scans are all past max_age
+    assert summary["gc"]["snapshots_deleted"] >= 1  # older history still goes
+    assert [float(v) for v in reader["CMI"].isel(x=0, y=0).values] == [0.0] * 4
 
 
 async def test_no_age_trim_while_an_append_is_pending(tmp_path):

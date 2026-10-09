@@ -8,8 +8,8 @@ alongside that sink's appends (spec §14.4). One run does six things:
    a. Trim by age with no new data. If nothing is pending and the tip is the
       recorded snapshot, drop the steps the window no longer holds (§6.2
       step 6) in one commit, then record that commit.
-   b. ``expire_snapshots(now - retention)``, then ``garbage_collect`` with
-      the same cutoff.
+   b. ``expire_snapshots`` then ``garbage_collect`` at a cutoff that spares
+      every snapshot that was the tip within the retention (``expiry_cutoff``).
 4. Republish the recorded tip on the cube collection (``after_batch``, Z-5's
    idempotent writer). That covers a trim, and also a publish that an
    append's crash missed.
@@ -137,6 +137,32 @@ def gc_counts(summary: ic.GCSummary) -> dict[str, Any]:
     return counts
 
 
+def expiry_cutoff(
+    repo: ic.Repository,
+    now: dt.datetime,
+    retention_seconds: int,
+    *,
+    protect_last_tips: bool,
+) -> dt.datetime:
+    """The expiry and GC cutoff. Icechunk ages a snapshot by when it was
+    WRITTEN, but a reader holds the snapshot that was the tip when it last
+    looked, and a snapshot stops being the tip only when its child is
+    written. So the newest ancestor written at or before ``now - retention``
+    was the tip until after the cutoff: the cutoff drops to its write time
+    (the bound is exclusive, so it survives). Without this, a trim commit, or
+    an append after a quiet spell, lets the same pass expire the snapshot
+    readers were on. A provisional repository (``protect_last_tips=False``)
+    keeps the plain cutoff: nothing published it, and its reset moved
+    ``main`` backwards."""
+    cutoff = now - dt.timedelta(seconds=retention_seconds)
+    if not protect_last_tips:
+        return cutoff
+    for snapshot in repo.ancestry(branch=BRANCH):
+        if snapshot.written_at <= cutoff:
+            return min(cutoff, snapshot.written_at)
+    return cutoff
+
+
 def maintain_repository(
     storage: ic.Storage,
     config: CubeSinkConfig,
@@ -166,7 +192,9 @@ def maintain_repository(
     expired: int | None = None
     gc: dict[str, Any] | None = None
     if config.window is not None:
-        cutoff = now - dt.timedelta(seconds=retention_seconds)
+        cutoff = expiry_cutoff(
+            repo, now, retention_seconds, protect_last_tips=recorded_snapshot_id is not None
+        )
         started = time.monotonic()
         expired = len(repo.expire_snapshots(cutoff))
         durations["expire"] = _ms(started)
