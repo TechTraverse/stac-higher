@@ -74,6 +74,10 @@ STATUS_ATTENTION = "attention"
 STATUS_FAILED = "failed"
 ATTENTION_REPO_SIZE = "repo_size"
 ATTENTION_GC_DELETE_FAILURES = "gc_delete_failures"
+ATTENTION_UNRECORDED_TIP = "unrecorded_tip"
+#: ends every maintenance trim's commit message, so a later run can tell a
+#: trim it made (and failed to record) from an append's commit
+MAINTENANCE_MESSAGE_SUFFIX = "(maintenance)"
 
 #: every object in a cube repository: (key relative to its prefix, bytes)
 ListObjects = Callable[[CubeSink], list[tuple[str, int]]]
@@ -113,6 +117,10 @@ class RepoPass:
     #: drops ``cube:dimensions``, so it must never publish time alone.
     state: CubeState | None = None
     trimmed: int = 0
+    #: the pass ended on a tip maintenance owns (it trimmed, or healed one)
+    record_tip: bool = False
+    #: the pass found an unrecorded maintenance trim and took it over
+    healed: bool = False
     expired: int | None = None
     gc: dict[str, Any] | None = None
     durations_ms: dict[str, int] = field(default_factory=dict)
@@ -142,7 +150,7 @@ def expiry_cutoff(
     now: dt.datetime,
     retention_seconds: int,
     *,
-    protect_last_tips: bool,
+    recorded_snapshot_id: str | None,
 ) -> dt.datetime:
     """The expiry and GC cutoff. Icechunk ages a snapshot by when it was
     WRITTEN, but a reader holds the snapshot that was the tip when it last
@@ -151,16 +159,25 @@ def expiry_cutoff(
     was the tip until after the cutoff: the cutoff drops to its write time
     (the bound is exclusive, so it survives). Without this, a trim commit, or
     an append after a quiet spell, lets the same pass expire the snapshot
-    readers were on. A provisional repository (``protect_last_tips=False``)
-    keeps the plain cutoff: nothing published it, and its reset moved
-    ``main`` backwards."""
+    readers were on. The recorded snapshot is the one the collection's asset
+    ``version`` names, so it survives any crash ordering. A provisional
+    repository (``recorded_snapshot_id=None``) keeps the plain cutoff: nothing
+    published it, and its reset moved ``main`` backwards."""
     cutoff = now - dt.timedelta(seconds=retention_seconds)
-    if not protect_last_tips:
+    if recorded_snapshot_id is None:
         return cutoff
+    lowest = cutoff
+    aged = recorded = False
     for snapshot in repo.ancestry(branch=BRANCH):
-        if snapshot.written_at <= cutoff:
-            return min(cutoff, snapshot.written_at)
-    return cutoff
+        if not aged and snapshot.written_at <= cutoff:
+            aged = True
+            lowest = min(lowest, snapshot.written_at)
+        if not recorded and snapshot.id == recorded_snapshot_id:
+            recorded = True
+            lowest = min(lowest, snapshot.written_at)
+        if aged and recorded:
+            break
+    return lowest
 
 
 def maintain_repository(
@@ -180,20 +197,33 @@ def maintain_repository(
     durations: dict[str, int] = {}
     tip = repo.lookup_branch(BRANCH)
     trimmed = 0
-    if config.window is not None and may_trim and tip == recorded_snapshot_id:
+    healed = False
+    owned = recorded_snapshot_id
+    if recorded_snapshot_id is not None and tip != recorded_snapshot_id:
+        # A trim committed, then the job died before recording it: that tip
+        # is maintenance's own, and a stopped source has no append to record it.
+        head = next(iter(repo.ancestry(branch=BRANCH)), None)
+        if (
+            head is not None
+            and head.parent_id == recorded_snapshot_id
+            and head.message.endswith(MAINTENANCE_MESSAGE_SUFFIX)
+        ):
+            healed = True
+            owned = tip
+    if config.window is not None and may_trim and tip == owned:
         started = time.monotonic()
         session = repo.writable_session(BRANCH)
         state = read_state(session, config.append_dim)
         trimmed = trim_count(state.values, config.window, now) if state.initialised else 0
         if trimmed:
             trim_steps(session, state, trimmed)
-            tip = session.commit(f"trim {trimmed} steps (maintenance)")
+            tip = session.commit(f"trim {trimmed} steps {MAINTENANCE_MESSAGE_SUFFIX}")
         durations["trim"] = _ms(started)
     expired: int | None = None
     gc: dict[str, Any] | None = None
     if config.window is not None:
         cutoff = expiry_cutoff(
-            repo, now, retention_seconds, protect_last_tips=recorded_snapshot_id is not None
+            repo, now, retention_seconds, recorded_snapshot_id=recorded_snapshot_id
         )
         started = time.monotonic()
         expired = len(repo.expire_snapshots(cutoff))
@@ -207,6 +237,8 @@ def maintain_repository(
         tip=tip,
         state=after if after.initialised else None,
         trimmed=trimmed,
+        record_tip=healed or trimmed > 0,
+        healed=healed,
         expired=expired,
         gc=gc,
         durations_ms=durations,
@@ -281,7 +313,8 @@ async def _maintain(
     summary["window"] = config.window is not None
     # A provisional repository (nothing recorded) belongs to the writer
     # (#98); a pending row means the next append trims anyway.
-    may_trim = sink.last_snapshot_id is not None and not await deps.repo.has_pending(sink.id)
+    pending = await deps.repo.has_pending(sink.id)
+    may_trim = sink.last_snapshot_id is not None and not pending
     rp = await asyncio.to_thread(
         lambda: maintain_repository(
             deps.storage_for(sink),
@@ -296,9 +329,9 @@ async def _maintain(
     summary["durations_ms"].update(rp.durations_ms)
     if not rp.exists:
         return
-    summary.update(trimmed=rp.trimmed, expired_snapshots=rp.expired, gc=rp.gc)
+    summary.update(trimmed=rp.trimmed, healed=rp.healed, expired_snapshots=rp.expired, gc=rp.gc)
     recorded = sink.last_snapshot_id
-    if rp.trimmed and recorded is not None and rp.tip is not None:
+    if rp.record_tip and recorded is not None and rp.tip is not None and rp.tip != recorded:
         if await deps.repo.record_snapshot(sink.id, snapshot_id=rp.tip, from_snapshot_id=recorded):
             recorded = rp.tip
         else:
@@ -306,6 +339,16 @@ async def _maintain(
                 "cube_maintain: the sink moved during the trim; the next append records the tip",
                 extra={"cube_sink_id": sink.id, "snapshot_id": rp.tip},
             )
+    if recorded is not None and rp.tip != recorded and not pending:
+        summary["attention"].append(ATTENTION_UNRECORDED_TIP)
+        logger.warning(
+            "cube_maintain: the tip is not the recorded snapshot and nothing is pending",
+            extra={
+                "cube_sink_id": sink.id,
+                "snapshot_id": rp.tip,
+                "recorded_snapshot_id": recorded,
+            },
+        )
     # Z-5's writer publishes only the recorded tip, so the trim is recorded first.
     summary["published"] = False
     if deps.after_batch is not None and rp.state is not None and recorded == rp.tip:

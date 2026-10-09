@@ -142,8 +142,8 @@ by `cube_kick`, like an append. One run (`pipeline/cubes/maintain.py`):
 3. **only with a window**:
    - trims by age when the source has stopped: if nothing is pending and
      the tip is the recorded snapshot, it drops the steps the window no
-     longer holds in one commit and records it (`last_snapshot_id`);
-   - runs `expire_snapshots` and then `garbage_collect`, both with the cutoff `now − CUBE_SNAPSHOT_RETENTION_SECONDS` (default 1 h), lowered so that every snapshot that was the tip within that window survives (`expiry_cutoff`): a reader still on the previous tip keeps working;
+     longer holds in one commit and records it (`last_snapshot_id`) (a trim whose record was lost is recorded on the next run);
+   - runs `expire_snapshots` and then `garbage_collect`, both with the cutoff `now − CUBE_SNAPSHOT_RETENTION_SECONDS` (default 1 h), lowered so that every snapshot that was the tip within that window survives (`expiry_cutoff`): a reader still on the previous tip keeps working, and the recorded snapshot (the one the collection asset's `version` names) always survives;
 4. republishes the recorded tip on the cube collection (Z-5's writer,
    idempotent);
 5. lists the prefix and records object counts and bytes per kind.
@@ -154,9 +154,10 @@ The result goes into `cube_sinks.last_maintenance` on every run.
 | `last_maintenance` key | Meaning |
 |---|---|
 | `status` | `ok`, `attention` (see `attention`) or `failed` (see `error`) |
-| `attention` | Reasons: `repo_size` (total ≥ `CUBE_REPO_WARN_BYTES`, default 1 GiB) and `gc_delete_failures` (GC could not delete some objects). Each one also logs a WARNING. |
+| `attention` | Reasons: `repo_size` (total ≥ `CUBE_REPO_WARN_BYTES`, default 1 GiB) `gc_delete_failures` (GC could not delete some objects) and `unrecorded_tip` (the tip is not the recorded snapshot and nothing is pending, so no append is coming to record it). Each one also logs a WARNING. |
 | `started_at`, `finished_at`, `durations_ms` | ISO times; per-phase milliseconds (`trim`, `expire`, `gc`, `list`) |
 | `window`, `repository` | Whether the sink has a window, and whether its repository exists |
+| `healed` | `true` when this run found a maintenance trim that was committed but never recorded, and recorded it |
 | `trimmed`, `published` | Steps the age trim dropped, and whether the collection asset was republished |
 | `expired_snapshots`, `gc` | Snapshots expired, and Icechunk's `GCSummary` counters (`snapshots_deleted`, `manifests_deleted`, `chunks_deleted`, `transaction_logs_deleted`, `attributes_deleted`, `bytes_deleted`, `objects_failed_to_delete`, the first 5 `delete_errors`). Both are `null` without a window. |
 | `sizes`, `total_objects`, `total_bytes`, `warn_bytes` | Per kind `{objects, bytes}` for `transactions`, `overwritten`, `manifests`, `snapshots`, `chunks` and `other` (the `repo` object, config) |

@@ -260,6 +260,54 @@ async def test_no_age_trim_when_the_tip_is_not_the_recorded_snapshot(tmp_path):
     assert summary["trimmed"] == 0
     assert cube.commits() == before
     assert cube.published == []  # the unrecorded tip is the next append's to record
+    assert summary["attention"] == ["unrecorded_tip"]
+    assert summary["healed"] is False
+
+
+async def test_a_trim_whose_record_was_lost_heals_on_the_next_run(tmp_path):
+    cube = Cube(tmp_path, window={"max_age": "30m"})
+    cube.append(0, 1, 2, 3, now=scan(3))
+    now = scan(3) + dt.timedelta(minutes=25)
+    real = cube.repo.record_snapshot
+    calls = []
+
+    async def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("db blip")
+        return await real(*a, **kw)
+
+    cube.repo.record_snapshot = flaky
+    with pytest.raises(ConnectionError):
+        await cube.run(now=now)
+    assert cube.sink.last_snapshot_id != cube.tip()  # trim committed, record lost
+    before = cube.commits()
+
+    summary = await cube.run(now=now)
+
+    assert summary["healed"] is True
+    assert cube.sink.last_snapshot_id == cube.tip()
+    assert summary["published"] is True
+    assert cube.published[-1][1].snapshot_id == cube.tip()
+    assert summary["status"] == "ok"
+    assert cube.commits() == before  # nothing left to trim
+
+
+async def test_expiry_never_collects_the_recorded_snapshot(tmp_path):
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    recorded = cube.append(0)
+    cube.append(1)  # an unrecorded append tip: not ours to heal
+    cube.sink.last_snapshot_id = recorded
+
+    summary = await cube.run(now=LATER)
+
+    repo = open_repository(cube.storage(), [cube.src], replace_containers=False)
+    old = xr.open_zarr(
+        repo.readonly_session(snapshot_id=recorded).store, consolidated=False, zarr_format=3
+    )
+    assert len(old["t"].values) == 1
+    assert "unrecorded_tip" in summary["attention"]
+    assert summary["status"] == "attention"
 
 
 async def test_a_trim_is_published_after_it_is_recorded(tmp_path):
