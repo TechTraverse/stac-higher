@@ -50,8 +50,10 @@ class FakeResolver(SourceResolver):
     #: item_id -> object key, or the SourceUnavailable to raise
     items: dict[str, str | SourceUnavailable] = field(default_factory=dict)
     calls: list[tuple[str, str]] = field(default_factory=list)
+    resolved: list[str] = field(default_factory=list)
 
     async def resolve(self, source_collection_id: str, item_id: str) -> ResolvedSource:
+        self.resolved.append(item_id)
         found = self.items.get(item_id)
         if found is None:
             raise SourceUnavailable("skipped", "source_missing")
@@ -379,8 +381,8 @@ async def test_a_nodd_wide_outage_ends_every_run_and_leaves_no_gap(h):
         assert (later.taken, later.in_transit, later.requeued) == (1, 1, False)
     assert h.enqueued == []
     assert set(h.ledger().values()) == {("pending", None)}
-    # the first run keeps every bump; later takes isolate the oldest row
-    assert [r.attempts for r in h.repo.rows(SINK)] == [3, 1, 1]
+    # only the oldest row that failed keeps its bump; later takes isolate it
+    assert [r.attempts for r in h.repo.rows(SINK)] == [3, 0, 0]
     assert h.sink().last_snapshot_id is None
 
     outage[0] = False
@@ -388,6 +390,34 @@ async def test_a_nodd_wide_outage_ends_every_run_and_leaves_no_gap(h):
         await run_cube_append(SINK, h.deps(parse=parse))
     assert h.ledger() == {f"i{n}": ("appended", None) for n in (0, 1, 2)}
     assert h.times() == ns(0, 1, 2)
+
+
+async def test_an_outage_stops_the_batch_at_the_first_transport_error(h):
+    await h.pend(*range(10))
+    parse, reads, _ = _in_transit()  # NODD down: every read fails
+    report = await run_cube_append(SINK, h.deps(parse=parse))
+    # Only the first wave was in flight; no later row was HEADed or parsed.
+    assert sorted(reads) == [f"{n}.nc" for n in range(PARSE_CONCURRENCY)]
+    assert len(h.resolver.calls) == PARSE_CONCURRENCY
+    assert report.in_transit == PARSE_CONCURRENCY
+    # Only the oldest row that failed keeps its bump; every other take is released.
+    assert [r.attempts for r in sorted(h.repo.rows(SINK), key=lambda r: r.item_datetime)] == [
+        1, *[0] * 9
+    ]
+
+
+async def test_recovery_after_an_outage_is_one_isolated_run_then_one_batch(h):
+    await h.pend(*range(10))
+    parse, _, outage = _in_transit()
+    for _ in range(3):
+        await run_cube_append(SINK, h.deps(parse=parse))
+    outage[0] = False
+    runs = []
+    while await h.repo.has_pending(SINK):
+        runs.append(await run_cube_append(SINK, h.deps(parse=parse)))
+    # the bumped oldest row alone, then the rest of the batch in one commit
+    assert [(r.taken, r.appended, r.committed) for r in runs] == [(1, 1, True), (9, 9, True)]
+    assert h.times() == ns(*range(10))
 
 
 async def test_a_dns_failure_at_resolve_retries_but_a_real_egress_block_fails_the_row(h):
@@ -404,19 +434,23 @@ async def test_a_dns_failure_at_resolve_retries_but_a_real_egress_block_fails_th
             dns = unavailable
     h.resolver.items["dns"] = dns
     h.resolver.items["eg"] = SourceUnavailable("failed", "EgressBlocked: egress to x is blocked")
+    write_goes_file(h.root / "dns.nc", when=scan(5), value=5.0)
     await h.repo.record_appends([LedgerEntry(SINK, i, scan(5)) for i in ("dns", "eg")])
     assert (await run_cube_append(SINK, h.deps())).in_transit == 1
+    assert h.resolver.resolved == ["i0", "dns"]  # stopped: "eg" is never resolved
+    assert h.resolver.calls == []  # and nothing is HEADed or parsed
     assert set(h.ledger().values()) == {("pending", None)}
     assert {r.item_id: r.attempts for r in h.repo.rows(SINK)} == {"i0": 0, "dns": 1, "eg": 0}
 
-    del h.resolver.items["dns"]  # DNS is back (and the item now resolves as missing)
+    h.resolver.items["dns"] = "dns.nc"  # DNS is back
     while await h.repo.has_pending(SINK):
         await run_cube_append(SINK, h.deps())
     assert h.ledger() == {
         "i0": ("appended", None),
-        "dns": ("skipped", "source_missing"),
+        "dns": ("appended", None),
         "eg": ("failed", "EgressBlocked: egress to x is blocked"),
     }
+    assert h.times() == ns(0, 5)
 
 
 @pytest.fixture
@@ -440,7 +474,8 @@ async def test_through_real_obstore_a_503_retries_and_a_404_is_source_missing(no
     assert (await run_cube_append(SINK, h.deps())).in_transit == 1
     assert "GenericError: Generic S3 error" in h.sink().last_error
     assert set(h.ledger().values()) == {("pending", None)}
-    assert {r.item_id: r.attempts for r in h.repo.rows(SINK)}["i1"] == 1
+    attempts = {r.item_id: r.attempts for r in h.repo.rows(SINK)}
+    assert attempts == {"i0": 0, "i1": 1, "i2": 0, "gone": 0, "denied": 0}
 
     del nodd.faults["1.nc"]  # NODD recovers
     while await h.repo.has_pending(SINK):

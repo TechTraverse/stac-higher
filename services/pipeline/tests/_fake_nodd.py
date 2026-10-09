@@ -7,12 +7,17 @@ and S3's error shapes on demand: ``faults[key] = 404 | 403 | 503``, or
 ``SourceLibs`` for both cube libraries, like ``cubes.source.libs_from_connection``
 builds for a real connection, but with a SHORT obstore retry budget: obstore
 retries 5xx and connection errors for up to 3 minutes by default.
+
+``close()`` collects garbage first: an HDF5 open that failed leaves an h5py
+file object whose finalizer HEADs the object (obspec-utils' reader), and it
+must not fire later, against a closed server, in the middle of another test.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import email.utils
+import gc
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,17 +37,19 @@ _ERRORS = {
 
 
 def short_retry_store(endpoint: str, bucket: str = BUCKET) -> S3Store:
-    """An anonymous path-style S3Store that gives up within about a second."""
+    """An anonymous path-style S3Store that retries once, quickly. The
+    timeouts are generous so a loaded test machine doesn't turn a slow local
+    answer into a transport error."""
     return S3Store(
         bucket=bucket,
         region="us-east-1",
         endpoint=endpoint,
         virtual_hosted_style_request=False,
         skip_signature=True,
-        client_options={"allow_http": True, "timeout": dt.timedelta(seconds=1)},
+        client_options={"allow_http": True, "timeout": dt.timedelta(seconds=10)},
         retry_config={
             "max_retries": 1,
-            "retry_timeout": dt.timedelta(seconds=1),
+            "retry_timeout": dt.timedelta(seconds=10),
             "backoff": {
                 "init_backoff": dt.timedelta(milliseconds=5),
                 "max_backoff": dt.timedelta(milliseconds=20),
@@ -88,6 +95,7 @@ class FakeNodd:
         return f"http://127.0.0.1:{self._server.server_address[1]}"
 
     def close(self) -> None:
+        gc.collect()
         self._server.shutdown()
         self._server.server_close()
 

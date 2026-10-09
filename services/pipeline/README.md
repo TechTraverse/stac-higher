@@ -252,9 +252,9 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   belongs on its ledger rows (`cube_appends.attempts`, Z-4). `cube_append`
   claims ≤ 50 pending rows and appends their headers virtually to the cube's
   Icechunk repository in one commit (`cubes/append.py`); a source read that
-  fails in transit (NODD 5xx, timeout, DNS) ends the job without failing the
-  row, and the next 5-minute `cube_kick` retries it (only that row keeps its
-  attempt, I-145).
+  fails in transit (NODD 5xx, timeout, DNS) stops the batch and ends the job
+  without failing the row, and the next 5-minute `cube_kick` retries it (only
+  the oldest failed row keeps its attempt, I-145).
   The pipeline never writes `cube_sinks.updated_at` (the app's version, #98).
 - **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
   the `pipeline.deliver` task loads the destination connection, builds its

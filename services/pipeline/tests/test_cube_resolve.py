@@ -145,7 +145,7 @@ async def test_egress_blocked_fails_the_row_with_the_message():
     assert "meta.internal" in exc.value.reason
 
 
-async def test_a_dns_failure_is_a_transport_error_looked_up_once_per_job(monkeypatch):
+async def test_a_dns_failure_is_a_transport_error(monkeypatch):
     # The real resolve_pinned, with DNS down: EgressBlocked from a gaierror.
     monkeypatch.setattr(platform, "resolve_pinned", egress.resolve_pinned)
     lookups: list[str] = []
@@ -162,14 +162,14 @@ async def test_a_dns_failure_is_a_transport_error_looked_up_once_per_job(monkeyp
         assert exc.value.status == "failed"
         assert "DNS resolution failed" in exc.value.reason
         assert is_transport_error(exc.value)  # the job retries; the row is not failed
-    assert lookups == ["s3.us-east-1.amazonaws.com"]  # once per connection per job
+    assert lookups == ["s3.us-east-1.amazonaws.com"] * 2  # nothing cached: DNS may return
 
 
 async def test_a_genuine_egress_block_is_not_a_transport_error():
     blocked = _assoc({"bucket": "b", "endpoint": "http://meta.internal", "force_path_style": True,
                       "anonymous": True})
     resolver, _ = _resolver({"x.nc": "http://meta.internal/b/x.nc"}, [blocked])
-    for item in ("item-1", "item-2"):  # the second answer comes from the per-job cache
+    for item in ("item-1", "item-2"):
         with pytest.raises(SourceUnavailable) as exc:
             await resolver.resolve("src", item)
         assert exc.value.status == "failed"

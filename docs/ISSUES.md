@@ -1656,32 +1656,46 @@ if a requeued `cube_append` is ever seen during a sink's first commit.
 
 `cube_append` does not fail a row when a source read fails in transit (NODD
 5xx or throttling, timeouts, refused connections, DNS:
-`cubes/resolve.py::is_transport_error`; the lead's decision on PR #101). It
-ends the job before writing anything, sets the sink's `last_error` and returns
-without raising, so Procrastinate does not retry it (each queue retry would be
-another take and another attempt within 90 s). The 5-minute `cube_kick`
-re-enqueues the sink while rows are pending, which paces the retries, and an
-outage that clears appends every row with no gap. The rows that hit the error
-keep their attempt, so a file NODD never serves cannot be retried forever: the
-next take works the oldest row alone, and it ends `failed: crash_loop` after
-6 reads.
+`cubes/resolve.py::is_transport_error`; the lead's decision on PR #101). The
+first such error stops the batch: no further row is resolved or read, and
+reads already in flight (at most 4) finish. The job then ends before writing
+anything, sets the sink's `last_error` and returns without raising, so
+Procrastinate does not retry it (each queue retry would be another take and
+another attempt within 90 s). The 5-minute `cube_kick` re-enqueues the sink
+while rows are pending, which paces the retries. Only the oldest row that
+failed in transit keeps its attempt; every other row is given back. The next
+take works that row alone, so a file NODD never serves cannot be retried
+forever: it ends `failed: crash_loop` after 6 reads. An outage that clears
+costs one isolated run for that row, then the batch appends as usual, with no
+gap.
 
 The cost: an outage longer than the oldest row's budget fails rows
 `crash_loop` **one at a time, oldest first**. Derived from the schedule (one
-take per kick; the 7th take fails the row unread):
+take per kick; the 7th take fails the row unread), the budget is about
+**25–30 minutes per row**:
 - **Reads that fail fast** (obstore gives up on a 503 after ~5 s of its own
-  retries, ~4 s on a refused connection, measured locally): the oldest row is
-  failed **25–30 minutes** after its first failed read. Each later row already
-  holds one attempt from the outage's first 50-row take, and the job
-  re-enqueues itself right after a `crash_loop`, so each takes about
-  **20–25 minutes**.
+  retries, ~4 s on a refused connection, measured locally): one run takes
+  seconds.
 - **Reads that time out**: obstore retries one read for up to 3 minutes by
-  default, so the outage's first 50-row run (4 reads at a time) alone takes
-  about 40 minutes and the oldest row is failed after roughly **an hour**. Each
-  single-row run then fits inside the 5-minute kick spacing, so later rows take
-  about 20–25 minutes each.
+  default, so a run takes about 3 minutes (the first wave of 4 reads times out
+  together, and nothing more is started). That still fits between kicks, so
+  the budget is the same, but each such run holds the sink's lock and a worker
+  for those 3 minutes.
+- After a `crash_loop`, the job re-enqueues itself and the next oldest row
+  starts its own budget at once.
 - New items for the source collection wake the sink between kicks, and each
-  wake-up is another take, so a busy collection can spend a budget faster.
+  wake-up is another take, so a busy collection spends a budget faster.
+
+The most visible cost is a stall, not the gap: while a row that keeps failing
+in transit is the oldest pending row, isolation works it alone and newer steps
+wait, so the cube stops advancing for that row's budget. Several bad keys
+stall it in sequence.
+
+A deterministic `GenericError` takes the same path: obstore reports, for
+example, a 400 or a 301 from a misconfigured endpoint as a `GenericError`,
+indistinguishable here from a 5xx. Its rows end `crash_loop` one at a time,
+and the real error appears only in `cube_sinks.last_error`; the ledger says
+`crash_loop`.
 
 A gap is a missing time step only. The `t` axis holds only the times that were
 appended, so the other steps, tiles and EDR series read normally, and the gap

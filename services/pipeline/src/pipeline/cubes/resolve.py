@@ -146,9 +146,6 @@ class PgSourceResolver(SourceResolver):
     associations: Callable[[], Awaitable[list[IngestAssociation]]]
     _assocs: list[IngestAssociation] | None = None
     _libs: dict[str, SourceLibs] = field(default_factory=dict)
-    #: connection id -> why its libraries could not be built (one DNS
-    #: lookup per connection per job, not one per row, during an outage)
-    _refused: dict[str, SourceUnavailable] = field(default_factory=dict)
 
     @classmethod
     def from_settings(cls, settings: Settings, master_key: bytes) -> PgSourceResolver:
@@ -173,9 +170,6 @@ class PgSourceResolver(SourceResolver):
         if match is None:
             raise SourceUnavailable("skipped", "no_source_connection")
         connection = match.association.connection
-        refused = self._refused.get(connection.id)
-        if refused is not None:
-            raise SourceUnavailable(refused.status, refused.reason) from refused.__cause__
         libs = self._libs.get(connection.id)
         if libs is None:
             try:
@@ -184,9 +178,7 @@ class PgSourceResolver(SourceResolver):
             except (EgressBlocked, SourceConnectionError) as exc:
                 # A DNS failure keeps its gaierror cause: is_transport_error
                 # then retries the job instead of failing the row.
-                unavailable = SourceUnavailable("failed", f"{type(exc).__name__}: {exc}")
-                self._refused[connection.id] = unavailable
-                raise unavailable from exc
+                raise SourceUnavailable("failed", f"{type(exc).__name__}: {exc}") from exc
             self._libs[connection.id] = libs
         return ResolvedSource(libs, match.key)
 

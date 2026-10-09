@@ -23,14 +23,17 @@ Source errors (the lead's rule on PR #101, amending plan Decision 7): an error
 about the FILE (missing, denied, corrupt, wrong layout, a real egress block)
 is that row's outcome, and the rest of the batch commits. An error in TRANSIT
 (``resolve.is_transport_error``: NODD 5xx or throttling, timeouts, refused or
-reset connections, DNS) ends the job with :class:`SourceTransportError` before
-anything is written: ``last_error`` is set and the job returns WITHOUT raising,
-so Procrastinate does not retry it (each retry would be another take and
-another bump). The 5-minute ``cube_kick`` re-enqueues the sink and paces the
-retries. The rows that hit the error keep the take's attempt bump: the next
-take then works the oldest row alone, so a file that never becomes readable
-climbs to ``MAX_ROW_ATTEMPTS`` by itself (about 6 kicks, ~25-30 min) and ends
-``crash_loop``, while an outage that clears appends every row, no gap (I-145).
+reset connections, DNS) stops the batch: no further row is resolved or read
+(reads already in flight finish), and the job ends with
+:class:`SourceTransportError` before anything is written. ``last_error`` is set
+and the job returns WITHOUT raising, so Procrastinate does not retry it (each
+retry would be another take and another bump); the 5-minute ``cube_kick``
+re-enqueues the sink and paces the retries. Only the oldest row that failed in
+transit keeps the take's attempt bump; every other row is given back. The next
+take then works that row alone, so a file that never becomes readable climbs
+to ``MAX_ROW_ATTEMPTS`` by itself (about 6 kicks) and ends ``crash_loop``, while
+an outage that clears costs one isolated run and then one normal batch, no gap
+(I-145).
 """
 
 from __future__ import annotations
@@ -83,14 +86,17 @@ Parse = Callable[[str, ObjectStoreRegistry, CubeSinkConfig], Any]
 class SourceTransportError(Exception):
     """Source reads failed in transit (``is_transport_error``): the job ends
     and the next ``cube_kick`` retries it. ``row_ids`` keep the take's attempt
-    bump; the batch's other rows are given back, and nothing reaches the cube
-    or the ledger. ``run_cube_append`` catches it; it never reaches the queue."""
+    bump (the oldest row that failed: isolation works only the oldest row
+    anyway, so a bump on any other row would only cost single-row runs after
+    the outage); the batch's other rows are given back, and nothing reaches
+    the cube or the ledger. ``failed`` counts the reads that failed in transit.
+    ``run_cube_append`` catches it; it never reaches the queue."""
 
-    def __init__(self, row_ids: frozenset[int], first: BaseException) -> None:
-        n = len(row_ids)
-        reads = "source read" if n == 1 else "source reads"
-        super().__init__(f"{n} {reads} failed in transit; first: {error_text(first)}")
+    def __init__(self, row_ids: frozenset[int], first: BaseException, failed: int) -> None:
+        reads = "source read" if failed == 1 else "source reads"
+        super().__init__(f"{failed} {reads} failed in transit; first: {error_text(first)}")
         self.row_ids = row_ids
+        self.failed = failed
 
 
 def _utcnow() -> dt.datetime:
@@ -189,10 +195,10 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
         # Not raised: a Procrastinate retry (3 x 30 s) would be three more takes
         # and bumps within 90 s. The 5-minute cube_kick re-enqueues the sink
         # while rows are pending, so it paces the retries (~6 kicks per row).
-        report.in_transit = len(kept)
+        report.in_transit = exc.failed
         logger.warning(
             "cube_append: source reads failed in transit; the next cube_kick retries",
-            extra={"cube_sink_id": sink.id, "rows": len(kept), "error": str(exc)},
+            extra={"cube_sink_id": sink.id, "rows": exc.failed, "error": str(exc)},
         )
     return report
 
@@ -226,6 +232,8 @@ async def _append_rows(
     #: row id -> the error of a source read that failed in transit
     transient: dict[int, BaseException] = {}
     for row in live:
+        if transient:
+            break  # the source is failing in transit: stop resolving (DNS)
         try:
             resolved = await deps.resolver.resolve(sink.source_collection_id, row.item_id)
         except SourceUnavailable as exc:
@@ -235,11 +243,15 @@ async def _append_rows(
                 outcomes[row.id] = RowOutcome(row.id, exc.status, exc.reason)
             continue
         sources.append((row, resolved))
-    parsed = await _parse_all(sources, config, deps, outcomes, transient)
+    parsed = [] if transient else await _parse_all(sources, config, deps, outcomes, transient)
     if transient:
         # End the job before writing anything: the next cube_kick re-reads the
-        # whole batch once the source answers again.
-        raise SourceTransportError(frozenset(transient), next(iter(transient.values())))
+        # batch once the source answers again. Only the oldest failed row keeps
+        # its bump (rows come in (item_datetime, id) order).
+        oldest = next(r for r in live if r.id in transient)
+        raise SourceTransportError(
+            frozenset({oldest.id}), transient[oldest.id], failed=len(transient)
+        )
 
     result: BatchResult | None = None
     if parsed:
@@ -299,8 +311,9 @@ async def _append_rows(
 
 
 def _in_transit(transient: dict[int, BaseException], row: PendingRow, exc: BaseException) -> None:
-    logger.warning(
-        "cube_append: source read failed in transit; the next cube_kick retries",
+    # debug per row: run_cube_append logs one warning per run
+    logger.debug(
+        "cube_append: source read failed in transit",
         extra={"item_id": row.item_id, "row_id": row.id, "error": error_text(exc)},
     )
     transient[row.id] = exc
@@ -327,6 +340,10 @@ async def _parse_all(
 
     async def one(row: PendingRow, source: ResolvedSource) -> ParsedStep | None:
         async with gate:
+            if transient:
+                # Another read failed in transit: don't start this one. The row
+                # is given back with the rest of the batch.
+                return None
             try:
                 # HEAD first: a rewrite after it makes reads fail loudly, while
                 # a HEAD after the parse could pair new bytes with old offsets.

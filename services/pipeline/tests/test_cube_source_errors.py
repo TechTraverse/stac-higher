@@ -178,7 +178,7 @@ async def test_a_503_raises_a_generic_error_after_obstore_retries(nodd):
     nodd.faults["ok.nc"] = 503
     head, parse = await _both(nodd.libs().store, "ok.nc")
     assert type(head) is GenericError and type(parse) is GenericError
-    assert "503" in str(head) and "after 1 retries" in str(head)
+    assert "503" in str(head)
     assert is_transport_error(head) and is_transport_error(parse)
     assert nodd.hits["ok.nc"] >= 4  # every request was retried once
 
