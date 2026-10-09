@@ -731,6 +731,28 @@ class PgProcessRepo(ProcessRepo):
             rows = await cur.fetchall()
         return {str(r[0]): str(r[1]) for r in rows}
 
+    async def reference_source_files(  # pragma: no cover
+        self, collection_id: str, item_id: str
+    ) -> dict[str, tuple[str, str]]:
+        """filename -> (source_href, association_id): ``reference_source_hrefs``
+        plus the association that produced each file (the cube writer reads a
+        source only through it, spec §6.1)."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT DISTINCT ON (filename) filename, source_href, association_id FROM ("
+                "  SELECT regexp_replace(f.source_path, '^.*/', '') AS filename,"
+                "         f.source_href, f.association_id, f.version"
+                "    FROM stac_higher.ingest_files f"
+                "    JOIN stac_higher.collection_connections cc ON cc.id = f.association_id"
+                "   WHERE cc.collection_id = %s AND f.item_id = %s"
+                "     AND f.source_href IS NOT NULL"
+                "     AND f.reference_removed_at IS NULL"
+                ") x ORDER BY filename, version DESC",
+                (collection_id, item_id),
+            )
+            rows = await cur.fetchall()
+        return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+
     async def reset_stalled_runs(  # pragma: no cover
         self, older_than: dt.datetime, limit: int
     ) -> int:

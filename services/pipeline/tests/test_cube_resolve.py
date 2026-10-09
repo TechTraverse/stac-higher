@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from _cube_sources import SOURCE_LAST_MODIFIED, local_libs, scan, write_goes_file
@@ -22,14 +24,23 @@ BASE = "https://noaa-goes19.s3.us-east-1.amazonaws.com/"
 NC = "ABI-L2-CMIPC/2026/276/17/OR_ABI-L2-CMIPC-M6C13_G19_s1.nc"
 
 
-def _assoc(config: dict | None = None) -> IngestAssociation:
+def _assoc(
+    config: dict | None = None,
+    *,
+    id: str = "a1",
+    collection_id: str = "src",
+    connection_id: str = "nodd",
+    credentials: dict | None = None,
+    storage_mode: str = "reference",
+) -> IngestAssociation:
     conn = ConnectionRow(
-        id="nodd", name="nodd", protocol="s3",
+        id=connection_id, name=connection_id, protocol="s3",
         config=config or {"bucket": "noaa-goes19", "region": "us-east-1", "anonymous": True},
-        credentials=seal("{}", KEY), host_key=None,
+        credentials=seal(json.dumps(credentials or {}), KEY), host_key=None,
     )
     return IngestAssociation(
-        id="a1", collection_id="src", config={"storage_mode": "reference"}, connection=conn
+        id=id, collection_id=collection_id, config={"storage_mode": storage_mode},
+        connection=conn,
     )
 
 
@@ -45,18 +56,21 @@ def no_dns(monkeypatch):
     monkeypatch.setattr(platform, "resolve_pinned", fake)
 
 
-def _resolver(hrefs: dict[str, str], associations: list[IngestAssociation]):
+def _resolver(
+    hrefs: dict[str, str], associations: list[IngestAssociation], producer: str = "a1"
+):
+    """``hrefs``: filename -> source href, every file produced by ``producer``."""
     calls = {"assoc": 0}
 
-    async def get_hrefs(collection_id: str, item_id: str) -> dict[str, str]:
+    async def get_files(collection_id: str, item_id: str) -> dict[str, tuple[str, str]]:
         assert collection_id == "src"
-        return hrefs
+        return {name: (href, producer) for name, href in hrefs.items()}
 
     async def get_assocs() -> list[IngestAssociation]:
         calls["assoc"] += 1
         return associations
 
-    return PgSourceResolver(Settings.from_env(env={}), KEY, get_hrefs, get_assocs), calls
+    return PgSourceResolver(Settings.from_env(env={}), KEY, get_files, get_assocs), calls
 
 
 def test_pick_hdf_href():
@@ -77,6 +91,31 @@ async def test_resolves_through_the_reference_association():
     assert first.url == f"s3://noaa-goes19/{NC}"
     assert first.libs is second.libs  # built once per connection per job
     assert calls["assoc"] == 1  # associations listed once per job
+
+
+async def test_resolves_through_the_association_that_produced_the_file():
+    # Two collections ingest the same bucket through different connections;
+    # the signed one is listed first and claims the href by prefix too.
+    signed = _assoc(
+        {"bucket": "noaa-goes19", "region": "us-east-1", "anonymous": False},
+        id="a0", collection_id="other", connection_id="signed",
+        credentials={"access_key_id": "AK", "secret_access_key": "SK"},
+    )
+    resolver, _ = _resolver({"x.nc": BASE + NC}, [signed, _assoc()], producer="a1")
+    resolved = await resolver.resolve("src", "item-1")
+    assert resolved.url == f"s3://noaa-goes19/{NC}"
+    assert resolver._libs.keys() == {"nodd"}  # its own connection, never "signed"
+
+
+async def test_a_producing_association_not_enabled_is_no_source_connection():
+    for producer, assocs in (
+        ("gone", [_assoc()]),  # deleted or disabled: not in the enabled list
+        ("a1", [_assoc(storage_mode="copy")]),  # no longer reference mode
+    ):
+        resolver, _ = _resolver({"x.nc": BASE + NC}, assocs, producer=producer)
+        with pytest.raises(SourceUnavailable) as exc:
+            await resolver.resolve("src", "item-1")
+        assert (exc.value.status, exc.value.reason) == ("skipped", "no_source_connection")
 
 
 async def test_an_href_no_association_claims_is_no_source_connection():

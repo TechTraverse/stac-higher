@@ -1,11 +1,14 @@
 """Item → its NODD source object, through the association that produced it (spec §6.1).
 
-The item's reference-mode source hrefs come from the ingest ledger
-(``PgProcessRepo.reference_source_hrefs``: the catalog stores canonical hrefs,
-not source ones). Its header is the one HDF file among them. The
-reference-mode association whose connection prefixes that href owns it
-(``connections/sources.py``), and that connection, egress-checked, is the
-only way the cube writer reads the source (ADR 0022).
+The item's reference-mode source files come from the ingest ledger
+(``PgProcessRepo.reference_source_files``: the catalog stores canonical hrefs,
+not source ones), each with the association that produced it. Its header is
+the one HDF file among them. That association, still enabled and in reference
+mode, owns the file; its connection derives the key
+(``connections/sources.py``) and, egress-checked, is the only way the cube
+writer reads the source (ADR 0022). Another association whose connection
+happens to prefix the same href (a second collection on the same bucket) is
+never used.
 """
 
 from __future__ import annotations
@@ -74,7 +77,8 @@ class PgSourceResolver(SourceResolver):
 
     settings: Settings
     master_key: bytes
-    hrefs: Callable[[str, str], Awaitable[dict[str, str]]]
+    #: (collection_id, item_id) -> filename -> (source_href, association_id)
+    files: Callable[[str, str], Awaitable[dict[str, tuple[str, str]]]]
     associations: Callable[[], Awaitable[list[IngestAssociation]]]
     _assocs: list[IngestAssociation] | None = None
     _libs: dict[str, SourceLibs] = field(default_factory=dict)
@@ -84,16 +88,21 @@ class PgSourceResolver(SourceResolver):
         return cls(
             settings,
             master_key,
-            PgProcessRepo(settings.database_url).reference_source_hrefs,
+            PgProcessRepo(settings.database_url).reference_source_files,
             PgIngestRepo(settings.database_url).list_enabled_ingest_associations,
         )
 
     async def resolve(self, source_collection_id: str, item_id: str) -> ResolvedSource:
-        href = pick_hdf_href(await self.hrefs(source_collection_id, item_id))
+        files = await self.files(source_collection_id, item_id)
+        href = pick_hdf_href({name: href for name, (href, _) in files.items()})
+        producer = next(assoc_id for h, assoc_id in files.values() if h == href)
         if self._assocs is None:
             self._assocs = await self.associations()
         allow = self.settings.egress_allow_hosts
-        match = association_for_href(href, self._assocs, self.master_key, allow)
+        # Only the producing association, and only while it is enabled and in
+        # reference mode (association_for_href passes over any other mode).
+        owner = [a for a in self._assocs if a.id == producer]
+        match = association_for_href(href, owner, self.master_key, allow)
         if match is None:
             raise SourceUnavailable("skipped", "no_source_connection")
         connection = match.association.connection
