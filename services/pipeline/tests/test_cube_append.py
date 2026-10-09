@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import threading
 from dataclasses import dataclass, field
@@ -278,8 +279,59 @@ async def test_one_bad_file_fails_only_its_row(h):
 async def test_a_row_past_the_attempt_cap_fails_crash_loop(h):
     await h.pend(0, 1)
     h.repo.ledger[(SINK, "i0")].attempts = MAX_ROW_ATTEMPTS  # this take makes it 7
+    first = await run_cube_append(SINK, h.deps())  # a crashed row is worked alone
+    assert (first.taken, first.failed, first.requeued) == (1, 1, True)
+    assert h.ledger() == {"i0": ("failed", "crash_loop"), "i1": ("pending", None)}
     await run_cube_append(SINK, h.deps())
     assert h.ledger() == {"i0": ("failed", "crash_loop"), "i1": ("appended", None)}
+
+
+class WorkerDied(BaseException):
+    """An OOM kill or segfault: nothing in the job catches it, so no release runs."""
+
+
+async def test_a_poison_file_crash_loops_alone(h):
+    await h.pend(0, 1, 2, 3, 4)
+    real = parse_header
+
+    def poison(url, registry, config):
+        if url.endswith("/2.nc"):
+            raise WorkerDied
+        return real(url, registry, config)
+
+    for _ in range(30):
+        if not await h.repo.has_pending(SINK):
+            break
+        with contextlib.suppress(WorkerDied):
+            await run_cube_append(SINK, h.deps(parse=poison))
+    assert h.ledger() == {
+        "i0": ("appended", None),
+        "i1": ("appended", None),
+        "i2": ("failed", "crash_loop"),
+        "i3": ("appended", None),
+        "i4": ("appended", None),
+    }
+    assert h.times() == ns(0, 1, 3, 4)
+
+
+async def test_a_take_after_a_crash_works_the_oldest_row_alone(h):
+    await h.pend(0, 1, 2)
+    h.repo.ledger[(SINK, "i1")].attempts = 1  # its last claim never finished
+    report = await run_cube_append(SINK, h.deps())
+    assert (report.taken, report.appended, report.requeued) == (1, 1, True)
+    assert h.ledger() == {
+        "i0": ("appended", None),
+        "i1": ("pending", None),
+        "i2": ("pending", None),
+    }
+    assert [r.attempts for r in h.repo.rows(SINK)][1:] == [1, 0]  # the rest given back
+
+
+async def test_a_normal_take_claims_up_to_the_batch_limit(h):
+    await h.pend(*range(6))
+    report = await run_cube_append(SINK, h.deps(batch_limit=4))
+    assert (report.taken, report.appended, report.requeued) == (4, 4, True)
+    assert h.times() == ns(0, 1, 2, 3)
 
 
 async def test_the_batch_limit_re_enqueues_the_rest(h):

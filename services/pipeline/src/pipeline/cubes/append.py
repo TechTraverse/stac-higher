@@ -47,6 +47,11 @@ BATCH_LIMIT = 50
 PARSE_CONCURRENCY = 4
 #: a row claimed more often than this is failed instead of parsed (#90)
 MAX_ROW_ATTEMPTS = 6
+#: a row claimed more than this often was in a job that died (the exception
+#: path and the quiet returns give attempts back): such a take keeps only its
+#: oldest row, so a poison file crash-loops alone instead of taking the rest
+#: of its batch to `crash_loop` with it (#90; plan Decision 9)
+CRASHED_ATTEMPTS = 1
 REASON_CRASH_LOOP = "crash_loop"
 REASON_LATE = "late"
 REASON_SOURCE_MISSING = "source_missing"
@@ -104,6 +109,17 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
         return report
 
     rows = await deps.repo.take_pending(sink.id, deps.batch_limit)
+    if len(rows) > 1 and any(r.attempts > CRASHED_ATTEMPTS for r in rows):
+        # A previous claim never finished: a worker died somewhere in this
+        # batch. Work the oldest row alone (rows come in (item_datetime, id)
+        # order); has_pending -> enqueue_next carries the backlog on.
+        rest = [r.id for r in rows[1:]]
+        await deps.repo.release_rows(sink.id, rest)
+        logger.warning(
+            "cube_append: a previous job died; working one row alone",
+            extra={"cube_sink_id": sink.id, "row_id": rows[0].id, "released": len(rest)},
+        )
+        rows = rows[:1]
     report.taken = len(rows)
     if not rows:
         return report
