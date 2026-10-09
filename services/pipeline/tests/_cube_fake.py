@@ -189,7 +189,7 @@ class FakeCubeRepo(CubeRepo):
         s.last_error = None
         return True
 
-    async def record_error(self, cube_sink_id: str, message: str) -> None:
+    async def record_error(self, cube_sink_id: str, message: str | None) -> None:
         s = self._sink(cube_sink_id)
         if s is not None:
             s.last_error = message

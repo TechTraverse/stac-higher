@@ -134,8 +134,8 @@ class CubeRepo(abc.ABC):
         ``updated_at``. Returns whether the row changed."""
 
     @abc.abstractmethod
-    async def record_error(self, cube_sink_id: str, message: str) -> None:
-        """Set ``last_error`` (never ``updated_at``)."""
+    async def record_error(self, cube_sink_id: str, message: str | None) -> None:
+        """Set ``last_error``, or clear it with ``None`` (never ``updated_at``)."""
 
 
 @dataclass
@@ -329,7 +329,9 @@ class PgCubeRepo(CubeRepo):
             await conn.commit()
         return changed > 0
 
-    async def record_error(self, cube_sink_id: str, message: str) -> None:  # pragma: no cover
+    async def record_error(  # pragma: no cover
+        self, cube_sink_id: str, message: str | None
+    ) -> None:
         async with await self._connect() as conn:
             await conn.execute(
                 "UPDATE stac_higher.cube_sinks SET last_error = %s WHERE id = %s",

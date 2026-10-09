@@ -301,6 +301,12 @@ async def _append_rows(
             # worker that dies here leaves them claimed; the next take redoes
             # them the same way. The asset never lags a finished batch (#101).
             await deps.after_batch(sink, config, result)
+        if not report.recorded:
+            # The batch (and its publish) went through with no new tip to
+            # record, and recording is what clears last_error: a redo after a
+            # failed publish is exactly this. Clear it here, or a stopped
+            # source would show a resolved error for good.
+            await deps.repo.record_error(sink.id, None)
 
     await deps.repo.finish_rows(sink.id, list(outcomes.values()))
     for outcome in [*looping, *outcomes.values()]:

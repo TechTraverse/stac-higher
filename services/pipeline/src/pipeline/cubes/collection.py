@@ -13,9 +13,10 @@ first production collection write:
   not with the KEY SHARE locks item inserts take through ``items_collections_fk``.
   A ``lock_timeout`` bounds the wait: the job holds the sink's ``cube:{id}``
   lock meanwhile, and a timeout is a DB error the job retries.
-- Only those four keys change, plus this sink's asset under an earlier
-  ``asset_key``, which is removed. A user's other edits survive, and a
-  removed asset comes back.
+- Only those four keys change, plus any stale cube asset (one carrying a
+  ``stac_higher:cube_sink_id`` under another key: an earlier ``asset_key``
+  or a deleted sink's), which is removed. A user's other edits survive, and
+  a removed asset comes back.
 - Only the sink's RECORDED tip is published (``cube_sinks.last_snapshot_id``,
   read under the lock), so a double run never publishes an older snapshot
   over a newer one (``superseded``).
@@ -77,6 +78,9 @@ def time_strings(values: np.ndarray) -> list[str] | None:
     selectors, spike Q1), or ``None`` for an ``append_dim`` that is not a time."""
     if not np.issubdtype(values.dtype, np.datetime64):
         return None
+    # A NaT would print as "NaTZ", which pgstac's generated datetime columns
+    # cannot cast: a deterministic error that would hold the rows pending.
+    values = values[~np.isnat(values)]
     ns = np.datetime_as_string(values.astype("datetime64[ns]"), unit="ns")
     return [f"{s}Z" for s in ns]
 
@@ -193,7 +197,7 @@ def merge_collection(
     prefixes: Sequence[str],
 ) -> dict[str, Any]:
     """The collection document with the cube published on it. Touches only
-    ``assets.{asset_key}`` (and this sink's asset under an older key),
+    ``assets.{asset_key}`` (and any stale cube asset under another key),
     ``extent.temporal``, ``cube:dimensions`` and the Datacube entry of
     ``stac_extensions``."""
     merged = copy.deepcopy(dict(content))
@@ -201,12 +205,14 @@ def merge_collection(
 
     assets = merged.get("assets")
     assets = dict(assets) if isinstance(assets, dict) else {}
-    # asset_key is not layout, so the app lets it change after a publish: this
-    # sink's asset under the old key would stay behind, frozen.
+    # asset_key is not layout, so the app lets it change after a publish; a
+    # deleted sink's asset stays on the collection (spec §7). cube_collection_id
+    # is UNIQUE, so every cube asset here other than the one written below is
+    # stale and would stay behind, frozen.
     assets = {
         key: asset
         for key, asset in assets.items()
-        if not (isinstance(asset, dict) and asset.get("stac_higher:cube_sink_id") == sink_id)
+        if not (isinstance(asset, dict) and "stac_higher:cube_sink_id" in asset)
     }
     assets[config.asset_key] = build_asset(
         href=href,

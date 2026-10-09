@@ -251,17 +251,28 @@ def test_hdf5_attribute_types_read_like_plain_values():
     assert merged(res=res)["cube:dimensions"] == merged()["cube:dimensions"]
 
 
-def test_a_renamed_asset_key_moves_the_sinks_asset():
+def test_a_renamed_asset_key_or_a_recreated_sink_leaves_no_stale_cube_asset():
     # asset_key is not layout (app lib/cubes/schemas.ts layoutChanged): it can
-    # change after a publish, and the old key must not stay behind frozen
+    # change after a publish. A deleted sink's asset stays on the collection
+    # (spec §7), and cube_collection_id is UNIQUE, so any cube asset another
+    # sink id wrote here is stale. Neither may stay behind frozen.
     before = merged()
-    before["assets"]["other-sink"] = {"href": "x", "stac_higher:cube_sink_id": "sink-2"}
+    before["assets"]["old-sink"] = {"href": "x", "stac_higher:cube_sink_id": "sink-0"}
     renamed = parse_cube_sink_config({**GOES_CONFIG, "asset_key": "c13"})
     doc = merge_collection(
         before, config=renamed, result=result(), sink_id="sink-1", href=HREF, prefixes=PREFIXES
     )
-    assert set(doc["assets"]) == {"thumbnail", "other-sink", "c13"}
+    assert set(doc["assets"]) == {"thumbnail", "c13"}
     assert doc["assets"]["c13"]["stac_higher:cube_sink_id"] == "sink-1"
+
+
+def test_a_nat_step_never_reaches_the_document():
+    # pgstac's generated datetime columns cannot cast "NaTZ": a deterministic
+    # DB error would hold the batch's rows pending for good
+    values = np.array([T_EXACT, np.datetime64("NaT", "ns")])
+    assert time_strings(values) == ["2026-10-03T17:02:36.714359936Z"]
+    doc = merged(res=result(values))
+    assert doc["extent"]["temporal"]["interval"] == [[time_strings(values)[0]] * 2]
 
 
 def test_a_result_without_the_grid_on_a_document_without_it_warns(caplog):

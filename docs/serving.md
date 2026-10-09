@@ -133,9 +133,10 @@ key moved. Details: `infra/titiler/README.md`.
 
 A cube sink (ADR 0022; spec `docs/superpowers/specs/2026-10-03-virtual-cube-sink-design.md`)
 publishes its Icechunk repository on the **cube collection** after every batch
-that reached the repository, and after Z-6's maintenance trim
-(`services/pipeline/src/pipeline/cubes/collection.py`). The `cube-server` that
-serves it as tiles and EDR is Z-7.
+that reached the repository (`services/pipeline/src/pipeline/cubes/collection.py`).
+Z-6's hourly maintenance (#92, not yet merged) will republish through the same
+writer for sinks with a `window`. The `cube-server` that serves it as tiles and
+EDR is Z-7.
 
 ```jsonc
 "assets": {
@@ -164,14 +165,19 @@ serves it as tiles and EDR is Z-7.
   `extent.temporal`, `cube:dimensions` and the Datacube entry of
   `stac_extensions`, and rewrites them on every publish; every other key is
   the user's. A hand edit to those four lasts until the next commit, and a
-  deleted asset comes back. Renaming the sink's `asset_key` moves the asset:
-  the sink's asset under the old key is removed.
+  deleted asset comes back. Any other asset carrying a
+  `stac_higher:cube_sink_id` is stale (a renamed `asset_key`, or a deleted
+  sink's asset; a collection has at most one sink) and is removed.
 - **Collection-form saves:** the UI's collection form rebuilds the document
-  from its fields (`CollectionForm.tsx::formToStacCollection`), so every save
-  drops `cube:dimensions`. A save from a copy loaded before a publish also
-  writes that copy's older asset back. The next publish repairs both: the next
-  commit (≤ 5 min at the GOES cadence), or the hourly maintenance run for a
-  source that has stopped.
+  from its fields (`CollectionForm.tsx::formToStacCollection`), and its asset
+  schema keeps only `href`, `type`, `title`, `description` and `roles`. So
+  **every** save drops `cube:dimensions` and strips the cube asset of
+  `version`, `stac_higher:virtual_chunk_prefixes`, `stac_higher:cube_sink_id`
+  and `stac_higher:time_values` (the preview then has no frames). The next
+  publish repairs both: the next commit (≤ 5 min at the GOES cadence) or, once
+  Z-6 lands, the hourly maintenance run, but only for sinks with a `window`. A
+  sink without a `window` whose source has stopped is not repaired until a new
+  step arrives.
 - **`version`** is the snapshot the sink recorded
   (`cube_sinks.last_snapshot_id`). Only that tip is published, under a row lock
   on the collection (`FOR NO KEY UPDATE`, 10 s `lock_timeout`), so a double run

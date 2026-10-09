@@ -718,6 +718,9 @@ async def test_a_failing_asset_hook_releases_the_rows_and_the_redo_publishes(h):
     assert tips == [tip, tip]
     assert h.sink().last_snapshot_id == tip
     assert h.ledger() == {"i0": ("appended", "duplicate"), "i1": ("appended", "duplicate")}
+    # nothing new to record, but the error is resolved: it must not linger
+    # (a stopped source would otherwise show it for good)
+    assert h.sink().last_error is None
 
 
 async def test_a_ledger_failure_after_the_publish_republishes_the_same_tip(h):
