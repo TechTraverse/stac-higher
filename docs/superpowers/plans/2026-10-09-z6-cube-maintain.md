@@ -12,7 +12,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-03-virtual-cube-sink-design.md` §10, plus §4.2 (ledger pruning) and §14.4 (the lock decision). Background: ADR 0022 (`docs/decisions/0022-virtual-cube-sink.md`) and I-143 in `docs/ISSUES.md`.
 
-**Pre-validated:** the code in this plan was written and run on this branch before the plan was committed, then removed so the plan executes from a clean branch. Results: the full pipeline suite passed (`2037 passed, 46 skipped`), `ruff check .` was clean, and the 4 new DB-gated repo tests passed against a throwaway Postgres holding migration 032's tables. Icechunk behaviour the plan relies on, measured on 2.3.0:
+**Pre-validated:** the code in this plan was written and run on this branch before the plan was committed, then removed so the plan executes from a clean branch. Results: the full pipeline suite passed (`2038 passed, 46 skipped`), `ruff check .` was clean, and the 4 new DB-gated repo tests passed against a throwaway Postgres holding migration 032's tables. Icechunk behaviour the plan relies on, measured on 2.3.0:
 - A repository opened **without** virtual-chunk credentials can still `shift_array`, `resize`, commit, `expire_snapshots` and `garbage_collect`.
 - `expire_snapshots` never expires the root snapshot or the `main` tip. GC then deletes the expired snapshots and manifests, and also the snapshots a `reset_to_root` orphaned.
 - GC reports `transaction_logs_deleted: 0` and never removes anything under `overwritten/` (I-143).
@@ -51,6 +51,8 @@
 
    `trim_count` is reused as-is, so `max_steps` also applies (a window shrunk by a config change). The trim commit is recorded with a compare-and-swap, `record_snapshot(..., from_snapshot_id=)`. It never touches `last_appended_at`, `last_error` or `updated_at`.
 6. **Republish on every run** (agreed with the Z-5 session). After the repository pass, if the cube is initialised and the recorded snapshot equals the tip, the job calls `after_batch(sink, config, BatchResult(outcomes={}, snapshot_id=tip, committed=trimmed>0, values=tip_values, trimmed=k, initialised=True))`. Z-5's writer publishes only the **recorded** tip, so the trim is recorded **before** the call. This publishes a trim, and also heals a publish that a crashed append missed. Z-5's writer short-circuits an unchanged document.
+
+   **The republish must always carry the grid** (`statics`, `spatial_dims`), never just the time values. This comes from peer review of the Z-5 plan on 2026-10-09, verified on main. `formToStacCollection` (`app/src/components/collections/CollectionForm.tsx:57`) rebuilds the document from the form fields only, so any form save drops `cube:dimensions`. For a source that has stopped, this republish is the only one left. If it sends no grid, Z-5's fallback keeps the (now missing) x/y entries, and x/y never come back. So `RepoPass` carries the tip's whole `CubeState`, and whoever wires `after_batch` into maintenance passes `statics=rp.state.statics, spatial_dims=rp.state.spatial_dims`.
 7. **Failure semantics.**
    - The per-sink job has **no retry**; the next hour retries.
    - Any error records `last_maintenance` with `status: "failed"` and `error`, keeps `last_maintained_at` at the **last success**, and re-raises so Procrastinate shows the failure.
@@ -71,17 +73,24 @@
 Agreed with the Z-5 planning session on 2026-10-09:
 - Z-5 keeps `AfterBatch = Callable[[CubeSink, CubeSinkConfig, BatchResult], Awaitable[None]]` (in `cubes/append.py`) unchanged. Its writer reads `sink.id`, `sink.cube_collection_id`, `config.asset_key`, `config.append_dim`, `result.snapshot_id` and `result.values`, and **never** `outcomes`, `committed` or `trimmed`.
 - Z-5 exposes `pipeline.cubes.collection.production_after_batch(settings: Settings) -> AfterBatch`.
-- Z-5 adds two **defaulted** `BatchResult` fields, `statics` and `spatial_dims`, plus `CubeState.spatial_dims`. If they are left empty, its writer keeps the document's existing x/y `cube:dimensions`. This plan's `BatchResult(...)` call compiles either way.
+- Z-5 adds two **defaulted** `BatchResult` fields, `statics` and `spatial_dims`, plus `CubeState.spatial_dims`. If they are left empty, its writer keeps the document's existing x/y `cube:dimensions`. That fallback is **not** safe for maintenance, because a form save drops `cube:dimensions` (Decision 6). Maintenance must therefore pass both fields whenever `after_batch` is wired.
 - Z-5's writer publishes only when `cube_sinks.last_snapshot_id == result.snapshot_id`, read under the collection row lock. Otherwise the call is a logged no-op (`superseded`). Decision 6 satisfies that.
 - An empty `values` (a cube trimmed to 0 steps) is valid. The writer publishes `time_values: []` with null temporal extents.
-- **Wiring: whichever slice merges second wires the other job.**
-  - **If Z-5 is already on `main` when you reach Task 4:** pass `after_batch=production_after_batch(settings)` in `production_maintain_deps`, and change that test's assertion from `deps.after_batch is None` to `deps.after_batch is not None`. If Z-5's `CubeState` already has `spatial_dims`, also pass `statics` and `spatial_dims` through: add `statics` and `spatial_dims` fields to `RepoPass`, fill them from `after.statics` / `after.spatial_dims` in `maintain_repository`, and pass them into the `BatchResult(...)` in `_maintain`.
-  - **Otherwise:** leave `after_batch` unset (`None`) and say so in the PR body. Z-5's PR adds the one-line wiring.
+- **Wiring: whichever slice merges second wires the other job, and the wiring is always these three edits together:**
+  1. In `production_maintain_deps` (Task 4), add `after_batch=production_after_batch(settings)`, and in `test_production_maintain_deps_wire_the_real_seams` change `deps.after_batch is None` to `deps.after_batch is not None`.
+  2. In `_maintain`'s `BatchResult(...)` (Task 3), add `statics=rp.state.statics, spatial_dims=rp.state.spatial_dims`. `RepoPass.state` is already the tip's full `CubeState`, so nothing else needs threading.
+  3. In `test_the_recorded_tip_is_republished_on_every_run` (Task 3), add:
+     ```python
+     assert set(result.statics) == {"x", "y", "goes_imager_projection"}
+     assert result.spatial_dims == ("y", "x")
+     ```
+  - **If Z-5 is already on `main` when you reach Task 4**, make all three edits in this PR.
+  - **Otherwise**, leave `after_batch` unset (`None`). Production then publishes nothing from maintenance, so no time-only publish can happen. Say so in the PR body: Z-5's PR makes the three edits. Wiring the hook without edit 2 is a bug.
 
 ## Review Focus
 
 These are the failure modes the spec implies that are most likely to bite a person. Each has a pinning test in the owning task:
-1. **A source that stops publishing.** The window must still shrink hourly, and the collection must stop advertising aged-out steps, down to an empty cube. Task 3: `test_an_age_trim_commits_once_and_records_the_snapshot`, `test_a_trim_is_published_after_it_is_recorded`, `test_a_cube_trimmed_to_empty_is_published_with_no_values`.
+1. **A source that stops publishing.** The window must still shrink hourly, and the collection must stop advertising aged-out steps, down to an empty cube. The republish must carry the grid, because a form save in between drops `cube:dimensions`. Task 3: `test_an_age_trim_commits_once_and_records_the_snapshot`, `test_a_trim_is_published_after_it_is_recorded`, `test_a_cube_trimmed_to_empty_is_published_with_no_values`, `test_the_repository_pass_carries_the_grid_for_the_writer`.
 2. **A worker killed during maintenance.** It holds the same lock, so it must not wedge the sink's appends. Task 4: `test_kick_recovers_a_stranded_maintenance_job`.
 3. **A sink without a window.** It must never lose a snapshot, yet still be measured and pruned. Task 3: `test_a_sink_without_a_window_is_never_expired_or_garbage_collected`, `test_terminal_ledger_rows_older_than_seven_days_are_pruned`.
 4. **A repository the writer has not recorded** (provisional, or a crash between commit and record). It must not be trimmed or published over, while GC still collects the snapshots a provisional reset orphaned. Task 3: `test_no_age_trim_on_a_provisional_repository`, `test_no_age_trim_when_the_tip_is_not_the_recorded_snapshot`, `test_gc_collects_the_snapshots_a_provisional_reset_orphaned`.
@@ -654,7 +663,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `maintain.MaintainDeps(repo, storage_for, list_objects, retention_seconds=3600, warn_bytes=1024**3, after_batch=None, now=_utcnow)` (a dataclass)
   - `maintain.ListObjects = Callable[[CubeSink], list[tuple[str, int]]]`, with keys relative to the repository prefix
   - `maintain.run_cube_maintain(cube_sink_id: str, deps: MaintainDeps) -> dict[str, Any] | None`
-  - `maintain.maintain_repository(storage, config, now, *, retention_seconds, recorded_snapshot_id, may_trim) -> RepoPass`
+  - `maintain.maintain_repository(storage, config, now, *, retention_seconds, recorded_snapshot_id, may_trim) -> RepoPass`. `RepoPass.state: CubeState | None` is the tip's full state (time `values` plus the grid `statics`, and `spatial_dims` once Z-5 adds it); it is `None` until the cube's first step.
   - `maintain.platform_lister(settings: Settings) -> ListObjects`
   - `maintain.size_by_kind(objects) -> dict[str, dict[str, int]]`
   - Constants: `KINDS`, `LEDGER_RETENTION_DAYS = 7`, `STATUS_OK`/`STATUS_ATTENTION`/`STATUS_FAILED`, `ATTENTION_REPO_SIZE = "repo_size"`, `ATTENTION_GC_DELETE_FAILURES = "gc_delete_failures"`.
@@ -696,6 +705,7 @@ from pipeline.cubes.maintain import (
     KINDS,
     LEDGER_RETENTION_DAYS,
     MaintainDeps,
+    maintain_repository,
     run_cube_maintain,
     size_by_kind,
 )
@@ -946,6 +956,25 @@ async def test_the_recorded_tip_is_republished_on_every_run(tmp_path):
     assert len(result.values) == 2
 
 
+def test_the_repository_pass_carries_the_grid_for_the_writer(tmp_path):
+    # A form save drops cube:dimensions, and for a stopped source this
+    # republish is the only one: it must carry x/y and the projection.
+    cube = Cube(tmp_path, window=None)
+    cube.append(0, 1)
+
+    rp = maintain_repository(
+        cube.storage(),
+        cube.config,
+        LATER,
+        retention_seconds=3600,
+        recorded_snapshot_id=cube.sink.last_snapshot_id,
+        may_trim=True,
+    )
+
+    assert set(rp.state.statics) == {"x", "y", "goes_imager_projection"}
+    assert list(rp.state.values) == [as_ns(scan(0)), as_ns(scan(1))]
+
+
 async def test_a_trim_the_sink_lost_is_not_published(tmp_path, caplog):
     cube = Cube(tmp_path, window={"max_age": "30m"})
     cube.append(0, 1, 2, 3, now=scan(3))
@@ -1156,7 +1185,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import icechunk as ic
-import numpy as np
 
 from pipeline.config import (
     DEFAULT_CUBE_REPO_WARN_BYTES,
@@ -1165,7 +1193,7 @@ from pipeline.config import (
 )
 from pipeline.cubes.append import AfterBatch
 from pipeline.cubes.config import CubeSinkConfig, parse_cube_sink_config
-from pipeline.cubes.icerepo import BRANCH, cube_prefix, open_existing, read_state
+from pipeline.cubes.icerepo import BRANCH, CubeState, cube_prefix, open_existing, read_state
 from pipeline.cubes.repo import CubeRepo, CubeSink
 from pipeline.cubes.steps import trim_count
 from pipeline.cubes.write import MAX_ERROR_CHARS, BatchResult, error_text, trim_steps
@@ -1227,8 +1255,11 @@ class RepoPass:
     exists: bool
     #: the branch tip after the pass (the trim commit, if there was one)
     tip: str | None = None
-    #: the tip's ``append_dim`` values; ``None`` until the cube has its first step
-    values: np.ndarray | None = None
+    #: the tip's cube: its time values AND its grid (``statics``); ``None``
+    #: until the cube has its first step. The grid goes to Z-5's writer:
+    #: for a stopped source this republish is the only one, and a form save
+    #: drops ``cube:dimensions``, so it must never publish time alone.
+    state: CubeState | None = None
     trimmed: int = 0
     expired: int | None = None
     gc: dict[str, Any] | None = None
@@ -1294,7 +1325,7 @@ def maintain_repository(
     return RepoPass(
         exists=True,
         tip=tip,
-        values=after.values if after.initialised else None,
+        state=after if after.initialised else None,
         trimmed=trimmed,
         expired=expired,
         gc=gc,
@@ -1397,7 +1428,9 @@ async def _maintain(
             )
     # Z-5's writer publishes only the recorded tip, so the trim is recorded first.
     summary["published"] = False
-    if deps.after_batch is not None and rp.values is not None and recorded == rp.tip:
+    if deps.after_batch is not None and rp.state is not None and recorded == rp.tip:
+        # Whoever wires after_batch adds statics=rp.state.statics and
+        # spatial_dims=rp.state.spatial_dims here (Z-5's BatchResult fields).
         await deps.after_batch(
             sink,
             config,
@@ -1405,7 +1438,7 @@ async def _maintain(
                 outcomes={},
                 snapshot_id=rp.tip,
                 committed=rp.trimmed > 0,
-                values=rp.values,
+                values=rp.state.values,
                 trimmed=rp.trimmed,
                 initialised=True,
             ),
@@ -1446,7 +1479,7 @@ async def _maintain(
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest -q -p no:warnings tests/test_cube_maintain.py tests/test_cube_write.py tests/test_cube_icerepo.py && uv run ruff check .`
-Expected: PASS (20 tests in `test_cube_maintain.py`); `All checks passed!`. Icechunk prints `WARN … LocalFileSystem storage is not safe for concurrent commits` on stderr; with local storage that is expected.
+Expected: PASS (21 tests in `test_cube_maintain.py`); `All checks passed!`. Icechunk prints `WARN … LocalFileSystem storage is not safe for concurrent commits` on stderr; with local storage that is expected.
 
 - [ ] **Step 5: Commit**
 
@@ -1751,12 +1784,12 @@ def production_maintain_deps(settings: Settings, repo: CubeRepo) -> MaintainDeps
     queue.register_periodic(cube_maintain, name=JOB_CUBE_MAINTAIN, cron=MAINTAIN_CRON)
 ```
 
-If Z-5 is on `main` by now, also apply the wiring described in "Coordination with Z-5" above.
+If Z-5 is on `main` by now, also make the three wiring edits in "Coordination with Z-5" above. All three are required, including the grid in `BatchResult(...)`.
 
 - [ ] **Step 4: Run the whole pipeline suite**
 
 Run: `uv run pytest -q -p no:warnings && uv run ruff check .`
-Expected: all pass (`2037 passed, 46 skipped` at validation; main's count plus this slice's new tests); `All checks passed!`
+Expected: all pass (`2038 passed, 46 skipped` at validation; main's count plus this slice's new tests); `All checks passed!`
 
 - [ ] **Step 5: Commit**
 
