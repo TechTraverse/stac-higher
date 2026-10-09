@@ -271,3 +271,11 @@ def test_error_text_is_bounded():
 def test_the_unused_now_does_not_matter_without_a_window(cube):
     result = cube.write(cube.parsed(1, 0), now=dt.datetime(1970, 1, 1, tzinfo=dt.UTC))
     assert result.trimmed == 0
+
+
+def test_the_result_carries_the_grid_for_the_asset_writer(cube):
+    result = cube.write(cube.parsed(1, 0))
+    assert result.spatial_dims == ("y", "x")
+    assert set(result.statics) == {"x", "y", "goes_imager_projection"}
+    assert result.statics["x"].values.tolist() == pytest.approx([i * 1e-4 for i in range(6)])
+    assert '"grid_mapping_name": "geostationary"' in result.statics["goes_imager_projection"].attrs

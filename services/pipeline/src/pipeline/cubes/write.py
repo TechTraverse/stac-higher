@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 import icechunk as ic
 import numpy as np
@@ -33,6 +33,7 @@ from pipeline.cubes.config import CubeSinkConfig
 from pipeline.cubes.icerepo import BRANCH, CubeState, read_state
 from pipeline.cubes.steps import (
     LayoutError,
+    StaticSpec,
     check_layout,
     check_statics,
     step_specs,
@@ -74,6 +75,12 @@ class BatchResult:
     trimmed: int
     #: the cube has its ``append_dim`` array (False only if nothing was ever written)
     initialised: bool
+    #: the cube's variables without the append axis (``x``, ``y``, the grid
+    #: mapping) and its data variables' other dimensions, for the collection
+    #: asset writer (Z-5). Empty when the caller did not read them (Z-6's
+    #: trim may not): the writer then keeps the document's spatial dimensions.
+    statics: Mapping[str, StaticSpec] = field(default_factory=dict)
+    spatial_dims: tuple[str, ...] = ()
 
 
 def error_text(exc: BaseException) -> str:
@@ -207,6 +214,8 @@ def _attempt(
         values=after.values[trimmed:],
         trimmed=trimmed,
         initialised=after.initialised,
+        statics=after.statics,
+        spatial_dims=after.spatial_dims,
     )
 
 
