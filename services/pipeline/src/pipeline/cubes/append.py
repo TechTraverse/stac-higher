@@ -18,6 +18,16 @@ PROVISIONAL, because the app may still change the source and layout (#98):
   version the job read. If the race is lost, the rows stay pending and the
   next job rebuilds under the new config.
 Nothing is deleted: the orphaned snapshots are Icechunk garbage for Z-6.
+
+Source errors (the lead's rule on PR #101, amending plan Decision 7): an error
+about the FILE (missing, denied, corrupt, wrong layout, a real egress block)
+is that row's outcome, and the rest of the batch commits. An error in TRANSIT
+(``resolve.is_transport_error``: NODD 5xx or throttling, timeouts, refused or
+reset connections, DNS) fails the whole job with :class:`SourceTransportError`
+before anything is written, and the job retries. The rows that hit it keep
+the take's attempt bump: the next take then works the oldest row alone, so a
+file that never becomes readable climbs to ``MAX_ROW_ATTEMPTS`` by itself and
+ends ``crash_loop``, while an outage that clears appends every row, no gap.
 """
 
 from __future__ import annotations
@@ -30,11 +40,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from obspec_utils.registry import ObjectStoreRegistry
+from obstore.exceptions import NotFoundError
 
 from pipeline.cubes.config import CubeSinkConfig, CubeSinkConfigError, parse_cube_sink_config
 from pipeline.cubes.icerepo import BRANCH, open_repository, read_state, reset_to_root
 from pipeline.cubes.repo import CubeRepo, CubeSink, PendingRow, RowOutcome
-from pipeline.cubes.resolve import ResolvedSource, SourceResolver, SourceUnavailable
+from pipeline.cubes.resolve import (
+    ResolvedSource,
+    SourceResolver,
+    SourceUnavailable,
+    is_transport_error,
+)
 from pipeline.cubes.source import SourceLibs
 from pipeline.cubes.steps import LayoutError, parse_header, step_value
 from pipeline.cubes.write import BatchResult, ParsedStep, error_text, write_batch
@@ -59,6 +75,18 @@ REASON_UNSUPPORTED_LAYOUT = "unsupported_layout"
 
 AfterBatch = Callable[[CubeSink, CubeSinkConfig, BatchResult], Awaitable[None]]
 Parse = Callable[[str, ObjectStoreRegistry, CubeSinkConfig], Any]
+
+
+class SourceTransportError(Exception):
+    """Source reads failed in transit (``is_transport_error``): the job fails
+    and retries. ``row_ids`` keep the take's attempt bump; the batch's other
+    rows are given back, and nothing reaches the cube or the ledger."""
+
+    def __init__(self, row_ids: frozenset[int], first: BaseException) -> None:
+        n = len(row_ids)
+        reads = "source read" if n == 1 else "source reads"
+        super().__init__(f"{n} {reads} failed in transit; first: {error_text(first)}")
+        self.row_ids = row_ids
 
 
 def _utcnow() -> dt.datetime:
@@ -132,8 +160,12 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
         # crashes still count (#90). A cleanup failure (likely the same DB
         # blip) is logged and must not replace the original exception: the
         # rows then keep their bump, which is the conservative direction.
+        # A source read that failed in transit is the exception: its rows keep
+        # the bump, so a file NODD never serves ends `crash_loop` alone after
+        # MAX_ROW_ATTEMPTS reads instead of failing every retry forever.
+        kept = exc.row_ids if isinstance(exc, SourceTransportError) else frozenset()
         try:
-            await deps.repo.release_rows(sink.id, [r.id for r in rows])
+            await deps.repo.release_rows(sink.id, [r.id for r in rows if r.id not in kept])
         except Exception:
             logger.exception(
                 "cube_append: could not release rows", extra={"cube_sink_id": sink.id}
@@ -174,14 +206,23 @@ async def _append_rows(
             outcomes[row.id] = RowOutcome(row.id, "skipped", REASON_LATE)
         live = [r for r in live if r.item_datetime >= cutoff]
     sources: list[tuple[PendingRow, ResolvedSource]] = []
+    #: row id -> the error of a source read that failed in transit
+    transient: dict[int, BaseException] = {}
     for row in live:
         try:
             resolved = await deps.resolver.resolve(sink.source_collection_id, row.item_id)
         except SourceUnavailable as exc:
-            outcomes[row.id] = RowOutcome(row.id, exc.status, exc.reason)
+            if is_transport_error(exc):  # DNS failed while vetting the endpoint
+                _in_transit(transient, row, exc)
+            else:
+                outcomes[row.id] = RowOutcome(row.id, exc.status, exc.reason)
             continue
         sources.append((row, resolved))
-    parsed = await _parse_all(sources, config, deps, outcomes)
+    parsed = await _parse_all(sources, config, deps, outcomes, transient)
+    if transient:
+        # Fail the job before writing anything: the retry (30 s apart, then
+        # cube_kick) re-reads the whole batch once the source answers again.
+        raise SourceTransportError(frozenset(transient), next(iter(transient.values())))
 
     result: BatchResult | None = None
     if parsed:
@@ -240,6 +281,14 @@ async def _append_rows(
         report.requeued = True
 
 
+def _in_transit(transient: dict[int, BaseException], row: PendingRow, exc: BaseException) -> None:
+    logger.warning(
+        "cube_append: source read failed in transit; the job will retry",
+        extra={"item_id": row.item_id, "row_id": row.id, "error": error_text(exc)},
+    )
+    transient[row.id] = exc
+
+
 def _age_cutoff(config: CubeSinkConfig, now: dt.datetime) -> dt.datetime | None:
     window = config.window
     if window is None or window.max_age_seconds is None:
@@ -252,6 +301,7 @@ async def _parse_all(
     config: CubeSinkConfig,
     deps: AppendDeps,
     outcomes: dict[int, RowOutcome],
+    transient: dict[int, BaseException],
 ) -> list[ParsedStep]:
     if not sources:
         return []
@@ -265,7 +315,7 @@ async def _parse_all(
                 # a HEAD after the parse could pair new bytes with old offsets.
                 last_modified = await deps.resolver.last_modified(source)
                 step = await asyncio.to_thread(deps.parse, source.url, registry, config)
-            except FileNotFoundError:
+            except (FileNotFoundError, NotFoundError):
                 outcomes[row.id] = RowOutcome(row.id, "skipped", REASON_SOURCE_MISSING)
                 return None
             except LayoutError as exc:
@@ -276,6 +326,9 @@ async def _parse_all(
                 outcomes[row.id] = RowOutcome(row.id, "skipped", REASON_UNSUPPORTED_LAYOUT)
                 return None
             except Exception as exc:
+                if is_transport_error(exc):  # not the file's fault: retry the job
+                    _in_transit(transient, row, exc)
+                    return None
                 logger.warning(
                     "cube_append: header parse failed",
                     exc_info=True,

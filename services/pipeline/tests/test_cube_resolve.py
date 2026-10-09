@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import json
+import socket
 
 import pytest
 
 from _cube_sources import SOURCE_LAST_MODIFIED, local_libs, scan, write_goes_file
 from pipeline.config import Settings
+from pipeline.connections import egress
 from pipeline.connections.envelope import load_master_key, seal
 from pipeline.connections.repo import ConnectionRow
 from pipeline.cubes.resolve import (
     PgSourceResolver,
     ResolvedSource,
     SourceUnavailable,
+    is_transport_error,
     pick_hdf_href,
 )
 from pipeline.ingest.repo import IngestAssociation
@@ -140,6 +143,37 @@ async def test_egress_blocked_fails_the_row_with_the_message():
         await resolver.resolve("src", "item-1")
     assert exc.value.status == "failed"
     assert "meta.internal" in exc.value.reason
+
+
+async def test_a_dns_failure_is_a_transport_error_looked_up_once_per_job(monkeypatch):
+    # The real resolve_pinned, with DNS down: EgressBlocked from a gaierror.
+    monkeypatch.setattr(platform, "resolve_pinned", egress.resolve_pinned)
+    lookups: list[str] = []
+
+    def no_dns(host, *args, **kwargs):
+        lookups.append(host)
+        raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", no_dns)
+    resolver, _ = _resolver({"x.nc": BASE + NC}, [_assoc()])
+    for item in ("item-1", "item-2"):
+        with pytest.raises(SourceUnavailable) as exc:
+            await resolver.resolve("src", item)
+        assert exc.value.status == "failed"
+        assert "DNS resolution failed" in exc.value.reason
+        assert is_transport_error(exc.value)  # the job retries; the row is not failed
+    assert lookups == ["s3.us-east-1.amazonaws.com"]  # once per connection per job
+
+
+async def test_a_genuine_egress_block_is_not_a_transport_error():
+    blocked = _assoc({"bucket": "b", "endpoint": "http://meta.internal", "force_path_style": True,
+                      "anonymous": True})
+    resolver, _ = _resolver({"x.nc": "http://meta.internal/b/x.nc"}, [blocked])
+    for item in ("item-1", "item-2"):  # the second answer comes from the per-job cache
+        with pytest.raises(SourceUnavailable) as exc:
+            await resolver.resolve("src", item)
+        assert exc.value.status == "failed"
+        assert not is_transport_error(exc.value)
 
 
 async def test_last_modified_is_the_object_head(tmp_path):

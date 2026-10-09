@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import socket
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,7 @@ import icechunk as ic
 import obstore
 import pytest
 import xarray as xr
+from obstore.exceptions import GenericError, NotFoundError, PermissionDeniedError
 
 import pipeline.cubes.write as write_mod
 from _cube_fake import FakeCubeRepo, FakeSink
@@ -24,11 +26,14 @@ from _cube_sources import (
     scan,
     write_goes_file,
 )
+from _fake_nodd import FakeNodd
+from pipeline.connections.egress import EgressBlocked
 from pipeline.cubes.append import (
     BATCH_LIMIT,
     MAX_ROW_ATTEMPTS,
     PARSE_CONCURRENCY,
     AppendDeps,
+    SourceTransportError,
     run_cube_append,
 )
 from pipeline.cubes.icerepo import BRANCH
@@ -260,20 +265,196 @@ async def test_unsupported_layout_and_late(h):
 
 async def test_one_bad_file_fails_only_its_row(h):
     await h.pend(0, 1, 2)
-    real = parse_header
-
-    def flaky(url, registry, config):
-        if url.endswith("/1.nc"):
-            raise OSError("connection reset by peer")
-        return real(url, registry, config)
-
-    await run_cube_append(SINK, h.deps(parse=flaky))
+    (h.root / "1.nc").write_bytes(b"not an HDF5 file" * 64)  # a corrupt header
+    await run_cube_append(SINK, h.deps())
     assert h.ledger() == {
         "i0": ("appended", None),
-        "i1": ("failed", "OSError: connection reset by peer"),
+        "i1": ("failed", "OSError: Unable to synchronously open file (file signature not found)"),
         "i2": ("appended", None),
     }
     assert h.times() == ns(0, 2)
+
+
+async def test_file_specific_errors_stay_row_outcomes(h):
+    await h.pend(0, 1, 2, 3)
+    real = parse_header
+
+    def per_file(url, registry, config):
+        if url.endswith("/1.nc"):
+            raise PermissionDeniedError("The operation lacked the necessary privileges")
+        if url.endswith("/2.nc"):
+            raise NotFoundError("Object at location 2.nc not found")
+        if url.endswith("/3.nc"):
+            raise ValueError("corrupt header")
+        return real(url, registry, config)
+
+    await run_cube_append(SINK, h.deps(parse=per_file))
+    assert h.ledger() == {
+        "i0": ("appended", None),
+        "i1": ("failed", "PermissionDeniedError: The operation lacked the necessary privileges"),
+        "i2": ("skipped", "source_missing"),
+        "i3": ("failed", "ValueError: corrupt header"),
+    }
+
+
+def _in_transit(*names: str, outage: list[bool] | None = None):
+    """A parse whose reads of ``names`` fail in transit (NODD 503) while
+    ``outage[0]`` is set; every read fails when ``names`` is empty."""
+    outage = outage if outage is not None else [True]
+    reads: list[str] = []
+
+    def parse(url, registry, config):
+        name = url.rsplit("/", 1)[1]
+        reads.append(name)
+        if outage[0] and (not names or name in names):
+            raise GenericError(f"Generic S3 error: HEAD {name}: 503 Slow Down")
+        return parse_header(url, registry, config)
+
+    return parse, reads, outage
+
+
+async def test_a_transport_error_fails_the_job_and_keeps_only_its_rows_attempt(h):
+    await h.pend(0, 1, 2)
+    parse, _, outage = _in_transit("1.nc")
+    with pytest.raises(SourceTransportError) as exc:
+        await run_cube_append(SINK, h.deps(parse=parse))
+    i1 = h.repo.ledger[(SINK, "i1")].id
+    assert exc.value.row_ids == frozenset({i1})
+    assert set(h.ledger().values()) == {("pending", None)}  # no ledger change
+    assert [r.attempts for r in h.repo.rows(SINK)] == [0, 1, 0]  # only i1 keeps its bump
+    assert h.sink().last_snapshot_id is None  # no commit
+    assert h.sink().last_error.startswith(
+        "SourceTransportError: 1 source read failed in transit; first: GenericError:"
+    )
+    assert h.enqueued == []
+
+    outage[0] = False  # NODD is back: every row appends, no gap
+    while await h.repo.has_pending(SINK):
+        await run_cube_append(SINK, h.deps(parse=parse))
+    assert h.ledger() == {f"i{n}": ("appended", None) for n in (0, 1, 2)}
+    assert h.times() == ns(0, 1, 2)
+    assert h.sink().last_error is None
+
+
+async def test_a_transport_error_at_the_head_counts_too(h):
+    await h.pend(0, 1)
+    real_head = h.resolver.last_modified
+
+    async def head(source):
+        if source.key == "1.nc":
+            raise TimeoutError("HEAD timed out")
+        return await real_head(source)
+
+    h.resolver.last_modified = head  # type: ignore[method-assign]
+    with pytest.raises(SourceTransportError, match="first: TimeoutError: HEAD timed out"):
+        await run_cube_append(SINK, h.deps())
+    assert [r.attempts for r in h.repo.rows(SINK)] == [0, 1]
+
+
+async def test_a_file_that_never_becomes_readable_crash_loops_alone(h):
+    await h.pend(0, 1, 2, 3)
+    parse, reads, _ = _in_transit("1.nc")
+    for _ in range(30):
+        if not await h.repo.has_pending(SINK):
+            break
+        with contextlib.suppress(SourceTransportError):
+            await run_cube_append(SINK, h.deps(parse=parse))
+    assert h.ledger() == {
+        "i0": ("appended", None),
+        "i1": ("failed", "crash_loop"),
+        "i2": ("appended", None),
+        "i3": ("appended", None),
+    }
+    assert h.times() == ns(0, 2, 3)
+    assert reads.count("1.nc") == MAX_ROW_ATTEMPTS  # six reads, then crash_loop unread
+
+
+async def test_a_nodd_wide_outage_fails_every_run_and_leaves_no_gap(h):
+    await h.pend(0, 1, 2)
+    parse, _, outage = _in_transit()  # every read fails
+    with pytest.raises(SourceTransportError, match=r"^3 source reads failed in transit"):
+        await run_cube_append(SINK, h.deps(parse=parse))
+    for _ in range(2):  # later takes work the oldest row alone
+        with pytest.raises(SourceTransportError, match=r"^1 source read failed in transit"):
+            await run_cube_append(SINK, h.deps(parse=parse))
+    assert set(h.ledger().values()) == {("pending", None)}
+    # the first run keeps every bump; later takes isolate the oldest row
+    assert [r.attempts for r in h.repo.rows(SINK)] == [3, 1, 1]
+    assert h.sink().last_snapshot_id is None
+
+    outage[0] = False
+    while await h.repo.has_pending(SINK):
+        await run_cube_append(SINK, h.deps(parse=parse))
+    assert h.ledger() == {f"i{n}": ("appended", None) for n in (0, 1, 2)}
+    assert h.times() == ns(0, 1, 2)
+
+
+async def test_a_dns_failure_at_resolve_retries_but_a_real_egress_block_fails_the_row(h):
+    await h.pend(0)
+    try:
+        try:
+            raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+        except socket.gaierror as gai:
+            raise EgressBlocked("egress to s3.example is blocked: DNS resolution failed") from gai
+    except EgressBlocked as blocked:
+        try:
+            raise SourceUnavailable("failed", f"EgressBlocked: {blocked}") from blocked
+        except SourceUnavailable as unavailable:
+            dns = unavailable
+    h.resolver.items["dns"] = dns
+    h.resolver.items["eg"] = SourceUnavailable("failed", "EgressBlocked: egress to x is blocked")
+    await h.repo.record_appends([LedgerEntry(SINK, i, scan(5)) for i in ("dns", "eg")])
+    with pytest.raises(SourceTransportError):
+        await run_cube_append(SINK, h.deps())
+    assert set(h.ledger().values()) == {("pending", None)}
+    assert {r.item_id: r.attempts for r in h.repo.rows(SINK)} == {"i0": 0, "dns": 1, "eg": 0}
+
+    del h.resolver.items["dns"]  # DNS is back (and the item now resolves as missing)
+    while await h.repo.has_pending(SINK):
+        await run_cube_append(SINK, h.deps())
+    assert h.ledger() == {
+        "i0": ("appended", None),
+        "dns": ("skipped", "source_missing"),
+        "eg": ("failed", "EgressBlocked: egress to x is blocked"),
+    }
+
+
+@pytest.fixture
+def nodd_h(tmp_path):
+    nodd = FakeNodd(tmp_path / "bucket")
+    repo = FakeCubeRepo(sinks=[FakeSink(SINK, "src", "cube", config=dict(GOES_CONFIG))])
+    harness = Harness(nodd.root, repo, FakeResolver(nodd.libs()), ic.in_memory_storage())
+    yield harness, nodd
+    nodd.close()
+
+
+async def test_through_real_obstore_a_503_retries_and_a_404_is_source_missing(nodd_h):
+    h, nodd = nodd_h
+    await h.pend(0, 1, 2)
+    h.resolver.items["gone"] = "gone.nc"
+    h.resolver.items["denied"] = "denied.nc"
+    write_goes_file(h.root / "denied.nc", when=scan(4))
+    nodd.faults["denied.nc"] = 403
+    await h.repo.record_appends([LedgerEntry(SINK, i, scan(3)) for i in ("gone", "denied")])
+    nodd.faults["1.nc"] = 503
+    with pytest.raises(SourceTransportError, match="GenericError: Generic S3 error"):
+        await run_cube_append(SINK, h.deps())
+    assert set(h.ledger().values()) == {("pending", None)}
+    assert {r.item_id: r.attempts for r in h.repo.rows(SINK)}["i1"] == 1
+
+    del nodd.faults["1.nc"]  # NODD recovers
+    while await h.repo.has_pending(SINK):
+        await run_cube_append(SINK, h.deps())
+    ledger = h.ledger()
+    assert {k: ledger[k] for k in ("i0", "i1", "i2", "gone")} == {
+        "i0": ("appended", None),
+        "i1": ("appended", None),
+        "i2": ("appended", None),
+        "gone": ("skipped", "source_missing"),
+    }
+    assert ledger["denied"][0] == "failed"
+    assert ledger["denied"][1].startswith("PermissionDeniedError:")
+    assert h.times() == ns(0, 1, 2)
 
 
 async def test_a_row_past_the_attempt_cap_fails_crash_loop(h):
