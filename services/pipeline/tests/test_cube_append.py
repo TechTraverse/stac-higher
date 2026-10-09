@@ -143,6 +143,7 @@ async def test_a_first_commit_that_loses_to_an_app_write_stays_provisional(h):
     assert (lost.committed, lost.recorded, lost.requeued) == (True, False, True)
     assert h.sink().last_snapshot_id is None
     assert set(h.ledger().values()) == {("pending", None)}
+    assert [r.attempts for r in h.repo.rows(SINK)] == [0, 0]  # the take is given back
     assert h.enqueued == [SINK]
 
     won = await run_cube_append(SINK, h.deps())  # the next job rebuilds under v2
@@ -190,6 +191,7 @@ async def test_a_sink_disabled_or_deleted_before_the_write_ends_quietly(h):
 
         report = await run_cube_append(SINK, h.deps(parse=vanish))
         assert (report.taken, report.committed, report.recorded) == (1, False, False)
+        assert h.repo.rows(SINK)[0].attempts == 0  # the take is given back
         if not gone:
             assert h.ledger() == {"i0": ("pending", None)}
             assert h.sink().last_error is None
@@ -217,7 +219,7 @@ async def test_redone_steps_of_a_recorded_cube_are_duplicates(h):
         await run_cube_append(SINK, h.deps())
     recorded = h.sink().last_snapshot_id
     report = await run_cube_append(SINK, h.deps())
-    assert not report.committed
+    assert (report.committed, report.recorded) == (False, False)  # nothing to record
     assert h.ledger() == {"i0": ("appended", "duplicate"), "i1": ("appended", "duplicate")}
     assert {r.snapshot_id for r in h.repo.rows(SINK)} == {recorded}
     assert h.times() == ns(0, 1)

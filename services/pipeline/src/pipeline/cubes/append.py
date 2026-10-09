@@ -176,7 +176,10 @@ async def _append_rows(
         # config this job parsed with).
         fresh = await deps.repo.load_sink(sink.id)
         if fresh is None or not fresh.enabled:
-            return  # as at job start: a disabled sink's rows wait
+            # As at job start: a disabled sink's rows wait. Nothing crashed,
+            # so the take's attempts are given back (finished rows unaffected).
+            await deps.repo.release_rows(sink.id, [r.id for r in rows])
+            return
         libs = list({source.libs.prefix: source.libs for _, source in sources}.values())
         result, prefixes = await asyncio.to_thread(
             _write,
@@ -193,11 +196,15 @@ async def _append_rows(
             result.snapshot_id != sink.last_snapshot_id
             or set(prefixes) != set(sink.source_prefixes)
         )
-        if needs_record and not await _record(deps.repo, sink, result, prefixes, deps.now()):
-            await deps.enqueue_next(sink.id)
-            report.requeued = True
-            return
-        report.recorded = True
+        if needs_record:
+            if not await _record(deps.repo, sink, result, prefixes, deps.now()):
+                # Lost the first-commit race: the rows wait for the next job,
+                # and losing is not a crash, so the attempts are given back.
+                await deps.repo.release_rows(sink.id, [r.id for r in rows])
+                await deps.enqueue_next(sink.id)
+                report.requeued = True
+                return
+            report.recorded = True
         for row_id, (status, reason) in result.outcomes.items():
             snapshot = result.snapshot_id if status == "appended" else None
             outcomes[row_id] = RowOutcome(row_id, status, reason, snapshot)
