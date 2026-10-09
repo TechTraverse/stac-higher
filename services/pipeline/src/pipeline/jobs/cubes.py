@@ -20,6 +20,8 @@ drains every pending ledger row when it runs (§5.1).
   rows remain. Retry: ``CUBE_APPEND_RETRY`` (shares Procrastinate's attempt
   budget with ``retry_stalled``'s cap of 3). A source read that fails in
   transit ends the job without raising; this kick paces that retry (I-145).
+  After the commit is recorded and before the ledger is written, it
+  publishes the cube on its collection (``cubes.collection``, Z-5).
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from collections.abc import Awaitable, Callable
 
 from pipeline.config import Settings
 from pipeline.cubes.append import AppendDeps, run_cube_append
+from pipeline.cubes.collection import production_after_batch
 from pipeline.cubes.icerepo import cube_storage
 from pipeline.cubes.repo import CubeRepo, PgCubeRepo
 from pipeline.cubes.resolve import PgSourceResolver
@@ -118,6 +121,7 @@ def production_append_deps(
         resolver=PgSourceResolver.from_settings(settings, master_key),
         storage_for=lambda sink: cube_storage(settings, sink.cube_collection_id),
         enqueue_next=enqueue_next,
+        after_batch=production_after_batch(settings),
     )
 
 

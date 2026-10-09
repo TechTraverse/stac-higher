@@ -8,6 +8,7 @@ import pipeline.jobs.cubes as cubes_jobs
 from _cube_fake import FakeCubeRepo, FakeLedgerRow, FakeSink
 from pipeline.config import Settings
 from pipeline.cubes.append import AppendDeps, AppendReport
+from pipeline.cubes.collection import PgCollectionPublisher
 from pipeline.cubes.repo import LedgerEntry
 from pipeline.cubes.resolve import PgSourceResolver
 from pipeline.jobs.cubes import (
@@ -211,3 +212,9 @@ async def test_production_deps_wire_the_real_seams(repo: FakeCubeRepo):
     assert "prefix: assets/cube1/_cube" in repr(deps.storage_for(sink))
     await deps.enqueue_next("s1")
     assert q.jobs[0].lock == q.jobs[0].queueing_lock == "cube:s1"
+    publisher = deps.after_batch.__self__
+    assert isinstance(publisher, PgCollectionPublisher)
+    assert (publisher.database_url, publisher.bucket) == (
+        settings.database_url,
+        settings.staging_bucket,
+    )
