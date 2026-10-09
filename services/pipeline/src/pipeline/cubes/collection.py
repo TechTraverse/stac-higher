@@ -45,8 +45,11 @@ import numpy as np
 from rasterio.crs import CRS
 from rasterio.errors import CRSError
 
+from pipeline.config import Settings
+from pipeline.cubes.append import AfterBatch
 from pipeline.cubes.config import CubeSinkConfig
 from pipeline.cubes.icerepo import cube_prefix
+from pipeline.cubes.repo import CubeSink
 from pipeline.cubes.steps import StaticSpec
 from pipeline.cubes.write import BatchResult
 
@@ -281,3 +284,75 @@ def plan_publish(
     if merged == content:
         return UNCHANGED, None
     return PUBLISHED, merged
+
+
+@dataclass
+class PgCollectionPublisher:
+    database_url: str
+    #: the platform bucket the repository lives in (``Settings.staging_bucket``)
+    bucket: str
+    #: how long to wait for the collection row; a BFF edit holds it for
+    #: milliseconds, so a longer wait is a stuck transaction (retry later)
+    lock_timeout: str = "10s"
+
+    async def _connect(self):  # pragma: no cover - thin pool wrapper
+        from pipeline.db.pool import get_async_pool
+
+        return (await get_async_pool(self.database_url)).connection()
+
+    async def publish(self, sink: CubeSink, config: CubeSinkConfig, result: BatchResult) -> str:
+        from psycopg.types.json import Jsonb
+
+        href = cube_href(self.bucket, sink.cube_collection_id)
+        async with await self._connect() as conn, conn.transaction():
+            await conn.execute("SELECT set_config('lock_timeout', %s, true)", (self.lock_timeout,))
+            cur = await conn.execute(
+                "SELECT content FROM pgstac.collections WHERE id = %s FOR NO KEY UPDATE",
+                (sink.cube_collection_id,),
+            )
+            row = await cur.fetchone()
+            recorded = None
+            if row is not None:
+                # Read AFTER the lock: a run recording a newer tip from here on
+                # publishes after this transaction, so the last write wins.
+                cur = await conn.execute(
+                    "SELECT last_snapshot_id, source_prefixes FROM stac_higher.cube_sinks"
+                    " WHERE id = %s",
+                    (sink.id,),
+                )
+                found = await cur.fetchone()
+                if found is not None:
+                    recorded = Recorded(found[0], tuple(found[1] or ()))
+            outcome, merged = plan_publish(
+                row[0] if row is not None else None,
+                recorded,
+                sink_id=sink.id,
+                config=config,
+                result=result,
+                href=href,
+            )
+            if merged is not None:
+                await conn.execute("SELECT pgstac.update_collection(%s)", (Jsonb(merged),))
+        log = logger.warning if outcome == MISSING_COLLECTION else logger.info
+        log(
+            "cube collection asset",
+            extra={
+                "cube_sink_id": sink.id,
+                "collection_id": sink.cube_collection_id,
+                "snapshot_id": result.snapshot_id,
+                "steps": len(result.values),
+                "outcome": outcome,
+            },
+        )
+        return outcome
+
+    async def after_batch(
+        self, sink: CubeSink, config: CubeSinkConfig, result: BatchResult
+    ) -> None:
+        await self.publish(sink, config, result)
+
+
+def production_after_batch(settings: Settings) -> AfterBatch:
+    """The ``AfterBatch`` both cube jobs wire in (``cube_append``, Z-6's
+    ``cube_maintain_sink``)."""
+    return PgCollectionPublisher(settings.database_url, settings.staging_bucket).after_batch
