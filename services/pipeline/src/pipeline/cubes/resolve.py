@@ -13,8 +13,9 @@ never used.
 Source errors split in two (the lead's rule on PR #101, amending plan
 Decision 7). File-specific errors (missing, denied, corrupt, wrong layout, a
 real egress block) are the row's outcome. Transport errors (:func:`is_transport_error`)
-are the NODD or the network failing, not the file, so the job fails and
-retries instead: a row failed by an outage could never be backfilled.
+are the NODD or the network failing, not the file, so the job ends instead
+and the next ``cube_kick`` retries it: a row failed by an outage could never
+be backfilled.
 """
 
 from __future__ import annotations
@@ -74,8 +75,8 @@ _TRANSPORT: tuple[type[BaseException], ...] = (
 
 def is_transport_error(exc: BaseException | None) -> bool:
     """Whether a source read failed in transit rather than on the file (the
-    lead's rule on PR #101, amending plan Decision 7): the job then fails and
-    retries, instead of failing the row for good.
+    lead's rule on PR #101, amending plan Decision 7): the job then ends and
+    the next ``cube_kick`` retries it, instead of failing the row for good.
 
     Walks the whole ``__cause__``/``__context__`` chain (h5py and
     obspec-utils may wrap the obstore error); the outermost decisive link

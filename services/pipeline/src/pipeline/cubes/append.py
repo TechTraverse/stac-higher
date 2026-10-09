@@ -23,11 +23,14 @@ Source errors (the lead's rule on PR #101, amending plan Decision 7): an error
 about the FILE (missing, denied, corrupt, wrong layout, a real egress block)
 is that row's outcome, and the rest of the batch commits. An error in TRANSIT
 (``resolve.is_transport_error``: NODD 5xx or throttling, timeouts, refused or
-reset connections, DNS) fails the whole job with :class:`SourceTransportError`
-before anything is written, and the job retries. The rows that hit it keep
-the take's attempt bump: the next take then works the oldest row alone, so a
-file that never becomes readable climbs to ``MAX_ROW_ATTEMPTS`` by itself and
-ends ``crash_loop``, while an outage that clears appends every row, no gap.
+reset connections, DNS) ends the job with :class:`SourceTransportError` before
+anything is written: ``last_error`` is set and the job returns WITHOUT raising,
+so Procrastinate does not retry it (each retry would be another take and
+another bump). The 5-minute ``cube_kick`` re-enqueues the sink and paces the
+retries. The rows that hit the error keep the take's attempt bump: the next
+take then works the oldest row alone, so a file that never becomes readable
+climbs to ``MAX_ROW_ATTEMPTS`` by itself (about 6 kicks, ~25-30 min) and ends
+``crash_loop``, while an outage that clears appends every row, no gap (I-145).
 """
 
 from __future__ import annotations
@@ -78,9 +81,10 @@ Parse = Callable[[str, ObjectStoreRegistry, CubeSinkConfig], Any]
 
 
 class SourceTransportError(Exception):
-    """Source reads failed in transit (``is_transport_error``): the job fails
-    and retries. ``row_ids`` keep the take's attempt bump; the batch's other
-    rows are given back, and nothing reaches the cube or the ledger."""
+    """Source reads failed in transit (``is_transport_error``): the job ends
+    and the next ``cube_kick`` retries it. ``row_ids`` keep the take's attempt
+    bump; the batch's other rows are given back, and nothing reaches the cube
+    or the ledger. ``run_cube_append`` catches it; it never reaches the queue."""
 
     def __init__(self, row_ids: frozenset[int], first: BaseException) -> None:
         n = len(row_ids)
@@ -119,6 +123,9 @@ class AppendReport:
     committed: bool = False
     recorded: bool = False
     requeued: bool = False
+    #: rows whose source read failed in transit: nothing was finished, and the
+    #: job returned for the next cube_kick to retry (``requeued`` stays False)
+    in_transit: int = 0
 
 
 async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
@@ -162,8 +169,9 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
         # rows then keep their bump, which is the conservative direction.
         # A source read that failed in transit is the exception: its rows keep
         # the bump, so a file NODD never serves ends `crash_loop` alone after
-        # MAX_ROW_ATTEMPTS reads instead of failing every retry forever.
-        kept = exc.row_ids if isinstance(exc, SourceTransportError) else frozenset()
+        # MAX_ROW_ATTEMPTS takes instead of failing every retry forever.
+        transport = isinstance(exc, SourceTransportError)
+        kept = exc.row_ids if transport else frozenset()
         try:
             await deps.repo.release_rows(sink.id, [r.id for r in rows if r.id not in kept])
         except Exception:
@@ -176,7 +184,16 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
             logger.exception(
                 "cube_append: could not record the error", extra={"cube_sink_id": sink.id}
             )
-        raise
+        if not transport:
+            raise
+        # Not raised: a Procrastinate retry (3 x 30 s) would be three more takes
+        # and bumps within 90 s. The 5-minute cube_kick re-enqueues the sink
+        # while rows are pending, so it paces the retries (~6 kicks per row).
+        report.in_transit = len(kept)
+        logger.warning(
+            "cube_append: source reads failed in transit; the next cube_kick retries",
+            extra={"cube_sink_id": sink.id, "rows": len(kept), "error": str(exc)},
+        )
     return report
 
 
@@ -220,8 +237,8 @@ async def _append_rows(
         sources.append((row, resolved))
     parsed = await _parse_all(sources, config, deps, outcomes, transient)
     if transient:
-        # Fail the job before writing anything: the retry (30 s apart, then
-        # cube_kick) re-reads the whole batch once the source answers again.
+        # End the job before writing anything: the next cube_kick re-reads the
+        # whole batch once the source answers again.
         raise SourceTransportError(frozenset(transient), next(iter(transient.values())))
 
     result: BatchResult | None = None
@@ -283,7 +300,7 @@ async def _append_rows(
 
 def _in_transit(transient: dict[int, BaseException], row: PendingRow, exc: BaseException) -> None:
     logger.warning(
-        "cube_append: source read failed in transit; the job will retry",
+        "cube_append: source read failed in transit; the next cube_kick retries",
         extra={"item_id": row.item_id, "row_id": row.id, "error": error_text(exc)},
     )
     transient[row.id] = exc

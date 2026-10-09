@@ -1654,23 +1654,34 @@ if a requeued `cube_append` is ever seen during a sink's first commit.
 
 ### I-145 · A NODD outage longer than a row's retry budget leaves a gap in the cube 🟡
 
-`cube_append` fails the job, rather than the row, when a source read fails in
-transit (NODD 5xx or throttling, timeouts, refused connections, DNS:
-`cubes/resolve.py::is_transport_error`; the lead's decision on PR #101). The
-job retries (3 × 30 s, then the 5-minute `cube_kick`) and an outage that clears
-appends every row with no gap. The rows that hit the error keep their attempt,
-so a file NODD never serves cannot fail every retry forever: the next take
-works the oldest row alone, and it ends `failed: crash_loop` after 6 reads.
+`cube_append` does not fail a row when a source read fails in transit (NODD
+5xx or throttling, timeouts, refused connections, DNS:
+`cubes/resolve.py::is_transport_error`; the lead's decision on PR #101). It
+ends the job before writing anything, sets the sink's `last_error` and returns
+without raising, so Procrastinate does not retry it (each queue retry would be
+another take and another attempt within 90 s). The 5-minute `cube_kick`
+re-enqueues the sink while rows are pending, which paces the retries, and an
+outage that clears appends every row with no gap. The rows that hit the error
+keep their attempt, so a file NODD never serves cannot be retried forever: the
+next take works the oldest row alone, and it ends `failed: crash_loop` after
+6 reads.
 
 The cost: an outage longer than the oldest row's budget fails rows
 `crash_loop` **one at a time, oldest first**. Derived from the schedule (one
-job = the first run plus 3 retries 30 s apart; the next job comes from
-`cube_kick` ≤ 5 min later), the oldest row's 6 reads take about **3–8 minutes**
-when reads fail fast (obstore gives up on a 503 after ~5 s of its own retries,
-~4 s on a refused connection, measured locally), and each later row about as
-long. Reads that time out are slower: obstore retries one read for up to
-3 minutes by default, so a row's budget stretches to roughly 15–25 minutes,
-and the first 50-row run of such an outage alone can take ~40 minutes.
+take per kick; the 7th take fails the row unread):
+- **Reads that fail fast** (obstore gives up on a 503 after ~5 s of its own
+  retries, ~4 s on a refused connection, measured locally): the oldest row is
+  failed **25–30 minutes** after its first failed read. Each later row already
+  holds one attempt from the outage's first 50-row take, and the job
+  re-enqueues itself right after a `crash_loop`, so each takes about
+  **20–25 minutes**.
+- **Reads that time out**: obstore retries one read for up to 3 minutes by
+  default, so the outage's first 50-row run (4 reads at a time) alone takes
+  about 40 minutes and the oldest row is failed after roughly **an hour**. Each
+  single-row run then fits inside the 5-minute kick spacing, so later rows take
+  about 20–25 minutes each.
+- New items for the source collection wake the sink between kicks, and each
+  wake-up is another take, so a busy collection can spend a budget faster.
 
 A gap is a missing time step only. The `t` axis holds only the times that were
 appended, so the other steps, tiles and EDR series read normally, and the gap

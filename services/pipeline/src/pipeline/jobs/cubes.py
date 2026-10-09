@@ -18,7 +18,8 @@ drains every pending ledger row when it runs (§5.1).
   event loop, appends them virtually in one Icechunk commit, trims the
   window, records the commit and the ledger, and re-enqueues itself while
   rows remain. Retry: ``CUBE_APPEND_RETRY`` (shares Procrastinate's attempt
-  budget with ``retry_stalled``'s cap of 3).
+  budget with ``retry_stalled``'s cap of 3). A source read that fails in
+  transit ends the job without raising; this kick paces that retry (I-145).
 """
 
 from __future__ import annotations

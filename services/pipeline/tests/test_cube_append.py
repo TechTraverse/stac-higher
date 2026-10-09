@@ -33,7 +33,6 @@ from pipeline.cubes.append import (
     MAX_ROW_ATTEMPTS,
     PARSE_CONCURRENCY,
     AppendDeps,
-    SourceTransportError,
     run_cube_append,
 )
 from pipeline.cubes.icerepo import BRANCH
@@ -313,20 +312,20 @@ def _in_transit(*names: str, outage: list[bool] | None = None):
     return parse, reads, outage
 
 
-async def test_a_transport_error_fails_the_job_and_keeps_only_its_rows_attempt(h):
+async def test_a_transport_error_ends_the_job_and_keeps_only_its_rows_attempt(h):
     await h.pend(0, 1, 2)
     parse, _, outage = _in_transit("1.nc")
-    with pytest.raises(SourceTransportError) as exc:
-        await run_cube_append(SINK, h.deps(parse=parse))
-    i1 = h.repo.ledger[(SINK, "i1")].id
-    assert exc.value.row_ids == frozenset({i1})
+    report = await run_cube_append(SINK, h.deps(parse=parse))  # no raise: no queue retry
+    assert (report.taken, report.in_transit, report.requeued) == (3, 1, False)
+    assert (report.appended, report.skipped, report.failed) == (0, 0, 0)
+    assert not report.committed
     assert set(h.ledger().values()) == {("pending", None)}  # no ledger change
     assert [r.attempts for r in h.repo.rows(SINK)] == [0, 1, 0]  # only i1 keeps its bump
     assert h.sink().last_snapshot_id is None  # no commit
     assert h.sink().last_error.startswith(
         "SourceTransportError: 1 source read failed in transit; first: GenericError:"
     )
-    assert h.enqueued == []
+    assert h.enqueued == []  # the next cube_kick paces the retry
 
     outage[0] = False  # NODD is back: every row appends, no gap
     while await h.repo.has_pending(SINK):
@@ -346,19 +345,19 @@ async def test_a_transport_error_at_the_head_counts_too(h):
         return await real_head(source)
 
     h.resolver.last_modified = head  # type: ignore[method-assign]
-    with pytest.raises(SourceTransportError, match="first: TimeoutError: HEAD timed out"):
-        await run_cube_append(SINK, h.deps())
+    report = await run_cube_append(SINK, h.deps())
+    assert report.in_transit == 1
+    assert h.sink().last_error.endswith("first: TimeoutError: HEAD timed out")
     assert [r.attempts for r in h.repo.rows(SINK)] == [0, 1]
 
 
 async def test_a_file_that_never_becomes_readable_crash_loops_alone(h):
     await h.pend(0, 1, 2, 3)
     parse, reads, _ = _in_transit("1.nc")
-    for _ in range(30):
+    for _ in range(30):  # each run: a cube_kick (or the job's own re-enqueue)
         if not await h.repo.has_pending(SINK):
             break
-        with contextlib.suppress(SourceTransportError):
-            await run_cube_append(SINK, h.deps(parse=parse))
+        await run_cube_append(SINK, h.deps(parse=parse))
     assert h.ledger() == {
         "i0": ("appended", None),
         "i1": ("failed", "crash_loop"),
@@ -369,14 +368,16 @@ async def test_a_file_that_never_becomes_readable_crash_loops_alone(h):
     assert reads.count("1.nc") == MAX_ROW_ATTEMPTS  # six reads, then crash_loop unread
 
 
-async def test_a_nodd_wide_outage_fails_every_run_and_leaves_no_gap(h):
+async def test_a_nodd_wide_outage_ends_every_run_and_leaves_no_gap(h):
     await h.pend(0, 1, 2)
     parse, _, outage = _in_transit()  # every read fails
-    with pytest.raises(SourceTransportError, match=r"^3 source reads failed in transit"):
-        await run_cube_append(SINK, h.deps(parse=parse))
-    for _ in range(2):  # later takes work the oldest row alone
-        with pytest.raises(SourceTransportError, match=r"^1 source read failed in transit"):
-            await run_cube_append(SINK, h.deps(parse=parse))
+    first = await run_cube_append(SINK, h.deps(parse=parse))
+    assert first.in_transit == 3
+    assert h.sink().last_error.startswith("SourceTransportError: 3 source reads failed")
+    for _ in range(2):  # later takes (one per cube_kick) work the oldest row alone
+        later = await run_cube_append(SINK, h.deps(parse=parse))
+        assert (later.taken, later.in_transit, later.requeued) == (1, 1, False)
+    assert h.enqueued == []
     assert set(h.ledger().values()) == {("pending", None)}
     # the first run keeps every bump; later takes isolate the oldest row
     assert [r.attempts for r in h.repo.rows(SINK)] == [3, 1, 1]
@@ -404,8 +405,7 @@ async def test_a_dns_failure_at_resolve_retries_but_a_real_egress_block_fails_th
     h.resolver.items["dns"] = dns
     h.resolver.items["eg"] = SourceUnavailable("failed", "EgressBlocked: egress to x is blocked")
     await h.repo.record_appends([LedgerEntry(SINK, i, scan(5)) for i in ("dns", "eg")])
-    with pytest.raises(SourceTransportError):
-        await run_cube_append(SINK, h.deps())
+    assert (await run_cube_append(SINK, h.deps())).in_transit == 1
     assert set(h.ledger().values()) == {("pending", None)}
     assert {r.item_id: r.attempts for r in h.repo.rows(SINK)} == {"i0": 0, "dns": 1, "eg": 0}
 
@@ -437,8 +437,8 @@ async def test_through_real_obstore_a_503_retries_and_a_404_is_source_missing(no
     nodd.faults["denied.nc"] = 403
     await h.repo.record_appends([LedgerEntry(SINK, i, scan(3)) for i in ("gone", "denied")])
     nodd.faults["1.nc"] = 503
-    with pytest.raises(SourceTransportError, match="GenericError: Generic S3 error"):
-        await run_cube_append(SINK, h.deps())
+    assert (await run_cube_append(SINK, h.deps())).in_transit == 1
+    assert "GenericError: Generic S3 error" in h.sink().last_error
     assert set(h.ledger().values()) == {("pending", None)}
     assert {r.item_id: r.attempts for r in h.repo.rows(SINK)}["i1"] == 1
 
