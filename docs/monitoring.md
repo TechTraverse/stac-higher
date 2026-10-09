@@ -126,6 +126,49 @@ marks on BFF item/collection deletes; `archived` refuses item writes and new
 associations (409). Nothing is deleted on an unconfigured platform.
 Residuals (grace-window item-id reuse, datetime-keyed retention): I-59.
 
+## Cube repositories (Z-6, ADR 0022)
+
+A virtual cube's Icechunk repository at `assets/{cube}/_cube/` is the one
+place bytes are deleted outside `asset_gc`. The deleter is Icechunk's own GC,
+and it runs only on a sink with a `window`. `pipeline.cube_maintain`
+(`23 * * * *`) enqueues one `pipeline.cube_maintain_sink` per **enabled**
+sink. Each job takes the sink's `lock` (`cube:{id}`), so it never runs
+alongside that sink's appends. A dead worker's maintenance job is recovered
+by `cube_kick`, like an append. One run (`pipeline/cubes/maintain.py`):
+
+1. deletes the sink's terminal ledger rows (`cube_appends`) last updated more
+   than 7 days ago; `pending` rows are kept;
+2. opens the repository, if it exists (maintenance never creates one);
+3. **only with a window**:
+   - trims by age when the source has stopped: if nothing is pending and
+     the tip is the recorded snapshot, it drops the steps the window no
+     longer holds in one commit and records it (`last_snapshot_id`);
+   - runs `expire_snapshots` and then `garbage_collect`, both with the cutoff `now − CUBE_SNAPSHOT_RETENTION_SECONDS` (default 1 h), lowered so that every snapshot that was the tip within that window survives (`expiry_cutoff`): a reader still on the previous tip keeps working;
+4. republishes the recorded tip on the cube collection (Z-5's writer,
+   idempotent);
+5. lists the prefix and records object counts and bytes per kind.
+
+The result goes into `cube_sinks.last_maintenance` on every run.
+`last_maintained_at` is set only on success.
+
+| `last_maintenance` key | Meaning |
+|---|---|
+| `status` | `ok`, `attention` (see `attention`) or `failed` (see `error`) |
+| `attention` | Reasons: `repo_size` (total ≥ `CUBE_REPO_WARN_BYTES`, default 1 GiB) and `gc_delete_failures` (GC could not delete some objects). Each one also logs a WARNING. |
+| `started_at`, `finished_at`, `durations_ms` | ISO times; per-phase milliseconds (`trim`, `expire`, `gc`, `list`) |
+| `window`, `repository` | Whether the sink has a window, and whether its repository exists |
+| `trimmed`, `published` | Steps the age trim dropped, and whether the collection asset was republished |
+| `expired_snapshots`, `gc` | Snapshots expired, and Icechunk's `GCSummary` counters (`snapshots_deleted`, `manifests_deleted`, `chunks_deleted`, `transaction_logs_deleted`, `attributes_deleted`, `bytes_deleted`, `objects_failed_to_delete`, the first 5 `delete_errors`). Both are `null` without a window. |
+| `sizes`, `total_objects`, `total_bytes`, `warn_bytes` | Per kind `{objects, bytes}` for `transactions`, `overwritten`, `manifests`, `snapshots`, `chunks` and `other` (the `repo` object, config) |
+| `ledger_pruned` | Ledger rows deleted |
+
+Expiry and GC keep snapshots, manifests and chunks flat. They never delete
+`transactions/` or `overwritten/`, which grow by one object each per commit
+(I-143, about 8 MB a day per cube). Those two kinds in `sizes` are the ones to
+watch. At the 1 GiB default, a 5-minute cube reaches `attention` after about
+four months. A sink without a window is never trimmed or garbage-collected,
+so its `snapshots` and `manifests` grow too.
+
 ## Table hygiene (M2-G, ADR 0012) & metrics (M2-H)
 
 `item_events` and `audit_log` are monthly-partitioned (migration 018,
