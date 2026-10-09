@@ -200,7 +200,7 @@ def _attempt(
     after = read_state(session, dim)
     trimmed = trim_count(after.values, config.window, now)
     if trimmed:
-        _trim(session, after, trimmed)
+        trim_steps(session, after, trimmed)
     if session.has_uncommitted_changes:
         snapshot_id = commit_session(session, _message(accepted, trimmed))
         committed = True
@@ -229,7 +229,7 @@ def _is_storage_error(exc: BaseException | None) -> bool:
     return False
 
 
-def _trim(session: ic.Session, state: CubeState, k: int) -> None:
+def trim_steps(session: ic.Session, state: CubeState, k: int) -> None:
     """Drop the ``k`` oldest steps of every time-dimensioned array (spike
     soak.py): shift the chunk grid down, then shrink. Every time array has
     time chunk 1, so a shift of ``k`` chunks is ``k`` steps."""
