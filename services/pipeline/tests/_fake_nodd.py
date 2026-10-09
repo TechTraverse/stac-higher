@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime as dt
 import email.utils
 import gc
+import os
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -119,8 +120,14 @@ class FakeNodd:
         _, bucket, key = path.split("/", 2)
         self.hits[key] = self.hits.get(key, 0) + 1
         status = 503 if self.down else self.faults.get(key)
-        target = self.root / key
-        if status is None and (bucket != BUCKET or not target.is_file()):
+        # Keys never leave the fixture root: "../" in a request is a 404.
+        root = os.path.realpath(self.root)
+        target = os.path.realpath(os.path.join(root, key))
+        if status is None and (
+            bucket != BUCKET
+            or not target.startswith(root + os.sep)
+            or not os.path.isfile(target)
+        ):
             status = 404
         if status is not None:
             code, message = _ERRORS[status]
@@ -135,8 +142,9 @@ class FakeNodd:
             if body:
                 req.wfile.write(xml)
             return
-        data = target.read_bytes()
-        stat = target.stat()
+        with open(target, "rb") as f:
+            data = f.read()
+        stat = os.stat(target)
         span = req.headers.get("Range") if body else None
         if span:
             first, last = span.split("=", 1)[1].split("-", 1)
