@@ -1,27 +1,33 @@
-"""Z-3 cube jobs: the per-sink lock, the cube_kick backstop, the stub."""
+"""Cube jobs: the per-sink lock, the cube_kick backstop, the cube_append handler."""
 
 import datetime as dt
 
 import pytest
 
+import pipeline.jobs.cubes as cubes_jobs
 from _cube_fake import FakeCubeRepo, FakeLedgerRow, FakeSink
 from pipeline.config import Settings
+from pipeline.cubes.append import AppendDeps, AppendReport
 from pipeline.cubes.repo import LedgerEntry
+from pipeline.cubes.resolve import PgSourceResolver
 from pipeline.jobs.cubes import (
+    CUBE_APPEND_RETRY,
     JOB_CUBE_APPEND,
     JOB_CUBE_KICK,
     KICK_CRON,
     KICK_STALE_SECONDS,
-    REASON_NOT_IMPLEMENTED,
     cube_append_enqueuer,
     cube_lock,
     enqueue_cube_append,
+    production_append_deps,
     register,
 )
-from pipeline.queue.interface import QUEUE_DEFAULT, Enqueued
+from pipeline.queue.interface import QUEUE_DEFAULT, Enqueued, RetrySpec
 from pipeline.queue.memory import InMemoryQueue
 
 T0 = dt.datetime(2026, 10, 3, 17, 0, tzinfo=dt.UTC)
+DEPS = object()  # what deps_factory hands the (patched) run_cube_append
+KEY_B64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 
 @pytest.fixture
@@ -36,9 +42,23 @@ def repo() -> FakeCubeRepo:
 
 
 @pytest.fixture
-def queue(repo: FakeCubeRepo) -> InMemoryQueue:
+def ran(monkeypatch) -> list[str]:
+    """Sink ids the handler ran run_cube_append for (the append is Task 9's)."""
+    calls: list[str] = []
+
+    async def fake_run(cube_sink_id: str, deps) -> AppendReport:
+        assert deps is DEPS
+        calls.append(cube_sink_id)
+        return AppendReport()
+
+    monkeypatch.setattr(cubes_jobs, "run_cube_append", fake_run)
+    return calls
+
+
+@pytest.fixture
+def queue(repo: FakeCubeRepo, ran: list[str]) -> InMemoryQueue:
     q = InMemoryQueue()
-    register(q, Settings.from_env(env={}), repo=repo)
+    register(q, Settings.from_env(env={}), repo=repo, deps_factory=lambda: DEPS)
     return q
 
 
@@ -46,6 +66,8 @@ def test_registration(queue: InMemoryQueue):
     assert queue.queues[JOB_CUBE_APPEND] == QUEUE_DEFAULT
     assert queue.periodic[JOB_CUBE_KICK].cron == KICK_CRON == "*/5 * * * *"
     assert KICK_STALE_SECONDS == 120
+    assert queue.retry_specs[JOB_CUBE_APPEND] == CUBE_APPEND_RETRY
+    assert RetrySpec(max_attempts=3, wait_seconds=30) == CUBE_APPEND_RETRY
 
 
 def test_cube_lock_is_per_sink():
@@ -111,7 +133,7 @@ async def test_kick_against_a_waiting_job_coalesces(queue: InMemoryQueue, repo: 
 
 
 async def test_kick_recovers_a_stranded_append_a_waiting_job_covers(
-    queue: InMemoryQueue, repo: FakeCubeRepo
+    queue: InMemoryQueue, repo: FakeCubeRepo, ran: list[str]
 ):
     await repo.record_appends([LedgerEntry("s1", "a", T0)])
     repo.backdate("s1", "a", KICK_STALE_SECONDS + 1)
@@ -119,12 +141,12 @@ async def test_kick_recovers_a_stranded_append_a_waiting_job_covers(
     queue.strand(stranded.job_id)  # its worker was SIGKILLed: holds cube:s1
     await enqueue_cube_append(queue, "s1")  # a later wake: waiting, blocked
     await queue.run_pending()
-    assert repo.rows("s1")[0].status == "pending"  # wedged
+    assert ran == []  # wedged
 
     await queue.run_periodic(JOB_CUBE_KICK, timestamp=1_700_000_000)
     await queue.run_pending()
     assert [j.status for j in queue.jobs] == ["failed", "done"]
-    assert repo.rows("s1")[0].status == "failed"  # the stub ran: unwedged
+    assert ran == ["s1"]  # unwedged
 
 
 async def test_kick_requeues_a_stranded_append_with_nothing_waiting(queue: InMemoryQueue):
@@ -159,20 +181,33 @@ async def test_kick_still_kicks_stale_sinks_when_stalled_recovery_fails(
     ]
 
 
-async def test_stub_marks_pending_rows_failed_not_implemented(
-    queue: InMemoryQueue, repo: FakeCubeRepo
-):
-    await repo.record_appends(
-        [
-            LedgerEntry("s1", "a", T0),
-            LedgerEntry("s1", "b", T0, status="skipped", reason="no_datetime"),
-            LedgerEntry("s2", "c", T0),
-        ]
-    )
+async def test_cube_append_runs_the_append_for_its_sink(queue: InMemoryQueue, ran: list[str]):
     await enqueue_cube_append(queue, "s1")
     await queue.run_pending()
-    assert [(r.item_id, r.status, r.reason, r.attempts) for r in repo.rows("s1")] == [
-        ("a", "failed", REASON_NOT_IMPLEMENTED, 1),
-        ("b", "skipped", "no_datetime", 0),
-    ]
-    assert repo.rows("s2")[0].status == "pending"  # another sink's rows untouched
+    assert ran == ["s1"]
+    assert queue.jobs[0].status == "done"
+
+
+async def test_cube_append_without_a_master_key_leaves_rows_waiting(repo: FakeCubeRepo):
+    q = InMemoryQueue()
+    register(q, Settings.from_env(env={}), repo=repo)  # production deps, no key
+    await repo.record_appends([LedgerEntry("s1", "a", T0)])
+    await enqueue_cube_append(q, "s1")
+    await q.run_pending()
+    assert q.jobs[0].status == "done"
+    assert repo.rows("s1")[0].status == "pending"
+
+
+async def test_production_deps_wire_the_real_seams(repo: FakeCubeRepo):
+    q = InMemoryQueue()
+    register(q, Settings.from_env(env={}), repo=repo)
+    settings = Settings.from_env(
+        env={"CREDENTIALS_MASTER_KEY": KEY_B64, "EGRESS_ALLOW_HOSTS": "minio"}
+    )
+    deps = production_append_deps(settings, q, repo)
+    assert isinstance(deps, AppendDeps)
+    assert isinstance(deps.resolver, PgSourceResolver)
+    sink = await repo.load_sink("s1")
+    assert "prefix: assets/cube1/_cube" in repr(deps.storage_for(sink))
+    await deps.enqueue_next("s1")
+    assert q.jobs[0].lock == q.jobs[0].queueing_lock == "cube:s1"

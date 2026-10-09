@@ -13,19 +13,28 @@ drains every pending ledger row when it runs (§5.1).
   since it would hold its sink's lock forever. It then re-enqueues sinks
   holding ``pending`` rows older than 2 minutes, recovering a job lost between
   the ledger insert and the enqueue (§5.3).
-- ``pipeline.cube_append`` is a **Z-3 stub**: it marks the sink's pending rows
-  ``failed`` with reason ``not_implemented``. Z-4 (#90) replaces it with the
-  real append. It writes nothing to ``cube_sinks``.
+- ``pipeline.cube_append`` runs ``cubes.append.run_cube_append`` (Z-4): it
+  claims up to 50 pending rows, parses their headers 4 at a time off the
+  event loop, appends them virtually in one Icechunk commit, trims the
+  window, records the commit and the ledger, and re-enqueues itself while
+  rows remain. Retry: ``CUBE_APPEND_RETRY`` (shares Procrastinate's attempt
+  budget with ``retry_stalled``'s cap of 3). A source read that fails in
+  transit ends the job without raising; this kick paces that retry (I-145).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
 
 from pipeline.config import Settings
+from pipeline.cubes.append import AppendDeps, run_cube_append
+from pipeline.cubes.icerepo import cube_storage
 from pipeline.cubes.repo import CubeRepo, PgCubeRepo
-from pipeline.queue.interface import Enqueued, QueueBackend
+from pipeline.cubes.resolve import PgSourceResolver
+from pipeline.jobs._common import load_key_or_skip
+from pipeline.queue.interface import Enqueued, QueueBackend, RetrySpec
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +43,9 @@ JOB_CUBE_KICK = "pipeline.cube_kick"
 KICK_CRON = "*/5 * * * *"
 #: §5.3: a pending row this old with no job in sight was probably stranded.
 KICK_STALE_SECONDS = 120
-#: The stub's failure reason (free text; failed reasons are not a closed set).
-REASON_NOT_IMPLEMENTED = "not_implemented"
+#: §6: three attempts. RetrySpec waits a fixed time (no exponential form), and
+#: Procrastinate counts retry_stalled requeues in the same attempts budget.
+CUBE_APPEND_RETRY = RetrySpec(max_attempts=3, wait_seconds=30)
 
 
 def cube_lock(cube_sink_id: str) -> str:
@@ -91,22 +101,48 @@ async def kick_stale_sinks(repo: CubeRepo, queue: QueueBackend) -> int:
     return len(cube_sink_ids)
 
 
+def production_append_deps(
+    settings: Settings, queue: QueueBackend, repo: CubeRepo
+) -> AppendDeps | None:
+    """The real seams, or ``None`` without a credential master key (logged by
+    ``load_key_or_skip``; the rows wait for the next kick)."""
+    master_key = load_key_or_skip(settings, JOB_CUBE_APPEND)
+    if master_key is None:
+        return None
+
+    async def enqueue_next(cube_sink_id: str) -> Enqueued:
+        return await enqueue_cube_append(queue, cube_sink_id)
+
+    return AppendDeps(
+        repo=repo,
+        resolver=PgSourceResolver.from_settings(settings, master_key),
+        storage_for=lambda sink: cube_storage(settings, sink.cube_collection_id),
+        enqueue_next=enqueue_next,
+    )
+
+
 def register(
-    queue: QueueBackend, settings: Settings, *, repo: CubeRepo | None = None
+    queue: QueueBackend,
+    settings: Settings,
+    *,
+    repo: CubeRepo | None = None,
+    deps_factory: Callable[[], AppendDeps | None] | None = None,
 ) -> None:
     def _repo() -> CubeRepo:
         return repo if repo is not None else PgCubeRepo(settings.database_url)
 
     async def cube_append(cube_sink_id: str) -> None:
-        # Z-3 stub (spec §15): Z-4 (#90) replaces this with the real append.
-        failed = await _repo().fail_pending(cube_sink_id, REASON_NOT_IMPLEMENTED)
-        logger.warning(
-            "cube_append is not implemented yet; pending rows marked failed",
-            extra={
-                "cube_sink_id": cube_sink_id,
-                "rows": failed,
-                "reason": REASON_NOT_IMPLEMENTED,
-            },
+        deps = (
+            deps_factory()
+            if deps_factory is not None
+            else production_append_deps(settings, queue, _repo())
+        )
+        if deps is None:
+            return
+        report = await run_cube_append(cube_sink_id, deps)
+        logger.info(
+            "cube_append finished",
+            extra={"cube_sink_id": cube_sink_id, **dataclasses.asdict(report)},
         )
 
     async def cube_kick(timestamp: int) -> None:
@@ -117,7 +153,6 @@ def register(
                 extra={"sinks": kicked, "scheduled_timestamp": timestamp},
             )
 
-    # Default queue: the append reads headers, not bytes (spec §6). Retry is
-    # Z-4's (§6: 3 attempts); the stub cannot fail usefully.
-    queue.register_task(cube_append, name=JOB_CUBE_APPEND)
+    # Default queue: the append reads headers, not bytes (spec §6).
+    queue.register_task(cube_append, name=JOB_CUBE_APPEND, retry=CUBE_APPEND_RETRY)
     queue.register_periodic(cube_kick, name=JOB_CUBE_KICK, cron=KICK_CRON)

@@ -1616,6 +1616,96 @@ Revisit when any of these happens:
 - an Icechunk release mentions transaction-log or `overwritten/` cleanup.
 - Tracked in: [Z-1 results §4](research/2026-10-03-virtual-cube-spike.md#4-soak); [ADR 0022](decisions/0022-virtual-cube-sink.md) (the GC exception it scopes).
 
+### I-144 · A double run during a cube's first commit can mislabel ledger rows 🟡
+
+While a sink has no recorded snapshot, its repository is provisional (Z-4): a
+job that finds unrecorded data resets `main` to the root snapshot before
+writing. The job reads the sink again just before that write, so it never
+resets a snapshot another run has already recorded. A second `cube_append`
+still overlaps the first when a stalled-job requeue starts it while the first
+is committing (a job blocking its event loop > 300 s, #90). If the second run
+re-reads the sink after the first committed but before it recorded, it resets
+the first run's snapshot and writes its own:
+- **Usually only labels are wrong.** Both runs claimed the same oldest pending
+  rows, so the second run rewrites every step of the first. The cube's data and
+  `cube_sinks.last_snapshot_id` end correct; the first run's rows are finished
+  `appended` with a snapshot id the reset orphaned.
+- **One narrower window loses data.** If older rows were inserted between the
+  two claims (late-arriving items), they can push some of the first run's rows
+  out of the second run's 50. Those rows are finished `appended` by the first
+  run, but the second run's reset dropped their steps, so the cube does not
+  hold them. Nothing re-appends them. The window needs a stalled-job requeue,
+  during the sink's very first commit, with a full batch and an older item
+  landing between the two claims.
+
+Related:
+- After the first commit, `record_commit` is unconditional. In a double run,
+  the slower recorder can move `cube_sinks.last_snapshot_id` back to an older
+  snapshot until the next commit records the tip.
+- Rows appended and trimmed in the same commit read `appended` with a
+  snapshot that no longer holds them. After crash recovery, such rows read
+  `late`.
+- A sink deleted while its repository is provisional (no recorded snapshot)
+  leaves the repository in storage until the cube collection is deleted
+  (`asset_gc`).
+
+Accepted for v1; revisit if the ledger's `snapshot_id` ever drives a reader, or
+if a requeued `cube_append` is ever seen during a sink's first commit.
+
+### I-145 · A NODD outage longer than a row's retry budget leaves a gap in the cube 🟡
+
+`cube_append` does not fail a row when a source read fails in transit (NODD
+5xx or throttling, timeouts, refused connections, DNS:
+`cubes/resolve.py::is_transport_error`; the lead's decision on PR #101). The
+first such error stops the batch: no further row is resolved or read, and
+reads already in flight (at most 4) finish. The job then ends before writing
+anything, sets the sink's `last_error` and returns without raising, so
+Procrastinate does not retry it (each queue retry would be another take and
+another attempt within 90 s). The 5-minute `cube_kick` re-enqueues the sink
+while rows are pending, which paces the retries. Only the oldest row that
+failed in transit keeps its attempt; every other row is given back. The next
+take works that row alone, so a file NODD never serves cannot be retried
+forever: it ends `failed: crash_loop` after 6 reads. An outage that clears
+costs one isolated run for that row, then the batch appends as usual, with no
+gap.
+
+The cost: an outage longer than the oldest row's budget fails rows
+`crash_loop` **one at a time, oldest first**. Derived from the schedule (one
+take per kick; the 7th take fails the row unread), the budget is about
+**25–30 minutes per row**:
+- **Reads that fail fast** (obstore gives up on a 503 after ~5 s of its own
+  retries, ~4 s on a refused connection, measured locally): one run takes
+  seconds.
+- **Reads that time out**: obstore retries one read for up to 3 minutes by
+  default, so a run takes about 3 minutes (the first wave of 4 reads times out
+  together, and nothing more is started). That still fits between kicks, so
+  the budget is the same, but each such run holds the sink's lock and a worker
+  for those 3 minutes.
+- After a `crash_loop`, the job re-enqueues itself and the next oldest row
+  starts its own budget at once.
+- New items for the source collection wake the sink between kicks, and each
+  wake-up is another take, so a busy collection spends a budget faster.
+
+The most visible cost is a stall, not the gap: while a row that keeps failing
+in transit is the oldest pending row, isolation works it alone and newer steps
+wait, so the cube stops advancing for that row's budget. Several bad keys
+stall it in sequence.
+
+A deterministic `GenericError` takes the same path: obstore reports, for
+example, a 400 or a 301 from a misconfigured endpoint as a `GenericError`,
+indistinguishable here from a 5xx. Its rows end `crash_loop` one at a time,
+and the real error appears only in `cube_sinks.last_error`; the ledger says
+`crash_loop`.
+
+A gap is a missing time step only. The `t` axis holds only the times that were
+appended, so the other steps, tiles and EDR series read normally, and the gap
+rolls off with the window. Nothing re-appends a `crash_loop` row.
+
+A per-sink choice (`on_source_error: retry | skip`) is not offered: it would be
+a change to the cross-runtime sink config (`cube-sink-config` fixture, Zod and
+Python). Accepted for v1; revisit if gaps after NODD incidents matter to users,
+or if the cube needs a backfill path.
+
 ---
 
 ## Resolved — archived

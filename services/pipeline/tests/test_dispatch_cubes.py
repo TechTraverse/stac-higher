@@ -220,7 +220,7 @@ async def test_a_sink_lookup_failure_keeps_the_items_deliveries():
 
 async def test_a_ledger_insert_failure_leaves_the_claim_for_a_redrive():
     h = Harness()
-    h.cubes.record_error = RuntimeError("db down")
+    h.cubes.record_error_exc = RuntimeError("db down")
     h.deliver_to("d1")
     h.add(_event(1, "a"), _item("a"))
     with pytest.raises(RuntimeError):
@@ -231,7 +231,7 @@ async def test_a_ledger_insert_failure_leaves_the_claim_for_a_redrive():
     assert h.deliveries == []
     assert h.cube_jobs() == []
     # The redrive (the next wake) delivers once the insert works.
-    h.cubes.record_error = None
+    h.cubes.record_error_exc = None
     h.repo.claimed.clear()
     await h.dispatch()
     assert [b["association_id"] for b in h.deliveries[0]] == ["d1"]

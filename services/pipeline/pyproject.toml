@@ -23,6 +23,13 @@ dependencies = [
     "defusedxml>=0.7.1",
     "cql2>=0.3",
     "prometheus-client>=0.20",
+    "icechunk>=2.2.2,<3",
+    "virtualizarr[hdf]>=2.7.3,<3",
+    "zarr>=3.4,<4",
+    "obstore>=0.11.1",
+    "h5py>=3.16.0",
+    "xarray>=2026.7.0",
+    "obspec-utils>=0.9.0",
 ]
 
 [project.optional-dependencies]
@@ -87,7 +94,7 @@ asyncio_mode = "auto"
 pythonpath = ["../process-runtime", "../image-scanner"]
 
 [tool.uv]
-no-build-package = ["rasterio"]
+no-build-package = ["rasterio", "h5py", "icechunk"]
 # Three stactools packages (goes-glm, noaa-hrrr, sentinel1) cap pystac below
 # the platform's pin; all eleven work on 1.15.1 (the adapter tests prove it
 # each run). Same override Dockerfile.stactools applies — docs/ISSUES.md I-109.
