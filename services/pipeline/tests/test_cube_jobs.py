@@ -324,6 +324,6 @@ async def test_production_maintain_deps_wire_the_real_seams(repo: FakeCubeRepo):
     deps = production_maintain_deps(settings, repo)
     assert isinstance(deps, MaintainDeps)
     assert (deps.retention_seconds, deps.warn_bytes) == (7200, 4096)
-    assert deps.after_batch is None  # wired by whichever of Z-5 / Z-6 merges second
+    assert deps.after_batch is not None
     sink = await repo.load_sink("s1")
     assert "prefix: assets/cube1/_cube" in repr(deps.storage_for(sink))

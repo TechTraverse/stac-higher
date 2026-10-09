@@ -162,6 +162,7 @@ def production_maintain_deps(settings: Settings, repo: CubeRepo) -> MaintainDeps
         list_objects=platform_lister(settings),
         retention_seconds=settings.cube_snapshot_retention_seconds,
         warn_bytes=settings.cube_repo_warn_bytes,
+        after_batch=production_after_batch(settings),
     )
 
 

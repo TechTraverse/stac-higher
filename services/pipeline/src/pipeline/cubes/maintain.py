@@ -352,8 +352,6 @@ async def _maintain(
     # Z-5's writer publishes only the recorded tip, so the trim is recorded first.
     summary["published"] = False
     if deps.after_batch is not None and rp.state is not None and recorded == rp.tip:
-        # Whoever wires after_batch adds statics=rp.state.statics and
-        # spatial_dims=rp.state.spatial_dims here (Z-5's BatchResult fields).
         await deps.after_batch(
             sink,
             config,
@@ -364,6 +362,8 @@ async def _maintain(
                 values=rp.state.values,
                 trimmed=rp.trimmed,
                 initialised=True,
+                statics=rp.state.statics,
+                spatial_dims=rp.state.spatial_dims,
             ),
         )
         summary["published"] = True

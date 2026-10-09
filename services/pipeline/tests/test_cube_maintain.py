@@ -346,6 +346,8 @@ async def test_the_recorded_tip_is_republished_on_every_run(tmp_path):
     _, result = cube.published[0]
     assert (result.snapshot_id, result.committed, result.trimmed) == (tip, False, 0)
     assert len(result.values) == 2
+    assert set(result.statics) == {"x", "y", "goes_imager_projection"}
+    assert result.spatial_dims == ("y", "x")
 
 
 def test_the_repository_pass_carries_the_grid_for_the_writer(tmp_path):
