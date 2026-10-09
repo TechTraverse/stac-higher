@@ -7,7 +7,7 @@
 **Architecture:**
 - **New module `pipeline/cubes/collection.py`, in two layers.**
   - *Pure builders.* They take the collection document, the sink config and Z-4's `BatchResult`, and return the merged document plus an outcome (`plan_publish`).
-  - *A thin pgstac writer.* `PgCollectionPublisher` runs one transaction on a plain pool connection: `SELECT content … FOR UPDATE`, read the sink's recorded tip, merge, `pgstac.update_collection`.
+  - *A thin pgstac writer.* `PgCollectionPublisher` runs one transaction on a plain pool connection: `SELECT content … FOR NO KEY UPDATE` (under a 10 s `lock_timeout`), read the sink's recorded tip, merge, `pgstac.update_collection`.
 - **`production_after_batch(settings)`** wraps the writer as Z-4's `AfterBatch` hook. `cube_append` wires it in, and Z-6's maintenance trim reuses it (agreed with the Z-6 planner, 2026-10-09).
 - **Z-4's `BatchResult` gains the grid** (`statics`, `spatial_dims`), so the writer never re-reads the repository.
 - **`cube_append` now awaits the hook BEFORE writing the ledger.** That closes the "hook not re-run" gap PR #101 left open.
@@ -22,8 +22,8 @@
 - **Gates:** each task ends green on what it touches. The final task runs `npm run verify` (repo root), plus `uv run pytest` and `uv run ruff check .` from `services/pipeline/`. No e2e, no dev server, no Docker, no load harness.
 - **DB-gated tests** (`test_integration_cube_collection.py`) skip without `DATABASE_URL`. CI runs them against its pgstac service after `npm run db:migrate`, and that is the gate. A teammate does not run them locally. The lead may run them against the compose DB: each test makes and removes its own `z5-cube-<uuid>` collection and sink.
 - **No migration and no DDL** (ADR 0001). The writer READS `cube_sinks.last_snapshot_id` and `source_prefixes`. It writes no `stac_higher.*` row at all.
-- **Collection writes only through `pgstac.update_collection`**, in a transaction that first takes `SELECT content FROM pgstac.collections WHERE id = %s FOR UPDATE`. Use a plain pool connection (`pipeline.db.pool.get_async_pool`), never `stac/pgstac_writer.py`'s item writer pool (spec §6.3).
-- **The writer touches exactly four keys:** `assets.{asset_key}`, `extent.temporal`, `cube:dimensions` and the Datacube entry of `stac_extensions`. Everything else in the document is the user's.
+- **Collection writes only through `pgstac.update_collection`**, in a transaction that sets `lock_timeout` and then takes `SELECT content FROM pgstac.collections WHERE id = %s FOR NO KEY UPDATE` (Decision 13). Use a plain pool connection (`pipeline.db.pool.get_async_pool`), never `stac/pgstac_writer.py`'s item writer pool (spec §6.3).
+- **The writer touches exactly four keys:** `assets.{asset_key}`, `extent.temporal`, `cube:dimensions` and the Datacube entry of `stac_extensions`. It also removes this sink's asset under an earlier key (Decision 15). Everything else in the document is the user's.
 - **The asset shape is spec §3.3, verbatim:** media type `application/vnd.zarr+icechunk`, roles `["data", "references", "virtual", "latest-version"]`, title `Virtual cube`, `version` = the snapshot id, `stac_higher:virtual_chunk_prefixes`, `stac_higher:cube_sink_id`, `stac_higher:time_values` (exact nanosecond RFC 3339 strings with a `Z`).
 - **Datacube extension URL:** `https://stac-extensions.github.io/datacube/v2.2.0/schema.json`.
 - **No audit row per publish** (§14.3). One structured log line, data in `extra={…}` (pipeline logging rule).
@@ -42,23 +42,27 @@
 9. **The Datacube extension is listed once, at v2.2.0.** Any other `datacube/` version the user listed is replaced.
 10. **An unchanged document is not rewritten** (`unchanged`). Equality is checked on the decoded JSON, so a pgstac round trip still compares equal. This keeps a duplicate-only redo or a Z-6 no-op from bumping the collection.
 11. **A missing cube collection is a WARNING and returns `missing_collection`.** It doesn't raise, because the app deletes the sink with its collection, so this is only a race.
-12. **`BatchResult.statics` / `spatial_dims` default to empty.** When they are empty (a caller that didn't read the grid, as Z-6's trim may not), the writer keeps the document's existing spatial dimensions. The layout check forbids a grid change within a cube, so they cannot be stale.
+12. **`BatchResult.statics` / `spatial_dims` default to empty.** When they are empty (a caller that didn't read the grid, as Z-6's trim may not), the writer keeps the document's existing spatial dimensions. The layout check forbids a grid change within a cube, so they cannot be stale. If the document has none (the UI form drops `cube:dimensions`, see Review Focus 1), the writer logs a WARNING and publishes only `t`. That is why Z-6 passes the grid it already reads (`rp.state`, Z-6 plan revision 122f533), and why this plan's Task 5 Step 2b wires it if Z-6 lands first.
+13. **`FOR NO KEY UPDATE`, not the spec's `FOR UPDATE`.** The writer never changes the collection id. `NO KEY UPDATE` still conflicts with the BFF's `UPDATE` (pinned by the concurrency test and its mutation check), but unlike `FOR UPDATE` it does not block the `KEY SHARE` locks item inserts take through `items_collections_fk`, the #41/#43 lock family. (stac-higher-5b review, finding 5.)
+14. **`lock_timeout` = 10 s on the publish transaction.** While it waits, the job holds the sink's `cube:{id}` Procrastinate lock. A BFF edit holds the row for milliseconds, so a longer wait means a stuck transaction. The timeout (`LockNotAvailable`) is a DB error: the rows are released and the job retries. `PgCollectionPublisher.lock_timeout` is a field so the DB test can shorten it. (Finding 3.)
+15. **A renamed `asset_key` moves the sink's asset.** The app treats `asset_key` as not layout (`app/src/lib/cubes/schemas.ts::layoutChanged`), so it can change after a publish. The merge removes every other asset whose `stac_higher:cube_sink_id` is this sink's. Otherwise the old key would stay forever with a frozen `version`, next to a second asset of the cube media type that Z-8 picks by. (Finding 4.)
 
 ## Review Focus
 
-1. **A user's edit made from a stale copy:** a user opens the collection, a publish lands, and the user saves. `pgstac.update_collection` replaces the whole document, so the asset and `cube:dimensions` disappear until the next commit (≤ 5 min at the GOES cadence). The row lock only orders concurrent transactions. Expected: documented in `docs/serving.md`. Spec §7 already accepts hand edits being overwritten.
+1. **Any collection-form save drops `cube:dimensions`, and a stale one rewinds the asset.** `app/src/components/collections/CollectionForm.tsx::formToStacCollection` rebuilds the document from form fields, so unknown top-level keys are lost even when the form loaded a fresh copy. A save from a copy loaded before a publish writes that copy's asset back (an older `version` and `time_values`). The next publish repairs both: within 5 min at the GOES cadence, or at Z-6's hourly republish for a stopped source, as long as the grid is passed (Decision 12). The form bug predates Z-5 and hits every collection; the Z-6 planner is filing it separately. Expected: documented in `docs/serving.md`.
 2. **A real GOES file's projection attributes come back from h5py as one-element arrays and bytes.** Expected: the same PROJJSON and extents as plain values. Pinned by `test_hdf5_attribute_types_read_like_plain_values` (Task 2).
-3. **A publish that keeps failing** (a bug in the writer, not an outage) keeps the batch's rows pending. Each `cube_kick` re-takes, re-HEADs and re-parses them; the cube itself stays correct and `last_error` names the error. Expected: Decision 4 keeps the builders total, so only DB errors raise. Pinned by the malformed-document and unusable-projection tests (Task 2) and `test_a_failing_asset_hook_releases_the_rows_and_the_redo_publishes` (Task 4).
+3. **A publish that keeps failing STOPS the cube.** Every retry re-takes the same 50 oldest pending rows. They are all duplicates by then, so newer rows are never taken and nothing new is appended. Each kick also costs up to 3 Procrastinate attempts × 50 HEADs and parses. It clears when the publish succeeds again, when those rows pass `max_age` (skipped `late` before any parse, so no hook), or never on a sink without `max_age`. `last_error` names the error throughout. Expected: Decision 4 keeps the builders total, so only DB errors raise (an outage, which clears), and Decision 14 bounds a stuck lock. This is stated in the PR. Pinned by the malformed-document and unusable-projection tests (Task 2) and `test_a_failing_asset_hook_releases_the_rows_and_the_redo_publishes` (Task 4).
 4. **Document size:** each step adds ~33 bytes of `time_values`, so 288 steps ≈ 10 KB, and the 10,000-step maximum ≈ 330 KB rides in every `/collections` response. Expected: documented in `docs/serving.md`. No code change in v1 (§14.5 chose the asset over asking the server).
 5. **Nanosecond strings in the browser:** `Date.parse("2026-10-03T17:02:36.714359936Z")` truncates to milliseconds in Node 22 / V8 (checked). Z-8 must select frames by the exact strings, never by a re-serialized `Date`. Expected: documented in `docs/serving.md` for Z-8. Pinned by `test_time_values_are_exact_nanosecond_strings` (Task 2).
 
 ## Pre-validation (2026-10-09)
 
 The plan's code was written and run in this worktree before the plan was saved, then reverted; the patch is in the planning session's scratchpad.
-- `uv run pytest`: 2025 passed, 47 skipped (no `DATABASE_URL`).
-- `DATABASE_URL=…5433… uv run pytest tests/test_integration_cube*.py tests/test_cube_*.py`: 195 passed, 1 skipped (the `CUBE_IT` test).
+- `uv run pytest`: 2028 passed, 48 skipped (no `DATABASE_URL`).
+- `DATABASE_URL=…5433… uv run pytest tests/test_integration_cube*.py tests/test_cube_*.py`: 199 passed, 1 skipped (the `CUBE_IT` test).
 - `ruff check .` is clean.
-- **Mutation check:** dropping `FOR UPDATE` makes `test_a_concurrent_bff_edit_is_not_lost` fail.
+- **Mutation check:** dropping `FOR NO KEY UPDATE` makes `test_a_concurrent_bff_edit_is_not_lost` fail.
+- Revised after the stac-higher-5b review (Decisions 13–15, Review Focus 1 and 3, docs). The revised code was re-run with the numbers above.
 - The compose DB was left with no `z5-cube-%` collection or sink.
 
 ## File Structure
@@ -454,6 +458,28 @@ def test_hdf5_attribute_types_read_like_plain_values():
     res = result()
     res.statics["goes_imager_projection"] = StaticSpec(np.array(0, "i4"), canonical_attrs(raw))
     assert merged(res=res)["cube:dimensions"] == merged()["cube:dimensions"]
+
+
+def test_a_renamed_asset_key_moves_the_sinks_asset():
+    # asset_key is not layout (app lib/cubes/schemas.ts layoutChanged): it can
+    # change after a publish, and the old key must not stay behind frozen
+    before = merged()
+    before["assets"]["other-sink"] = {"href": "x", "stac_higher:cube_sink_id": "sink-2"}
+    renamed = parse_cube_sink_config({**GOES_CONFIG, "asset_key": "c13"})
+    doc = merge_collection(
+        before, config=renamed, result=result(), sink_id="sink-1", href=HREF, prefixes=PREFIXES
+    )
+    assert set(doc["assets"]) == {"thumbnail", "other-sink", "c13"}
+    assert doc["assets"]["c13"]["stac_higher:cube_sink_id"] == "sink-1"
+
+
+def test_a_result_without_the_grid_on_a_document_without_it_warns(caplog):
+    no_dims = {k: v for k, v in merged().items() if k != "cube:dimensions"}
+    res = result(np.array([as_ns(scan(1))]), snapshot="SNAP3", grid=False)
+    with caplog.at_level("WARNING", logger="pipeline.cubes.collection"):
+        doc = merged(no_dims, res)
+    assert set(doc["cube:dimensions"]) == {"t"}
+    assert "no spatial dimensions" in caplog.text
 ```
 
 - [ ] **Step 2: Run them to see them fail.** `uv run pytest tests/test_cube_collection.py -q`. Expected: collection error (`ModuleNotFoundError: No module named 'pipeline.cubes.collection'`).
@@ -469,10 +495,16 @@ cube on its collection: ``assets.{asset_key}``, ``extent.temporal``,
 maintenance trim publishes through the same hook. This is the pipeline's
 first production collection write:
 - One transaction on a plain pool connection, not the item writer pool:
-  ``SELECT … FOR UPDATE`` on the pgstac row, merge, ``pgstac.update_collection``.
-  The row lock serializes against a BFF edit, which also goes through pgstac.
-- Only those four keys change. A user's other edits survive, and a removed
-  asset comes back.
+  ``SELECT … FOR NO KEY UPDATE`` on the pgstac row, merge,
+  ``pgstac.update_collection``. The row lock serializes against a BFF edit,
+  which also goes through pgstac. ``NO KEY`` (spec §6.3 says ``FOR UPDATE``)
+  because the id never changes: it still conflicts with the BFF's UPDATE, but
+  not with the KEY SHARE locks item inserts take through ``items_collections_fk``.
+  A ``lock_timeout`` bounds the wait: the job holds the sink's ``cube:{id}``
+  lock meanwhile, and a timeout is a DB error the job retries.
+- Only those four keys change, plus this sink's asset under an earlier
+  ``asset_key``, which is removed. A user's other edits survive, and a
+  removed asset comes back.
 - Only the sink's RECORDED tip is published (``cube_sinks.last_snapshot_id``,
   read under the lock), so a double run never publishes an older snapshot
   over a newer one (``superseded``).
@@ -483,7 +515,10 @@ The builders never raise on odd metadata: they drop a field
 (``reference_system``, a spatial dimension) instead, because a raise here
 keeps the batch's ledger rows pending while the job retries. The ``x``/``y``
 extents are in the projected metres the cube-server presents: a geostationary
-grid's scan angles (radians) times ``perspective_point_height`` (spec §8.2).
+grid's scan angles times ``perspective_point_height`` (spec §8.2). The
+cube-server also checks ``x.units == "rad"``; the writer cannot, because
+``StaticSpec`` keeps no attributes for 1-D variables, so it assumes radians,
+as CF requires of a geostationary grid's coordinates (true of every GOES file).
 """
 
 from __future__ import annotations
@@ -644,13 +679,21 @@ def merge_collection(
     prefixes: Sequence[str],
 ) -> dict[str, Any]:
     """The collection document with the cube published on it. Touches only
-    ``assets.{asset_key}``, ``extent.temporal``, ``cube:dimensions`` and the
-    Datacube entry of ``stac_extensions``."""
+    ``assets.{asset_key}`` (and this sink's asset under an older key),
+    ``extent.temporal``, ``cube:dimensions`` and the Datacube entry of
+    ``stac_extensions``."""
     merged = copy.deepcopy(dict(content))
     times = time_strings(result.values)
 
     assets = merged.get("assets")
     assets = dict(assets) if isinstance(assets, dict) else {}
+    # asset_key is not layout, so the app lets it change after a publish: this
+    # sink's asset under the old key would stay behind, frozen.
+    assets = {
+        key: asset
+        for key, asset in assets.items()
+        if not (isinstance(asset, dict) and asset.get("stac_higher:cube_sink_id") == sink_id)
+    }
     assets[config.asset_key] = build_asset(
         href=href,
         sink_id=sink_id,
@@ -668,6 +711,13 @@ def merge_collection(
         # The caller did not read the grid (Z-6's trim). The grid cannot
         # change within a cube (the layout check), so keep what is there.
         dims = {k: v for k, v in old_dims.items() if k != config.append_dim}
+        if not dims:
+            # The UI's collection form drops cube:dimensions on every save;
+            # only a caller that passes the grid can put x/y back.
+            logger.warning(
+                "cube collection asset: no spatial dimensions to keep or build",
+                extra={"cube_sink_id": sink_id, "snapshot_id": result.snapshot_id},
+            )
     if times is not None:
         interval = [times[0], times[-1]] if times else [None, None]
         dims = {config.append_dim: {"type": "temporal", "extent": interval}, **dims}
@@ -722,7 +772,7 @@ def plan_publish(
     return PUBLISHED, merged
 ```
 
-- [ ] **Step 4: Run the tests.** `uv run pytest tests/test_cube_collection.py -q`. Expected: 19 passed.
+- [ ] **Step 4: Run the tests.** `uv run pytest tests/test_cube_collection.py -q`. Expected: 21 passed.
 
 - [ ] **Step 5: Lint and commit.**
 
@@ -923,8 +973,8 @@ async def test_a_removed_asset_comes_back(db):
 
 async def test_a_concurrent_bff_edit_is_not_lost(db):
     """The BFF's edit holds the row when the publish starts: the publish waits
-    on FOR UPDATE, then merges into the edited document. A plain SELECT would
-    read the old document and its update would overwrite the edit."""
+    on FOR NO KEY UPDATE, then merges into the edited document. A plain SELECT
+    would read the old document and its update would overwrite the edit."""
     import psycopg
     from psycopg.types.json import Jsonb
 
@@ -938,7 +988,7 @@ async def test_a_concurrent_bff_edit_is_not_lost(db):
             cur = await conn.execute(
                 "SELECT count(*) FROM pg_stat_activity"
                 " WHERE wait_event_type = 'Lock' AND query LIKE %s",
-                ("%FOR UPDATE%",),
+                ("%FOR NO KEY UPDATE%",),
             )
             if (await cur.fetchone())[0]:
                 break
@@ -953,6 +1003,26 @@ async def test_a_concurrent_bff_edit_is_not_lost(db):
     doc = await content(conn, sink.cube_collection_id)
     assert doc["title"] == "bff edit"
     assert doc["assets"]["cube"]["version"] == "SNAP1"
+
+
+async def test_a_row_held_too_long_times_out_instead_of_waiting(db):
+    """The job holds the sink's cube:{id} lock while it waits, so the wait is
+    bounded: the timeout is a DB error, and the job retries."""
+    import psycopg
+    from psycopg.types.json import Jsonb
+
+    conn, sink, publisher = db
+    publisher.lock_timeout = "200ms"
+    held = await content(conn, sink.cube_collection_id)
+    bff = await psycopg.AsyncConnection.connect(DATABASE_URL)
+    try:
+        await bff.execute("SELECT pgstac.update_collection(%s)", (Jsonb(held),))
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            await publisher.publish(sink, CONFIG, result("SNAP1"))
+    finally:
+        await bff.rollback()
+        await bff.close()
+    assert await publisher.publish(sink, CONFIG, result("SNAP1")) == PUBLISHED
 
 
 async def test_a_tip_that_is_not_the_recorded_one_is_not_published(db):
@@ -977,6 +1047,9 @@ class PgCollectionPublisher:
     database_url: str
     #: the platform bucket the repository lives in (``Settings.staging_bucket``)
     bucket: str
+    #: how long to wait for the collection row; a BFF edit holds it for
+    #: milliseconds, so a longer wait is a stuck transaction (retry later)
+    lock_timeout: str = "10s"
 
     async def _connect(self):  # pragma: no cover - thin pool wrapper
         from pipeline.db.pool import get_async_pool
@@ -988,8 +1061,9 @@ class PgCollectionPublisher:
 
         href = cube_href(self.bucket, sink.cube_collection_id)
         async with await self._connect() as conn, conn.transaction():
+            await conn.execute("SELECT set_config('lock_timeout', %s, true)", (self.lock_timeout,))
             cur = await conn.execute(
-                "SELECT content FROM pgstac.collections WHERE id = %s FOR UPDATE",
+                "SELECT content FROM pgstac.collections WHERE id = %s FOR NO KEY UPDATE",
                 (sink.cube_collection_id,),
             )
             row = await cur.fetchone()
@@ -1040,7 +1114,7 @@ def production_after_batch(settings: Settings) -> AfterBatch:
     return PgCollectionPublisher(settings.database_url, settings.staging_bucket).after_batch
 ```
 
-- [ ] **Step 4: Run the tests.** `uv run pytest tests/test_cube_collection.py tests/test_integration_cube_collection.py -q`. Expected: 19 passed, 5 skipped without a DB. Lead only, optionally: `DATABASE_URL=postgresql://username:password@localhost:5433/postgis uv run pytest tests/test_integration_cube_collection.py -q` should give 5 passed, then `SELECT count(*) FROM pgstac.collections WHERE id LIKE 'z5-cube-%'` should be 0. CI runs these against its own pgstac.
+- [ ] **Step 4: Run the tests.** `uv run pytest tests/test_cube_collection.py tests/test_integration_cube_collection.py -q`. Expected: 21 passed, 6 skipped without a DB. Lead only, optionally: `DATABASE_URL=postgresql://username:password@localhost:5433/postgis uv run pytest tests/test_integration_cube_collection.py -q` should give 6 passed, then `SELECT count(*) FROM pgstac.collections WHERE id LIKE 'z5-cube-%'` should be 0. CI runs these against its own pgstac.
 
 - [ ] **Step 5: Lint and commit.**
 
@@ -1098,6 +1172,24 @@ async def test_a_failing_asset_hook_releases_the_rows_and_the_redo_publishes(h):
     assert tips == [tip, tip]
     assert h.sink().last_snapshot_id == tip
     assert h.ledger() == {"i0": ("appended", "duplicate"), "i1": ("appended", "duplicate")}
+
+
+async def test_a_ledger_failure_after_the_publish_republishes_the_same_tip(h):
+    tips: list[str] = []
+
+    async def hook(sink, config, result):
+        tips.append(result.snapshot_id)
+
+    await h.pend(0)
+    h.repo.finish_error = RuntimeError("worker killed")  # published, ledger not written
+    with pytest.raises(RuntimeError):
+        await run_cube_append(SINK, h.deps(after_batch=hook))
+    tip = h.sink().last_snapshot_id
+    assert tips == [tip]
+    assert h.ledger() == {"i0": ("pending", None)}
+    await run_cube_append(SINK, h.deps(after_batch=hook))  # the redo: a duplicate
+    assert tips == [tip, tip]  # the writer sees an unchanged document
+    assert h.ledger() == {"i0": ("appended", "duplicate")}
 ```
 
 In `tests/test_cube_jobs.py`, add `from pipeline.cubes.collection import PgCollectionPublisher` to the imports. At the end of `test_production_deps_wire_the_real_seams`, add:
@@ -1141,7 +1233,7 @@ Replace the `after_batch` field comment on `AppendDeps` with:
 
 - [ ] **Step 4: Wire production.** In `jobs/cubes.py`, add `from pipeline.cubes.collection import production_after_batch` after the `pipeline.cubes.append` import. Then add `after_batch=production_after_batch(settings),` as the last argument of the `AppendDeps(...)` in `production_append_deps`. Update the module docstring's `pipeline.cube_append` bullet by appending this sentence to it: "After the commit is recorded and before the ledger is written, it publishes the cube on its collection (`cubes.collection`, Z-5)."
 
-- [ ] **Step 5: Run the whole suite.** `uv run pytest -q`. Expected: all pass (2025 passed, 47 skipped at pre-validation). `test_after_batch_runs_after_every_batch_that_reached_the_cube` must still pass unchanged.
+- [ ] **Step 5: Run the whole suite.** `uv run pytest -q`. Expected: all pass (2028 passed, 48 skipped at pre-validation). `test_after_batch_runs_after_every_batch_that_reached_the_cube` must still pass unchanged.
 
 - [ ] **Step 6: Lint and commit.**
 
@@ -1197,20 +1289,30 @@ serves it as tiles and EDR is Z-7.
   `extent.temporal`, `cube:dimensions` and the Datacube entry of
   `stac_extensions`, and rewrites them on every publish; every other key is
   the user's. A hand edit to those four lasts until the next commit, and a
-  deleted asset comes back. pgstac has no partial update, so an edit saved
-  from a copy read **before** a publish replaces the whole document: the
-  asset is gone until the next commit (≤ 5 min at the GOES cadence).
+  deleted asset comes back. Renaming the sink's `asset_key` moves the asset:
+  the sink's asset under the old key is removed.
+- **Collection-form saves:** the UI's collection form rebuilds the document
+  from its fields (`CollectionForm.tsx::formToStacCollection`), so every save
+  drops `cube:dimensions`. A save from a copy loaded before a publish also
+  writes that copy's older asset back. The next publish repairs both: the next
+  commit (≤ 5 min at the GOES cadence), or the hourly maintenance run for a
+  source that has stopped.
 - **`version`** is the snapshot the sink recorded
   (`cube_sinks.last_snapshot_id`). Only that tip is published, under a row lock
-  on the collection, so a double run never publishes an older snapshot.
+  on the collection (`FOR NO KEY UPDATE`, 10 s `lock_timeout`), so a double run
+  never publishes an older snapshot.
 - **`stac_higher:time_values`** holds the exact nanosecond `t` values. Build
   frames from this list and select `t` with these strings verbatim (or
   `nearest::`). JavaScript's `Date` truncates them to milliseconds, so never
-  round-trip them through it.
+  round-trip them through it. Never take `t` from `extent.temporal` either: a
+  user's PUT through stac-fastapi-pgstac truncates it to microseconds, while
+  `time_values` and `cube:dimensions.t` keep full precision.
 - **`x`/`y` extents are projected metres:** a geostationary grid's scan angle
   times `perspective_point_height`, the same rescale the cube-server applies.
-  `reference_system` is the grid mapping's PROJJSON, for `geostationary` only
-  in v1; any other grid omits it.
+  The writer assumes the stored `x`/`y` are radians, as CF requires of a
+  geostationary grid (it cannot read their `units`; the cube-server checks
+  `units == "rad"`). `reference_system` is the grid mapping's PROJJSON, for
+  `geostationary` only in v1; any other grid omits it.
 - **An empty cube** (trimmed to zero steps) has `time_values: []` and
   `[null, null]` intervals.
 - **Size:** each step adds about 33 bytes to the collection document: 288
@@ -1224,7 +1326,7 @@ serves it as tiles and EDR is Z-7.
 - [ ] **Step 2: `docs/FEATURES.md`.** Add after the Z-4 row:
 
 ```markdown
-| Z-5 · Collection asset writer | ✅ | `pipeline/cubes/collection.py`: after every batch that reached the repository, `cube_append` publishes the cube on its collection — `assets.{asset_key}` (spec §3.3: `application/vnd.zarr+icechunk`, `version` = snapshot id, `stac_higher:virtual_chunk_prefixes`, `stac_higher:cube_sink_id`, exact-ns `stac_higher:time_values`), `extent.temporal`, Datacube `cube:dimensions` (`x`/`y` in projected metres, geostationary PROJJSON via rasterio) and the Datacube v2.2.0 extension; every other key is the user's. One transaction on a plain pool connection: `SELECT … FOR UPDATE`, then only the sink's **recorded** tip (`cube_sinks.last_snapshot_id`, read under the lock; else `superseded`), merge, `pgstac.update_collection`; an unchanged document is not rewritten; no audit row, one `cube collection asset` log line. The hook (`AppendDeps.after_batch` = `production_after_batch(settings)`, shared with Z-6) now runs after the record and **before** the ledger, so a failed publish releases the rows and the retry republishes. Shape: `docs/serving.md` |
+| Z-5 · Collection asset writer | ✅ | `pipeline/cubes/collection.py`: after every batch that reached the repository, `cube_append` publishes the cube on its collection — `assets.{asset_key}` (spec §3.3: `application/vnd.zarr+icechunk`, `version` = snapshot id, `stac_higher:virtual_chunk_prefixes`, `stac_higher:cube_sink_id`, exact-ns `stac_higher:time_values`), `extent.temporal`, Datacube `cube:dimensions` (`x`/`y` in projected metres, geostationary PROJJSON via rasterio) and the Datacube v2.2.0 extension; every other key is the user's. One transaction on a plain pool connection: `SELECT … FOR NO KEY UPDATE` under a 10 s `lock_timeout`, then only the sink's **recorded** tip (`cube_sinks.last_snapshot_id`, read under the lock; else `superseded`), merge, `pgstac.update_collection`; a renamed `asset_key` moves the sink's asset; an unchanged document is not rewritten; no audit row, one `cube collection asset` log line. The hook (`AppendDeps.after_batch` = `production_after_batch(settings)`, shared with Z-6) now runs after the record and **before** the ledger, so a failed publish releases the rows and the retry republishes. Shape: `docs/serving.md` |
 ```
 
 - [ ] **Step 2b: Only if Z-6 (#92) is already on `main`, wire its maintenance publish with the grid.** First `git fetch origin main && git rebase origin/main`. Then make these three edits together (agreed with the Z-6 planner; Z-6 plan revision 122f533):
@@ -1247,7 +1349,8 @@ git push -u origin feat/z5-cube-collection-asset
 - [ ] **Step 5: PR (lead).** `gh pr create --base main --title "Z-5: publish the cube asset on its collection after each commit"`. The body starts `Closes #91` and lists:
   - the gates run;
   - that CI runs the DB-gated `test_integration_cube_collection.py`;
-  - Decisions 1–12 above, especially 1 (recorded tip only), 3 (the hook moved before the ledger, which resolves PR #101's follow-up) and 6 (geostationary-only PROJJSON);
+  - Decisions 1–15 above, especially 1 (recorded tip only), 3 (the hook moved before the ledger, which resolves PR #101's follow-up), 6 (geostationary-only PROJJSON) and 13 (`FOR NO KEY UPDATE`, which deviates from the spec's wording);
+  - Review Focus 3, verbatim: a publish that keeps failing stops the cube advancing;
   - the Z-6 contract: record before publish, `production_after_batch(settings)`, the optional `statics`/`spatial_dims`;
   - lead-only steps: none for #91. Z-9 checks the asset on the live stack.
 
