@@ -33,6 +33,18 @@ GOES_CONFIG = {
     "loadable_variables": ["t", "x", "y", "goes_imager_projection"],
 }
 
+#: ``goes_imager_projection``'s attributes in a real GOES-East ABI L2 file
+GOES_PROJECTION = {
+    "grid_mapping_name": "geostationary",
+    "perspective_point_height": 35786023.0,
+    "semi_major_axis": 6378137.0,
+    "semi_minor_axis": 6356752.31414,
+    "inverse_flattening": 298.2572221,
+    "latitude_of_projection_origin": 0.0,
+    "longitude_of_projection_origin": -75.0,
+    "sweep_angle_axis": "x",
+}
+
 
 def scan(n: int) -> dt.datetime:
     """The n-th 5-minute scan after T0."""
@@ -73,7 +85,8 @@ def write_goes_file(
         t = f.create_dataset("t", data=np.float64((when - J2000).total_seconds()))
         t.attrs["units"] = "seconds since 2000-01-01 12:00:00"
         proj = f.create_dataset("goes_imager_projection", data=np.int32(-2147483647))
-        proj.attrs["grid_mapping_name"] = "geostationary"
+        for key, attr in GOES_PROJECTION.items():
+            proj.attrs[key] = attr
         proj.attrs["perspective_point_height"] = perspective_point_height
     os.utime(path, (mtime, mtime))
     return path

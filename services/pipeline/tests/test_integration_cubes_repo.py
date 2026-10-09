@@ -284,3 +284,9 @@ async def test_record_error_keeps_the_app_version(db):
     )
     assert (await cur.fetchone())[0] == "invalid config: unsupported parser 'grib'"
     assert (await repo.load_sink(sink)).version == before
+    await repo.record_error(sink, None)  # a recovered publish clears it (Z-5)
+    cur = await conn.execute(
+        "SELECT last_error FROM stac_higher.cube_sinks WHERE id = %s", (sink,)
+    )
+    assert (await cur.fetchone())[0] is None
+    assert (await repo.load_sink(sink)).version == before

@@ -686,22 +686,59 @@ async def test_after_batch_runs_after_every_batch_that_reached_the_cube(h):
     assert calls == [(SINK, "cube", first), (SINK, "cube", first)]
 
 
-async def test_the_asset_hook_catches_up_after_a_crash(h):
+async def test_the_asset_hook_runs_after_the_record_and_before_the_ledger(h):
+    seen = []
+
+    async def hook(sink, config, result):
+        seen.append((h.sink().last_snapshot_id == result.snapshot_id, h.ledger()))
+
+    await h.pend(0)
+    await run_cube_append(SINK, h.deps(after_batch=hook))
+    assert seen == [(True, {"i0": ("pending", None)})]
+    assert h.ledger() == {"i0": ("appended", None)}
+
+
+async def test_a_failing_asset_hook_releases_the_rows_and_the_redo_publishes(h):
+    tips: list[str] = []
+
+    async def hook(sink, config, result):
+        tips.append(result.snapshot_id)
+        if len(tips) == 1:
+            raise ConnectionError("pgstac went away")
+
+    await h.pend(0, 1)
+    with pytest.raises(ConnectionError):
+        await run_cube_append(SINK, h.deps(after_batch=hook))
+    tip = h.sink().last_snapshot_id
+    assert tips == [tip]  # the commit is recorded; the publish failed
+    assert h.ledger() == {"i0": ("pending", None), "i1": ("pending", None)}
+    assert [r.attempts for r in h.repo.rows(SINK)] == [0, 0]  # an outage, not a crash
+    assert h.sink().last_error == "ConnectionError: pgstac went away"
+    await run_cube_append(SINK, h.deps(after_batch=hook))  # the retry: duplicates only
+    assert tips == [tip, tip]
+    assert h.sink().last_snapshot_id == tip
+    assert h.ledger() == {"i0": ("appended", "duplicate"), "i1": ("appended", "duplicate")}
+    # nothing new to record, but the error is resolved: it must not linger
+    # (a stopped source would otherwise show it for good)
+    assert h.sink().last_error is None
+
+
+async def test_a_ledger_failure_after_the_publish_republishes_the_same_tip(h):
     tips: list[str] = []
 
     async def hook(sink, config, result):
         tips.append(result.snapshot_id)
 
     await h.pend(0)
-    await run_cube_append(SINK, h.deps(after_batch=hook))
-    await h.pend(1)
-    h.repo.finish_error = RuntimeError("worker killed")  # recorded, hook not reached
+    h.repo.finish_error = RuntimeError("worker killed")  # published, ledger not written
     with pytest.raises(RuntimeError):
         await run_cube_append(SINK, h.deps(after_batch=hook))
     tip = h.sink().last_snapshot_id
-    assert tips[-1] != tip
-    await run_cube_append(SINK, h.deps(after_batch=hook))  # the redo: duplicates only
-    assert tips[-1] == tip
+    assert tips == [tip]
+    assert h.ledger() == {"i0": ("pending", None)}
+    await run_cube_append(SINK, h.deps(after_batch=hook))  # the redo: a duplicate
+    assert tips == [tip, tip]  # the writer sees an unchanged document
+    assert h.ledger() == {"i0": ("appended", "duplicate")}
 
 
 async def test_a_storage_outage_hands_the_attempts_back(h):

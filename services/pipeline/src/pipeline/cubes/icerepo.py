@@ -101,6 +101,9 @@ class CubeState:
     initialised: bool = False
     #: every variable without the append axis (``x``, ``y``, the grid mapping)
     statics: dict[str, StaticSpec] = field(default_factory=dict)
+    #: the data variables' dimensions after ``append_dim`` (e.g. ``("y", "x")``),
+    #: from the first of them by name (they share one layout)
+    spatial_dims: tuple[str, ...] = ()
 
 
 def read_state(session: ic.Session, append_dim: str) -> CubeState:
@@ -114,12 +117,15 @@ def read_state(session: ic.Session, append_dim: str) -> CubeState:
         return CubeState()
     time_arrays: list[str] = []
     specs: dict[str, ArraySpec] = {}
+    spatial_dims: tuple[str, ...] = ()
     for name in names:
         array = group[name]
         dims = array.metadata.dimension_names or ()
         if dims and dims[0] == append_dim:
             time_arrays.append(name)
             if name != append_dim:
+                if not specs:
+                    spatial_dims = tuple(dims[1:])
                 specs[name] = ArraySpec(
                     tuple(array.shape[1:]), tuple(array.chunks[1:]), str(array.dtype)
                 )
@@ -133,6 +139,7 @@ def read_state(session: ic.Session, append_dim: str) -> CubeState:
         statics={
             str(name): static_spec(ds[name]) for name in ds.variables if name not in time_arrays
         },
+        spatial_dims=spatial_dims,
     )
 
 

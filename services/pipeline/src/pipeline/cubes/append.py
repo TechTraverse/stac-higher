@@ -111,8 +111,9 @@ class AppendDeps:
     storage_for: Callable[[CubeSink], Any]
     #: wake the sink's next job (``jobs.cubes.enqueue_cube_append``: same locks)
     enqueue_next: Callable[[str], Awaitable[object]]
-    #: Z-5's collection asset writer: awaited after every batch that reached
-    #: the repository (recorded tip, ledger written); must be idempotent
+    #: the collection asset writer (``cubes.collection.production_after_batch``):
+    #: awaited after every batch that reached the repository, once the tip is
+    #: recorded and BEFORE the ledger is written; must be idempotent
     after_batch: AfterBatch | None = None
     now: Callable[[], dt.datetime] = _utcnow
     batch_limit: int = BATCH_LIMIT
@@ -294,6 +295,18 @@ async def _append_rows(
         for row_id, (status, reason) in result.outcomes.items():
             snapshot = result.snapshot_id if status == "appended" else None
             outcomes[row_id] = RowOutcome(row_id, status, reason, snapshot)
+        if result.initialised and deps.after_batch is not None:
+            # Publish BEFORE the ledger: a raise here releases the rows and the
+            # job retries, and the redo (duplicates only) publishes again. A
+            # worker that dies here leaves them claimed; the next take redoes
+            # them the same way. The asset never lags a finished batch (#101).
+            await deps.after_batch(sink, config, result)
+        if not report.recorded:
+            # The batch (and its publish) went through with no new tip to
+            # record, and recording is what clears last_error: a redo after a
+            # failed publish is exactly this. Clear it here, or a stopped
+            # source would show a resolved error for good.
+            await deps.repo.record_error(sink.id, None)
 
     await deps.repo.finish_rows(sink.id, list(outcomes.values()))
     for outcome in [*looping, *outcomes.values()]:
@@ -303,8 +316,6 @@ async def _append_rows(
             report.skipped += 1
         else:
             report.failed += 1
-    if result is not None and result.initialised and deps.after_batch is not None:
-        await deps.after_batch(sink, config, result)
     if await deps.repo.has_pending(sink.id):
         await deps.enqueue_next(sink.id)
         report.requeued = True

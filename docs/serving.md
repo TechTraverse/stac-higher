@@ -128,3 +128,77 @@ titiler-pgstac 3.x (rio-tiler 9) changed that method's return shape — run
 `cd infra/titiler && uv run --extra dev --extra titiler pytest` against the
 candidate version before moving the pin, and adjust `main.py` if the `url`
 key moved. Details: `infra/titiler/README.md`.
+
+## Virtual cubes: the collection asset
+
+A cube sink (ADR 0022; spec `docs/superpowers/specs/2026-10-03-virtual-cube-sink-design.md`)
+publishes its Icechunk repository on the **cube collection** after every batch
+that reached the repository (`services/pipeline/src/pipeline/cubes/collection.py`).
+Z-6's hourly maintenance (#92, not yet merged) will republish through the same
+writer for sinks with a `window`. The `cube-server` that serves it as tiles and
+EDR is Z-7.
+
+```jsonc
+"assets": {
+  "cube": {
+    "href": "s3://{platform bucket}/assets/{cube collection}/_cube/",
+    "type": "application/vnd.zarr+icechunk",
+    "roles": ["data", "references", "virtual", "latest-version"],
+    "title": "Virtual cube",
+    "version": "<icechunk snapshot id of main>",
+    "stac_higher:virtual_chunk_prefixes": ["s3://noaa-goes19/"],
+    "stac_higher:cube_sink_id": "<uuid>",
+    "stac_higher:time_values": ["2026-10-03T17:02:36.714359936Z", "…"]
+  }
+},
+"extent": { "temporal": { "interval": [["<first t>", "<last t>"]] } },
+"cube:dimensions": {
+  // x/y: GOES-East CONUS, approximately
+  "t": { "type": "temporal", "extent": ["<first t>", "<last t>"] },
+  "x": { "type": "spatial", "axis": "x", "extent": [-3626269.5, 1381770.0], "reference_system": { "…PROJJSON" } },
+  "y": { "type": "spatial", "axis": "y", "extent": [1584175.1, 4588198.0], "reference_system": { "…PROJJSON" } }
+},
+"stac_extensions": ["…", "https://stac-extensions.github.io/datacube/v2.2.0/schema.json"]
+```
+
+- **Ownership:** the pipeline owns `assets.{asset_key}` (default `cube`),
+  `extent.temporal`, `cube:dimensions` and the Datacube entry of
+  `stac_extensions`, and rewrites them on every publish; every other key is
+  the user's. A hand edit to those four lasts until the next commit, and a
+  deleted asset comes back. Any other asset carrying a
+  `stac_higher:cube_sink_id` is stale (a renamed `asset_key`, or a deleted
+  sink's asset; a collection has at most one sink) and is removed.
+- **Collection-form saves:** the UI's collection form rebuilds the document
+  from its fields (`CollectionForm.tsx::formToStacCollection`), and its asset
+  schema keeps only `href`, `type`, `title`, `description` and `roles`. So
+  **every** save drops `cube:dimensions` and strips the cube asset of
+  `version`, `stac_higher:virtual_chunk_prefixes`, `stac_higher:cube_sink_id`
+  and `stac_higher:time_values` (the preview then has no frames). The next
+  publish repairs both: the next commit (≤ 5 min at the GOES cadence) or, once
+  Z-6 lands, the hourly maintenance run, but only for sinks with a `window`. A
+  sink without a `window` whose source has stopped is not repaired until a new
+  step arrives.
+- **`version`** is the snapshot the sink recorded
+  (`cube_sinks.last_snapshot_id`). Only that tip is published, under a row lock
+  on the collection (`FOR NO KEY UPDATE`, 10 s `lock_timeout`), so a double run
+  never publishes an older snapshot.
+- **`stac_higher:time_values`** holds the exact nanosecond `t` values. Build
+  frames from this list and select `t` with these strings verbatim (or
+  `nearest::`). JavaScript's `Date` truncates them to milliseconds, so never
+  round-trip them through it. Never take `t` from `extent.temporal` either: a
+  user's PUT through stac-fastapi-pgstac truncates it to microseconds, while
+  `time_values` and `cube:dimensions.t` keep full precision.
+- **`x`/`y` extents are projected metres:** a geostationary grid's scan angle
+  times `perspective_point_height`, the same rescale the cube-server applies.
+  The writer assumes the stored `x`/`y` are radians, as CF requires of a
+  geostationary grid (it cannot read their `units`; the cube-server checks
+  `units == "rad"`). `reference_system` is the grid mapping's PROJJSON, for
+  `geostationary` only in v1; any other grid omits it.
+- **An empty cube** (trimmed to zero steps) has `time_values: []` and
+  `[null, null]` intervals.
+- **Size:** each step adds about 33 bytes to the collection document: 288
+  steps ≈ 10 KB, and the 10,000-step maximum ≈ 330 KB, carried by every
+  `/collections` response.
+- **No audit row per publish** (spec §14.3). Each publish logs one
+  `cube collection asset` line with `outcome`: `published`, `unchanged`,
+  `superseded` or `missing_collection`.
