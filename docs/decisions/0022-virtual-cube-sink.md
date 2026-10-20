@@ -7,6 +7,11 @@
 - **Amends:** ADR 0011 — byte deletion only through `asset_gc` gains one
   exception: Icechunk's own GC inside a cube repository's `_cube/` prefix.
   Every other ADR 0011 invariant stands unchanged.
+
+> **Amended 2026-10-19 by [ADR 0023](0023-cube-maintenance-trim-writer.md):**
+> "exactly one writer, `pipeline.cube_append`" below now reads "one writer
+> at a time": `pipeline.cube_maintain_sink` also commits a repository's age
+> trim, under the same per-sink `lock`.
 - **Related:** ADR 0011 (retention & GC), ADR 0013 (executor
   isolation — why this is not a process), ADR 0014 (process output path),
   ADR 0018 (process inputs and network profiles — the staging copy this

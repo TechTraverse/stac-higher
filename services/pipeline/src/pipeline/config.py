@@ -53,6 +53,11 @@ S3 in cloud; distinct from per-connection endpoints):
   logs a WARNING (the staleness bound on partition statistics, spec §4.6).
 - ``PGSTAC_QUEUE_HISTORY_DAYS`` — ``pgstac.query_queue_history`` rows older
   than this are pruned by the same tick (pgstac never prunes it).
+- ``CUBE_SNAPSHOT_RETENTION_SECONDS`` — ``pipeline.cube_maintain_sink`` expires
+  cube snapshots older than this, then garbage-collects with the same cutoff
+  (virtual cube spec §10; at least 300).
+- ``CUBE_REPO_WARN_BYTES`` — a cube repository at or above this size logs a
+  WARNING and its sink's ``last_maintenance.status`` reads ``attention`` (I-143).
 - ``PROCESS_HARDWARE_PROFILES_FILE`` — path of the hardware-profile document
   (K-1, spec §3). Unset means the repo checkout's
   ``infra/hardware-profiles/local.json``; the image sets it to its copy.
@@ -129,6 +134,14 @@ DEFAULT_PGSTAC_QUEUE_DRAINER = "pipeline"
 #: Drain cadence is one minute; twice that plus slack is "the drainer stopped".
 DEFAULT_PGSTAC_QUEUE_STALE_SECONDS = 300
 DEFAULT_PGSTAC_QUEUE_HISTORY_DAYS = 7
+
+# Virtual cube maintenance (Z-6, virtual cube spec §10, I-143). Expiry keeps an
+# hour of snapshots by default, so a reader that opened a recent snapshot is
+# not cut off mid-animation; the floor keeps a mistyped 0 from deleting the
+# snapshot a reader is on. ~8 MB/day of bookkeeping reaches 1 GiB in ~4 months.
+DEFAULT_CUBE_SNAPSHOT_RETENTION_SECONDS = 3600
+MIN_CUBE_SNAPSHOT_RETENTION_SECONDS = 300
+DEFAULT_CUBE_REPO_WARN_BYTES = 1024**3
 
 # Push-ingest finalize (Phase 7, §6.4). A staged_uploads row stranded
 # `finalizing` this long is presumed crashed (idempotent to re-run) — the
@@ -307,6 +320,23 @@ def _parse_scan_concurrency(raw: str | None) -> int:
     return value
 
 
+def _parse_cube_retention(raw: str | None) -> int:
+    value = int(raw) if raw not in (None, "") else DEFAULT_CUBE_SNAPSHOT_RETENTION_SECONDS
+    if value < MIN_CUBE_SNAPSHOT_RETENTION_SECONDS:
+        raise ValueError(
+            "CUBE_SNAPSHOT_RETENTION_SECONDS must be >= "
+            f"{MIN_CUBE_SNAPSHOT_RETENTION_SECONDS}, got {value}"
+        )
+    return value
+
+
+def _parse_cube_warn_bytes(raw: str | None) -> int:
+    value = int(raw) if raw not in (None, "") else DEFAULT_CUBE_REPO_WARN_BYTES
+    if value < 1:
+        raise ValueError(f"CUBE_REPO_WARN_BYTES must be >= 1, got {value}")
+    return value
+
+
 def _optional(raw: str | None) -> str | None:
     """Blank means unset: compose passes `${VAR:-}` as an empty string."""
     value = (raw or "").strip()
@@ -352,6 +382,9 @@ class Settings:
     pgstac_queue_drainer: str = DEFAULT_PGSTAC_QUEUE_DRAINER
     pgstac_queue_stale_seconds: int = DEFAULT_PGSTAC_QUEUE_STALE_SECONDS
     pgstac_queue_history_days: int = DEFAULT_PGSTAC_QUEUE_HISTORY_DAYS
+    #: Virtual cube maintenance (Z-6) — see the DEFAULT_CUBE_* constants.
+    cube_snapshot_retention_seconds: int = DEFAULT_CUBE_SNAPSHOT_RETENTION_SECONDS
+    cube_repo_warn_bytes: int = DEFAULT_CUBE_REPO_WARN_BYTES
     #: History-table retention windows (M2-G).
     connection_checks_retention_days: int = DEFAULT_CONNECTION_CHECKS_RETENTION_DAYS
     history_retention_days: int = DEFAULT_HISTORY_RETENTION_DAYS
@@ -487,6 +520,10 @@ class Settings:
             pgstac_queue_history_days=int(
                 env.get("PGSTAC_QUEUE_HISTORY_DAYS", str(DEFAULT_PGSTAC_QUEUE_HISTORY_DAYS))
             ),
+            cube_snapshot_retention_seconds=_parse_cube_retention(
+                env.get("CUBE_SNAPSHOT_RETENTION_SECONDS")
+            ),
+            cube_repo_warn_bytes=_parse_cube_warn_bytes(env.get("CUBE_REPO_WARN_BYTES")),
             connection_checks_retention_days=int(
                 env.get(
                     "CONNECTION_CHECKS_RETENTION_DAYS",

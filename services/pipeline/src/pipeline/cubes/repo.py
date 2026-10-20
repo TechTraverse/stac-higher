@@ -7,8 +7,9 @@ is exercised by the DB-gated ``test_integration_cubes_repo.py``.
 Ownership (ADR 0001): the app owns the DDL (migration 032). The pipeline
 reads ``cube_sinks`` and writes ``cube_appends`` rows, plus the
 pipeline-owned ``cube_sinks`` columns ``source_prefixes``,
-``last_snapshot_id``, ``last_appended_at`` and ``last_error`` (Z-4). It
-never writes ``cube_sinks.updated_at``: that column is the app's
+``last_snapshot_id``, ``last_appended_at`` and ``last_error`` (Z-4), and
+``last_maintained_at`` / ``last_maintenance`` (Z-6). It never writes
+``cube_sinks.updated_at``: that column is the app's
 optimistic-lock version (#98).
 """
 
@@ -16,7 +17,8 @@ from __future__ import annotations
 
 import abc
 import datetime as dt
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -136,6 +138,35 @@ class CubeRepo(abc.ABC):
     @abc.abstractmethod
     async def record_error(self, cube_sink_id: str, message: str | None) -> None:
         """Set ``last_error``, or clear it with ``None`` (never ``updated_at``)."""
+
+    @abc.abstractmethod
+    async def maintainable_sinks(self) -> list[str]:
+        """Ids of every enabled sink, sorted: the hourly maintenance fan-out."""
+
+    @abc.abstractmethod
+    async def record_snapshot(
+        self, cube_sink_id: str, *, snapshot_id: str, from_snapshot_id: str
+    ) -> bool:
+        """Move ``last_snapshot_id`` to a maintenance commit, only while it is
+        still ``from_snapshot_id``. Leaves ``last_appended_at``, ``last_error``
+        and ``updated_at`` alone. Returns whether the row changed."""
+
+    @abc.abstractmethod
+    async def prune_ledger(self, cube_sink_id: str, older_than_days: int) -> int:
+        """Delete the sink's terminal ledger rows last updated more than
+        ``older_than_days`` ago; ``pending`` rows are never pruned. Returns the
+        rows deleted."""
+
+    @abc.abstractmethod
+    async def record_maintenance(
+        self,
+        cube_sink_id: str,
+        *,
+        summary: Mapping[str, Any],
+        maintained_at: dt.datetime | None,
+    ) -> None:
+        """Set ``last_maintenance`` to ``summary``, and ``last_maintained_at``
+        when given (a failed run passes ``None`` and keeps the last success)."""
 
 
 @dataclass
@@ -336,5 +367,57 @@ class PgCubeRepo(CubeRepo):
             await conn.execute(
                 "UPDATE stac_higher.cube_sinks SET last_error = %s WHERE id = %s",
                 (message, cube_sink_id),
+            )
+            await conn.commit()
+
+    async def maintainable_sinks(self) -> list[str]:  # pragma: no cover
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT id::text FROM stac_higher.cube_sinks WHERE enabled ORDER BY 1"
+            )
+            rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
+    async def record_snapshot(  # pragma: no cover
+        self, cube_sink_id: str, *, snapshot_id: str, from_snapshot_id: str
+    ) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.cube_sinks SET last_snapshot_id = %s"
+                " WHERE id = %s AND last_snapshot_id = %s",
+                (snapshot_id, cube_sink_id, from_snapshot_id),
+            )
+            changed = cur.rowcount
+            await conn.commit()
+        return changed > 0
+
+    async def prune_ledger(  # pragma: no cover
+        self, cube_sink_id: str, older_than_days: int
+    ) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "DELETE FROM stac_higher.cube_appends"
+                " WHERE cube_sink_id = %s AND status <> 'pending'"
+                "   AND updated_at < now() - make_interval(days => %s)",
+                (cube_sink_id, older_than_days),
+            )
+            deleted = cur.rowcount
+            await conn.commit()
+        return deleted
+
+    async def record_maintenance(  # pragma: no cover
+        self,
+        cube_sink_id: str,
+        *,
+        summary: Mapping[str, Any],
+        maintained_at: dt.datetime | None,
+    ) -> None:
+        async with await self._connect() as conn:
+            await conn.execute(
+                "UPDATE stac_higher.cube_sinks"
+                "   SET last_maintenance = %s::jsonb,"
+                "       last_maintained_at = COALESCE(%s, last_maintained_at)"
+                " WHERE id = %s",
+                (json.dumps(summary), maintained_at, cube_sink_id),
             )
             await conn.commit()

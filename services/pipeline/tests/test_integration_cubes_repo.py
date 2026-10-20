@@ -290,3 +290,84 @@ async def test_record_error_keeps_the_app_version(db):
     )
     assert (await cur.fetchone())[0] is None
     assert (await repo.load_sink(sink)).version == before
+
+
+async def test_maintainable_sinks_lists_enabled_sinks_only(db):
+    from pipeline.cubes.repo import PgCubeRepo
+
+    _conn, make_sink = db
+    on = await make_sink(_source())
+    off = await make_sink(_source(), enabled=False)
+    found = await PgCubeRepo(DATABASE_URL).maintainable_sinks()
+    assert on in found
+    assert off not in found
+    assert found == sorted(found)
+
+
+async def test_record_snapshot_moves_only_from_the_expected_tip(db):
+    from pipeline.cubes.repo import PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    before = (await repo.load_sink(sink)).version
+    kw = {"appended_at": T0, "source_prefixes": ["s3://b/"]}
+    await repo.record_commit(sink, snapshot_id="S1", first_commit_version=None, **kw)
+    assert not await repo.record_snapshot(sink, snapshot_id="T1", from_snapshot_id="S0")
+    assert await repo.record_snapshot(sink, snapshot_id="T1", from_snapshot_id="S1")
+    after = await repo.load_sink(sink)
+    assert after.last_snapshot_id == "T1"
+    assert after.version == before  # never updated_at
+    cur = await conn.execute(
+        "SELECT last_appended_at FROM stac_higher.cube_sinks WHERE id = %s", (sink,)
+    )
+    assert (await cur.fetchone())[0] == T0  # a trim is not an append
+
+
+async def test_prune_ledger_deletes_old_terminal_rows_of_that_sink_only(db):
+    from pipeline.cubes.repo import LedgerEntry, PgCubeRepo
+
+    conn, make_sink = db
+    sink, other = await make_sink(_source()), await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    await repo.record_appends(
+        [
+            LedgerEntry(sink, "old-done", T0, status="skipped", reason="late"),
+            LedgerEntry(sink, "old-pending", T0),
+            LedgerEntry(sink, "new-done", T0, status="skipped", reason="late"),
+            LedgerEntry(other, "old-done", T0, status="skipped", reason="late"),
+        ]
+    )
+    await conn.execute(
+        "UPDATE stac_higher.cube_appends SET updated_at = now() - interval '8 days'"
+        " WHERE item_id IN ('old-done', 'old-pending')"
+        "   AND cube_sink_id = ANY(%s::uuid[])",
+        ([sink, other],),
+    )
+    assert await repo.prune_ledger(sink, 7) == 1
+    cur = await conn.execute(
+        "SELECT cube_sink_id::text, item_id FROM stac_higher.cube_appends"
+        " WHERE cube_sink_id = ANY(%s::uuid[]) ORDER BY 1, 2",
+        ([sink, other],),
+    )
+    assert sorted(await cur.fetchall()) == sorted(
+        [(sink, "new-done"), (sink, "old-pending"), (other, "old-done")]
+    )
+
+
+async def test_record_maintenance_keeps_the_last_success_on_failure(db):
+    from pipeline.cubes.repo import PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    before = (await repo.load_sink(sink)).version
+    ok = {"status": "ok", "total_bytes": 5}
+    await repo.record_maintenance(sink, summary=ok, maintained_at=T0)
+    await repo.record_maintenance(sink, summary={"status": "failed"}, maintained_at=None)
+    cur = await conn.execute(
+        "SELECT last_maintenance, last_maintained_at FROM stac_higher.cube_sinks WHERE id = %s",
+        (sink,),
+    )
+    assert await cur.fetchone() == ({"status": "failed"}, T0)
+    assert (await repo.load_sink(sink)).version == before
