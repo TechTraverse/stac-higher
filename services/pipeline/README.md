@@ -258,8 +258,9 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   without failing the row, and the next 5-minute `cube_kick` retries it (only
   the oldest failed row keeps its attempt, I-145).
   `pipeline.cube_maintain` (`23 * * * *`) enqueues one
-  `pipeline.cube_maintain_sink` per enabled sink under the same `lock` (no
-  `queueing_lock`; `cube_kick` recovers a stalled one too). It prunes the
+  `pipeline.cube_maintain_sink` per enabled sink under the same `lock`, with
+  its own `queueing_lock` `cube-maintain:{id}` (`cube_kick` recovers a stalled
+  one too; the age trim makes it the sink's second writer, ADR 0023). It prunes the
   ledger (terminal rows > 7 days), and on a sink with a window it age-trims
   a stopped source, then expires and garbage-collects snapshots
   (`cubes/maintain.py`). It republishes the recorded tip and records per-kind

@@ -1706,6 +1706,34 @@ a change to the cross-runtime sink config (`cube-sink-config` fixture, Zod and
 Python). Accepted for v1; revisit if gaps after NODD incidents matter to users,
 or if the cube needs a backfill path.
 
+### I-146 · A maintenance run that kills its worker stalls the sink's appends 🟡
+
+`pipeline.cube_maintain_sink` holds the sink's `lock` (`cube:{id}`), the same
+lock as `cube_append` (ADR 0023). Unlike the append, it has no crash-loop guard
+of its own: the append's guard is its ledger (`cube_appends.attempts`), and
+maintenance writes no ledger row. If a run deterministically kills its worker
+(for example, GC running out of memory on a very large repository):
+- the dead job keeps the lock until its heartbeat is `STALLED_WORKER_SECONDS`
+  (300 s) old;
+- the next 5-minute `cube_kick` requeues it (`retry_stalled`), and a requeued
+  job keeps its place ahead of the waiting append;
+- after `MAX_STALLED_ATTEMPTS` (3) requeues, it is closed `failed`, and the
+  appends run;
+- the next hour's tick starts a fresh job, and the cycle repeats.
+
+The cost: the sink's appends wait up to about 20–40 minutes each hour, and then
+catch up. No step is lost (the rows stay `pending`), and nothing is deleted
+twice. The sink's `last_maintained_at` stops advancing, and `last_maintenance`
+keeps the last run that finished, so a stuck sink shows up as stale
+maintenance, not as a failure.
+
+Accepted for v1: the 1 GiB `repo_size` attention fires long before GC needs
+that much memory on a 100-snapshot repository. Revisit if a sink ever
+crash-loops: either let `retry_stalled` close a stalled maintenance job
+`failed` instead of requeueing it (it has no retry anyway; the next hour
+retries), or record a started marker in `last_maintenance` and skip GC after
+repeated unfinished runs.
+
 ---
 
 ## Resolved — archived

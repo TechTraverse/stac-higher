@@ -133,7 +133,9 @@ place bytes are deleted outside `asset_gc`. The deleter is Icechunk's own GC,
 and it runs only on a sink with a `window`. `pipeline.cube_maintain`
 (`23 * * * *`) enqueues one `pipeline.cube_maintain_sink` per **enabled**
 sink. Each job takes the sink's `lock` (`cube:{id}`), so it never runs
-alongside that sink's appends. A dead worker's maintenance job is recovered
+alongside that sink's appends, and its own `queueing_lock`
+(`cube-maintain:{id}`), so at most one waits per sink when the lock is held
+for more than an hour. A dead worker's maintenance job is recovered
 by `cube_kick`, like an append. One run (`pipeline/cubes/maintain.py`):
 
 1. deletes the sink's terminal ledger rows (`cube_appends`) last updated more
@@ -142,7 +144,9 @@ by `cube_kick`, like an append. One run (`pipeline/cubes/maintain.py`):
 3. **only with a window**:
    - trims by age when the source has stopped: if nothing is pending and
      the tip is the recorded snapshot, it drops the steps the window no
-     longer holds in one commit and records it (`last_snapshot_id`) (a trim whose record was lost is recorded on the next run);
+     longer holds in one commit and records it (`last_snapshot_id`). The commit is tagged `stac_higher:writer =
+     maintenance` in its snapshot metadata, so a trim whose record was lost is
+     recognised and recorded on the next run (ADR 0023);
    - runs `expire_snapshots` and then `garbage_collect`, both with the cutoff `now − CUBE_SNAPSHOT_RETENTION_SECONDS` (default 1 h), lowered so that every snapshot that was the tip within that window survives (`expiry_cutoff`): a reader still on the previous tip keeps working, and the recorded snapshot (the one the collection asset's `version` names) always survives;
 4. republishes the recorded tip on the cube collection (Z-5's writer,
    idempotent);
