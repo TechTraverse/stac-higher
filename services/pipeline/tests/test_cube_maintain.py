@@ -293,6 +293,21 @@ async def test_a_trim_whose_record_was_lost_heals_on_the_next_run(tmp_path):
     assert cube.commits() == before  # nothing left to trim
 
 
+async def test_only_a_commit_tagged_as_maintenance_is_healed(tmp_path):
+    # The heal reads the snapshot metadata, not the message: a commit that
+    # merely says "(maintenance)" is someone else's tip.
+    cube = Cube(tmp_path, window={"max_age": "30m"})
+    recorded = cube.append(0, 1, now=scan(1))
+    session = ic.Repository.open(cube.storage()).writable_session(BRANCH)
+    session.commit("trim 1 steps (maintenance)", allow_empty=True)
+
+    summary = await cube.run(now=scan(1) + dt.timedelta(minutes=5))
+
+    assert summary["healed"] is False
+    assert cube.sink.last_snapshot_id == recorded
+    assert summary["attention"] == ["unrecorded_tip"]
+
+
 async def test_expiry_never_collects_the_recorded_snapshot(tmp_path):
     cube = Cube(tmp_path, window={"max_steps": 10})
     recorded = cube.append(0)
@@ -382,7 +397,8 @@ async def test_a_trim_the_sink_lost_is_not_published(tmp_path, caplog):
 
     assert summary["trimmed"] == 2
     assert cube.published == []
-    assert "the sink moved during the trim" in caplog.text
+    assert "the trim stays unrecorded and unpublished" in caplog.text
+    assert summary["attention"] == ["unrecorded_tip"]
 
 
 async def test_a_cube_trimmed_to_empty_is_published_with_no_values(tmp_path):

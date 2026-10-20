@@ -262,11 +262,14 @@ def test_maintenance_registration(mqueue: InMemoryQueue):
     assert mqueue.retry_specs.get(JOB_CUBE_MAINTAIN_SINK) is None
 
 
-async def test_maintenance_takes_the_sink_lock_and_no_queueing_lock(mqueue: InMemoryQueue):
+async def test_maintenance_takes_the_sink_lock_and_its_own_queueing_lock(
+    mqueue: InMemoryQueue,
+):
     await enqueue_cube_maintain(mqueue, "s1")
     job = mqueue.jobs[0]
     assert (job.name, job.payload) == (JOB_CUBE_MAINTAIN_SINK, {"cube_sink_id": "s1"})
-    assert (job.lock, job.queueing_lock) == ("cube:s1", None)
+    # cube:s1 is the append's queueing lock: sharing it would coalesce the two
+    assert (job.lock, job.queueing_lock) == ("cube:s1", "cube-maintain:s1")
 
 
 async def test_the_hourly_tick_enqueues_every_enabled_sink(mqueue: InMemoryQueue):
@@ -275,6 +278,41 @@ async def test_the_hourly_tick_enqueues_every_enabled_sink(mqueue: InMemoryQueue
         (JOB_CUBE_MAINTAIN_SINK, "s1", "cube:s1"),
         (JOB_CUBE_MAINTAIN_SINK, "s2", "cube:s2"),
     ]
+
+
+async def test_hourly_ticks_behind_a_held_lock_do_not_pile_up(
+    mqueue: InMemoryQueue, maintained: list[str]
+):
+    append = await enqueue_cube_append(mqueue, "s1")
+    mqueue.strand(append.job_id)  # holds cube:s1 across several ticks
+    for hour in range(3):
+        await mqueue.run_periodic(JOB_CUBE_MAINTAIN, timestamp=1_700_000_000 + 3600 * hour)
+    await mqueue.run_pending()
+
+    waiting = [
+        j
+        for j in mqueue.jobs
+        if j.name == JOB_CUBE_MAINTAIN_SINK and j.payload["cube_sink_id"] == "s1"
+    ]
+    assert [j.status for j in waiting] == ["pending"]
+    assert maintained == ["s2"]
+
+
+async def test_a_failed_enqueue_still_schedules_the_other_sinks(
+    mqueue: InMemoryQueue, monkeypatch, caplog
+):
+    real = cubes_jobs.enqueue_cube_maintain
+
+    async def flaky(queue, cube_sink_id: str) -> Enqueued:
+        if cube_sink_id == "s1":
+            raise ConnectionError("db blip")
+        return await real(queue, cube_sink_id)
+
+    monkeypatch.setattr(cubes_jobs, "enqueue_cube_maintain", flaky)
+    await mqueue.run_periodic(JOB_CUBE_MAINTAIN, timestamp=1_700_000_000)
+
+    assert [j.payload["cube_sink_id"] for j in mqueue.jobs] == ["s2"]
+    assert "cube_maintain: enqueue failed" in caplog.text
 
 
 async def test_maintenance_waits_behind_a_running_append(

@@ -75,9 +75,11 @@ STATUS_FAILED = "failed"
 ATTENTION_REPO_SIZE = "repo_size"
 ATTENTION_GC_DELETE_FAILURES = "gc_delete_failures"
 ATTENTION_UNRECORDED_TIP = "unrecorded_tip"
-#: ends every maintenance trim's commit message, so a later run can tell a
-#: trim it made (and failed to record) from an append's commit
-MAINTENANCE_MESSAGE_SUFFIX = "(maintenance)"
+#: snapshot metadata on every maintenance trim, so a later run can tell a trim
+#: it made (and failed to record) from an append's commit; the message is
+#: only for people
+WRITER_METADATA_KEY = "stac_higher:writer"
+MAINTENANCE_WRITER = "maintenance"
 
 #: every object in a cube repository: (key relative to its prefix, bytes)
 ListObjects = Callable[[CubeSink], list[tuple[str, int]]]
@@ -206,7 +208,7 @@ def maintain_repository(
         if (
             head is not None
             and head.parent_id == recorded_snapshot_id
-            and head.message.endswith(MAINTENANCE_MESSAGE_SUFFIX)
+            and (head.metadata or {}).get(WRITER_METADATA_KEY) == MAINTENANCE_WRITER
         ):
             healed = True
             owned = tip
@@ -217,7 +219,10 @@ def maintain_repository(
         trimmed = trim_count(state.values, config.window, now) if state.initialised else 0
         if trimmed:
             trim_steps(session, state, trimmed)
-            tip = session.commit(f"trim {trimmed} steps {MAINTENANCE_MESSAGE_SUFFIX}")
+            tip = session.commit(
+                f"trim {trimmed} steps (maintenance)",
+                metadata={WRITER_METADATA_KEY: MAINTENANCE_WRITER},
+            )
         durations["trim"] = _ms(started)
     expired: int | None = None
     gc: dict[str, Any] | None = None
@@ -336,8 +341,13 @@ async def _maintain(
             recorded = rp.tip
         else:
             logger.warning(
-                "cube_maintain: the sink moved during the trim; the next append records the tip",
-                extra={"cube_sink_id": sink.id, "snapshot_id": rp.tip},
+                "cube_maintain: the sink's recorded snapshot changed during the trim; "
+                "the trim stays unrecorded and unpublished",
+                extra={
+                    "cube_sink_id": sink.id,
+                    "snapshot_id": rp.tip,
+                    "recorded_snapshot_id": recorded,
+                },
             )
     if recorded is not None and rp.tip != recorded and not pending:
         summary["attention"].append(ATTENTION_UNRECORDED_TIP)

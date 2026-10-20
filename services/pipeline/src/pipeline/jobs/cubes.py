@@ -23,10 +23,12 @@ drains every pending ledger row when it runs (§5.1).
   After the commit is recorded and before the ledger is written, it
   publishes the cube on its collection (``cubes.collection``, Z-5).
 - ``pipeline.cube_maintain`` (hourly, ``:23``) enqueues one
-  ``pipeline.cube_maintain_sink`` per enabled sink with the same ``lock``
-  (no ``queueing_lock``: that one is the append's), so maintenance never runs
-  alongside the sink's appends (spec §10, §14.4). ``cube_kick`` recovers a
-  stalled maintenance job too, since it would hold the same lock.
+  ``pipeline.cube_maintain_sink`` per enabled sink with the same ``lock``, so
+  maintenance never runs alongside the sink's appends (spec §10, §14.4). Its
+  own ``queueing_lock`` (``cube-maintain:{sink_id}``; ``cube:{sink_id}`` is the
+  append's) keeps hourly ticks behind a long-held lock from piling up.
+  ``cube_kick`` recovers a stalled maintenance job too, since it would hold
+  the same lock.
   ``cube_maintain_sink`` runs ``cubes.maintain.run_cube_maintain``: expiry and
   GC only on a sink with a window (ADR 0022). No retry: the next hour retries.
 """
@@ -96,18 +98,33 @@ def cube_append_enqueuer(queue: QueueBackend) -> Callable[[list[str]], Awaitable
     return _enqueue
 
 
+def maintain_queueing_lock(cube_sink_id: str) -> str:
+    """Maintenance's own ``queueing_lock``: at most one waits per sink."""
+    return f"cube-maintain:{cube_sink_id}"
+
+
 async def enqueue_cube_maintain(queue: QueueBackend, cube_sink_id: str) -> Enqueued:
-    """One sink's maintenance, under the append's ``lock`` (spec §10)."""
+    """One sink's maintenance, under the append's ``lock`` (spec §10). A
+    coalesced result means last hour's run is still waiting for the lock."""
     return await queue.enqueue(
-        JOB_CUBE_MAINTAIN_SINK, {"cube_sink_id": cube_sink_id}, lock=cube_lock(cube_sink_id)
+        JOB_CUBE_MAINTAIN_SINK,
+        {"cube_sink_id": cube_sink_id},
+        lock=cube_lock(cube_sink_id),
+        queueing_lock=maintain_queueing_lock(cube_sink_id),
     )
 
 
 async def schedule_maintenance(repo: CubeRepo, queue: QueueBackend) -> int:
-    """The hourly fan-out: one ``cube_maintain_sink`` per enabled sink."""
+    """The hourly fan-out: one ``cube_maintain_sink`` per enabled sink. A
+    failed enqueue is logged and the remaining sinks are still scheduled."""
     cube_sink_ids = await repo.maintainable_sinks()
     for cube_sink_id in cube_sink_ids:
-        await enqueue_cube_maintain(queue, cube_sink_id)
+        try:
+            await enqueue_cube_maintain(queue, cube_sink_id)
+        except Exception:
+            logger.exception(
+                "cube_maintain: enqueue failed", extra={"cube_sink_id": cube_sink_id}
+            )
     return len(cube_sink_ids)
 
 
