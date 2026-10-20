@@ -299,7 +299,7 @@ async def test_hourly_ticks_behind_a_held_lock_do_not_pile_up(
 
 
 async def test_a_failed_enqueue_still_schedules_the_other_sinks(
-    mqueue: InMemoryQueue, monkeypatch, caplog
+    mqueue: InMemoryQueue, repo: FakeCubeRepo, monkeypatch, caplog
 ):
     real = cubes_jobs.enqueue_cube_maintain
 
@@ -309,8 +309,9 @@ async def test_a_failed_enqueue_still_schedules_the_other_sinks(
         return await real(queue, cube_sink_id)
 
     monkeypatch.setattr(cubes_jobs, "enqueue_cube_maintain", flaky)
-    await mqueue.run_periodic(JOB_CUBE_MAINTAIN, timestamp=1_700_000_000)
+    scheduled = await cubes_jobs.schedule_maintenance(repo, mqueue)
 
+    assert scheduled == 1  # the failed sink is not counted
     assert [j.payload["cube_sink_id"] for j in mqueue.jobs] == ["s2"]
     assert "cube_maintain: enqueue failed" in caplog.text
 

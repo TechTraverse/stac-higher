@@ -116,16 +116,19 @@ async def enqueue_cube_maintain(queue: QueueBackend, cube_sink_id: str) -> Enque
 
 async def schedule_maintenance(repo: CubeRepo, queue: QueueBackend) -> int:
     """The hourly fan-out: one ``cube_maintain_sink`` per enabled sink. A
-    failed enqueue is logged and the remaining sinks are still scheduled."""
-    cube_sink_ids = await repo.maintainable_sinks()
-    for cube_sink_id in cube_sink_ids:
+    failed enqueue is logged and the remaining sinks are still scheduled.
+    Returns how many were enqueued (coalesced or not); failures don't count."""
+    scheduled = 0
+    for cube_sink_id in await repo.maintainable_sinks():
         try:
             await enqueue_cube_maintain(queue, cube_sink_id)
         except Exception:
             logger.exception(
                 "cube_maintain: enqueue failed", extra={"cube_sink_id": cube_sink_id}
             )
-    return len(cube_sink_ids)
+        else:
+            scheduled += 1
+    return scheduled
 
 
 async def kick_stale_sinks(repo: CubeRepo, queue: QueueBackend) -> int:
