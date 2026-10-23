@@ -21,7 +21,13 @@ from pipeline.dispatcher.loop import dispatch_once
 from pipeline.dispatcher.repo import ItemEvent
 from pipeline.images.repo import RegistryCredentialRow
 from pipeline.process.cron import is_due, matches_minute
-from pipeline.process.executor import ExecutorUnavailable, ExitStatus, ImagePullFailed
+from pipeline.process.docker_executor import DockerExecutor, EngineHTTPError
+from pipeline.process.executor import (
+    ExecutorUnavailable,
+    ExitStatus,
+    ImageMissing,
+    ImagePullFailed,
+)
 from pipeline.process.hardware import PROFILES_ENV_VAR
 from pipeline.process.ledger import infrastructure_transition, outcome_transition
 from pipeline.process.matcher import ProcessSource, match_process_sources
@@ -733,6 +739,80 @@ async def test_a_user_image_run_with_no_images_repo_dies_not_approved():
     )
     assert result.status == "dead"
     assert repo.finished[0]["error"].startswith("image_not_approved")
+
+
+# ---------------------------------------------------------------------------
+# a missing platform image is a per-run outcome, not an outage (#108)
+# ---------------------------------------------------------------------------
+
+
+def _docker_without_the_image() -> DockerExecutor:
+    """A real DockerExecutor whose daemon answers create the way it does when
+    the platform runtime image was never built."""
+
+    def engine(method, path, *, body=None, timeout=None, raw=False, headers=None):
+        if path.startswith("/containers/create"):
+            detail = '{"message":"No such image: stac-higher-process-runtime:local"}'
+            raise EngineHTTPError(
+                f"docker POST /containers/create failed: 404 {detail}",
+                status=404,
+                detail=detail,
+            )
+        return b"" if raw else {}
+
+    ex = DockerExecutor(docker_host="tcp://proxy:2375")
+    ex._request = engine  # type: ignore[method-assign]
+    return ex
+
+
+@pytest.mark.asyncio
+async def test_a_missing_runtime_image_spends_an_attempt_instead_of_requeueing():
+    """Retrying will not build the image, so the run fails into its retry
+    budget like a refused pull -- never a silent infrastructure requeue."""
+    repo = FakeProcessRepo()
+    result = await _run(queued(attempts=1), _docker_without_the_image(), repo)
+    assert result.status == "failed"
+    finished = repo.finished[0]
+    assert finished["status"] == "failed"
+    assert finished["next_attempt_at"] is not None
+    assert "stac-higher-process-runtime:local" in finished["error"]
+    assert "docker buildx bake -f services/process-runtime/docker-bake.hcl runtime" in (
+        finished["error"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_missing_runtime_image_dies_on_budget_and_fails_the_extractor_batch():
+    """On the last attempt the run goes dead -- which is what raises the
+    process_failed alert -- and an extractor's on_dead fails its ledger rows
+    with the reason."""
+    repo = FakeProcessRepo()
+    seen: list[tuple[str, str]] = []
+
+    async def on_dead(run, error):
+        seen.append((run.id, error))
+
+    run = _extract_run(attempts=3)
+    result = await _run(run, _docker_without_the_image(), repo, on_dead=on_dead)
+    assert result.status == "dead"
+    assert repo.finished[0]["status"] == "dead"
+    assert seen and seen[0][0] == run.id
+    assert "stac-higher-process-runtime:local" in seen[0][1]
+    assert "docker buildx bake" in seen[0][1]
+
+
+@pytest.mark.asyncio
+async def test_image_missing_from_any_executor_takes_the_outcome_branch():
+    """The runner keys on the exception, not on the Docker backend."""
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor(launch_error=ImageMissing("image 'x' is not on the daemon"))
+    result = await _run(
+        queued(runtime={"kind": "inline_python", "retry": {"max_attempts": 1}}, attempts=1),
+        executor,
+        repo,
+    )
+    assert result.status == "dead"
+    assert "is not on the daemon" in repo.finished[0]["error"]
 
 
 # ---------------------------------------------------------------------------
