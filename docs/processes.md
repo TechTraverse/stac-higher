@@ -673,4 +673,7 @@ A run stranded by a worker or executor crash is returned to `queued` by the
 stall sweep, so the crash direction is safe: a run may execute twice, never
 zero times. The container that crash left behind is removed separately, by the
 orphan reaper — so a second attempt does not collide with the first attempt's
-leftovers.
+leftovers. If a newer trigger queued a run for the same source (or ingest
+association) meanwhile, the returning run folds into it instead: its items
+join that run's batch, its extracting files move with them, and its own row is
+removed. The same happens to a run that could not start.
