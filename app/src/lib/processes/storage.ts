@@ -808,6 +808,15 @@ export async function getRun(
   return result.rows[0] ? toApiRun(result.rows[0]) : null;
 }
 
+export class RunAlreadyQueuedError extends Error {
+  constructor() {
+    super(
+      "A run for this source is already queued. Re-run this one after it starts.",
+    );
+    this.name = "RunAlreadyQueuedError";
+  }
+}
+
 /**
  * Re-run a DEAD run (the `redeliver` analog, spec §6).
  *
@@ -820,22 +829,32 @@ export async function getRun(
  *   revision that failed, not whatever is current — otherwise "re-run" would
  *   silently mean "run something else", and the ledger would misattribute the
  *   result.
+ *
+ * The queued-slot partial unique indexes (`process_runs_queued_source_idx`,
+ * `process_runs_queued_association_idx`) allow one queued run per source, so
+ * the UPDATE fails while another run for the same source waits to be claimed.
+ * That surfaces as `RunAlreadyQueuedError`, never the raw constraint text.
  */
 export async function rerunRun(
   processId: string,
   runId: string,
 ): Promise<ApiProcessRun | null> {
   await runMigrations();
-  const result = await query<RunRow>(
-    `UPDATE stac_higher.process_runs
-        SET status = 'queued', attempts = 0, error = NULL,
-            started_at = NULL, finished_at = NULL,
-            rate_deferred_until = NULL
-      WHERE id = $1 AND process_id = $2 AND status = 'dead'
-      RETURNING ${RUN_COLUMNS}`,
-    [runId, processId],
-  );
-  return result.rows[0] ? toApiRun(result.rows[0]) : null;
+  try {
+    const result = await query<RunRow>(
+      `UPDATE stac_higher.process_runs
+          SET status = 'queued', attempts = 0, error = NULL,
+              started_at = NULL, finished_at = NULL,
+              rate_deferred_until = NULL
+        WHERE id = $1 AND process_id = $2 AND status = 'dead'
+        RETURNING ${RUN_COLUMNS}`,
+      [runId, processId],
+    );
+    return result.rows[0] ? toApiRun(result.rows[0]) : null;
+  } catch (err) {
+    if (isUniqueViolation(err)) throw new RunAlreadyQueuedError();
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
