@@ -59,7 +59,8 @@ export const POST: APIRoute = async ({ params, locals }) => {
     if (err instanceof RunAlreadyQueuedError) {
       return jsonResponse(409, { error: err.message, code: "run_already_queued" });
     }
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return jsonResponse(500, { error: message });
+    // Never the raw database text (#74): log it, answer generically.
+    console.error(err instanceof Error ? err.message : "Unknown error");
+    return jsonResponse(500, { error: "internal error" });
   }
 };
