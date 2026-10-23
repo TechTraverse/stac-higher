@@ -407,6 +407,10 @@ services:
         condition: service_completed_successfully
       minio:
         condition: service_healthy
+      # The buckets it writes come from minio-init. Depending on its success
+      # also keeps `up --wait` from reading that one-shot's exit as a failure.
+      minio-init:
+        condition: service_completed_successfully
       docker-socket-proxy:
         condition: service_started
     healthcheck:
