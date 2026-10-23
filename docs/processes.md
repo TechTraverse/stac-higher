@@ -666,8 +666,8 @@ container ever started. A platform runtime image missing from the Docker
 daemon (create answers `404 No such image`) fails the same way, and the error
 names the image and the `docker buildx bake` command that builds it; an
 unreachable daemon or any other executor fault (a missing network, say)
-requeues the run without spending an attempt. A revision whose `network.level` exceeds the
-deployment cap dies immediately: that is configuration, not a fault. A dead run can be re-run from the UI — which re-executes **the same
+requeues the run without spending an attempt. A revision whose
+`network.level` exceeds the deployment cap dies immediately: that is configuration, not a fault. A dead run can be re-run from the UI — which re-executes **the same
 revision that failed**, not whatever is current. If you deployed a fix, trigger
 a new run; re-running an old row will run the old code. **Extractor** runs are
 the exception: re-run is refused for them, and their files are retried by the
