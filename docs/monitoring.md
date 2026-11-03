@@ -180,9 +180,13 @@ The result goes into `cube_sinks.last_maintenance` on every run.
 | `window`, `repository` | Whether the sink has a window, and whether its repository exists |
 | `healed` | `true` when this run found a maintenance trim that was committed but never recorded, and recorded it |
 | `trimmed`, `published`, `publish_outcome`, `publish_error` | Steps the age trim dropped; whether the collection asset names the recorded tip after the run; the writer's outcome: `published`, `unchanged` (already current), `superseded` (a newer tip was recorded meanwhile), `missing_collection`, `error` (it raised; `publish_error` has the message), or `null` when nothing was handed to the writer |
-| `expired_snapshots`, `gc` | Snapshots expired, and Icechunk's `GCSummary` counters (`snapshots_deleted`, `manifests_deleted`, `chunks_deleted`, `transaction_logs_deleted`, `attributes_deleted`, `bytes_deleted`, `objects_failed_to_delete`, the first 5 `delete_errors`). Both are `null` without a window. |
+| `expired_snapshots`, `gc` | Snapshots expired, and Icechunk's `GCSummary` counters (`snapshots_deleted`, `manifests_deleted`, `chunks_deleted`, `transaction_logs_deleted`, `attributes_deleted`, `bytes_deleted`, `objects_failed_to_delete`, the first 5 `delete_errors`). Both are `null` without a window, and absent (like every key after `repository`) when the repository does not exist or the run failed before reaching it. |
 | `sizes`, `total_objects`, `total_bytes`, `warn_bytes`, `measured_at`, `measure_error` | From the size readout (`cube_measure_sink`), merged in after the run: per kind `{objects, bytes}` for `transactions`, `overwritten`, `manifests`, `snapshots`, `chunks` and `other` (the `repo` object, config). Absent until the readout lands. When the listing fails, `measure_error` and attention `measure_failed` replace the sizes; the next successful readout removes both. `measured_at` is when the readout's listing started. `durations_ms.list` comes from the readout too. |
 | `ledger_pruned` | Ledger rows deleted |
+
+The shape is pinned by `tests/contract-fixtures/cube-maintenance-summary.json`
+in both runtimes; the app reads it as `CubeMaintenance`
+(`app/src/lib/cubes/schemas.ts`).
 
 Expiry and GC keep snapshots, manifests and chunks flat. They never delete
 `transactions/` or `overwritten/`, which grow by one object each per commit
