@@ -51,6 +51,7 @@ class Cube:
         self.repo = FakeCubeRepo(sinks=[FakeSink("s1", "src", "cube1", config=raw)])
         self.published: list[tuple[str, BatchResult]] = []
         self.listed = 0
+        self.publish_outcome: str | None = "published"
 
     def storage(self) -> ic.Storage:
         return ic.local_filesystem_storage(str(self.dir))
@@ -99,8 +100,9 @@ class Cube:
             if p.is_file()
         ]
 
-    async def publish(self, sink, config, result: BatchResult) -> None:
+    async def publish(self, sink, config, result: BatchResult) -> str:
         self.published.append((sink.id, result))
+        return self.publish_outcome
 
     def deps(self, *, now: dt.datetime = LATER, warn_bytes: int = 1024**3) -> MaintainDeps:
         return MaintainDeps(
@@ -369,7 +371,7 @@ async def test_a_trim_is_published_after_it_is_recorded(tmp_path):
 
     async def tracking_publish(sink, config, result):
         order.append(f"publish:{cube.sink.last_snapshot_id == result.snapshot_id}")
-        await cube.publish(sink, config, result)
+        return await cube.publish(sink, config, result)
 
     cube.repo.record_snapshot = tracking_record
     deps = cube.deps(now=scan(3) + dt.timedelta(minutes=25))  # cutoff scan(2)
@@ -381,6 +383,27 @@ async def test_a_trim_is_published_after_it_is_recorded(tmp_path):
     _, result = cube.published[0]
     assert (result.committed, result.trimmed, result.initialised) == (True, 2, True)
     assert list(result.values) == [as_ns(scan(2)), as_ns(scan(3))]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "published"),
+    [
+        ("published", True),
+        ("unchanged", True),
+        ("superseded", False),
+        ("missing_collection", False),
+    ],
+)
+async def test_published_reports_what_the_writer_did(tmp_path, outcome, published):
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    cube.append(0, 1)
+    cube.publish_outcome = outcome
+
+    summary = await cube.run(now=scan(1))
+
+    assert len(cube.published) == 1  # the writer was always called
+    assert summary["publish_outcome"] == outcome
+    assert summary["published"] is published
 
 
 async def test_the_recorded_tip_is_republished_on_every_run(tmp_path):

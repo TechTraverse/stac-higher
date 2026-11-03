@@ -44,6 +44,7 @@ from pipeline.config import (
     Settings,
 )
 from pipeline.cubes.append import AfterBatch
+from pipeline.cubes.collection import PUBLISHED, UNCHANGED
 from pipeline.cubes.config import CubeSinkConfig, parse_cube_sink_config
 from pipeline.cubes.icerepo import BRANCH, CubeState, cube_prefix, open_existing, read_state
 from pipeline.cubes.repo import CubeRepo, CubeSink
@@ -373,8 +374,9 @@ async def _maintain(
         )
     # Z-5's writer publishes only the recorded tip, so the trim is recorded first.
     summary["published"] = False
+    summary["publish_outcome"] = None
     if deps.after_batch is not None and rp.state is not None and recorded == rp.tip:
-        await deps.after_batch(
+        outcome = await deps.after_batch(
             sink,
             config,
             BatchResult(
@@ -388,7 +390,10 @@ async def _maintain(
                 spatial_dims=rp.state.spatial_dims,
             ),
         )
-        summary["published"] = True
+        # The writer can skip the write (collection gone, a newer tip recorded
+        # meanwhile); only a written or already-current asset names this tip.
+        summary["publish_outcome"] = outcome
+        summary["published"] = outcome in (PUBLISHED, UNCHANGED)
     if rp.gc is not None and rp.gc["objects_failed_to_delete"]:
         summary["attention"].append(ATTENTION_GC_DELETE_FAILURES)
         logger.warning(

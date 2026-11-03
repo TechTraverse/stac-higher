@@ -162,7 +162,7 @@ The result goes into `cube_sinks.last_maintenance` on every run.
 | `started_at`, `finished_at`, `durations_ms` | ISO times; per-phase milliseconds (`trim`, `expire`, `gc`, `list`) |
 | `window`, `repository` | Whether the sink has a window, and whether its repository exists |
 | `healed` | `true` when this run found a maintenance trim that was committed but never recorded, and recorded it |
-| `trimmed`, `published` | Steps the age trim dropped, and whether the collection asset was republished |
+| `trimmed`, `published`, `publish_outcome` | Steps the age trim dropped; whether the collection asset names the recorded tip after the run; and the writer's outcome: `published`, `unchanged` (already current), `superseded` (a newer tip was recorded meanwhile), `missing_collection`, or `null` when nothing was handed to the writer |
 | `expired_snapshots`, `gc` | Snapshots expired, and Icechunk's `GCSummary` counters (`snapshots_deleted`, `manifests_deleted`, `chunks_deleted`, `transaction_logs_deleted`, `attributes_deleted`, `bytes_deleted`, `objects_failed_to_delete`, the first 5 `delete_errors`). Both are `null` without a window. |
 | `sizes`, `total_objects`, `total_bytes`, `warn_bytes` | Per kind `{objects, bytes}` for `transactions`, `overwritten`, `manifests`, `snapshots`, `chunks` and `other` (the `repo` object, config) |
 | `ledger_pruned` | Ledger rows deleted |
