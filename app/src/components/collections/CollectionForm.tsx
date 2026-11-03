@@ -12,6 +12,8 @@ import {
   type CollectionFormData,
 } from "@/lib/stac-api/schemas";
 import type { StacCollection } from "@/lib/stac-api/types";
+import { getCollection } from "@/lib/stac-api/collections";
+import { mergeCollectionEdit } from "@/lib/stac-api/collectionEdit";
 import { AppShell } from "@/components/layout/AppShell";
 import { JsonViewer } from "@stac-higher/shared";
 import { BboxInput } from "@stac-higher/shared";
@@ -97,6 +99,20 @@ export function formToStacCollection(
     stac_extensions: data.stac_extensions?.length ? data.stac_extensions : undefined,
     summaries: Object.keys(extSummaries).length > 0 ? extSummaries : undefined,
   };
+}
+
+/**
+ * The document as the form saw it when it opened, built through the same
+ * schema parse and conversion as a submit, so an untouched field compares
+ * equal to what the submit produces (the baseline of `mergeCollectionEdit`).
+ */
+export function loadedAsForm(collection: StacCollection): StacCollection {
+  const form = stacCollectionToForm(collection);
+  const parsed = collectionFormSchema.safeParse(form);
+  return formToStacCollection(
+    parsed.success ? (parsed.data as CollectionFormData) : form,
+    collection.stac_version,
+  );
 }
 
 export function stacCollectionToForm(collection: StacCollection): CollectionFormData {
@@ -215,15 +231,32 @@ function CollectionFormInner({ existingCollection }: CollectionFormInnerProps) {
     existingCollection?.stac_version,
   );
 
-  const onSubmit = (data: CollectionFormData) => {
+  const onSubmit = async (data: CollectionFormData) => {
     const collection = formToStacCollection(
       data,
       existingCollection?.stac_version,
     );
 
     if (isEdit) {
+      // A full-document PUT: re-read the stored document and merge, so fields
+      // the form doesn't own (cube:dimensions, item_assets, a pipeline's
+      // asset) survive and a stale form can't roll another writer back (#102).
+      let latest: StacCollection;
+      try {
+        latest = await getCollection(data.id, endpointUrl);
+      } catch (err) {
+        toast.error(
+          `Update failed: could not re-read the ${noun.singular}: ${(err as Error).message}`,
+        );
+        return;
+      }
+      const merged = mergeCollectionEdit({
+        loaded: loadedAsForm(existingCollection),
+        edited: collection,
+        latest,
+      });
       updateMutation.mutate(
-        { collectionId: data.id, data: collection },
+        { collectionId: data.id, data: merged },
         {
           onSuccess: () => {
             toast.success("Collection updated");

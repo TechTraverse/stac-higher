@@ -168,16 +168,15 @@ EDR is Z-7.
   deleted asset comes back. Any other asset carrying a
   `stac_higher:cube_sink_id` is stale (a renamed `asset_key`, or a deleted
   sink's asset; a collection has at most one sink) and is removed.
-- **Collection-form saves:** the UI's collection form rebuilds the document
-  from its fields (`CollectionForm.tsx::formToStacCollection`), and its asset
-  schema keeps only `href`, `type`, `title`, `description` and `roles`. So
-  **every** save drops `cube:dimensions` and strips the cube asset of
-  `version`, `stac_higher:virtual_chunk_prefixes`, `stac_higher:cube_sink_id`
-  and `stac_higher:time_values` (the preview then has no frames). The next
-  publish repairs both: the next commit (≤ 5 min at the GOES cadence) or, once
-  Z-6 lands, the hourly maintenance run, but only for sinks with a `window`. A
-  sink without a `window` whose source has stopped is not repaired until a new
-  step arrives.
+- **Collection-form saves:** an edit re-reads the stored document and
+  three-way merges it (`app/src/lib/stac-api/collectionEdit.ts`, #102). Keys
+  the form doesn't build (`cube:dimensions`, `item_assets`, ...) pass through,
+  a field the user didn't change keeps the stored value (so a form opened
+  before a publish can't roll back `extent.temporal` or the Datacube entry),
+  and an asset carrying `stac_higher:cube_sink_id` always keeps the stored
+  copy: the form can neither edit nor delete it. A publish that lands between
+  the re-read and the `PUT` (milliseconds) can still be overwritten; the next
+  commit or the hourly maintenance republish (Z-6) repairs it.
 - **`version`** is the snapshot the sink recorded
   (`cube_sinks.last_snapshot_id`). Only that tip is published, under a row lock
   on the collection (`FOR NO KEY UPDATE`, 10 s `lock_timeout`), so a double run
