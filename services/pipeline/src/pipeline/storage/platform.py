@@ -5,12 +5,15 @@ Egress parity with the adapter layer: the endpoint host is vetted through
 MinIO — the URL is rewritten to the validated IP (DNS-rebind defence), unless the
 host is allowlisted (the compose-internal ``minio``, which resolves privately by
 design), in which case the hostname is kept. This mirrors ``S3Adapter`` but for
-the platform's own bucket rather than a user connection.
+the platform's own bucket rather than a user connection, under the platform's
+keys or its workload identity (the AWS default credential chain, when the keys
+are unset).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import functools
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Protocol
@@ -61,6 +64,24 @@ def pinned_endpoint_url(
     return endpoint
 
 
+def static_s3_credentials(settings: Settings) -> dict[str, str]:
+    """The platform's static keys as boto3 kwargs, or ``{}`` when unset so
+    boto3 resolves the AWS default credential chain (workload identity)."""
+    if settings.staging_s3_access_key is None or settings.staging_s3_secret_key is None:
+        return {}
+    return {
+        "aws_access_key_id": settings.staging_s3_access_key,
+        "aws_secret_access_key": settings.staging_s3_secret_key,
+    }
+
+
+@functools.cache
+def default_chain_session(region: str) -> boto3.Session:
+    """One default-chain ``boto3.Session`` per region and process, so the chain
+    is resolved once and its credentials refresh through botocore."""
+    return boto3.Session(region_name=region)
+
+
 def build_platform_client(settings: Settings) -> Any:
     """Construct a boto3 S3 client for the platform bucket (egress-pinned)."""
     endpoint_url = pinned_endpoint_url(
@@ -82,9 +103,8 @@ def build_platform_client(settings: Settings) -> Any:
         "s3",
         region_name=settings.staging_s3_region,
         endpoint_url=endpoint_url,
-        aws_access_key_id=settings.staging_s3_access_key,
-        aws_secret_access_key=settings.staging_s3_secret_key,
         config=boto_config,
+        **static_s3_credentials(settings),
     )
 
 
@@ -92,12 +112,12 @@ def build_platform_client(settings: Settings) -> Any:
 class PlatformS3Access:
     """What a GDAL session needs to read the platform bucket in place (M3-C):
     the PINNED endpoint (egress parity with `build_platform_client`) and the
-    platform's own keys. Frozen and never logged."""
+    platform's keys (``None`` => the default credential chain). Frozen and never logged."""
 
     endpoint_url: str | None
     region: str
-    access_key: str = field(repr=False)
-    secret_key: str = field(repr=False)
+    access_key: str | None = field(repr=False)
+    secret_key: str | None = field(repr=False)
     force_path_style: bool
 
 
@@ -140,15 +160,25 @@ def gdal_session_options(
 def raster_location(
     access: PlatformS3Access, bucket: str, key: str, *, gdal_cachemax_mb: int
 ) -> RasterLocation:
-    """`/vsis3/<bucket>/<key>` under the platform's session (copy-mode EXTRACT)."""
+    """`/vsis3/<bucket>/<key>` under the platform's session (copy-mode EXTRACT).
+
+    Without keys the session is the cached default-chain one."""
     from rasterio.session import AWSSession
 
-    session = AWSSession(
-        aws_access_key_id=access.access_key,
-        aws_secret_access_key=access.secret_key,
-        region_name=access.region,
-        endpoint_url=gdal_endpoint(access.endpoint_url),
-    )
+    if access.access_key is None or access.secret_key is None:
+        # Workload identity: rasterio freezes botocore's refreshable chain
+        # credentials into the GDAL options on each read.
+        session = AWSSession(
+            session=default_chain_session(access.region),
+            endpoint_url=gdal_endpoint(access.endpoint_url),
+        )
+    else:
+        session = AWSSession(
+            aws_access_key_id=access.access_key,
+            aws_secret_access_key=access.secret_key,
+            region_name=access.region,
+            endpoint_url=gdal_endpoint(access.endpoint_url),
+        )
     return RasterLocation(
         uri=f"/vsis3/{bucket}/{key}",
         session=session,

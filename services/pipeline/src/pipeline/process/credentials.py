@@ -34,7 +34,7 @@ from botocore.client import Config
 
 from pipeline.config import STS_MIN_DURATION_SECONDS, Settings
 from pipeline.storage.keys import run_staging_prefix
-from pipeline.storage.platform import pinned_endpoint_url
+from pipeline.storage.platform import pinned_endpoint_url, static_s3_credentials
 
 #: STS minimum is 900s; a shorter ask is rejected by AWS outright.
 MIN_DURATION_SECONDS = STS_MIN_DURATION_SECONDS
@@ -145,9 +145,8 @@ def build_sts_client(settings: Settings):  # pragma: no cover - thin boto3 wrapp
         "sts",
         endpoint_url=endpoint,
         region_name=settings.staging_s3_region,
-        aws_access_key_id=settings.staging_s3_access_key,
-        aws_secret_access_key=settings.staging_s3_secret_key,
         config=Config(signature_version="s3v4"),
+        **static_s3_credentials(settings),
     )
 
 

@@ -35,7 +35,9 @@ def cube_prefix(cube_collection_id: str) -> str:
 
 
 def cube_storage(settings: Settings, cube_collection_id: str) -> ic.Storage:
-    """The platform bucket, egress-pinned like every other platform client."""
+    """The platform bucket, egress-pinned like every other platform client.
+    Unset keys reach Icechunk as ``None``, which selects ``FromEnv`` (the AWS
+    default credential chain / workload identity)."""
     access = platform_s3_access(settings)
     endpoint = access.endpoint_url
     return ic.s3_storage(
