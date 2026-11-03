@@ -106,6 +106,88 @@ capabilities:
 {{- (urlParse (trimSuffix "/" .Values.publicUrls.app)).host -}}
 {{- end -}}
 
+{{/* Hook-copy Secret names in external-secrets mode, by logical name. */}}
+{{- define "stac-higher.hookSecretSuffix" -}}
+{{- $m := dict "dbMaster" "hook-db-master" "dbOwner" "hook-db-owner" "dbStacApi" "hook-db-stac-api" "dbStacReader" "hook-db-stac-reader" "dbProxyPolicy" "hook-db-proxy-policy" "dbCubeServer" "hook-db-cube-server" -}}
+{{- get $m .name -}}
+{{- end -}}
+
+{{/* Kubernetes Secret name the pre-install hooks read. (dict "root" $ "name" "dbMaster") */}}
+{{- define "stac-higher.hookSecretName" -}}
+{{- if eq .root.Values.secrets.mode "existing" -}}
+{{- get .root.Values.secrets.existing .name -}}
+{{- else -}}
+{{- printf "%s-%s" (include "stac-higher.fullname" .root) (include "stac-higher.hookSecretSuffix" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Kubernetes Secret name the runtime pods read; "" for an unset dockerHub. (dict "root" $ "name" "platform") */}}
+{{- define "stac-higher.secretName" -}}
+{{- if eq .root.Values.secrets.mode "existing" -}}
+{{- get .root.Values.secrets.existing .name -}}
+{{- else if eq .name "platform" -}}
+{{- printf "%s-platform" (include "stac-higher.fullname" .root) | trunc 63 | trimSuffix "-" -}}
+{{- else if eq .name "dbOwner" -}}
+{{- printf "%s-db-owner" (include "stac-higher.fullname" .root) | trunc 63 | trimSuffix "-" -}}
+{{- else if eq .name "dockerHub" -}}
+{{- if .root.Values.secrets.dockerHubArn -}}
+{{- printf "%s-dockerhub" (include "stac-higher.fullname" .root) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- else -}}
+{{- include "stac-higher.hookSecretName" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+One ExternalSecret. (dict "root" $ "name" <k8s Secret name> "remoteKey" <key> "json" bool "keys" <list> "hook" bool)
+keys items are strings or {key, remoteKey}. With json, each string key is both the Secret key and the
+remoteRef.property of remoteKey. Without json, an item is {key, remoteKey} and maps the whole remote value.
+*/}}
+{{- define "stac-higher.externalSecret" -}}
+{{- $r := .root -}}
+{{- $es := $r.Values.secrets.externalSecrets -}}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ .name }}
+  namespace: {{ $r.Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" $r "component" "secrets") | nindent 4 }}
+  {{- if .hook }}
+  annotations:
+    {{- include "stac-higher.hookAnnotations" (dict "weight" -40) | nindent 4 }}
+  {{- end }}
+spec:
+  refreshInterval: {{ $es.refreshInterval | quote }}
+  secretStoreRef:
+    name: {{ $es.storeRef.name | quote }}
+    kind: {{ $es.storeRef.kind }}
+  target:
+    name: {{ .name }}
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    {{- $json := .json -}}
+    {{- $remoteKey := .remoteKey -}}
+    {{- range $k := .keys }}
+    {{- $secretKey := $k -}}
+    {{- $key := $remoteKey -}}
+    {{- if kindIs "map" $k -}}
+    {{- $secretKey = $k.key -}}
+    {{- $key = $k.remoteKey -}}
+    {{- end }}
+    - secretKey: {{ $secretKey }}
+      remoteRef:
+        key: {{ $key | quote }}
+        {{- if $json }}
+        property: {{ $secretKey }}
+        {{- end }}
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+    {{- end }}
+{{- end -}}
+
 {{/* Cross-field rules. Every message starts with the offending key path. */}}
 {{- define "stac-higher.validate" -}}
 {{- $v := .Values -}}
@@ -139,6 +221,25 @@ capabilities:
 {{- $pem := not (not $v.database.caBundle.pem) -}}
 {{- if eq $cm $pem -}}
 {{- fail "database.caBundle needs exactly one of existingConfigMap or pem when database.sslMode=verify-full" -}}
+{{- end -}}
+{{- end -}}
+{{- if eq $v.secrets.mode "external-secrets" -}}
+{{- if not $v.secrets.externalSecrets.storeRef.name -}}
+{{- fail "secrets.externalSecrets.storeRef.name is required when secrets.mode=external-secrets" -}}
+{{- end -}}
+{{- range $k := list "db_stac_higher_owner" "db_stac_api" "db_stac_reader" "db_stac_proxy_policy" "db_cube_server" "session_secret" "catalog_bff_shared_secret" "internal_api_token" "credentials_master_key" -}}
+{{- if not (get $v.secrets.arns $k) -}}
+{{- fail (printf "secrets.arns.%s is required when secrets.mode=external-secrets" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- if not $v.database.masterSecretArn -}}
+{{- fail "database.masterSecretArn is required when secrets.mode=external-secrets" -}}
+{{- end -}}
+{{- else -}}
+{{- range $k := list "platform" "dbMaster" "dbOwner" "dbStacApi" "dbStacReader" "dbProxyPolicy" "dbCubeServer" -}}
+{{- if not (get $v.secrets.existing $k) -}}
+{{- fail (printf "secrets.existing.%s is required when secrets.mode=existing" $k) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- $keys := include "stac-higher.imageKeys" . | fromJsonArray -}}
