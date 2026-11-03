@@ -162,8 +162,25 @@ describe("cube sink storage", () => {
 
   it("enabling clears a stale last_error; disabling keeps it", async () => {
     mockQuery.mockResolvedValueOnce(result([row]));
-    await setCubeSinkEnabled("goes19-c13-cube", true);
+    await setCubeSinkEnabled("goes19-c13-cube", true, "2026-10-05 01:00:00.123456+00");
     expect(mockQuery.mock.calls[0][0]).toMatch(/last_error = CASE WHEN \$2 THEN NULL ELSE last_error END/);
+  });
+
+  it("the toggle applies only at the version it read", async () => {
+    mockQuery.mockResolvedValueOnce(result([row]));
+    await setCubeSinkEnabled("goes19-c13-cube", true, "2026-10-05 01:00:00.123456+00");
+    expect(mockQuery.mock.calls[0][0]).toContain("AND updated_at = $3::timestamptz");
+    expect(mockQuery.mock.calls[0][1]).toEqual(["goes19-c13-cube", true, "2026-10-05 01:00:00.123456+00"]);
+    mockQuery.mockResolvedValueOnce(result([]));
+    expect(await setCubeSinkEnabled("goes19-c13-cube", false, "stale")).toBeNull();
+  });
+
+  it("orders recent ledger rows by activity", async () => {
+    mockQuery.mockResolvedValueOnce(result([])).mockResolvedValueOnce(result([]));
+    await cubeLedgerSummary(SINK_ID);
+    const sql = mockQuery.mock.calls[1][0] as string;
+    expect(sql).toContain("ORDER BY updated_at DESC, id DESC LIMIT 20");
+    expect(sql).not.toContain("ORDER BY item_datetime");
   });
 
   it("summarises the ledger with zero-filled counts and the last 20 rows", async () => {

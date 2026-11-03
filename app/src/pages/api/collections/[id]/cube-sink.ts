@@ -10,7 +10,10 @@
  *          the source are locked (409 cube_layout_locked). Before that, a
  *          source change resets the old source's prefixes, error and ledger.
  * PATCH  — operator+: { enabled }. Enabling re-runs the source checks;
- *          disabling never does.
+ *          disabling never does. Optimistic on the row version, like PUT
+ *          (#98): each attempt re-reads the row, re-checks it (when
+ *          enabling) and writes only at that version; one retry, then 409
+ *          cube_sink_conflict.
  * DELETE — operator+: only while no repository exists (else 409
  *          cube_repository_exists). Afterwards the row carries the layout
  *          lock and the ledger, so it goes with the cube collection; disable
@@ -47,6 +50,9 @@ import {
 
 const notFound = () => jsonResponse(404, { error: "Cube sink not found" });
 const refuse = (status: number, code: string, error: string) => jsonResponse(status, { error, code });
+const conflict = () =>
+  refuse(409, "cube_sink_conflict",
+    "The cube sink changed while this request was being applied; reload it and retry");
 
 /** 401 / 403 / 404 preamble shared by every verb. Returns the caller. */
 async function preamble(
@@ -166,8 +172,7 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
       if (written) return jsonResponse(written.created ? 201 : 200, { sink: written.sink });
     }
     // Lost twice to other writers. The lock didn't refuse this edit; retry.
-    return refuse(409, "cube_sink_conflict",
-      "The cube sink changed while this request was being applied; reload it and retry");
+    return conflict();
   } catch (err) {
     return failure(err);
   }
@@ -181,14 +186,21 @@ export const PATCH: APIRoute = async ({ params, request, locals }) => {
     if (!parsed.success) {
       return jsonResponse(400, { error: "Validation failed", details: parsed.error.issues });
     }
-    const current = await getCubeSink(pre.collectionId);
-    if (!current) return notFound();
-    if (parsed.data.enabled) {
-      const refused = await refuseSource(pre.identity, pre.collectionId, current.source_collection_id);
-      if (refused) return refused;
+    // Check and write are one optimistic step, as in PUT (#98): a source
+    // deleted between them disables the sink (and bumps its version), so the
+    // write loses and the retry re-checks the fresh row. `enabled` is not
+    // layout, so there is no repository guard.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const current = await getCubeSink(pre.collectionId);
+      if (!current) return notFound();
+      if (parsed.data.enabled) {
+        const refused = await refuseSource(pre.identity, pre.collectionId, current.source_collection_id);
+        if (refused) return refused;
+      }
+      const sink = await setCubeSinkEnabled(pre.collectionId, parsed.data.enabled, current.version);
+      if (sink) return jsonResponse(200, { sink });
     }
-    const sink = await setCubeSinkEnabled(pre.collectionId, parsed.data.enabled);
-    return sink ? jsonResponse(200, { sink }) : notFound();
+    return conflict();
   } catch (err) {
     return failure(err);
   }

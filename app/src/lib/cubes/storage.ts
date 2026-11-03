@@ -155,10 +155,13 @@ export async function upsertCubeSink(input: {
 }
 
 /** Enabling clears a stale `last_error` (e.g. `source_collection_deleted`
- * after the source came back); disabling keeps it. */
+ * after the source came back); disabling keeps it. Optimistic (like the
+ * upsert): applies only at the row `version` the caller read and checked
+ * against; null when the row is gone or its version moved. */
 export async function setCubeSinkEnabled(
   cubeCollectionId: string,
   enabled: boolean,
+  expectedVersion: string,
 ): Promise<ApiCubeSink | null> {
   await runMigrations();
   const result = await query<CubeSinkRow>(
@@ -166,8 +169,9 @@ export async function setCubeSinkEnabled(
         SET enabled = $2,
             last_error = CASE WHEN $2 THEN NULL ELSE last_error END,
             updated_at = now()
-      WHERE cube_collection_id = $1 RETURNING ${COLUMNS}`,
-    [cubeCollectionId, enabled],
+      WHERE cube_collection_id = $1 AND updated_at = $3::timestamptz
+      RETURNING ${COLUMNS}`,
+    [cubeCollectionId, enabled, expectedVersion],
   );
   return result.rows[0] ? toApi(result.rows[0]) : null;
 }
@@ -231,7 +235,7 @@ export async function cubeLedgerSummary(sinkId: string): Promise<CubeLedgerSumma
     query<Omit<CubeLedgerRow, "item_datetime" | "updated_at"> & { item_datetime: Date; updated_at: Date }>(
       `SELECT item_id, item_datetime, status, reason, snapshot_id, attempts, updated_at
          FROM stac_higher.cube_appends WHERE cube_sink_id = $1
-        ORDER BY item_datetime DESC LIMIT 20`,
+        ORDER BY updated_at DESC, id DESC LIMIT 20`,
       [sinkId],
     ),
   ]);

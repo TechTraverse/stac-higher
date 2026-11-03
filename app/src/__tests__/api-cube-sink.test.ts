@@ -307,7 +307,7 @@ describe("PATCH", () => {
     vi.mocked(referenceIngestSources).mockResolvedValue([]); // would refuse an enable
     const res = await patch(false);
     expect(res.status).toBe(200);
-    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, false);
+    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, false, "V1");
   });
   it("400s anything but {enabled}, 404s a missing sink", async () => {
     expect((await call(patchRoute, operator, { method: "PATCH", body: { config } })).status).toBe(400);
@@ -334,7 +334,51 @@ describe("PATCH", () => {
   it("enables when the source still qualifies", async () => {
     vi.mocked(getCubeSink).mockResolvedValue(sink({ enabled: false }));
     expect((await patch(true)).status).toBe(200);
-    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, true);
+    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, true, "V1");
+  });
+});
+
+describe("PATCH optimistic lock", () => {
+  const patch = (enabled: unknown) => call(patchRoute, operator, { method: "PATCH", body: { enabled } });
+
+  it("a lost toggle re-reads, re-checks the fresh row and retries once", async () => {
+    vi.mocked(getCubeSink)
+      .mockResolvedValueOnce(sink({ enabled: false, version: "V1" }))
+      .mockResolvedValueOnce(sink({ enabled: false, version: "V2" }));
+    vi.mocked(setCubeSinkEnabled).mockResolvedValueOnce(null).mockResolvedValueOnce(sink());
+    const res = await patch(true);
+    expect(res.status).toBe(200);
+    expect(setCubeSinkEnabled).toHaveBeenLastCalledWith(CUBE, true, "V2");
+    expect(referenceIngestSources).toHaveBeenCalledTimes(2);
+  });
+
+  it("a source deleted mid-request: the re-check on the fresh row refuses", async () => {
+    vi.mocked(getCubeSink)
+      .mockResolvedValueOnce(sink({ enabled: false }))
+      .mockResolvedValueOnce(sink({ enabled: false, last_error: "source_collection_deleted", version: "V2" }));
+    vi.mocked(setCubeSinkEnabled).mockResolvedValueOnce(null);
+    vi.mocked(existingCollections)
+      .mockResolvedValueOnce(new Set([CUBE, SOURCE]))
+      .mockResolvedValue(new Set([CUBE]));
+    const res = await patch(true);
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe("source_collection_not_found");
+    expect(setCubeSinkEnabled).toHaveBeenCalledTimes(1);
+  });
+
+  it("still losing after the re-check → 409 cube_sink_conflict", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ enabled: false }));
+    vi.mocked(setCubeSinkEnabled).mockResolvedValue(null);
+    const res = await patch(true);
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("cube_sink_conflict");
+    expect(setCubeSinkEnabled).toHaveBeenCalledTimes(2);
+  });
+
+  it("a sink deleted between attempts is a 404", async () => {
+    vi.mocked(getCubeSink).mockResolvedValueOnce(sink({ enabled: false })).mockResolvedValueOnce(null);
+    vi.mocked(setCubeSinkEnabled).mockResolvedValueOnce(null);
+    expect((await patch(true)).status).toBe(404);
   });
 });
 
