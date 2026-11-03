@@ -5,6 +5,9 @@ environment (PGHOST, PGUSER, PGPASSWORD, PGSSLMODE, PGSSLROOTCERT, ...). Every
 STAC_HIGHER_SQL_<NAME> variable becomes the transaction-local setting
 `stac_higher_sql.<name>`, which the SQL reads with current_setting(). Setting
 values (role names, passwords) travel as bind parameters and are never printed.
+Passwords are turned into client-side SCRAM-SHA-256 verifiers first, so the
+plaintext never reaches the server (or its logs); Postgres accepts a verifier
+in ALTER/CREATE ROLE ... PASSWORD and the plaintext still logs in.
 """
 
 from __future__ import annotations
@@ -28,8 +31,34 @@ def settings_from_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+class SettingsError(Exception):
+    """A bad setting set; the message names keys only, never values."""
+
+
+PASSWORD_SUFFIX = "_password"
+ROLE_SUFFIX = "_role"
+
+
+def hash_passwords(conn: psycopg.Connection, settings: dict[str, str]) -> dict[str, str]:
+    """Replace every `<x>_password` value with a SCRAM-SHA-256 verifier for the
+    paired `<x>_role` (the role is the encrypt_password user argument)."""
+    out = dict(settings)
+    for name, password in settings.items():
+        if not (name.startswith(GUC_PREFIX) and name.endswith(PASSWORD_SUFFIX)):
+            continue
+        role_key = name[: -len(PASSWORD_SUFFIX)] + ROLE_SUFFIX
+        if role_key not in settings:
+            raise SettingsError(f"{name} has no paired {role_key}")
+        if not password:
+            raise SettingsError(f"{name} is empty")
+        out[name] = conn.pgconn.encrypt_password(
+            password.encode(), settings[role_key].encode(), b"scram-sha-256"
+        ).decode()
+    return out
+
+
 def apply(conn: psycopg.Connection, sql: str, settings: dict[str, str]) -> None:
-    for name, value in settings.items():
+    for name, value in hash_passwords(conn, settings).items():
         conn.execute("SELECT set_config(%s, %s, true)", (name, value))
     # No parameters: psycopg sends the whole file as one multi-statement query.
     conn.execute(sql)
@@ -59,9 +88,16 @@ def main(
         info = conn.info
         print(f"applied {name} to {info.host}:{info.port}/{info.dbname} as {info.user}")
         return 0
+    except SettingsError as exc:
+        print(f"{name} failed: {exc}")
+        return 1
     except psycopg.Error as exc:
-        detail = exc.diag.message_primary or type(exc).__name__
-        print(f"{name} failed: {exc.sqlstate} {detail}")
+        if exc.sqlstate is None:
+            # libpq connection failure: no SQLSTATE; its message never holds the password.
+            print(f"{name} failed: {exc}")
+        else:
+            detail = exc.diag.message_primary or type(exc).__name__
+            print(f"{name} failed: {exc.sqlstate} {detail}")
         return 1
     finally:
         if conn is not None:

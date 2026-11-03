@@ -10,6 +10,7 @@ set (CI's `pipeline` job sets it against the migrated pgstac service):
 import importlib.util
 import os
 import secrets
+import sys
 from pathlib import Path
 
 import psycopg
@@ -30,7 +31,13 @@ def _load_runner():
     spec = importlib.util.spec_from_file_location("run_sql", DB_DIR / "run_sql.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Never write a __pycache__ next to the chart file (it would ship in the chart).
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     return module
 
 
@@ -60,8 +67,15 @@ class _FakeInfo:
     user = "master"
 
 
+class _FakePgConn:
+    def encrypt_password(self, password, user, algorithm):
+        assert algorithm == b"scram-sha-256"
+        return b"SCRAM-SHA-256$4096:fake$" + user + b":" + password[::-1]
+
+
 class _FakeConn:
     info = _FakeInfo()
+    pgconn = _FakePgConn()
 
     def __init__(self, fail_with=None):
         self.fail_with = fail_with
@@ -89,7 +103,7 @@ def test_main_reports_failure_without_values(tmp_path, capsys):
     path = tmp_path / "boom.sql"
     path.write_text("SELECT 1;")
     conn = _FakeConn(psycopg.errors.InsufficientPrivilege("denied"))
-    env = {"STAC_HIGHER_SQL_OWNER_PASSWORD": "s3cr3t"}
+    env = {"STAC_HIGHER_SQL_OWNER_ROLE": "o", "STAC_HIGHER_SQL_OWNER_PASSWORD": "s3cr3t"}
     assert run_sql.main([str(path)], env, lambda: conn) == 1
     out = capsys.readouterr()
     text = out.out + out.err
@@ -99,29 +113,64 @@ def test_main_reports_failure_without_values(tmp_path, capsys):
     assert conn.closed
 
 
-def test_apply_passes_settings_as_parameters_then_runs_sql_and_commits():
+def test_apply_sends_scram_verifiers_never_plaintext_passwords():
     conn = _FakeConn()
-    settings = {"stac_higher_sql.owner_password": "p'\"; DROP"}
+    settings = {
+        "stac_higher_sql.owner_role": "own",
+        "stac_higher_sql.owner_password": "pl41n'\"; DROP",
+    }
     run_sql.apply(conn, "SELECT 42;", settings)
-    assert conn.executed[0][1] == ("stac_higher_sql.owner_password", "p'\"; DROP")
+    params = [e[1] for e in conn.executed[:-1]]
+    assert all("pl41n" not in part for p in params for part in p)
+    assert all("DROP" not in e[0] for e in conn.executed[:-1])
+    sent = dict(params)
+    assert sent["stac_higher_sql.owner_role"] == "own"
+    assert sent["stac_higher_sql.owner_password"].startswith("SCRAM-SHA-256$")
+    assert sent["stac_higher_sql.owner_password"].split("$")[-1].startswith("own:")
     assert "set_config" in conn.executed[0][0]
-    assert "DROP" not in conn.executed[0][0]
     assert conn.executed[-1] == ("SELECT 42;", None)
     assert conn.commits == 1
+
+
+def test_password_without_role_fails_clearly_without_the_value(tmp_path, capsys):
+    path = tmp_path / "x.sql"
+    path.write_text("SELECT 1;")
+    conn = _FakeConn()
+    env = {"STAC_HIGHER_SQL_API_PASSWORD": "s3cr3t"}
+    assert run_sql.main([str(path)], env, lambda: conn) == 1
+    text = capsys.readouterr().out
+    assert "stac_higher_sql.api_password" in text and "stac_higher_sql.api_role" in text
+    assert "s3cr3t" not in text
+    assert conn.executed == []
+
+
+def test_main_prints_libpq_connection_message_when_there_is_no_sqlstate(tmp_path, capsys):
+    path = tmp_path / "c.sql"
+    path.write_text("SELECT 1;")
+
+    def connect():
+        raise psycopg.OperationalError("connection failed: no route to host")
+
+    assert run_sql.main([str(path)], {}, connect) == 1
+    assert capsys.readouterr().out.strip() == ("c.sql failed: connection failed: no route to host")
 
 
 def test_main_success_prints_target_not_values(tmp_path, capsys):
     path = tmp_path / "ok.sql"
     path.write_text("SELECT 1;")
     conn = _FakeConn()
-    env = {"STAC_HIGHER_SQL_OWNER_PASSWORD": "s3cr3t", "HOME": "/x"}
+    env = {
+        "STAC_HIGHER_SQL_OWNER_ROLE": "o",
+        "STAC_HIGHER_SQL_OWNER_PASSWORD": "s3cr3t",
+        "HOME": "/x",
+    }
     assert run_sql.main([str(path)], env, lambda: conn) == 0
     out = capsys.readouterr().out
     assert out.strip() == "applied ok.sql to db.example.com:5432/app as master"
     assert "s3cr3t" not in out
     assert conn.closed and conn.commits == 1
-    # one set_config for the single STAC_HIGHER_SQL_* variable, then the file
-    assert len(conn.executed) == 2
+    # one set_config per STAC_HIGHER_SQL_* variable (role, password), then the file
+    assert len(conn.executed) == 3
 
 
 def test_main_requires_a_path(capsys):
@@ -344,3 +393,26 @@ def test_grants_are_idempotent(sandbox):
     finally:
         with _admin_conn(dbname) as conn:
             _drop_roles(conn, (proxy, reader, api))
+
+
+@needs_db
+def test_bootstrap_refuses_the_connecting_role(sandbox, capsys):
+    with _admin_conn() as admin:
+        me = admin.execute("SELECT current_user").fetchone()[0]
+    env = _env(sandbox["prefix"], _passwords())
+    env["STAC_HIGHER_SQL_OWNER_ROLE"] = me
+    assert _run("bootstrap.sql", sandbox, env) == 1
+    assert "names the connecting role" in capsys.readouterr().out
+    with _admin_conn() as admin:
+        left = admin.execute(
+            "SELECT count(*) FROM pg_roles WHERE rolname = ANY(%s)", (sandbox["roles"],)
+        ).fetchone()[0]
+    assert left == 0
+
+
+@needs_db
+def test_bootstrap_refuses_two_keys_sharing_a_role(sandbox, capsys):
+    env = _env(sandbox["prefix"], _passwords())
+    env["STAC_HIGHER_SQL_READER_ROLE"] = env["STAC_HIGHER_SQL_API_ROLE"]
+    assert _run("bootstrap.sql", sandbox, env) == 1
+    assert "duplicates another role name" in capsys.readouterr().out
