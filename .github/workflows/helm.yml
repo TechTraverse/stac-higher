@@ -1,0 +1,86 @@
+name: Helm
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/helm/**
+      - infra/examples/aws-eks/values.yaml
+      - infra/image-policy/**
+      - scripts/check-helm.sh
+      - app/src/__tests__/helm/**
+      - .github/workflows/helm.yml
+  pull_request:
+    paths:
+      - infra/helm/**
+      - infra/examples/aws-eks/values.yaml
+      - infra/image-policy/**
+      - scripts/check-helm.sh
+      - app/src/__tests__/helm/**
+      - .github/workflows/helm.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  render:
+    name: Chart · lint, template, render tests (Helm ${{ matrix.helm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        helm: [v3.22.1, v4.3.1]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: ${{ matrix.helm }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Lint and template every scenario
+        run: scripts/check-helm.sh "$RUNNER_TEMP/rendered"
+      - name: Render tests
+        working-directory: app
+        run: npx vitest run src/__tests__/helm/
+
+  validate:
+    name: Chart · kubeconform, trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.1
+      - name: Render every scenario
+        run: scripts/check-helm.sh rendered
+      - name: Install kubeconform
+        run: |
+          curl -sSfL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo install kubeconform /usr/local/bin/kubeconform
+      - name: kubeconform
+        run: |
+          kubeconform -strict -summary -kubernetes-version 1.34.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/6ab3493622cd387923a2d0da5234f53e80e1bd28/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            rendered/*.yaml
+      # The rendered output is scanned, not the chart directory: trivy
+      # silently skips a chart whose schema rejects its defaults.
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: rendered
+          severity: HIGH,CRITICAL
+          exit-code: "1"

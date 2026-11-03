@@ -1,0 +1,89 @@
+# Example values for an aws-eks deployment (external-secrets + pod-identity).
+# Every value is a placeholder: replace the account ID (123456789012), names
+# and URLs with your own. Nothing here is a credential.
+#
+# Keys marked "deployment-supplied" are not emitted by R-5.
+#
+# from tofu output -raw helm_values (R-5)
+global:
+  imageRegistry: 123456789012.dkr.ecr.us-east-1.amazonaws.com/ghcr
+registry:
+  host: 123456789012.dkr.ecr.us-east-1.amazonaws.com
+  mirrorPrefixes:
+    ghcr.io: 123456789012.dkr.ecr.us-east-1.amazonaws.com/ghcr
+    docker.io: 123456789012.dkr.ecr.us-east-1.amazonaws.com/docker-hub
+    quay.io: 123456789012.dkr.ecr.us-east-1.amazonaws.com/quay
+aws:
+  partition: aws
+  region: us-east-1
+  bucket: stac-higher-example-platform
+  kmsKeyArn: arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-123456789012
+  processRunRoleArn: arn:aws:iam::123456789012:role/stac-higher-example-process-run
+  processMaxCredentialSeconds: 3600
+  s3PrefixListCidrs: [192.0.2.0/24]
+publicUrls:
+  app: https://app.example.com
+  objectStore: https://s3.us-east-1.amazonaws.com
+  # deployment-supplied
+  catalog: https://catalog.example.com
+  titiler: https://titiler.example.com
+  tipg: https://tipg.example.com
+  cubeServer: https://cube.example.com
+database:
+  host: db.example.com
+  port: 5432
+  name: stac_higher
+  masterSecretArn: arn:aws:secretsmanager:us-east-1:123456789012:secret:rds!db-00000000
+  caCertIdentifier: rds-ca-rsa2048-g1
+  # deployment-supplied
+  caBundle:
+    existingConfigMap: rds-ca-bundle
+identity:
+  mode: pod-identity
+  namespace: stac-higher
+  serviceAccounts:
+    app: stac-higher-app
+    pipeline: stac-higher-pipeline
+    titiler: stac-higher-titiler
+    cubeServer: stac-higher-cube-server
+  roleArns:
+    app: ""
+    pipeline: ""
+    titiler: ""
+    cubeServer: ""
+secrets:
+  mode: external-secrets
+  # deployment-supplied
+  externalSecrets:
+    storeRef:
+      name: aws-secrets-manager
+  arns:
+    db_stac_higher_owner: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/db/stac_higher_owner-AbCdEf
+    db_stac_api: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/db/stac_api-AbCdEf
+    db_stac_reader: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/db/stac_reader-AbCdEf
+    db_stac_proxy_policy: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/db/stac_proxy_policy-AbCdEf
+    db_cube_server: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/db/cube_server-AbCdEf
+    session_secret: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/platform/session_secret-AbCdEf
+    catalog_bff_shared_secret: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/platform/catalog_bff_shared_secret-AbCdEf
+    internal_api_token: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/platform/internal_api_token-AbCdEf
+    credentials_master_key: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/platform/credentials_master_key-AbCdEf
+    proxy_auth_token: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/platform/proxy_auth_token-AbCdEf
+auth:
+  mode: oidc
+  issuer: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example
+  clientId: example-client-id
+  audienceClaim: client_id
+  audiences: [example-client-id]
+  claimsMapping:
+    groups: "cognito:groups"
+    roles: "cognito:groups"
+    roleMap:
+      stac-admins: admin
+      stac-operators: operator
+      stac-members: member
+    name: [name, email, username]
+  hostedDomain: example.auth.us-east-1.amazoncognito.com
+demoDestination:
+  bucket: stac-higher-example-demo
+  region: us-east-1
+  credentialsSecretArn: arn:aws:secretsmanager:us-east-1:123456789012:secret:stac-higher-example/demo-AbCdEf

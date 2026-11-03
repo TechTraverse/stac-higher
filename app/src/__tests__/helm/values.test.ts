@@ -55,6 +55,12 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     }
   });
 
+  it("renders the aws-eks example values alone", () => {
+    const r = renderChart({ valuesFiles: [join(CHART_DIR, "../../examples/aws-eks/values.yaml")] });
+    expect(r.ok, r.stderr).toBe(true);
+    expect((r.docs as Doc[]).some((d) => d.kind === "Secret")).toBe(false);
+  });
+
   it("refuses a missing required value", () => {
     fails(base({ publicUrls: { app: null } }), "publicUrls");
   });

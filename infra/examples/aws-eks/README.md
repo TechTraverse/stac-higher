@@ -37,3 +37,13 @@ Check it with the mock-provider test, no account needed:
 ```bash
 tofu init -backend=false && tofu validate && tofu test
 ```
+
+## values.yaml
+
+`values.yaml` is the Helm chart's values file for this deployment shape
+(`external-secrets` + `pod-identity`), with placeholders only (account
+`123456789012`, `example.com` hosts). The R-5 half is the layout of
+`tofu output -raw helm_values`; the keys marked deployment-supplied (public
+URLs, CA bundle ConfigMap, secret store) are yours to set. R-5 adds the
+`helm_values` output it will come from. CI renders it alone with
+`scripts/check-helm.sh`.

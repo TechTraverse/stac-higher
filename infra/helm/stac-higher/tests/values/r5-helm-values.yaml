@@ -56,7 +56,14 @@ auth:
   clientId: example-client-id
   audienceClaim: client_id
   audiences: [example-client-id]
-  claimsMapping: { sub: sub, email: email, groups: "cognito:groups" }
+  claimsMapping:
+    groups: "cognito:groups"
+    roles: "cognito:groups"
+    roleMap:
+      stac-admins: admin
+      stac-operators: operator
+      stac-members: member
+    name: [name, email, username]
   hostedDomain: example.auth.us-east-1.amazoncognito.com
 demoDestination:
   bucket: stac-higher-example-demo
