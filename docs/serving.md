@@ -203,6 +203,9 @@ Z-6's hourly maintenance republishes through the same writer for sinks with a
 
 ## Virtual cubes: the cube-server (:8086)
 
+Locally it is opt-in: `docker compose --profile cube up -d` (compose profile
+`cube`; see [`backend.md`](backend.md)).
+
 `infra/cube-server` (Z-7, spec §8): xpublish 0.5.2 + xpublish-tiles 0.9.2 +
 xpublish-edr 0.11.1 over every **enabled** cube sink's Icechunk repository.
 Datasets are keyed by **cube collection id**:
