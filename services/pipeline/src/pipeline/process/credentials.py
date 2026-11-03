@@ -32,12 +32,12 @@ from dataclasses import dataclass
 import boto3
 from botocore.client import Config
 
-from pipeline.config import Settings
+from pipeline.config import STS_MIN_DURATION_SECONDS, Settings
 from pipeline.storage.keys import run_staging_prefix
 from pipeline.storage.platform import pinned_endpoint_url
 
 #: STS minimum is 900s; a shorter ask is rejected by AWS outright.
-MIN_DURATION_SECONDS = 900
+MIN_DURATION_SECONDS = STS_MIN_DURATION_SECONDS
 
 #: Real STS caps an inline session policy at 2048 characters; each read
 #: prefix costs two ARN-ish strings. Eight keeps a worst-case policy under the
