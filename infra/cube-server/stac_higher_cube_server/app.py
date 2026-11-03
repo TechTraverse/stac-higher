@@ -53,8 +53,11 @@ class ExtraFormatter(logging.Formatter):
         return f"{line} {json.dumps(extra, default=str)}" if extra else line
 
 
-#: the warm-up tile's rendering (the spike's map.html query, z0)
-WARM_UP_QUERY = "style=raster/gray&width=256&height=256&f=png"
+#: the warm-up tile's rendering (the spike's map.html query, z0). The range is
+#: explicit because xpublish-tiles 422s without one on a variable lacking
+#: valid_min/valid_max (the real GOES CMI); the warm-up only absorbs the JIT,
+#: so the colours it draws don't matter.
+WARM_UP_QUERY = "style=raster/gray&colorscalerange=0,1&width=256&height=256&f=png"
 
 
 class CubeRegistryProvider(Plugin):

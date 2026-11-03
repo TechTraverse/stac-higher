@@ -140,6 +140,16 @@ def test_warm_up_renders_a_tile_and_never_raises(registry):
     assert asyncio.run(warm_up(app, "nope", registry.get("c1"))) == 404
 
 
+def test_warm_up_renders_a_variable_without_valid_min_max(registry):
+    # The real GOES CMI carries neither (Z-7 live check): xpublish-tiles then
+    # needs an explicit colorscalerange, else every warm-up is a 422.
+    ds = registry.get("c1")
+    for attr in ("valid_min", "valid_max"):
+        ds["CMI"].attrs.pop(attr)
+    app = create_app(registry, SETTINGS, poll=False)
+    assert asyncio.run(warm_up(app, "c1", ds)) == 200
+
+
 def test_lifespan_polls_and_serves(cube):
     registry = CubeRegistry(FakeSource(SINK), LocalOpener({"c1": cube}))
     with TestClient(create_app(registry, SETTINGS)) as client:
