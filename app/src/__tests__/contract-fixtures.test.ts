@@ -63,6 +63,10 @@ import { imageScanDiffSchema, readScanDiff } from "@/lib/images/scan-diff";
 import { cubeSinkConfigSchema } from "@/lib/cubes/schemas";
 import {
   CUBE_APPEND_STATUSES,
+  CUBE_APPENDED_REASON_LABEL,
+  CUBE_APPENDED_REASONS,
+  CUBE_FAILED_REASON_LABEL,
+  CUBE_FAILED_REASONS,
   CUBE_APPEND_STATUS_LABEL,
   CUBE_APPEND_TERMINAL,
   CUBE_SKIP_REASONS,
@@ -575,16 +579,26 @@ describe("cube append status vocabulary (tests/contract-fixtures/cube-append-sta
       fileURLToPath(new URL("../../../tests/contract-fixtures/cube-append-status.json", import.meta.url)),
       "utf8",
     ),
-  ) as { statuses: string[]; terminal: string[]; skip_reasons: string[] };
+  ) as {
+    statuses: string[];
+    terminal: string[];
+    skip_reasons: string[];
+    appended_reasons: string[];
+    failed_reasons: string[];
+  };
 
-  it("pins the statuses, terminal set and skip reasons", () => {
+  it("pins the statuses, terminal set and every closed reason list", () => {
     expect([...CUBE_APPEND_STATUSES]).toEqual(fixture.statuses);
     expect([...CUBE_APPEND_TERMINAL]).toEqual(fixture.terminal);
     expect([...CUBE_SKIP_REASONS]).toEqual(fixture.skip_reasons);
+    expect([...CUBE_APPENDED_REASONS]).toEqual(fixture.appended_reasons);
+    expect([...CUBE_FAILED_REASONS]).toEqual(fixture.failed_reasons);
   });
 
-  it("labels every status and every skip reason", () => {
+  it("labels every status and every closed reason", () => {
     expect(Object.keys(CUBE_APPEND_STATUS_LABEL).sort()).toEqual([...fixture.statuses].sort());
     expect(Object.keys(CUBE_SKIP_REASON_LABEL).sort()).toEqual([...fixture.skip_reasons].sort());
+    expect(Object.keys(CUBE_APPENDED_REASON_LABEL).sort()).toEqual([...fixture.appended_reasons].sort());
+    expect(Object.keys(CUBE_FAILED_REASON_LABEL).sort()).toEqual([...fixture.failed_reasons].sort());
   });
 });

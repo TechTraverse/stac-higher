@@ -18,12 +18,15 @@ APPEND_STATUSES = ("pending", "appended", "skipped", "failed")
 TERMINAL_STATUSES = ("appended", "skipped", "failed")
 SKIP_REASONS = (
     "late",
-    "duplicate",
     "no_source_connection",
     "unsupported_layout",
     "source_missing",
     "no_datetime",
 )
+#: Reasons on ``appended`` rows (the step was already in the cube: a no-op).
+APPENDED_REASONS = ("duplicate",)
+#: The closed part of ``failed`` reasons; any other failed reason is error text.
+FAILED_REASONS = ("crash_loop",)
 
 #: Reserved item id (ADR 0022): ``assets/{c}/_cube/`` is a cube repository's
 #: prefix, so no item of this id may ever be GC-marked by item.

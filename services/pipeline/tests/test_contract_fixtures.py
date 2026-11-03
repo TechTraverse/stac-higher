@@ -16,6 +16,8 @@ import pytest
 from pipeline.connections.adapters.s3 import parse_s3_config
 from pipeline.cubes.config import (
     APPEND_STATUSES,
+    APPENDED_REASONS,
+    FAILED_REASONS,
     SKIP_REASONS,
     TERMINAL_STATUSES,
     parse_cube_sink_config,
@@ -561,6 +563,22 @@ def test_cube_sink_config_minimal_parses_to_defaults():
 
 
 def test_cube_append_vocabulary_matches_golden():
+    from pipeline.cubes.append import REASON_CRASH_LOOP
+    from pipeline.cubes.repo import REASON_NO_DATETIME
+    from pipeline.cubes.write import (
+        MAX_ERROR_CHARS,
+        REASON_DUPLICATE,
+        REASON_LATE,
+        REASON_UNSUPPORTED_LAYOUT,
+    )
+
     assert list(APPEND_STATUSES) == CUBE_APPEND_STATUS["statuses"]
     assert list(TERMINAL_STATUSES) == CUBE_APPEND_STATUS["terminal"]
     assert list(SKIP_REASONS) == CUBE_APPEND_STATUS["skip_reasons"]
+    assert list(APPENDED_REASONS) == CUBE_APPEND_STATUS["appended_reasons"]
+    assert list(FAILED_REASONS) == CUBE_APPEND_STATUS["failed_reasons"]
+    assert MAX_ERROR_CHARS == CUBE_APPEND_STATUS["failed_reason_max_chars"]
+    # The writers' constants sit in the right list (duplicate is written on appended rows).
+    assert {REASON_LATE, REASON_UNSUPPORTED_LAYOUT, REASON_NO_DATETIME} <= set(SKIP_REASONS)
+    assert REASON_DUPLICATE in APPENDED_REASONS and REASON_DUPLICATE not in SKIP_REASONS
+    assert REASON_CRASH_LOOP in FAILED_REASONS
