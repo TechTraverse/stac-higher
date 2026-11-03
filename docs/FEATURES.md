@@ -695,3 +695,4 @@ gate (K-9) are Phase 8. Spec:
 | Feature | Status | Notes |
 |---|---|---|
 | R-3 · release artifacts | ✅ | Derived `auth-proxy` image published with `AUTH_BEARER_AUDIENCE_CLAIM` support; provenance + SBOM on `v*` images; `release-manifest.json` (image digests, chart and module refs) on each release and as a dry-run artifact on every Containers run. `docs/releases.md` |
+| R-2 · Pipeline + cube-server: S3 credential chain, RDS TLS, credential cap at mint | ✅ | Blank `STAGING_S3_*` / `CUBE_S3_*` keys mean the default chain for boto3, STS, GDAL (via botocore) and Icechunk; keys come as a pair; compose is unchanged. A signed connection without keys is refused. `PROCESS_MAX_CREDENTIAL_SECONDS` refuses at mint (`credential_budget_exceeded`, dead run, scans too, fixture `process-credential-budget.json`). TLS is libpq's `PGSSLMODE`/`PGSSLROOTCERT` (no code). Library findings: `backend.md` "Deployment: S3 credentials and database TLS (R-2)". |
