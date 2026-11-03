@@ -1736,6 +1736,28 @@ repeated unfinished runs.
 
 ---
 
+### I-147 · A source file that kills its worker is isolated only after every batch ahead of it has died once 🟡
+
+Crash recovery (#127) isolates one row per crash: after a worker dies
+mid-batch, the next `cube_append` works the oldest row alone and forgives the
+rest, so the batch returns to normal after one isolated take instead of one
+job per row (which cost a 50-row backlog about five minutes of serial jobs).
+The price is paid by the rare row that deterministically kills its worker (a
+header that segfaults the parser, say): sitting `k` places behind the oldest
+pending row, it dies with its batch `k` times, each death followed by the
+5–10 minute lock hold until the next `cube_kick` requeues the job, before it
+is the oldest row and crash-loops alone (`failed: crash_loop` after
+`MAX_ROW_ATTEMPTS`). An exception, as opposed to a worker death, never pays
+this: it gives the attempts back (I-145 governs source errors). A row older
+than the crashed batch arriving after the crash costs one extra death before
+the isolation triggers.
+
+Accepted for v1: a worker-killing file has not been seen on CMIPC, and the
+common case (a restart or OOM during a batch) is now cheap. Revisit if Z-9's
+kill-the-worker check or a live sink ever shows a poison row: a marker column
+set on the take, or a bisecting isolation, would pinpoint it in `log k`
+deaths.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
