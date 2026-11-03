@@ -21,6 +21,7 @@ from pipeline.cubes.icerepo import (
     REPO_INFO_UPDATES,
     cube_prefix,
     cube_storage,
+    open_existing,
     open_repository,
     read_state,
     reset_to_root,
@@ -114,3 +115,32 @@ def test_cube_storage_points_at_the_reserved_prefix():
     assert "prefix: assets/goes19-c13-cube/_cube" in text
     assert "endpoint_url: http://minio:9000" in text
     assert "force_path_style: True" in text
+
+
+def test_open_existing_authorizes_each_recorded_prefix_anonymously(tmp_path, monkeypatch):
+    storage, libs = ic.in_memory_storage(), local_libs(tmp_path)
+    open_repository(storage, [libs], replace_containers=False)
+    seen: dict = {}
+    real_open, real_creds = ic.Repository.open, ic.containers_credentials
+
+    def spy_open(*args, **kwargs):
+        seen["authorize"] = kwargs.get("authorize_virtual_chunk_access")
+        return real_open(*args, **kwargs)
+
+    def spy_creds(mapping):
+        seen["mapping"] = mapping
+        return real_creds(mapping)
+
+    monkeypatch.setattr(ic.Repository, "open", staticmethod(spy_open))
+    monkeypatch.setattr(ic, "containers_credentials", spy_creds)
+    prefixes = ["s3://noaa-goes19/", "s3://noaa-goes18/"]
+    assert open_existing(storage, prefixes) is not None
+    assert set(seen["mapping"]) == set(prefixes)
+    assert all(
+        isinstance(c, ic.S3Credentials.Anonymous) for c in seen["mapping"].values()
+    )
+    assert seen["authorize"] is not None
+
+
+def test_open_existing_of_a_missing_repository_is_none():
+    assert open_existing(ic.in_memory_storage(), ["s3://noaa-goes19/"]) is None

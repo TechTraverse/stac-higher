@@ -89,14 +89,28 @@ def open_repository(
     return repo
 
 
-def open_existing(storage: ic.Storage) -> ic.Repository | None:
+def anonymous_authorization(prefixes: Sequence[str]) -> dict[str, ic.S3Credentials | None]:
+    """Anonymous credentials for each recorded source prefix (v1 sources are
+    anonymous, spec §13; the cube server authorizes the same way)."""
+    return ic.containers_credentials({p: ic.s3_credentials(anonymous=True) for p in prefixes})
+
+
+def open_existing(
+    storage: ic.Storage, source_prefixes: Sequence[str] = ()
+) -> ic.Repository | None:
     """Open the repository for maintenance (Z-6), or ``None`` if it was never
     created. Never creates it and never saves its config: only the writer
-    does either. No virtual chunk credentials: trimming, expiry and GC read
-    manifests, never source bytes."""
+    does either. Trimming, expiry and GC read manifests, never source bytes,
+    but the recorded ``source_prefixes`` are still authorized (anonymously) so
+    the open is explicit: Icechunk deprecates an absent authorization map and
+    may refuse unauthorized containers (#127)."""
     if not ic.Repository.exists(storage):
         return None
-    return ic.Repository.open(storage, config=_config())
+    return ic.Repository.open(
+        storage,
+        config=_config(),
+        authorize_virtual_chunk_access=anonymous_authorization(source_prefixes),
+    )
 
 
 @dataclass(frozen=True)

@@ -1075,3 +1075,28 @@ async def test_a_sink_whose_asset_lags_the_recorded_tip_is_republished_and_clear
     summary = await run_cube_maintain("s1", deps)
     assert summary["attention"] == ["publish_failed"]
     assert cube.sink.last_error == f"{PUBLISH_ERROR_PREFIX}x"
+
+
+def test_the_repository_pass_opens_with_the_sinks_recorded_prefixes(tmp_path, monkeypatch):
+    import pipeline.cubes.maintain as maintain_mod
+
+    cube = Cube(tmp_path, window=None)
+    cube.append(0)
+    seen: list = []
+    real = maintain_mod.open_existing
+
+    def spy(storage, prefixes=()):
+        seen.append(list(prefixes))
+        return real(storage, prefixes)
+
+    monkeypatch.setattr(maintain_mod, "open_existing", spy)
+    maintain_repository(
+        cube.storage(),
+        cube.config,
+        LATER,
+        retention_seconds=3600,
+        recorded_snapshot_id=cube.sink.last_snapshot_id,
+        may_trim=False,
+        source_prefixes=["s3://noaa-goes19/"],
+    )
+    assert seen == [["s3://noaa-goes19/"]]

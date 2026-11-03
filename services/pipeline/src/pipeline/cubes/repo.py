@@ -25,6 +25,11 @@ from typing import Any
 #: The dispatcher's skip reason for an item with neither ``datetime`` nor
 #: ``start_datetime`` (spec §5.2; in ``cube-append-status.json``).
 REASON_NO_DATETIME = "no_datetime"
+#: a row claimed more often than this was in a job that died (the exception
+#: path and the quiet returns give attempts back): such a take keeps only its
+#: oldest row, so a poison file crash-loops alone instead of taking the rest
+#: of its batch to `crash_loop` with it (#90; plan Decision 9)
+CRASHED_ATTEMPTS = 1
 
 
 @dataclass(frozen=True)
@@ -107,10 +112,16 @@ class CubeRepo(abc.ABC):
         row that keeps killing its worker is counted (#90 comment)."""
 
     @abc.abstractmethod
-    async def release_rows(self, cube_sink_id: str, row_ids: Sequence[int]) -> int:
+    async def release_rows(
+        self, cube_sink_id: str, row_ids: Sequence[int], *, forgive_crash: bool = False
+    ) -> int:
         """Undo ``take_pending``'s bump on rows still ``pending``: the job
         failed with an exception (an outage or a bug), which is not a crash
-        loop. Returns the rows changed."""
+        loop. ``forgive_crash`` also clears the suspicion of a dead job: a row
+        whose bumped count is only ``CRASHED_ATTEMPTS + 1`` goes to 0, not 1,
+        so the next take does not read it as claimed-and-unfinished again.
+        Rows with a real history (a higher count) get the plain undo. Returns
+        the rows changed."""
 
     @abc.abstractmethod
     async def finish_rows(self, cube_sink_id: str, outcomes: Sequence[RowOutcome]) -> int:
@@ -307,16 +318,18 @@ class PgCubeRepo(CubeRepo):
         return sorted(taken, key=lambda r: (r.item_datetime, r.id))
 
     async def release_rows(  # pragma: no cover
-        self, cube_sink_id: str, row_ids: Sequence[int]
+        self, cube_sink_id: str, row_ids: Sequence[int], *, forgive_crash: bool = False
     ) -> int:
         if not row_ids:
             return 0
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "UPDATE stac_higher.cube_appends"
-                "   SET attempts = GREATEST(attempts - 1, 0), updated_at = now()"
+                "   SET attempts = CASE WHEN %s AND attempts <= %s THEN 0"
+                "                       ELSE GREATEST(attempts - 1, 0) END,"
+                "       updated_at = now()"
                 " WHERE cube_sink_id = %s AND id = ANY(%s::bigint[]) AND status = 'pending'",
-                (cube_sink_id, list(row_ids)),
+                (forgive_crash, CRASHED_ATTEMPTS + 1, cube_sink_id, list(row_ids)),
             )
             changed = cur.rowcount
             await conn.commit()

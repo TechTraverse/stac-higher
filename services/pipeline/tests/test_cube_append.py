@@ -532,7 +532,7 @@ async def test_a_poison_file_crash_loops_alone(h):
 
 async def test_a_take_after_a_crash_works_the_oldest_row_alone(h):
     await h.pend(0, 1, 2)
-    h.repo.ledger[(SINK, "i1")].attempts = 1  # its last claim never finished
+    h.repo.ledger[(SINK, "i0")].attempts = 1  # its last claim never finished
     report = await run_cube_append(SINK, h.deps())
     assert (report.taken, report.appended, report.requeued) == (1, 1, True)
     assert h.ledger() == {
@@ -540,7 +540,34 @@ async def test_a_take_after_a_crash_works_the_oldest_row_alone(h):
         "i1": ("pending", None),
         "i2": ("pending", None),
     }
-    assert [r.attempts for r in h.repo.rows(SINK)][1:] == [1, 0]  # the rest given back
+    assert [r.attempts for r in h.repo.rows(SINK)][1:] == [0, 0]  # the rest forgiven
+
+
+async def test_one_crash_costs_one_isolated_take_then_the_batch_is_normal(h):
+    await h.pend(0, 1, 2, 3, 4)
+    for row in h.repo.rows(SINK):
+        row.attempts = 1  # a worker died mid-batch: every claimed row sits at 1
+    isolated = await run_cube_append(SINK, h.deps())
+    assert (isolated.taken, isolated.appended, isolated.requeued) == (1, 1, True)
+    assert [r.attempts for r in h.repo.rows(SINK)][1:] == [0, 0, 0, 0]  # forgiven, not left at 1
+    rest = await run_cube_append(SINK, h.deps())  # a normal batch, not one row per job
+    assert (rest.taken, rest.appended, rest.requeued) == (4, 4, False)
+    assert h.times() == ns(0, 1, 2, 3, 4)
+
+
+async def test_a_released_row_with_real_history_keeps_its_count(h):
+    await h.pend(0, 1)
+    h.repo.ledger[(SINK, "i0")].attempts = 1
+    h.repo.ledger[(SINK, "i1")].attempts = 3  # failed in transit before
+    await run_cube_append(SINK, h.deps())  # i0 isolated; i1 released
+    assert h.repo.ledger[(SINK, "i1")].attempts == 3
+
+
+async def test_a_younger_rows_old_claim_does_not_isolate_a_fresh_oldest_row(h):
+    await h.pend(0, 1, 2)
+    h.repo.ledger[(SINK, "i1")].attempts = 1  # failed in transit once; i0 is fresh
+    report = await run_cube_append(SINK, h.deps())
+    assert (report.taken, report.appended, report.requeued) == (3, 3, False)
 
 
 async def test_a_normal_take_claims_up_to_the_batch_limit(h):
