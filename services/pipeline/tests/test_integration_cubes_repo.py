@@ -362,6 +362,8 @@ async def test_record_measurement_merges_into_the_current_summary(db):
     sink = await make_sink(_source())
     repo = PgCubeRepo(DATABASE_URL)
     before = (await repo.load_sink(sink)).version
+    owned = ("repo_size", "measure_failed")
+    started = T0.isoformat()
 
     async def summary():
         cur = await conn.execute(
@@ -371,50 +373,73 @@ async def test_record_measurement_merges_into_the_current_summary(db):
         )
         return await cur.fetchone()
 
+    async def measure(at, *, patch=None, remove=(), attention=()):
+        return await repo.record_measurement(
+            sink,
+            measured_at=at,
+            patch=patch or {},
+            remove=list(remove),
+            durations_ms={"list": 7},
+            attention=list(attention),
+            owned_reasons=owned,
+        )
+
     # No summary yet: nothing to merge into.
-    assert not await repo.record_measurement(
-        sink, patch={"total_bytes": 1}, durations_ms={}, attention=[]
-    )
+    assert not await measure(T0)
     assert (await summary())[0] is None
 
     run = {
         "status": "attention",
+        "started_at": started,
         "attention": ["unrecorded_tip"],
         "durations_ms": {"trim": 3},
-        "measure_error": "earlier listing failed",
     }
     await repo.record_maintenance(sink, summary=run, maintained_at=T0)
-    for _ in range(2):  # a redelivered readout adds its reason once
-        assert await repo.record_measurement(
-            sink,
-            patch={"total_bytes": 9, "sizes": {"chunks": {"objects": 1, "bytes": 9}}},
-            durations_ms={"list": 7},
-            attention=["repo_size"],
-        )
+    # A readout that started listing before the run did: pre-GC sizes, dropped.
+    assert not await measure(T0 - dt.timedelta(seconds=1), patch={"total_bytes": 1})
+
+    failed_listing = T0 + dt.timedelta(seconds=10)
+    assert await measure(
+        failed_listing, patch={"measure_error": "boom"}, attention=["measure_failed"]
+    )
+    good = T0 + dt.timedelta(seconds=20)
+    assert await measure(
+        good, patch={"total_bytes": 9}, remove=["measure_error"], attention=["repo_size"]
+    )
+    # Older than the readout already merged: dropped.
+    assert not await measure(good - dt.timedelta(seconds=5), patch={"total_bytes": 1})
     merged, maintained_at = await summary()
     assert merged["total_bytes"] == 9
-    assert merged["durations_ms"] == {"trim": 3, "list": 7}
-    assert merged["attention"] == ["unrecorded_tip", "repo_size"]
-    assert merged["status"] == "attention"
     assert "measure_error" not in merged
+    assert merged["attention"] == ["unrecorded_tip", "repo_size"]  # measure_failed replaced
+    assert merged["durations_ms"] == {"trim": 3, "list": 7}
+    assert merged["status"] == "attention"
+    assert dt.datetime.fromisoformat(merged["measured_at"]) == good
     assert maintained_at == T0
     assert (await repo.load_sink(sink)).version == before  # never touches updated_at
 
-    await repo.record_maintenance(sink, summary={"status": "ok"}, maintained_at=T0)
-    await repo.record_measurement(sink, patch={}, durations_ms={}, attention=["repo_size"])
-    assert (await summary())[0]["status"] == "attention"
+    # Under the threshold now: the readout's own reason clears, the run's stays.
+    assert await measure(good + dt.timedelta(seconds=1), patch={"total_bytes": 2})
+    assert (await summary())[0]["attention"] == ["unrecorded_tip"]
 
-    # A summary with no status/attention/durations keys never becomes NULL.
-    await repo.record_maintenance(sink, summary={"started_at": "x"}, maintained_at=None)
-    await repo.record_measurement(sink, patch={"total_bytes": 2}, durations_ms={}, attention=[])
+    ok = {"status": "ok", "started_at": started, "attention": []}
+    await repo.record_maintenance(sink, summary=ok, maintained_at=T0)
+    assert await measure(good, attention=["repo_size"])
+    assert (await summary())[0]["status"] == "attention"
+    assert await measure(good + dt.timedelta(seconds=1))
+    assert (await summary())[0]["status"] == "ok"
+
+    failed = {"status": "failed", "started_at": started}
+    await repo.record_maintenance(sink, summary=failed, maintained_at=None)
+    assert await measure(good, patch={"total_bytes": 2})
+    assert (await summary())[0]["status"] == "failed"
+
+    # A summary with no started_at/status/attention/durations never becomes NULL.
+    await repo.record_maintenance(sink, summary={"x": 1}, maintained_at=None)
+    assert await measure(good, patch={"total_bytes": 2})
     merged = (await summary())[0]
-    assert merged == {
-        "started_at": "x",
-        "total_bytes": 2,
-        "durations_ms": {},
-        "attention": [],
-        "status": "ok",
-    }
+    assert merged["x"] == 1 and merged["total_bytes"] == 2
+    assert (merged["attention"], merged["status"]) == ([], "ok")
 
 
 async def test_record_maintenance_keeps_the_last_success_on_failure(db):

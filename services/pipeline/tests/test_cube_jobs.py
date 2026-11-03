@@ -410,6 +410,6 @@ async def test_production_maintain_deps_wire_the_real_seams(repo: FakeCubeRepo):
     assert deps.enqueue_measure is not None
     assert production_measure_deps(settings, repo).warn_bytes == 4096
     assert deps.after_batch is not None
-    assert deps.published_snapshot is not None
+    assert isinstance(deps.published_snapshot.__self__, PgCollectionPublisher)
     sink = await repo.load_sink("s1")
     assert "prefix: assets/cube1/_cube" in repr(deps.storage_for(sink))

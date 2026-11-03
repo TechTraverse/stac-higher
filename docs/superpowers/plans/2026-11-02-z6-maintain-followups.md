@@ -25,6 +25,13 @@ Issue: #115. Spec: `docs/superpowers/specs/2026-10-03-virtual-cube-sink-design.m
 - **D1:** the readout merges into the sink's **current** summary, not the run that enqueued it (`run_cube_measure(cube_sink_id)`). Pinning it to `started_at` plus a `queueing_lock` let a backlog coalesce away every hour's readout. A failed listing is attention `measure_failed`, so a readout that keeps failing is visible. Failed runs enqueue a readout too. The SQL COALESCEs every `jsonb_set` value (it is strict) and adds each attention reason once. The lister, and with it the boto3 client, is built once per worker in `register()`.
 - **D3/D6:** spared snapshots are looked up by id (`repo.lookup_snapshot`), not found on the walk. The walk stops at the newest aged ancestor, so there is no walk limit; a limit's fallback could still expire the published snapshot. If the published snapshot can't be read, the run skips expiry and GC (attention `expiry_skipped`) instead of failing.
 
+## Revised after the peer review of PR #118 (second pass)
+
+- **Spared snapshots off `main` skip expiry and GC.** GC deletes whatever no ref reaches, and a snapshot's manifests predate it, so lowering the cutoff can't save a snapshot `main` no longer reaches. `expiry_cutoff` returns `None` (no expiry, no GC; attention `expiry_skipped`) when a spared snapshot is off `main` or its id is invalid (`IcechunkError`). The walk runs newest first and stops at the deepest spared snapshot, or once it has passed one's write time without meeting it.
+- **The readout owns `repo_size` and `measure_failed`.** Each readout replaces them and recomputes `status` (`failed` stays). It merges only if its listing started at or after the run's `started_at` and after the `measured_at` already merged. A failed listing drops the old size keys.
+- `status` is set after `_maintain` returns, so an early return (no repository) still reports `attention`. A failed run enqueues a readout only if it reached the repository. The published snapshot is read only for sinks with a window, through `PgCollectionPublisher.published_snapshot` (`content->'assets'` only).
+- Not changed: with nothing recorded (a provisional repository), the published id is not spared. The provisional reset orphans those snapshots on purpose (#98), and any asset naming one is stale until the first recorded commit republishes.
+
 ## Tasks
 
 - [ ] **T1 paginator + client (D5, D7):** `_iter_objects`; three projections; `platform_lister` caches its client. Tests: the existing `list_*` tests stay green; one test that a lister builds one client across two calls.

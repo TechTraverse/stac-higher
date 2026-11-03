@@ -238,21 +238,33 @@ class FakeCubeRepo(CubeRepo):
         self,
         cube_sink_id: str,
         *,
+        measured_at: dt.datetime,
         patch: Mapping[str, Any],
+        remove: Sequence[str],
         durations_ms: Mapping[str, int],
         attention: Sequence[str],
+        owned_reasons: Sequence[str],
     ) -> bool:
         s = self._sink(cube_sink_id)
         current = s.last_maintenance if s is not None else None
         if current is None:
             return False
-        merged = {k: v for k, v in current.items() if k != "measure_error"}
+        floor = dt.datetime.min.replace(tzinfo=dt.UTC)
+
+        def when(key: str) -> dt.datetime:
+            value = current.get(key)
+            return dt.datetime.fromisoformat(value) if value else floor
+
+        if measured_at < when("started_at") or measured_at <= when("measured_at"):
+            return False
+        merged = {k: v for k, v in current.items() if k not in remove}
         merged.update(patch)
+        merged["measured_at"] = measured_at.isoformat()
         merged["durations_ms"] = {**current.get("durations_ms", {}), **durations_ms}
-        reasons = list(current.get("attention", []))
-        merged["attention"] = reasons + [a for a in attention if a not in reasons]
-        status = current.get("status") or "ok"
-        merged["status"] = "attention" if status == "ok" and attention else status
+        reasons = [a for a in current.get("attention", []) if a not in owned_reasons]
+        merged["attention"] = reasons + list(attention)
+        if current.get("status") != "failed":
+            merged["status"] = "attention" if merged["attention"] else "ok"
         s.last_maintenance = merged
         return True
 

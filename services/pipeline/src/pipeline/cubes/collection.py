@@ -355,16 +355,25 @@ class PgCollectionPublisher:
         )
         return outcome
 
+    async def published_snapshot(self, sink: CubeSink) -> str | None:  # pragma: no cover
+        """The ``version`` the cube collection's asset names right now."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT content->'assets' FROM pgstac.collections WHERE id = %s",
+                (sink.cube_collection_id,),
+            )
+            row = await cur.fetchone()
+        return published_snapshot_of(row[0] if row is not None else None, sink.id)
+
     async def after_batch(
         self, sink: CubeSink, config: CubeSinkConfig, result: BatchResult
     ) -> str:
         return await self.publish(sink, config, result)
 
 
-def published_snapshot_of(content: Mapping[str, Any] | None, sink_id: str) -> str | None:
-    """The ``version`` of this sink's cube asset on a collection document,
-    or ``None`` (no document, no such asset, no version)."""
-    assets = content.get("assets") if isinstance(content, Mapping) else None
+def published_snapshot_of(assets: Any, sink_id: str) -> str | None:
+    """The ``version`` of this sink's cube asset in a collection's ``assets``,
+    or ``None`` (no assets, no such asset, no version)."""
     if not isinstance(assets, Mapping):
         return None
     for asset in assets.values():
@@ -379,19 +388,7 @@ def production_published_snapshot(
 ) -> Callable[[CubeSink], Awaitable[str | None]]:
     """Maintenance's ``published_snapshot`` seam: the snapshot the cube
     collection's asset names right now (expiry spares it)."""
-
-    async def _published(sink: CubeSink) -> str | None:  # pragma: no cover - thin SQL
-        from pipeline.db.pool import get_async_pool
-
-        async with (await get_async_pool(settings.database_url)).connection() as conn:
-            cur = await conn.execute(
-                "SELECT content FROM pgstac.collections WHERE id = %s",
-                (sink.cube_collection_id,),
-            )
-            row = await cur.fetchone()
-        return published_snapshot_of(row[0] if row is not None else None, sink.id)
-
-    return _published
+    return PgCollectionPublisher(settings.database_url, settings.staging_bucket).published_snapshot
 
 
 def production_after_batch(settings: Settings) -> AfterBatch:
