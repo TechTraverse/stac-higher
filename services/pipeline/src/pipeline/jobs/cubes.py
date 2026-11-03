@@ -41,7 +41,7 @@ from collections.abc import Awaitable, Callable
 
 from pipeline.config import Settings
 from pipeline.cubes.append import AppendDeps, run_cube_append
-from pipeline.cubes.collection import production_after_batch
+from pipeline.cubes.collection import production_after_batch, production_published_snapshot
 from pipeline.cubes.icerepo import cube_storage
 from pipeline.cubes.maintain import MaintainDeps, platform_lister, run_cube_maintain
 from pipeline.cubes.repo import CubeRepo, PgCubeRepo
@@ -183,6 +183,7 @@ def production_maintain_deps(settings: Settings, repo: CubeRepo) -> MaintainDeps
         retention_seconds=settings.cube_snapshot_retention_seconds,
         warn_bytes=settings.cube_repo_warn_bytes,
         after_batch=production_after_batch(settings),
+        published_snapshot=production_published_snapshot(settings),
     )
 
 

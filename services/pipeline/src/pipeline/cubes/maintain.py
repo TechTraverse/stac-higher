@@ -32,7 +32,7 @@ import asyncio
 import datetime as dt
 import logging
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -76,14 +76,23 @@ STATUS_FAILED = "failed"
 ATTENTION_REPO_SIZE = "repo_size"
 ATTENTION_GC_DELETE_FAILURES = "gc_delete_failures"
 ATTENTION_UNRECORDED_TIP = "unrecorded_tip"
+ATTENTION_PUBLISH_FAILED = "publish_failed"
+#: ``publish_outcome`` when the collection writer raised
+PUBLISH_ERROR = "error"
 #: snapshot metadata on every maintenance trim, so a later run can tell a trim
 #: it made (and failed to record) from an append's commit; the message is
 #: only for people
 WRITER_METADATA_KEY = "stac_higher:writer"
 MAINTENANCE_WRITER = "maintenance"
 
+#: how far ``expiry_cutoff`` walks ``main``'s ancestry before giving up
+#: on finding the snapshots it spares (expiry keeps the history short, so
+#: only a first run over an old repository gets near it)
+MAX_EXPIRY_WALK = 1000
+
 #: every object in a cube repository: (key relative to its prefix, bytes)
 ListObjects = Callable[[CubeSink], list[tuple[str, int]]]
+PublishedSnapshot = Callable[[CubeSink], Awaitable[str | None]]
 
 
 def _utcnow() -> dt.datetime:
@@ -104,6 +113,9 @@ class MaintainDeps:
     warn_bytes: int = DEFAULT_CUBE_REPO_WARN_BYTES
     #: Z-5's collection asset writer (the same hook ``cube_append`` calls)
     after_batch: AfterBatch | None = None
+    #: the snapshot the cube collection's asset ``version`` names now
+    #: (``cubes.collection.production_published_snapshot``); expiry spares it
+    published_snapshot: PublishedSnapshot | None = None
     now: Callable[[], dt.datetime] = _utcnow
 
 
@@ -154,6 +166,8 @@ def expiry_cutoff(
     retention_seconds: int,
     *,
     recorded_snapshot_id: str | None,
+    published_snapshot_id: str | None = None,
+    max_walk: int | None = None,
 ) -> dt.datetime:
     """The expiry and GC cutoff. Icechunk ages a snapshot by when it was
     WRITTEN, but a reader holds the snapshot that was the tip when it last
@@ -162,23 +176,45 @@ def expiry_cutoff(
     was the tip until after the cutoff: the cutoff drops to its write time
     (the bound is exclusive, so it survives). Without this, a trim commit, or
     an append after a quiet spell, lets the same pass expire the snapshot
-    readers were on. The recorded snapshot is the one the collection's asset
-    ``version`` names, so it survives any crash ordering. A provisional
-    repository (``recorded_snapshot_id=None``) keeps the plain cutoff: nothing
-    published it, and its reset moved ``main`` backwards."""
+    readers were on.
+
+    Two more snapshots always survive: the RECORDED one (what the next publish
+    names, so it survives any crash ordering) and the PUBLISHED one (what the
+    collection asset's ``version`` names right now; it lags the recorded one
+    while a republish keeps failing). A provisional repository
+    (``recorded_snapshot_id=None``) keeps the plain cutoff: nothing published
+    it, and its reset moved ``main`` backwards.
+
+    Expiry rewrites the history, so a maintained repository's ancestry is
+    short; a first run over an old one is not. The walk stops after
+    ``max_walk`` snapshots, and if a spared one is still unseen the cutoff
+    drops to the oldest snapshot walked: everything seen survives."""
     cutoff = now - dt.timedelta(seconds=retention_seconds)
     if recorded_snapshot_id is None:
         return cutoff
+    limit = MAX_EXPIRY_WALK if max_walk is None else max_walk
+    spare = {recorded_snapshot_id}
+    if published_snapshot_id is not None:
+        spare.add(published_snapshot_id)
     lowest = cutoff
-    aged = recorded = False
-    for snapshot in repo.ancestry(branch=BRANCH):
+    aged = False
+    for walked, snapshot in enumerate(repo.ancestry(branch=BRANCH), start=1):
         if not aged and snapshot.written_at <= cutoff:
             aged = True
             lowest = min(lowest, snapshot.written_at)
-        if not recorded and snapshot.id == recorded_snapshot_id:
-            recorded = True
+        if snapshot.id in spare:
+            spare.discard(snapshot.id)
             lowest = min(lowest, snapshot.written_at)
-        if aged and recorded:
+        if aged and not spare:
+            break
+        if walked >= limit:
+            if spare:
+                logger.warning(
+                    "cube expiry: spared snapshots not found within the walk limit;"
+                    " keeping every snapshot walked",
+                    extra={"unseen": sorted(spare), "walked": walked},
+                )
+                lowest = min(lowest, snapshot.written_at)
             break
     return lowest
 
@@ -205,6 +241,7 @@ def maintain_repository(
     retention_seconds: int,
     recorded_snapshot_id: str | None,
     may_trim: bool,
+    published_snapshot_id: str | None = None,
 ) -> RepoPass:
     """Blocking: trim (windowed, recorded tip, nothing pending), expire and GC
     (windowed only), then read the tip's time values."""
@@ -215,6 +252,8 @@ def maintain_repository(
     tip = repo.lookup_branch(BRANCH)
     trimmed = 0
     healed = False
+    #: the tip's state when the trim read it and changed nothing
+    untouched: CubeState | None = None
     owned = recorded_snapshot_id
     if (
         recorded_snapshot_id is not None
@@ -236,12 +275,18 @@ def maintain_repository(
                 f"trim {trimmed} steps (maintenance)",
                 metadata={WRITER_METADATA_KEY: MAINTENANCE_WRITER},
             )
+        else:
+            untouched = state
         durations["trim"] = _ms(started)
     expired: int | None = None
     gc: dict[str, Any] | None = None
     if config.window is not None:
         cutoff = expiry_cutoff(
-            repo, now, retention_seconds, recorded_snapshot_id=recorded_snapshot_id
+            repo,
+            now,
+            retention_seconds,
+            recorded_snapshot_id=recorded_snapshot_id,
+            published_snapshot_id=published_snapshot_id,
         )
         started = time.monotonic()
         expired = len(repo.expire_snapshots(cutoff))
@@ -249,7 +294,13 @@ def maintain_repository(
         started = time.monotonic()
         gc = gc_counts(repo.garbage_collect(cutoff))
         durations["gc"] = _ms(started)
-    after = read_state(repo.readonly_session(BRANCH), config.append_dim)
+    # Expiry and GC never change the tip's content, so an untouched read
+    # stands; only a trim commit needs reading again.
+    after = (
+        untouched
+        if untouched is not None
+        else read_state(repo.readonly_session(BRANCH), config.append_dim)
+    )
     return RepoPass(
         exists=True,
         tip=tip,
@@ -339,6 +390,11 @@ async def _maintain(
     # (#98); a pending row means the next append trims anyway.
     pending = await deps.repo.has_pending(sink.id)
     may_trim = sink.last_snapshot_id is not None and not pending
+    # Read before expiry: if this fails the run fails, rather than risk
+    # expiring the snapshot the collection still points readers at.
+    published = (
+        await deps.published_snapshot(sink) if deps.published_snapshot is not None else None
+    )
     rp = await asyncio.to_thread(
         lambda: maintain_repository(
             deps.storage_for(sink),
@@ -347,6 +403,7 @@ async def _maintain(
             retention_seconds=deps.retention_seconds,
             recorded_snapshot_id=sink.last_snapshot_id,
             may_trim=may_trim,
+            published_snapshot_id=published,
         )
     )
     summary["repository"] = rp.exists
@@ -382,24 +439,37 @@ async def _maintain(
     summary["published"] = False
     summary["publish_outcome"] = None
     if deps.after_batch is not None and rp.state is not None and recorded == rp.tip:
-        outcome = await deps.after_batch(
-            sink,
-            config,
-            BatchResult(
-                outcomes={},
-                snapshot_id=rp.tip,
-                committed=rp.trimmed > 0,
-                values=rp.state.values,
-                trimmed=rp.trimmed,
-                initialised=True,
-                statics=rp.state.statics,
-                spatial_dims=rp.state.spatial_dims,
-            ),
-        )
-        # The writer can skip the write (collection gone, a newer tip recorded
-        # meanwhile); only a written or already-current asset names this tip.
-        summary["publish_outcome"] = outcome
-        summary["published"] = outcome in (PUBLISHED, UNCHANGED)
+        try:
+            outcome = await deps.after_batch(
+                sink,
+                config,
+                BatchResult(
+                    outcomes={},
+                    snapshot_id=rp.tip,
+                    committed=rp.trimmed > 0,
+                    values=rp.state.values,
+                    trimmed=rp.trimmed,
+                    initialised=True,
+                    statics=rp.state.statics,
+                    spatial_dims=rp.state.spatial_dims,
+                ),
+            )
+        except Exception as exc:
+            # The trim is recorded either way; the next run republishes it, and
+            # expiry keeps sparing the snapshot the asset still names.
+            logger.exception(
+                "cube_maintain: the collection republish failed",
+                extra={"cube_sink_id": sink.id, "snapshot_id": rp.tip},
+            )
+            summary["publish_outcome"] = PUBLISH_ERROR
+            summary["publish_error"] = error_text(exc)
+            summary["attention"].append(ATTENTION_PUBLISH_FAILED)
+        else:
+            # The writer can skip the write (collection gone, a newer tip
+            # recorded meanwhile); only a written or already-current asset
+            # names this tip.
+            summary["publish_outcome"] = outcome
+            summary["published"] = outcome in (PUBLISHED, UNCHANGED)
     if rp.gc is not None and rp.gc["objects_failed_to_delete"]:
         summary["attention"].append(ATTENTION_GC_DELETE_FAILURES)
         logger.warning(

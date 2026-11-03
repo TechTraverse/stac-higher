@@ -21,6 +21,7 @@ from _cube_sources import (
     scan,
     write_goes_file,
 )
+from pipeline.cubes.collection import published_snapshot_of
 from pipeline.cubes.config import parse_cube_sink_config
 from pipeline.cubes.icerepo import BRANCH, open_repository, reset_to_root
 from pipeline.cubes.maintain import (
@@ -28,6 +29,7 @@ from pipeline.cubes.maintain import (
     KINDS,
     LEDGER_RETENTION_DAYS,
     MaintainDeps,
+    expiry_cutoff,
     maintain_repository,
     run_cube_maintain,
     size_by_kind,
@@ -357,6 +359,119 @@ async def test_expiry_never_collects_the_recorded_snapshot(tmp_path):
     assert len(old["t"].values) == 1
     assert "unrecorded_tip" in summary["attention"]
     assert summary["status"] == "attention"
+
+
+async def test_expiry_spares_the_snapshot_the_collection_asset_names(tmp_path):
+    # A republish that keeps failing leaves the asset on an older snapshot
+    # than the recorded one; readers open that one, so it must survive.
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    cube.append(0)  # older than the named snapshot: still expires
+    named = cube.append(1)
+    cube.append(2)
+    cube.append(3)  # recorded tip (append sets last_snapshot_id)
+    deps = cube.deps()
+    deps.published_snapshot = _published(named)
+
+    summary = await run_cube_maintain("s1", deps)
+
+    assert summary["expired_snapshots"] >= 1
+    repo = open_repository(cube.storage(), [cube.src], replace_containers=False)
+    old = xr.open_zarr(
+        repo.readonly_session(snapshot_id=named).store, consolidated=False, zarr_format=3
+    )
+    assert len(old["t"].values) == 2
+
+
+async def test_without_the_published_seam_an_older_named_snapshot_is_expired(tmp_path):
+    # The counterpart of the test above: proves the seam is what saves it.
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    named = cube.append(0)
+    cube.append(1)
+    cube.append(2)
+
+    await cube.run()
+
+    repo = open_repository(cube.storage(), [cube.src], replace_containers=False)
+    with pytest.raises(Exception):  # noqa: B017 - icechunk's error type varies by version
+        repo.readonly_session(snapshot_id=named)
+
+
+def test_the_expiry_walk_stops_at_its_limit_and_keeps_everything_it_saw(tmp_path, caplog):
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    for n in range(5):
+        cube.append(n)
+    repo = ic.Repository.open(cube.storage())
+    walked = list(repo.ancestry(branch=BRANCH))
+    deepest = walked[-2].id  # the first append, below the root
+
+    with caplog.at_level(logging.WARNING):
+        cutoff = expiry_cutoff(repo, LATER, 3600, recorded_snapshot_id=deepest, max_walk=2)
+
+    assert cutoff == walked[1].written_at  # the oldest of the two walked
+    assert "walk limit" in caplog.text
+
+
+async def test_an_untouched_tip_is_read_once(tmp_path, monkeypatch):
+    import pipeline.cubes.maintain as maintain_mod
+
+    cube = Cube(tmp_path, window={"max_steps": 10})  # nothing to trim
+    cube.append(0, 1)
+    reads = []
+    real = maintain_mod.read_state
+    monkeypatch.setattr(
+        maintain_mod, "read_state", lambda *a, **kw: reads.append(1) or real(*a, **kw)
+    )
+
+    summary = await cube.run(now=scan(1))
+
+    assert summary["trimmed"] == 0
+    assert len(reads) == 1
+    assert list(cube.published[-1][1].values) == [as_ns(scan(0)), as_ns(scan(1))]
+
+
+async def test_a_failed_republish_is_attention_and_the_run_still_finishes(tmp_path):
+    cube = Cube(tmp_path, window={"max_age": "30m"})
+    cube.append(0, 1, 2, 3, now=scan(3))
+
+    async def broken(sink, config, result):
+        raise TimeoutError("canceling statement due to lock timeout")
+
+    deps = cube.deps(now=scan(3) + dt.timedelta(minutes=25))
+    deps.after_batch = broken
+
+    summary = await run_cube_maintain("s1", deps)
+
+    assert summary["trimmed"] == 2
+    assert cube.sink.last_snapshot_id == cube.tip()  # the trim is still recorded
+    assert summary["status"] == "attention"
+    assert summary["attention"] == ["publish_failed"]
+    assert summary["publish_outcome"] == "error"
+    assert "lock timeout" in summary["publish_error"]
+    assert summary["published"] is False
+    assert cube.sink.last_maintained_at is not None
+
+
+def test_published_snapshot_of_finds_this_sinks_asset_version():
+    content = {
+        "assets": {
+            "thumb": {"href": "x"},
+            "cube": {"href": "s3://b/_cube/", "version": "SNAP", "stac_higher:cube_sink_id": "s1"},
+            "other": {"version": "NOPE", "stac_higher:cube_sink_id": "s2"},
+        }
+    }
+    assert published_snapshot_of(content, "s1") == "SNAP"
+    assert published_snapshot_of(content, "s3") is None
+    no_version = {"assets": {"c": {"stac_higher:cube_sink_id": "s1"}}}
+    assert published_snapshot_of(no_version, "s1") is None
+    assert published_snapshot_of(None, "s1") is None
+    assert published_snapshot_of({"assets": []}, "s1") is None
+
+
+def _published(snapshot_id: str | None):
+    async def _read(sink) -> str | None:
+        return snapshot_id
+
+    return _read
 
 
 async def test_a_trim_is_published_after_it_is_recorded(tmp_path):
