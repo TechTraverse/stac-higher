@@ -31,7 +31,7 @@ From 2026-09-17 an ADR's **Status** line also names the PR that adopted it (`acc
 | [0021](0021-user-images-scan-then-approve.md) | User-supplied process images: scan, approve by policy, run by digest | accepted — PR #23 (2026-09-27; proposed 2026-09-13; amends 0013's slice-1 scope and 0019's "user images remain refused") | C queue |
 | [0022](0022-virtual-cube-sink.md) | Virtual cube sink: a platform-owned rolling Icechunk store per collection | accepted — PR #82 (2026-10-03; amends 0011); single-writer wording amended by 0023 | Z queue |
 | [0023](0023-cube-maintenance-trim-writer.md) | Cube maintenance is a second cube writer, for its age trim only | accepted — PR #105 (2026-10-19; amends 0022) | Z queue (Z-6) |
-| [0024](0024-deployment-artifacts.md) | Deployment artifacts: this repo publishes, a private repo deploys; Terraform for AWS, Helm for Kubernetes, services on EKS | accepted (2026-11-03; supersedes ROADMAP Phase 8's eoapi-cdk plan) | Phase 8 (R queue) |
+| [0024](0024-deployment-artifacts.md) | Deployment artifacts: this repo publishes, a private repo deploys; Terraform for AWS, Helm for Kubernetes, services on EKS | accepted — PR #125 (2026-11-03; supersedes ROADMAP Phase 8's eoapi-cdk plan) | Phase 8 (R queue) |
 
 Proposed ADRs establish no invariants until accepted (via the Phase 9 design
 spec); their draft invariants live inside the documents.

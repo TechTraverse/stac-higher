@@ -1,6 +1,6 @@
 # ADR 0024 — Deployment artifacts: this repo publishes, a private repo deploys; Terraform for AWS, Helm for Kubernetes, services on EKS
 
-- **Status:** accepted (2026-11-03; proposed 2026-11-02) — the lead approved
+- **Status:** accepted — PR #125 (2026-11-03; proposed 2026-11-02). The lead approved
   the design spec `docs/superpowers/specs/2026-11-02-deployment-artifacts-design.md`.
 - **Supersedes:** ROADMAP Phase 8's "AWS stack via eoapi-cdk extended" and
   the §7 "eoapi-cdk … Adopt in Phase 8" row. eoapi-k8s stays adopted.
