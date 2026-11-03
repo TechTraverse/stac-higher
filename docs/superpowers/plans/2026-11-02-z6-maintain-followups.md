@@ -20,6 +20,11 @@ Issue: #115. Spec: `docs/superpowers/specs/2026-10-03-virtual-cube-sink-design.m
 6. **Bounded expiry walk.** Verified on icechunk 2.3.0: `expire_snapshots` rewrites the history, so a windowed sink's history stays short (9 → 4 in a probe). The long walk is a first run over an old repository, or spared ids missing from the history. Cap the walk at `MAX_EXPIRY_WALK = 1000` snapshots. If the cap is hit before every spared id is found, the cutoff drops to the oldest snapshot walked, which protects everything seen (conservative), and the run logs a WARNING.
 7. **One paginator:** `storage/platform.py::_iter_objects(client, bucket, prefix)` yields the raw `Contents` dicts. `list_keys`, `list_objects` and `list_sizes` become one-line projections over it.
 
+## Revised after the PR #118 review
+
+- **D1:** the readout merges into the sink's **current** summary, not the run that enqueued it (`run_cube_measure(cube_sink_id)`). Pinning it to `started_at` plus a `queueing_lock` let a backlog coalesce away every hour's readout. A failed listing is attention `measure_failed`, so a readout that keeps failing is visible. Failed runs enqueue a readout too. The SQL COALESCEs every `jsonb_set` value (it is strict) and adds each attention reason once. The lister, and with it the boto3 client, is built once per worker in `register()`.
+- **D3/D6:** spared snapshots are looked up by id (`repo.lookup_snapshot`), not found on the walk. The walk stops at the newest aged ancestor, so there is no walk limit; a limit's fallback could still expire the published snapshot. If the published snapshot can't be read, the run skips expiry and GC (attention `expiry_skipped`) instead of failing.
+
 ## Tasks
 
 - [ ] **T1 paginator + client (D5, D7):** `_iter_objects`; three projections; `platform_lister` caches its client. Tests: the existing `list_*` tests stay green; one test that a lister builds one client across two calls.

@@ -55,7 +55,7 @@ class Cube:
         self.repo = FakeCubeRepo(sinks=[FakeSink("s1", "src", "cube1", config=raw)])
         self.published: list[tuple[str, BatchResult]] = []
         self.listed = 0
-        self.measure_queue: list[tuple[str, str]] = []
+        self.measure_queue: list[str] = []
         self.publish_outcome: str | None = "published"
 
     def storage(self) -> ic.Storage:
@@ -109,8 +109,8 @@ class Cube:
         self.published.append((sink.id, result))
         return self.publish_outcome
 
-    async def enqueue_measure(self, cube_sink_id: str, started_at: str) -> None:
-        self.measure_queue.append((cube_sink_id, started_at))
+    async def enqueue_measure(self, cube_sink_id: str) -> None:
+        self.measure_queue.append(cube_sink_id)
 
     def deps(self, *, now: dt.datetime = LATER) -> MaintainDeps:
         return MaintainDeps(
@@ -131,9 +131,8 @@ class Cube:
         if await run_cube_maintain("s1", self.deps(**kw)) is None:
             return None
         while self.measure_queue:
-            cube_sink_id, started_at = self.measure_queue.pop(0)
             deps = self.measure_deps(warn_bytes=warn_bytes)
-            await run_cube_measure(cube_sink_id, started_at, deps)
+            await run_cube_measure(self.measure_queue.pop(0), deps)
         return self.sink.last_maintenance
 
 
@@ -412,19 +411,81 @@ async def test_without_the_published_seam_an_older_named_snapshot_is_expired(tmp
         repo.readonly_session(snapshot_id=named)
 
 
-def test_the_expiry_walk_stops_at_its_limit_and_keeps_everything_it_saw(tmp_path, caplog):
+def test_a_spared_id_that_no_longer_exists_is_ignored(tmp_path):
     cube = Cube(tmp_path, window={"max_steps": 10})
-    for n in range(5):
+    for n in range(3):
         cube.append(n)
     repo = ic.Repository.open(cube.storage())
-    walked = list(repo.ancestry(branch=BRANCH))
-    deepest = walked[-2].id  # the first append, below the root
+    tip = repo.lookup_branch(BRANCH)
+    plain = expiry_cutoff(repo, LATER, 3600, recorded_snapshot_id=tip)
 
-    with caplog.at_level(logging.WARNING):
-        cutoff = expiry_cutoff(repo, LATER, 3600, recorded_snapshot_id=deepest, max_walk=2)
+    cutoff = expiry_cutoff(
+        repo, LATER, 3600, recorded_snapshot_id=tip, published_snapshot_id="1CECHNKREP0F1RSTCMTX"
+    )
 
-    assert cutoff == walked[1].written_at  # the oldest of the two walked
-    assert "walk limit" in caplog.text
+    assert cutoff == plain
+
+
+def test_a_deep_spared_snapshot_is_looked_up_not_walked_to(tmp_path, monkeypatch):
+    # The walk stops at the newest aged ancestor; the spared ids are looked
+    # up directly, however deep (review of #118: no walk limit to fall off).
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    deep = cube.append(0)
+    for n in range(1, 5):
+        cube.append(n)
+    repo = ic.Repository.open(cube.storage())
+    walked = []
+    real_ancestry = repo.ancestry
+
+    def counting_ancestry(*a, **kw):
+        for snapshot in real_ancestry(*a, **kw):
+            walked.append(snapshot.id)
+            yield snapshot
+
+    monkeypatch.setattr(repo, "ancestry", counting_ancestry, raising=False)
+
+    cutoff = expiry_cutoff(
+        repo, LATER, 3600, recorded_snapshot_id=repo.lookup_branch(BRANCH),
+        published_snapshot_id=deep,
+    )
+
+    assert len(walked) == 1  # LATER: the tip itself is already aged
+    assert cutoff == repo.lookup_snapshot(deep).written_at
+
+
+async def test_an_unreadable_published_snapshot_skips_expiry_not_the_run(tmp_path):
+    cube = Cube(tmp_path, window={"max_age": "30m"})
+    cube.append(0, 1, 2, 3, now=scan(3))
+    before = cube.snapshot_files()
+
+    async def broken(sink):
+        raise ConnectionError("pool exhausted")
+
+    deps = cube.deps(now=scan(3) + dt.timedelta(minutes=25))
+    deps.published_snapshot = broken
+
+    summary = await run_cube_maintain("s1", deps)
+
+    assert summary["trimmed"] == 2  # the trim still ran
+    assert summary["expired_snapshots"] is None and summary["gc"] is None
+    assert cube.snapshot_files() == before + 1  # the trim's, nothing collected
+    assert summary["attention"] == ["expiry_skipped"]
+    assert summary["status"] == "attention"
+
+
+async def test_a_failed_run_still_gets_a_size_readout(tmp_path):
+    cube = Cube(tmp_path, window=None)
+    cube.append(0)
+    deps = cube.deps()
+
+    def boom(sink):
+        raise ConnectionError("platform bucket unreachable")
+
+    deps.storage_for = boom
+    with pytest.raises(ConnectionError):
+        await run_cube_maintain("s1", deps)
+
+    assert cube.measure_queue == ["s1"]
 
 
 async def test_an_untouched_tip_is_read_once(tmp_path, monkeypatch):
@@ -677,8 +738,8 @@ async def test_the_size_readout_is_enqueued_after_the_record_not_run_inside(tmp_
         order.append("record")
         return await record(*a, **kw)
 
-    async def tracking_enqueue(cube_sink_id, started_at):
-        order.append(f"enqueue:{started_at == cube.sink.last_maintenance['started_at']}")
+    async def tracking_enqueue(cube_sink_id):
+        order.append(f"enqueue:{cube_sink_id}")
 
     cube.repo.record_maintenance = tracking_record
     deps = cube.deps()
@@ -686,45 +747,62 @@ async def test_the_size_readout_is_enqueued_after_the_record_not_run_inside(tmp_
 
     summary = await run_cube_maintain("s1", deps)
 
-    assert order == ["record", "enqueue:True"]
+    assert order == ["record", "enqueue:s1"]
     assert cube.listed == 0  # the listing is the measure job's, outside the lock
     assert "sizes" not in summary
 
 
-async def test_a_readout_for_a_replaced_run_is_dropped(tmp_path):
+async def test_a_readout_that_waited_behind_a_newer_run_lands_on_it(tmp_path):
+    # A backlog: two runs, one coalesced readout. It measures the current
+    # summary, so neither hour goes dark (review of #118).
     cube = Cube(tmp_path, window={"max_steps": 10})
     cube.append(0)
     await run_cube_maintain("s1", cube.deps(now=LATER))
     await run_cube_maintain("s1", cube.deps(now=LATER + dt.timedelta(hours=1)))
-    (_, first), (_, second) = cube.measure_queue
 
-    stale = await run_cube_measure("s1", first, cube.measure_deps())
+    result = await run_cube_measure("s1", cube.measure_deps(warn_bytes=1))
+    again = await run_cube_measure("s1", cube.measure_deps(warn_bytes=1))  # redelivered
 
-    assert stale["merged"] is False
-    assert "sizes" not in cube.sink.last_maintenance
-    fresh = await run_cube_measure("s1", second, cube.measure_deps())
-    assert fresh["merged"] is True
-    assert cube.sink.last_maintenance["total_bytes"] == fresh["total_bytes"] > 0
-    assert "list" in cube.sink.last_maintenance["durations_ms"]
+    assert (result["merged"], again["merged"]) == (True, True)
+    summary = cube.sink.last_maintenance
+    assert summary["started_at"] == (LATER + dt.timedelta(hours=1)).isoformat()
+    assert summary["total_bytes"] == result["total_bytes"] > 0
+    assert summary["attention"] == ["repo_size"]  # once, not once per readout
+    assert summary["status"] == "attention"
+    assert "list" in summary["durations_ms"]
 
 
-async def test_a_listing_failure_is_recorded_as_measure_error(tmp_path):
+async def test_a_readout_before_any_maintenance_is_dropped(tmp_path):
+    cube = Cube(tmp_path, window=None)
+    cube.append(0)
+
+    result = await run_cube_measure("s1", cube.measure_deps())
+
+    assert result["merged"] is False
+    assert cube.sink.last_maintenance is None
+
+
+async def test_a_listing_failure_is_attention_and_a_later_success_clears_the_error(tmp_path):
     cube = Cube(tmp_path, window=None)
     cube.append(0)
     await run_cube_maintain("s1", cube.deps())
-    ((_, started_at),) = cube.measure_queue
     deps = cube.measure_deps()
 
     def boom(sink):
         raise ConnectionError("platform bucket unreachable")
 
     deps.list_objects = boom
-    await run_cube_measure("s1", started_at, deps)
+    await run_cube_measure("s1", deps)
 
     summary = cube.sink.last_maintenance
     assert "platform bucket unreachable" in summary["measure_error"]
-    assert summary["status"] == "ok"  # an unknown size is not a size warning
+    assert summary["attention"] == ["measure_failed"]
+    assert summary["status"] == "attention"  # a readout that keeps failing is visible
     assert "sizes" not in summary
+
+    await run_cube_measure("s1", cube.measure_deps())
+    assert "measure_error" not in cube.sink.last_maintenance
+    assert "sizes" in cube.sink.last_maintenance
 
 
 async def test_the_size_warning_adds_to_existing_attention(tmp_path):

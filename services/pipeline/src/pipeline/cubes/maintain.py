@@ -80,6 +80,10 @@ ATTENTION_REPO_SIZE = "repo_size"
 ATTENTION_GC_DELETE_FAILURES = "gc_delete_failures"
 ATTENTION_UNRECORDED_TIP = "unrecorded_tip"
 ATTENTION_PUBLISH_FAILED = "publish_failed"
+#: the published snapshot could not be read, so this run did not expire or GC
+ATTENTION_EXPIRY_SKIPPED = "expiry_skipped"
+#: the size readout's listing failed (``measure_error`` has the message)
+ATTENTION_MEASURE_FAILED = "measure_failed"
 #: ``publish_outcome`` when the collection writer raised
 PUBLISH_ERROR = "error"
 #: snapshot metadata on every maintenance trim, so a later run can tell a trim
@@ -88,16 +92,11 @@ PUBLISH_ERROR = "error"
 WRITER_METADATA_KEY = "stac_higher:writer"
 MAINTENANCE_WRITER = "maintenance"
 
-#: how far ``expiry_cutoff`` walks ``main``'s ancestry before giving up
-#: on finding the snapshots it spares (expiry keeps the history short, so
-#: only a first run over an old repository gets near it)
-MAX_EXPIRY_WALK = 1000
-
 #: every object in a cube repository: (key relative to its prefix, bytes)
 ListObjects = Callable[[CubeSink], list[tuple[str, int]]]
 PublishedSnapshot = Callable[[CubeSink], Awaitable[str | None]]
-#: (cube_sink_id, the run's started_at)
-EnqueueMeasure = Callable[[str, str], Awaitable[Any]]
+#: (cube_sink_id) -> enqueue its size readout
+EnqueueMeasure = Callable[[str], Awaitable[Any]]
 
 
 def _utcnow() -> dt.datetime:
@@ -119,8 +118,8 @@ class MaintainDeps:
     #: the snapshot the cube collection's asset ``version`` names now
     #: (``cubes.collection.production_published_snapshot``); expiry spares it
     published_snapshot: PublishedSnapshot | None = None
-    #: enqueue ``cube_measure_sink`` for this run (``jobs.cubes``): the size
-    #: readout runs outside the sink's lock, after the summary is recorded
+    #: enqueue ``cube_measure_sink`` (``jobs.cubes``): the size readout runs
+    #: outside the sink's lock, after the summary is recorded
     enqueue_measure: EnqueueMeasure | None = None
     now: Callable[[], dt.datetime] = _utcnow
 
@@ -130,6 +129,7 @@ class MeasureDeps:
     repo: CubeRepo
     list_objects: ListObjects
     warn_bytes: int = DEFAULT_CUBE_REPO_WARN_BYTES
+    now: Callable[[], dt.datetime] = _utcnow
 
 
 @dataclass(frozen=True)
@@ -180,7 +180,6 @@ def expiry_cutoff(
     *,
     recorded_snapshot_id: str | None,
     published_snapshot_id: str | None = None,
-    max_walk: int | None = None,
 ) -> dt.datetime:
     """The expiry and GC cutoff. Icechunk ages a snapshot by when it was
     WRITTEN, but a reader holds the snapshot that was the tip when it last
@@ -189,46 +188,31 @@ def expiry_cutoff(
     was the tip until after the cutoff: the cutoff drops to its write time
     (the bound is exclusive, so it survives). Without this, a trim commit, or
     an append after a quiet spell, lets the same pass expire the snapshot
-    readers were on.
+    readers were on. The walk stops at that ancestor, so it is as long as the
+    commits inside the retention.
 
-    Two more snapshots always survive: the RECORDED one (what the next publish
-    names, so it survives any crash ordering) and the PUBLISHED one (what the
-    collection asset's ``version`` names right now; it lags the recorded one
-    while a republish keeps failing). A provisional repository
-    (``recorded_snapshot_id=None``) keeps the plain cutoff: nothing published
-    it, and its reset moved ``main`` backwards.
-
-    Expiry rewrites the history, so a maintained repository's ancestry is
-    short; a first run over an old one is not. The walk stops after
-    ``max_walk`` snapshots, and if a spared one is still unseen the cutoff
-    drops to the oldest snapshot walked: everything seen survives."""
+    Two more snapshots always survive, looked up by id rather than found on
+    the walk (they may be deep in the history, or off ``main`` entirely): the
+    RECORDED one (what the next publish names, so it survives any crash
+    ordering) and the PUBLISHED one (what the collection asset's ``version``
+    names right now; it lags the recorded one while a republish keeps
+    failing). An id that no longer exists has nothing left to spare. A
+    provisional repository (``recorded_snapshot_id=None``) keeps the plain
+    cutoff: nothing published it, and its reset moved ``main`` backwards."""
     cutoff = now - dt.timedelta(seconds=retention_seconds)
     if recorded_snapshot_id is None:
         return cutoff
-    limit = MAX_EXPIRY_WALK if max_walk is None else max_walk
-    spare = {recorded_snapshot_id}
-    if published_snapshot_id is not None:
-        spare.add(published_snapshot_id)
     lowest = cutoff
-    aged = False
-    for walked, snapshot in enumerate(repo.ancestry(branch=BRANCH), start=1):
-        if not aged and snapshot.written_at <= cutoff:
-            aged = True
-            lowest = min(lowest, snapshot.written_at)
-        if snapshot.id in spare:
-            spare.discard(snapshot.id)
-            lowest = min(lowest, snapshot.written_at)
-        if aged and not spare:
+    for snapshot in repo.ancestry(branch=BRANCH):
+        if snapshot.written_at <= cutoff:
+            lowest = snapshot.written_at
             break
-        if walked >= limit:
-            if spare:
-                logger.warning(
-                    "cube expiry: spared snapshots not found within the walk limit;"
-                    " keeping every snapshot walked",
-                    extra={"unseen": sorted(spare), "walked": walked},
-                )
-                lowest = min(lowest, snapshot.written_at)
-            break
+    for spared in dict.fromkeys(i for i in (recorded_snapshot_id, published_snapshot_id) if i):
+        try:
+            written_at = repo.lookup_snapshot(spared).written_at
+        except ic.SnapshotNotFoundError:
+            continue
+        lowest = min(lowest, written_at)
     return lowest
 
 
@@ -255,6 +239,7 @@ def maintain_repository(
     recorded_snapshot_id: str | None,
     may_trim: bool,
     published_snapshot_id: str | None = None,
+    may_expire: bool = True,
 ) -> RepoPass:
     """Blocking: trim (windowed, recorded tip, nothing pending), expire and GC
     (windowed only), then read the tip's time values."""
@@ -293,7 +278,7 @@ def maintain_repository(
         durations["trim"] = _ms(started)
     expired: int | None = None
     gc: dict[str, Any] | None = None
-    if config.window is not None:
+    if config.window is not None and may_expire:
         cutoff = expiry_cutoff(
             repo,
             now,
@@ -374,19 +359,16 @@ async def run_cube_maintain(cube_sink_id: str, deps: MaintainDeps) -> dict[str, 
             logger.exception(
                 "cube_maintain: could not record the failure", extra={"cube_sink_id": sink.id}
             )
+        else:
+            # A failed run still gets its sizes: the readout needs no lock.
+            await _enqueue_measure(sink.id, deps)
         raise
     finished = deps.now()
     summary["finished_at"] = finished.isoformat()
     await deps.repo.record_maintenance(sink.id, summary=summary, maintained_at=finished)
-    if summary.get("repository") and deps.enqueue_measure is not None:
-        # After the record: the measurement merges into this run's summary.
-        try:
-            await deps.enqueue_measure(sink.id, summary["started_at"])
-        except Exception:
-            logger.exception(
-                "cube_maintain: could not enqueue the size readout",
-                extra={"cube_sink_id": sink.id},
-            )
+    if summary.get("repository"):
+        # After the record: the readout merges into the recorded summary.
+        await _enqueue_measure(sink.id, deps)
     logger.info(
         "cube_maintain finished",
         extra={
@@ -397,6 +379,18 @@ async def run_cube_maintain(cube_sink_id: str, deps: MaintainDeps) -> dict[str, 
         },
     )
     return summary
+
+
+async def _enqueue_measure(cube_sink_id: str, deps: MaintainDeps) -> None:
+    if deps.enqueue_measure is None:
+        return
+    try:
+        await deps.enqueue_measure(cube_sink_id)
+    except Exception:
+        logger.exception(
+            "cube_maintain: could not enqueue the size readout",
+            extra={"cube_sink_id": cube_sink_id},
+        )
 
 
 async def _maintain(
@@ -410,11 +404,22 @@ async def _maintain(
     # (#98); a pending row means the next append trims anyway.
     pending = await deps.repo.has_pending(sink.id)
     may_trim = sink.last_snapshot_id is not None and not pending
-    # Read before expiry: if this fails the run fails, rather than risk
-    # expiring the snapshot the collection still points readers at.
-    published = (
-        await deps.published_snapshot(sink) if deps.published_snapshot is not None else None
-    )
+    # Expiry must spare the snapshot the collection points readers at. If
+    # that can't be read, this run skips expiry and GC rather than guess; the
+    # trim, republish and readout still run.
+    published: str | None = None
+    may_expire = True
+    if deps.published_snapshot is not None:
+        try:
+            published = await deps.published_snapshot(sink)
+        except Exception:
+            logger.exception(
+                "cube_maintain: could not read the published snapshot; skipping expiry",
+                extra={"cube_sink_id": sink.id},
+            )
+            may_expire = False
+            if config.window is not None:
+                summary["attention"].append(ATTENTION_EXPIRY_SKIPPED)
     rp = await asyncio.to_thread(
         lambda: maintain_repository(
             deps.storage_for(sink),
@@ -424,6 +429,7 @@ async def _maintain(
             recorded_snapshot_id=sink.last_snapshot_id,
             may_trim=may_trim,
             published_snapshot_id=published,
+            may_expire=may_expire,
         )
     )
     summary["repository"] = rp.exists
@@ -500,58 +506,55 @@ async def _maintain(
         summary["status"] = STATUS_ATTENTION
 
 
-async def run_cube_measure(
-    cube_sink_id: str, started_at: str, deps: MeasureDeps
-) -> dict[str, Any] | None:
+async def run_cube_measure(cube_sink_id: str, deps: MeasureDeps) -> dict[str, Any] | None:
     """``pipeline.cube_measure_sink``: list one cube repository and merge the
-    per-kind sizes into the maintenance run ``started_at`` (I-143). Runs
-    WITHOUT the sink's lock: a long listing never delays appends. A listing
-    error is merged as ``measure_error`` and not raised (the next hour
-    measures again). Returns what was merged, or ``None`` for a gone sink."""
+    per-kind sizes into the sink's CURRENT ``last_maintenance`` (I-143). Runs
+    WITHOUT the sink's lock, so a long listing never delays appends. Not tied
+    to the run that enqueued it: a readout that waited behind a backlog
+    still lands (on whatever run is current), and a coalesced enqueue loses
+    nothing. A listing error is merged as ``measure_error`` with attention
+    ``measure_failed``, and not raised (the next hour measures again).
+    Returns what was merged, or ``None`` for a gone sink."""
     sink = await deps.repo.load_sink(cube_sink_id)
     if sink is None:
         return None
     started = time.monotonic()
+    measured_at = deps.now().isoformat()
     try:
         sizes = size_by_kind(await asyncio.to_thread(deps.list_objects, sink))
     except Exception as exc:
         logger.exception("cube_measure: listing failed", extra={"cube_sink_id": sink.id})
-        patch: dict[str, Any] = {"measure_error": error_text(exc)}
-        await deps.repo.record_measurement(
-            sink.id, started_at=started_at, patch=patch, durations_ms={}, attention=[]
-        )
-        return patch
-    total_bytes = sum(kind["bytes"] for kind in sizes.values())
-    patch = {
-        "sizes": sizes,
-        "total_objects": sum(kind["objects"] for kind in sizes.values()),
-        "total_bytes": total_bytes,
-        "warn_bytes": deps.warn_bytes,
-    }
-    attention: list[str] = []
-    if total_bytes >= deps.warn_bytes:
-        attention.append(ATTENTION_REPO_SIZE)
-        logger.warning(
-            "cube repository at or above CUBE_REPO_WARN_BYTES (I-143)",
-            extra={
-                "cube_sink_id": sink.id,
-                "cube_collection_id": sink.cube_collection_id,
-                "total_bytes": total_bytes,
-                "warn_bytes": deps.warn_bytes,
-                "transactions_bytes": sizes["transactions"]["bytes"],
-                "overwritten_bytes": sizes["overwritten"]["bytes"],
-            },
-        )
+        patch: dict[str, Any] = {"measured_at": measured_at, "measure_error": error_text(exc)}
+        attention = [ATTENTION_MEASURE_FAILED]
+    else:
+        total_bytes = sum(kind["bytes"] for kind in sizes.values())
+        patch = {
+            "measured_at": measured_at,
+            "sizes": sizes,
+            "total_objects": sum(kind["objects"] for kind in sizes.values()),
+            "total_bytes": total_bytes,
+            "warn_bytes": deps.warn_bytes,
+        }
+        attention = []
+        if total_bytes >= deps.warn_bytes:
+            attention.append(ATTENTION_REPO_SIZE)
+            logger.warning(
+                "cube repository at or above CUBE_REPO_WARN_BYTES (I-143)",
+                extra={
+                    "cube_sink_id": sink.id,
+                    "cube_collection_id": sink.cube_collection_id,
+                    "total_bytes": total_bytes,
+                    "warn_bytes": deps.warn_bytes,
+                    "transactions_bytes": sizes["transactions"]["bytes"],
+                    "overwritten_bytes": sizes["overwritten"]["bytes"],
+                },
+            )
     merged = await deps.repo.record_measurement(
-        sink.id,
-        started_at=started_at,
-        patch=patch,
-        durations_ms={"list": _ms(started)},
-        attention=attention,
+        sink.id, patch=patch, durations_ms={"list": _ms(started)}, attention=attention
     )
     if not merged:
         logger.info(
-            "cube_measure: a newer maintenance run replaced this one; readout dropped",
-            extra={"cube_sink_id": sink.id, "started_at": started_at},
+            "cube_measure: the sink has no maintenance summary yet; readout dropped",
+            extra={"cube_sink_id": sink.id},
         )
     return {**patch, "attention": attention, "merged": merged}

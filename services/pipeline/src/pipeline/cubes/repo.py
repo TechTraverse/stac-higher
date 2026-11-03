@@ -173,17 +173,17 @@ class CubeRepo(abc.ABC):
         self,
         cube_sink_id: str,
         *,
-        started_at: str,
         patch: Mapping[str, Any],
         durations_ms: Mapping[str, int],
         attention: Sequence[str],
     ) -> bool:
-        """Merge a size readout into the maintenance run that asked for it,
-        only while ``last_maintenance.started_at`` is still ``started_at``:
-        top-level ``patch`` keys, ``durations_ms`` merged into the run's,
-        ``attention`` appended, and ``status`` ``ok`` → ``attention`` when any
-        was added (never over ``failed``). Leaves ``updated_at`` and
-        ``last_maintained_at`` alone. Returns whether the row changed."""
+        """Merge a size readout into the sink's current ``last_maintenance``:
+        drop an earlier ``measure_error``, set the top-level ``patch`` keys,
+        merge ``durations_ms``, add each ``attention`` reason not already
+        there, and turn ``status`` ``ok`` into ``attention`` when any reason
+        is given (never over ``failed``). A sink with no summary yet is left
+        alone. Leaves ``updated_at`` and ``last_maintained_at`` alone.
+        Returns whether the row changed."""
 
 
 @dataclass
@@ -443,33 +443,39 @@ class PgCubeRepo(CubeRepo):
         self,
         cube_sink_id: str,
         *,
-        started_at: str,
         patch: Mapping[str, Any],
         durations_ms: Mapping[str, int],
         attention: Sequence[str],
     ) -> bool:
+        # jsonb_set returns NULL for a NULL value, so every value it is given
+        # is COALESCEd: a summary missing a key must never become NULL.
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "UPDATE stac_higher.cube_sinks SET last_maintenance ="
+                "WITH cur AS ("
+                "  SELECT id, last_maintenance - 'measure_error' AS lm,"
+                "         COALESCE(last_maintenance->'attention', '[]'::jsonb) AS att"
+                "    FROM stac_higher.cube_sinks"
+                "   WHERE id = %(id)s AND last_maintenance IS NOT NULL"
+                "     FOR NO KEY UPDATE)"
+                " UPDATE stac_higher.cube_sinks s SET last_maintenance ="
                 " jsonb_set(jsonb_set(jsonb_set("
-                "   last_maintenance || %(patch)s::jsonb,"
+                "   cur.lm || %(patch)s::jsonb,"
                 "   '{durations_ms}',"
-                "   COALESCE(last_maintenance->'durations_ms', '{}'::jsonb)"
-                "     || %(durations)s::jsonb),"
+                "   COALESCE(cur.lm->'durations_ms', '{}'::jsonb) || %(durations)s::jsonb),"
                 "   '{attention}',"
-                "   COALESCE(last_maintenance->'attention', '[]'::jsonb)"
-                "     || %(attention)s::jsonb),"
+                "   cur.att || COALESCE((SELECT jsonb_agg(a.v) FROM jsonb_array_elements("
+                "     %(attention)s::jsonb) AS a(v) WHERE NOT cur.att @> jsonb_build_array(a.v)),"
+                "     '[]'::jsonb)),"
                 "   '{status}',"
-                "   to_jsonb(CASE WHEN last_maintenance->>'status' = 'ok'"
-                "                  AND jsonb_array_length(%(attention)s::jsonb) > 0"
-                "             THEN 'attention' ELSE last_maintenance->>'status' END))"
-                " WHERE id = %(id)s AND last_maintenance->>'started_at' = %(started_at)s",
+                "   to_jsonb(COALESCE(CASE WHEN cur.lm->>'status' = 'ok'"
+                "                          AND jsonb_array_length(%(attention)s::jsonb) > 0"
+                "                     THEN 'attention' ELSE cur.lm->>'status' END, 'ok')))"
+                " FROM cur WHERE s.id = cur.id",
                 {
                     "patch": json.dumps(dict(patch)),
                     "durations": json.dumps(dict(durations_ms)),
                     "attention": json.dumps(list(attention)),
                     "id": cube_sink_id,
-                    "started_at": started_at,
                 },
             )
             changed = cur.rowcount

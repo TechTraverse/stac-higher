@@ -266,7 +266,7 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   (`cubes/maintain.py`). It republishes the recorded tip, records
   `last_maintenance` (`docs/monitoring.md`), then enqueues
   `pipeline.cube_measure_sink`, which takes no lock (`queueing_lock`
-  `cube-measure:{id}`) and merges the per-kind sizes into that summary.
+  `cube-measure:{id}`) and merges the per-kind sizes into the current summary.
   The pipeline never writes `cube_sinks.updated_at` (the app's version, #98).
 - **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
   the `pipeline.deliver` task loads the destination connection, builds its

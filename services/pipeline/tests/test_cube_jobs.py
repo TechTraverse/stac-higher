@@ -248,13 +248,13 @@ MEASURE_DEPS = object()
 
 
 @pytest.fixture
-def measured(monkeypatch) -> list[tuple[str, str]]:
-    """(sink id, started_at) the measure handler ran run_cube_measure for."""
-    calls: list[tuple[str, str]] = []
+def measured(monkeypatch) -> list[str]:
+    """Sink ids the measure handler ran run_cube_measure for."""
+    calls: list[str] = []
 
-    async def fake_run(cube_sink_id: str, started_at: str, deps) -> None:
+    async def fake_run(cube_sink_id: str, deps) -> None:
         assert deps is MEASURE_DEPS
-        calls.append((cube_sink_id, started_at))
+        calls.append(cube_sink_id)
 
     monkeypatch.setattr(cubes_jobs, "run_cube_measure", fake_run)
     return calls
@@ -291,19 +291,19 @@ async def test_maintenance_takes_the_sink_lock_and_its_own_queueing_lock(
 
 
 async def test_the_size_readout_takes_no_lock_and_runs_the_measure(
-    mqueue: InMemoryQueue, measured: list[tuple[str, str]]
+    mqueue: InMemoryQueue, measured: list[str]
 ):
     assert mqueue.queues[JOB_CUBE_MEASURE_SINK] == QUEUE_DEFAULT
     assert mqueue.retry_specs.get(JOB_CUBE_MEASURE_SINK) is None
     append = await enqueue_cube_append(mqueue, "s1")
     mqueue.strand(append.job_id)  # holds cube:s1: the readout must not wait on it
-    await enqueue_cube_measure(mqueue, "s1", "2026-11-02T10:23:00+00:00")
+    await enqueue_cube_measure(mqueue, "s1")
     job = mqueue.jobs[-1]
     assert (job.lock, job.queueing_lock) == (None, "cube-measure:s1")
 
     await mqueue.run_pending()
 
-    assert measured == [("s1", "2026-11-02T10:23:00+00:00")]
+    assert measured == ["s1"]
 
 
 async def test_production_maintain_deps_enqueue_the_measure(
@@ -311,10 +311,9 @@ async def test_production_maintain_deps_enqueue_the_measure(
 ):
     q = mqueue
     deps = production_maintain_deps(Settings.from_env(env={}), q, repo)
-    await deps.enqueue_measure("s1", "T")
-    assert [(j.name, j.payload) for j in q.jobs] == [
-        (JOB_CUBE_MEASURE_SINK, {"cube_sink_id": "s1", "started_at": "T"})
-    ]
+    await deps.enqueue_measure("s1")
+    jobs = [(j.name, j.payload) for j in q.jobs]
+    assert jobs == [(JOB_CUBE_MEASURE_SINK, {"cube_sink_id": "s1"})]
 
 
 async def test_the_hourly_tick_enqueues_every_enabled_sink(mqueue: InMemoryQueue):

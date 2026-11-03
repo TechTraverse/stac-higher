@@ -238,20 +238,21 @@ class FakeCubeRepo(CubeRepo):
         self,
         cube_sink_id: str,
         *,
-        started_at: str,
         patch: Mapping[str, Any],
         durations_ms: Mapping[str, int],
         attention: Sequence[str],
     ) -> bool:
         s = self._sink(cube_sink_id)
         current = s.last_maintenance if s is not None else None
-        if current is None or current.get("started_at") != started_at:
+        if current is None:
             return False
-        merged = {**current, **patch}
+        merged = {k: v for k, v in current.items() if k != "measure_error"}
+        merged.update(patch)
         merged["durations_ms"] = {**current.get("durations_ms", {}), **durations_ms}
-        merged["attention"] = [*current.get("attention", []), *attention]
-        if current.get("status") == "ok" and attention:
-            merged["status"] = "attention"
+        reasons = list(current.get("attention", []))
+        merged["attention"] = reasons + [a for a in attention if a not in reasons]
+        status = current.get("status") or "ok"
+        merged["status"] = "attention" if status == "ok" and attention else status
         s.last_maintenance = merged
         return True
 
