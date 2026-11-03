@@ -1043,3 +1043,35 @@ async def test_a_platform_lister_builds_one_client_for_all_its_calls(monkeypatch
 
     assert len(built) == 1
     assert used == [built[0], built[0]]
+
+
+async def test_a_sink_whose_asset_lags_the_recorded_tip_is_republished_and_cleared(tmp_path):
+    from pipeline.cubes.append import PUBLISH_ERROR_PREFIX
+
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    tip = cube.append(0, 1)
+    # an append committed and recorded, then its publish failed (#128)
+    cube.sink.last_error = f"{PUBLISH_ERROR_PREFIX}ConnectionError: pgstac went away"
+    cube.sink.last_snapshot_id = tip
+
+    summary = await cube.run(now=scan(1))
+
+    assert [r.snapshot_id for _, r in cube.published] == [tip]
+    assert summary["published"] is True
+    assert cube.sink.last_error is None
+
+    # another error is not maintenance's to clear
+    cube.sink.last_error = "OSError: platform store unreachable"
+    await cube.run(now=scan(1))
+    assert cube.sink.last_error == "OSError: platform store unreachable"
+
+    # and a republish that keeps failing is attention, not a failed run
+    async def broken(sink, config, result):
+        raise TimeoutError("lock timeout")
+
+    deps = cube.deps(now=scan(1))
+    deps.after_batch = broken
+    cube.sink.last_error = f"{PUBLISH_ERROR_PREFIX}x"
+    summary = await run_cube_maintain("s1", deps)
+    assert summary["attention"] == ["publish_failed"]
+    assert cube.sink.last_error == f"{PUBLISH_ERROR_PREFIX}x"

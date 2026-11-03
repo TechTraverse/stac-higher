@@ -74,6 +74,10 @@ MAX_ROW_ATTEMPTS = 6
 #: oldest row, so a poison file crash-loops alone instead of taking the rest
 #: of its batch to `crash_loop` with it (#90; plan Decision 9)
 CRASHED_ATTEMPTS = 1
+#: ``cube_sinks.last_error`` starts with this when the append-time collection
+#: publish failed (the batch itself is finished); maintenance clears it again
+#: when its republish succeeds
+PUBLISH_ERROR_PREFIX = "publish failed: "
 REASON_CRASH_LOOP = "crash_loop"
 REASON_LATE = "late"
 REASON_SOURCE_MISSING = "source_missing"
@@ -115,7 +119,7 @@ class AppendDeps:
     enqueue_next: Callable[[str], Awaitable[object]]
     #: the collection asset writer (``cubes.collection.production_after_batch``):
     #: awaited after every batch that reached the repository, once the tip is
-    #: recorded and BEFORE the ledger is written; must be idempotent
+    #: recorded and the ledger is written (a raise is caught, #128); idempotent
     after_batch: AfterBatch | None = None
     now: Callable[[], dt.datetime] = _utcnow
     batch_limit: int = BATCH_LIMIT
@@ -135,6 +139,8 @@ class AppendReport:
     #: rows whose source read failed in transit: nothing was finished, and the
     #: job returned for the next cube_kick to retry (``requeued`` stays False)
     in_transit: int = 0
+    #: the collection publish raised after the batch was finished (#128)
+    publish_failed: bool = False
 
 
 async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
@@ -297,18 +303,6 @@ async def _append_rows(
         for row_id, (status, reason) in result.outcomes.items():
             snapshot = result.snapshot_id if status == "appended" else None
             outcomes[row_id] = RowOutcome(row_id, status, reason, snapshot)
-        if result.initialised and deps.after_batch is not None:
-            # Publish BEFORE the ledger: a raise here releases the rows and the
-            # job retries, and the redo (duplicates only) publishes again. A
-            # worker that dies here leaves them claimed; the next take redoes
-            # them the same way. The asset never lags a finished batch (#101).
-            await deps.after_batch(sink, config, result)
-        if not report.recorded:
-            # The batch (and its publish) went through with no new tip to
-            # record, and recording is what clears last_error: a redo after a
-            # failed publish is exactly this. Clear it here, or a stopped
-            # source would show a resolved error for good.
-            await deps.repo.record_error(sink.id, None)
 
     await deps.repo.finish_rows(sink.id, list(outcomes.values()))
     for outcome in [*looping, *outcomes.values()]:
@@ -318,9 +312,50 @@ async def _append_rows(
             report.skipped += 1
         else:
             report.failed += 1
+    if result is not None and result.initialised and deps.after_batch is not None:
+        await _publish(sink, config, result, deps, report)
     if await deps.repo.has_pending(sink.id):
         await deps.enqueue_next(sink.id)
         report.requeued = True
+
+
+async def _publish(
+    sink: CubeSink,
+    config: CubeSinkConfig,
+    result: BatchResult,
+    deps: AppendDeps,
+    report: AppendReport,
+) -> None:
+    """Publish the collection asset AFTER the ledger (#128).
+
+    The commit is recorded and the rows are finished, so a publish failure
+    changes nothing about them: it is caught and set on ``last_error``, never
+    raised. Raising would release finished rows and re-parse up to a batch of
+    headers every five minutes for as long as the failure repeats. The asset is
+    republished by the next batch, or by the hourly maintenance republish,
+    which raises attention ``publish_failed`` when it fails too.
+    """
+    assert deps.after_batch is not None
+    try:
+        await deps.after_batch(sink, config, result)
+    except Exception as exc:
+        report.publish_failed = True
+        logger.exception(
+            "cube_append: the collection publish failed; the batch stays finished",
+            extra={"cube_sink_id": sink.id, "snapshot_id": result.snapshot_id},
+        )
+        error = f"{PUBLISH_ERROR_PREFIX}{error_text(exc)}"
+        try:
+            await deps.repo.record_error(sink.id, error)
+        except Exception:
+            logger.exception(
+                "cube_append: could not record the error", extra={"cube_sink_id": sink.id}
+            )
+        return
+    if not report.recorded:
+        # A recorded commit clears last_error itself; with no new tip, a
+        # successful publish is what resolves an earlier failure.
+        await deps.repo.record_error(sink.id, None)
 
 
 def _in_transit(transient: dict[int, BaseException], row: PendingRow, exc: BaseException) -> None:

@@ -46,7 +46,7 @@ from pipeline.config import (
     DEFAULT_CUBE_SNAPSHOT_RETENTION_SECONDS,
     Settings,
 )
-from pipeline.cubes.append import AfterBatch
+from pipeline.cubes.append import PUBLISH_ERROR_PREFIX, AfterBatch
 from pipeline.cubes.collection import PUBLISHED, UNCHANGED
 from pipeline.cubes.config import CubeSinkConfig, parse_cube_sink_config
 from pipeline.cubes.icerepo import BRANCH, CubeState, cube_prefix, open_existing, read_state
@@ -540,6 +540,10 @@ async def _maintain(
             # names this tip.
             summary["publish_outcome"] = outcome
             summary["published"] = outcome in (PUBLISHED, UNCHANGED)
+            if summary["published"] and (sink.last_error or "").startswith(PUBLISH_ERROR_PREFIX):
+                # An append-time publish failure (#128) is resolved: the asset
+                # names the recorded tip. Other errors are left alone.
+                await deps.repo.record_error(sink.id, None)
     if rp.gc is not None and rp.gc["objects_failed_to_delete"]:
         summary["attention"].append(ATTENTION_GC_DELETE_FAILURES)
         logger.warning(
