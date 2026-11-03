@@ -234,6 +234,27 @@ class FakeCubeRepo(CubeRepo):
             if maintained_at is not None:
                 s.last_maintained_at = maintained_at
 
+    async def record_measurement(
+        self,
+        cube_sink_id: str,
+        *,
+        started_at: str,
+        patch: Mapping[str, Any],
+        durations_ms: Mapping[str, int],
+        attention: Sequence[str],
+    ) -> bool:
+        s = self._sink(cube_sink_id)
+        current = s.last_maintenance if s is not None else None
+        if current is None or current.get("started_at") != started_at:
+            return False
+        merged = {**current, **patch}
+        merged["durations_ms"] = {**current.get("durations_ms", {}), **durations_ms}
+        merged["attention"] = [*current.get("attention", []), *attention]
+        if current.get("status") == "ok" and attention:
+            merged["status"] = "attention"
+        s.last_maintenance = merged
+        return True
+
     def backdate(self, cube_sink_id: str, item_id: str, seconds: int) -> None:
         """Test helper: age one ledger row's created_at."""
         row = self.ledger[(cube_sink_id, item_id)]

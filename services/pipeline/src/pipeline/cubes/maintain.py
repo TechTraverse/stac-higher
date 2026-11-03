@@ -12,12 +12,15 @@ alongside that sink's appends (spec §14.4). One run does six things:
       every snapshot that was the tip within the retention (``expiry_cutoff``).
 4. Republish the recorded tip on the cube collection (``after_batch``, Z-5's
    idempotent writer). That covers a trim, and also a publish that an
-   append's crash missed.
-5. List the repository prefix and record object counts and bytes per kind.
-   Icechunk never deletes ``transactions/`` or ``overwritten/`` (I-143). At or
-   above ``CUBE_REPO_WARN_BYTES`` the run's status is ``attention``.
-6. Write ``last_maintenance`` on every run, and ``last_maintained_at`` only
+   append's crash missed. A republish that raises is attention
+   ``publish_failed``, not a failed run (#115).
+5. Write ``last_maintenance`` on every run, and ``last_maintained_at`` only
    on success.
+6. Enqueue ``pipeline.cube_measure_sink`` (``run_cube_measure``), which holds
+   NO lock: it lists the repository prefix and merges object counts and
+   bytes per kind into this run's summary. Icechunk never deletes
+   ``transactions/`` or ``overwritten/`` (I-143). At or above
+   ``CUBE_REPO_WARN_BYTES`` the status becomes ``attention``.
 
 A sink without a window gets steps 1, 2, 4, 5 and 6, never 3. Its ledger
 still needs pruning, and its repository, which nothing trims, is the one
@@ -93,6 +96,8 @@ MAX_EXPIRY_WALK = 1000
 #: every object in a cube repository: (key relative to its prefix, bytes)
 ListObjects = Callable[[CubeSink], list[tuple[str, int]]]
 PublishedSnapshot = Callable[[CubeSink], Awaitable[str | None]]
+#: (cube_sink_id, the run's started_at)
+EnqueueMeasure = Callable[[str, str], Awaitable[Any]]
 
 
 def _utcnow() -> dt.datetime:
@@ -108,15 +113,23 @@ class MaintainDeps:
     repo: CubeRepo
     #: the Icechunk Storage of a sink's repository (``icerepo.cube_storage``)
     storage_for: Callable[[CubeSink], Any]
-    list_objects: ListObjects
     retention_seconds: int = DEFAULT_CUBE_SNAPSHOT_RETENTION_SECONDS
-    warn_bytes: int = DEFAULT_CUBE_REPO_WARN_BYTES
     #: Z-5's collection asset writer (the same hook ``cube_append`` calls)
     after_batch: AfterBatch | None = None
     #: the snapshot the cube collection's asset ``version`` names now
     #: (``cubes.collection.production_published_snapshot``); expiry spares it
     published_snapshot: PublishedSnapshot | None = None
+    #: enqueue ``cube_measure_sink`` for this run (``jobs.cubes``): the size
+    #: readout runs outside the sink's lock, after the summary is recorded
+    enqueue_measure: EnqueueMeasure | None = None
     now: Callable[[], dt.datetime] = _utcnow
+
+
+@dataclass
+class MeasureDeps:
+    repo: CubeRepo
+    list_objects: ListObjects
+    warn_bytes: int = DEFAULT_CUBE_REPO_WARN_BYTES
 
 
 @dataclass(frozen=True)
@@ -346,7 +359,6 @@ async def run_cube_maintain(cube_sink_id: str, deps: MaintainDeps) -> dict[str, 
     summary: dict[str, Any] = {
         "status": STATUS_OK,
         "started_at": now.isoformat(),
-        "warn_bytes": deps.warn_bytes,
         "attention": [],
         "durations_ms": {},
     }
@@ -366,13 +378,21 @@ async def run_cube_maintain(cube_sink_id: str, deps: MaintainDeps) -> dict[str, 
     finished = deps.now()
     summary["finished_at"] = finished.isoformat()
     await deps.repo.record_maintenance(sink.id, summary=summary, maintained_at=finished)
+    if summary.get("repository") and deps.enqueue_measure is not None:
+        # After the record: the measurement merges into this run's summary.
+        try:
+            await deps.enqueue_measure(sink.id, summary["started_at"])
+        except Exception:
+            logger.exception(
+                "cube_maintain: could not enqueue the size readout",
+                extra={"cube_sink_id": sink.id},
+            )
     logger.info(
         "cube_maintain finished",
         extra={
             "cube_sink_id": sink.id,
             "status": summary["status"],
             "trimmed": summary.get("trimmed", 0),
-            "total_bytes": summary.get("total_bytes"),
             "ledger_pruned": summary["ledger_pruned"],
         },
     )
@@ -476,17 +496,41 @@ async def _maintain(
             "cube GC could not delete some objects",
             extra={"cube_sink_id": sink.id, **rp.gc},
         )
+    if summary["attention"]:
+        summary["status"] = STATUS_ATTENTION
+
+
+async def run_cube_measure(
+    cube_sink_id: str, started_at: str, deps: MeasureDeps
+) -> dict[str, Any] | None:
+    """``pipeline.cube_measure_sink``: list one cube repository and merge the
+    per-kind sizes into the maintenance run ``started_at`` (I-143). Runs
+    WITHOUT the sink's lock: a long listing never delays appends. A listing
+    error is merged as ``measure_error`` and not raised (the next hour
+    measures again). Returns what was merged, or ``None`` for a gone sink."""
+    sink = await deps.repo.load_sink(cube_sink_id)
+    if sink is None:
+        return None
     started = time.monotonic()
-    sizes = size_by_kind(await asyncio.to_thread(deps.list_objects, sink))
-    summary["durations_ms"]["list"] = _ms(started)
+    try:
+        sizes = size_by_kind(await asyncio.to_thread(deps.list_objects, sink))
+    except Exception as exc:
+        logger.exception("cube_measure: listing failed", extra={"cube_sink_id": sink.id})
+        patch: dict[str, Any] = {"measure_error": error_text(exc)}
+        await deps.repo.record_measurement(
+            sink.id, started_at=started_at, patch=patch, durations_ms={}, attention=[]
+        )
+        return patch
     total_bytes = sum(kind["bytes"] for kind in sizes.values())
-    summary.update(
-        sizes=sizes,
-        total_objects=sum(kind["objects"] for kind in sizes.values()),
-        total_bytes=total_bytes,
-    )
+    patch = {
+        "sizes": sizes,
+        "total_objects": sum(kind["objects"] for kind in sizes.values()),
+        "total_bytes": total_bytes,
+        "warn_bytes": deps.warn_bytes,
+    }
+    attention: list[str] = []
     if total_bytes >= deps.warn_bytes:
-        summary["attention"].append(ATTENTION_REPO_SIZE)
+        attention.append(ATTENTION_REPO_SIZE)
         logger.warning(
             "cube repository at or above CUBE_REPO_WARN_BYTES (I-143)",
             extra={
@@ -498,5 +542,16 @@ async def _maintain(
                 "overwritten_bytes": sizes["overwritten"]["bytes"],
             },
         )
-    if summary["attention"]:
-        summary["status"] = STATUS_ATTENTION
+    merged = await deps.repo.record_measurement(
+        sink.id,
+        started_at=started_at,
+        patch=patch,
+        durations_ms={"list": _ms(started)},
+        attention=attention,
+    )
+    if not merged:
+        logger.info(
+            "cube_measure: a newer maintenance run replaced this one; readout dropped",
+            extra={"cube_sink_id": sink.id, "started_at": started_at},
+        )
+    return {**patch, "attention": attention, "merged": merged}

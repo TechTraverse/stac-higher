@@ -168,6 +168,23 @@ class CubeRepo(abc.ABC):
         """Set ``last_maintenance`` to ``summary``, and ``last_maintained_at``
         when given (a failed run passes ``None`` and keeps the last success)."""
 
+    @abc.abstractmethod
+    async def record_measurement(
+        self,
+        cube_sink_id: str,
+        *,
+        started_at: str,
+        patch: Mapping[str, Any],
+        durations_ms: Mapping[str, int],
+        attention: Sequence[str],
+    ) -> bool:
+        """Merge a size readout into the maintenance run that asked for it,
+        only while ``last_maintenance.started_at`` is still ``started_at``:
+        top-level ``patch`` keys, ``durations_ms`` merged into the run's,
+        ``attention`` appended, and ``status`` ``ok`` → ``attention`` when any
+        was added (never over ``failed``). Leaves ``updated_at`` and
+        ``last_maintained_at`` alone. Returns whether the row changed."""
+
 
 @dataclass
 class PgCubeRepo(CubeRepo):
@@ -421,3 +438,40 @@ class PgCubeRepo(CubeRepo):
                 (json.dumps(summary), maintained_at, cube_sink_id),
             )
             await conn.commit()
+
+    async def record_measurement(  # pragma: no cover
+        self,
+        cube_sink_id: str,
+        *,
+        started_at: str,
+        patch: Mapping[str, Any],
+        durations_ms: Mapping[str, int],
+        attention: Sequence[str],
+    ) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.cube_sinks SET last_maintenance ="
+                " jsonb_set(jsonb_set(jsonb_set("
+                "   last_maintenance || %(patch)s::jsonb,"
+                "   '{durations_ms}',"
+                "   COALESCE(last_maintenance->'durations_ms', '{}'::jsonb)"
+                "     || %(durations)s::jsonb),"
+                "   '{attention}',"
+                "   COALESCE(last_maintenance->'attention', '[]'::jsonb)"
+                "     || %(attention)s::jsonb),"
+                "   '{status}',"
+                "   to_jsonb(CASE WHEN last_maintenance->>'status' = 'ok'"
+                "                  AND jsonb_array_length(%(attention)s::jsonb) > 0"
+                "             THEN 'attention' ELSE last_maintenance->>'status' END))"
+                " WHERE id = %(id)s AND last_maintenance->>'started_at' = %(started_at)s",
+                {
+                    "patch": json.dumps(dict(patch)),
+                    "durations": json.dumps(dict(durations_ms)),
+                    "attention": json.dumps(list(attention)),
+                    "id": cube_sink_id,
+                    "started_at": started_at,
+                },
+            )
+            changed = cur.rowcount
+            await conn.commit()
+        return changed > 0

@@ -263,8 +263,10 @@ pgstac item change → item_events (trigger) → dispatch → deliver
   one too; the age trim makes it the sink's second writer, ADR 0023). It prunes the
   ledger (terminal rows > 7 days), and on a sink with a window it age-trims
   a stopped source, then expires and garbage-collects snapshots
-  (`cubes/maintain.py`). It republishes the recorded tip and records per-kind
-  sizes in `last_maintenance` (`docs/monitoring.md`).
+  (`cubes/maintain.py`). It republishes the recorded tip, records
+  `last_maintenance` (`docs/monitoring.md`), then enqueues
+  `pipeline.cube_measure_sink`, which takes no lock (`queueing_lock`
+  `cube-measure:{id}`) and merges the per-kind sizes into that summary.
   The pipeline never writes `cube_sinks.updated_at` (the app's version, #98).
 - **deliver** (`delivery/worker.py`, `delivery/repo.py`, `jobs/dispatch.py`) —
   the `pipeline.deliver` task loads the destination connection, builds its

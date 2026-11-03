@@ -355,6 +355,60 @@ async def test_prune_ledger_deletes_old_terminal_rows_of_that_sink_only(db):
     )
 
 
+async def test_record_measurement_merges_into_the_matching_run_only(db):
+    from pipeline.cubes.repo import PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    before = (await repo.load_sink(sink)).version
+    run = {
+        "status": "attention",
+        "started_at": "2026-11-02T10:23:00+00:00",
+        "attention": ["unrecorded_tip"],
+        "durations_ms": {"trim": 3},
+    }
+    await repo.record_maintenance(sink, summary=run, maintained_at=T0)
+
+    stale = await repo.record_measurement(
+        sink,
+        started_at="2026-11-02T09:23:00+00:00",
+        patch={"total_bytes": 1},
+        durations_ms={"list": 1},
+        attention=["repo_size"],
+    )
+    merged = await repo.record_measurement(
+        sink,
+        started_at=run["started_at"],
+        patch={"total_bytes": 9, "sizes": {"chunks": {"objects": 1, "bytes": 9}}},
+        durations_ms={"list": 7},
+        attention=["repo_size"],
+    )
+
+    assert (stale, merged) == (False, True)
+    cur = await conn.execute(
+        "SELECT last_maintenance, last_maintained_at FROM stac_higher.cube_sinks WHERE id = %s",
+        (sink,),
+    )
+    summary, maintained_at = await cur.fetchone()
+    assert summary["total_bytes"] == 9
+    assert summary["durations_ms"] == {"trim": 3, "list": 7}
+    assert summary["attention"] == ["unrecorded_tip", "repo_size"]
+    assert summary["status"] == "attention"
+    assert maintained_at == T0
+    assert (await repo.load_sink(sink)).version == before  # never touches updated_at
+
+    ok = {**run, "status": "ok", "attention": []}
+    await repo.record_maintenance(sink, summary=ok, maintained_at=T0)
+    await repo.record_measurement(
+        sink, started_at=run["started_at"], patch={}, durations_ms={}, attention=["repo_size"]
+    )
+    cur = await conn.execute(
+        "SELECT last_maintenance->>'status' FROM stac_higher.cube_sinks WHERE id = %s", (sink,)
+    )
+    assert (await cur.fetchone())[0] == "attention"
+
+
 async def test_record_maintenance_keeps_the_last_success_on_failure(db):
     from pipeline.cubes.repo import PgCubeRepo
 

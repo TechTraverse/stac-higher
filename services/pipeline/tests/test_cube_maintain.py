@@ -29,9 +29,11 @@ from pipeline.cubes.maintain import (
     KINDS,
     LEDGER_RETENTION_DAYS,
     MaintainDeps,
+    MeasureDeps,
     expiry_cutoff,
     maintain_repository,
     run_cube_maintain,
+    run_cube_measure,
     size_by_kind,
 )
 from pipeline.cubes.steps import parse_header, step_value
@@ -53,6 +55,7 @@ class Cube:
         self.repo = FakeCubeRepo(sinks=[FakeSink("s1", "src", "cube1", config=raw)])
         self.published: list[tuple[str, BatchResult]] = []
         self.listed = 0
+        self.measure_queue: list[tuple[str, str]] = []
         self.publish_outcome: str | None = "published"
 
     def storage(self) -> ic.Storage:
@@ -106,19 +109,32 @@ class Cube:
         self.published.append((sink.id, result))
         return self.publish_outcome
 
-    def deps(self, *, now: dt.datetime = LATER, warn_bytes: int = 1024**3) -> MaintainDeps:
+    async def enqueue_measure(self, cube_sink_id: str, started_at: str) -> None:
+        self.measure_queue.append((cube_sink_id, started_at))
+
+    def deps(self, *, now: dt.datetime = LATER) -> MaintainDeps:
         return MaintainDeps(
             repo=self.repo,
             storage_for=lambda sink: self.storage(),
-            list_objects=self.list_objects,
             retention_seconds=3600,
-            warn_bytes=warn_bytes,
             after_batch=self.publish,
+            enqueue_measure=self.enqueue_measure,
             now=lambda: now,
         )
 
-    async def run(self, **kw) -> dict | None:
-        return await run_cube_maintain("s1", self.deps(**kw))
+    def measure_deps(self, *, warn_bytes: int = 1024**3) -> MeasureDeps:
+        return MeasureDeps(repo=self.repo, list_objects=self.list_objects, warn_bytes=warn_bytes)
+
+    async def run(self, *, warn_bytes: int = 1024**3, **kw) -> dict | None:
+        """What production does: the maintenance run, then the size readout
+        it enqueued. Returns the sink's merged ``last_maintenance``."""
+        if await run_cube_maintain("s1", self.deps(**kw)) is None:
+            return None
+        while self.measure_queue:
+            cube_sink_id, started_at = self.measure_queue.pop(0)
+            deps = self.measure_deps(warn_bytes=warn_bytes)
+            await run_cube_measure(cube_sink_id, started_at, deps)
+        return self.sink.last_maintenance
 
 
 def test_size_by_kind_buckets_by_top_level_directory():
@@ -642,13 +658,85 @@ async def test_a_failure_is_recorded_and_raised(tmp_path):
     def boom(sink):
         raise ConnectionError("platform bucket unreachable")
 
-    deps.list_objects = boom
+    deps.storage_for = boom
     with pytest.raises(ConnectionError):
         await run_cube_maintain("s1", deps)
 
     assert cube.sink.last_maintenance["status"] == "failed"
     assert "platform bucket unreachable" in cube.sink.last_maintenance["error"]
     assert cube.sink.last_maintained_at == scan(0)  # the last success stands
+
+
+async def test_the_size_readout_is_enqueued_after_the_record_not_run_inside(tmp_path):
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    cube.append(0)
+    order: list[str] = []
+    record = cube.repo.record_maintenance
+
+    async def tracking_record(*a, **kw):
+        order.append("record")
+        return await record(*a, **kw)
+
+    async def tracking_enqueue(cube_sink_id, started_at):
+        order.append(f"enqueue:{started_at == cube.sink.last_maintenance['started_at']}")
+
+    cube.repo.record_maintenance = tracking_record
+    deps = cube.deps()
+    deps.enqueue_measure = tracking_enqueue
+
+    summary = await run_cube_maintain("s1", deps)
+
+    assert order == ["record", "enqueue:True"]
+    assert cube.listed == 0  # the listing is the measure job's, outside the lock
+    assert "sizes" not in summary
+
+
+async def test_a_readout_for_a_replaced_run_is_dropped(tmp_path):
+    cube = Cube(tmp_path, window={"max_steps": 10})
+    cube.append(0)
+    await run_cube_maintain("s1", cube.deps(now=LATER))
+    await run_cube_maintain("s1", cube.deps(now=LATER + dt.timedelta(hours=1)))
+    (_, first), (_, second) = cube.measure_queue
+
+    stale = await run_cube_measure("s1", first, cube.measure_deps())
+
+    assert stale["merged"] is False
+    assert "sizes" not in cube.sink.last_maintenance
+    fresh = await run_cube_measure("s1", second, cube.measure_deps())
+    assert fresh["merged"] is True
+    assert cube.sink.last_maintenance["total_bytes"] == fresh["total_bytes"] > 0
+    assert "list" in cube.sink.last_maintenance["durations_ms"]
+
+
+async def test_a_listing_failure_is_recorded_as_measure_error(tmp_path):
+    cube = Cube(tmp_path, window=None)
+    cube.append(0)
+    await run_cube_maintain("s1", cube.deps())
+    ((_, started_at),) = cube.measure_queue
+    deps = cube.measure_deps()
+
+    def boom(sink):
+        raise ConnectionError("platform bucket unreachable")
+
+    deps.list_objects = boom
+    await run_cube_measure("s1", started_at, deps)
+
+    summary = cube.sink.last_maintenance
+    assert "platform bucket unreachable" in summary["measure_error"]
+    assert summary["status"] == "ok"  # an unknown size is not a size warning
+    assert "sizes" not in summary
+
+
+async def test_the_size_warning_adds_to_existing_attention(tmp_path):
+    cube = Cube(tmp_path, window={"max_age": "30m"})
+    recorded = cube.append(0, 1, now=scan(1))
+    cube.append(2, now=scan(2))  # unrecorded append tip
+    cube.sink.last_snapshot_id = recorded
+
+    summary = await cube.run(now=scan(9), warn_bytes=1)
+
+    assert summary["attention"] == ["unrecorded_tip", "repo_size"]
+    assert summary["status"] == "attention"
 
 
 async def test_an_invalid_config_fails_after_the_ledger_prune(tmp_path):
