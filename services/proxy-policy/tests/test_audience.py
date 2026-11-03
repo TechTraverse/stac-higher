@@ -142,6 +142,12 @@ def test_client_id_mode_moves_audiences_off_pyjwt():
     assert mw.allowed_client_ids == ["app-client"]
 
 
+def test_bare_string_audience_is_a_one_element_list_not_a_substring_match():
+    mw = make_mw("client_id", "app-client")  # type: ignore[arg-type]
+    assert mw.allowed_client_ids == ["app-client"]
+    assert_rejected(mw, sign({**COGNITO, "client_id": "app"}))
+
+
 def test_unknown_audience_claim_field_fails_construction():
     with pytest.raises(ValueError, match=AUDIENCE_CLAIM_ENV):
         make_mw("sub", ["x"])

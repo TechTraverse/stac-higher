@@ -47,10 +47,17 @@ class ClaimAwareEnforceAuthMiddleware(EnforceAuthMiddleware):
     allowed_client_ids: Sequence[str] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
+        parent = getattr(super(), "__post_init__", None)
+        if parent is not None:
+            parent()
         self.audience_claim = resolve_audience_claim({AUDIENCE_CLAIM_ENV: self.audience_claim})
         if self.audience_claim == "client_id":
             # PyJWT must not see the list, or it would demand an ``aud`` claim.
-            self.allowed_client_ids = self.allowed_jwt_audiences
+            audiences = self.allowed_jwt_audiences
+            if isinstance(audiences, str):
+                # A bare str would make `in` a substring match.
+                audiences = [audiences]
+            self.allowed_client_ids = audiences
             self.allowed_jwt_audiences = None
 
     def validate_token(

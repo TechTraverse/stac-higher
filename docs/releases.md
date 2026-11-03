@@ -1,19 +1,21 @@
 # Releases
 
 What a `v*` tag publishes and the contract a deployment repo and the Helm
-chart read. Spec §5 and §11 (Phase 8 deployment artifacts); ADR
+chart read. Spec §5 and §11 of
+[the deployment artifacts design](superpowers/specs/2026-11-02-deployment-artifacts-design.md); ADR
 [0024](decisions/0024-deployment-artifacts.md) for why
 this repo publishes artifacts and a private repo deploys them.
 
 ## What a `v*` tag publishes
 
 - **Images** to GHCR, one per row of the table below, tagged `X.Y.Z`, `X.Y`
-  and `sha-<long sha>` (`containers.yml`).
+  and `sha-<long sha>` (`containers.yml`). The `X.Y` tag is not published for
+  pre-release tags: `v1.2.3-rc.1` publishes `1.2.3-rc.1` and `sha-…` only.
 - **A GitHub release** (`release.yml`) carrying the app dist tarball, the
   pipeline wheel and sdist, and `release-manifest.json` (attached by the
   `release-manifest` job in `containers.yml`).
-- **The Helm chart** to `oci://ghcr.io/<owner>/charts/stac-higher` (R-9, not
-  yet published).
+- **The Helm chart**, at `oci://ghcr.io/<owner>/charts/stac-higher`, version =
+  the tag without `v`.
 - **The Terraform modules**: the tag itself is the version; the manifest's
   `terraformModules.ref` is a ready `source` string.
 
@@ -45,8 +47,9 @@ docker buildx imagetools inspect <ref> --format '{{json .Provenance}}'
 docker buildx imagetools inspect <ref> --format '{{json .SBOM}}'
 ```
 
-`main` images carry only the default minimal provenance. Nothing is signed
-yet (cosign is deferred, spec §12).
+`main` images carry the build action's default provenance and no SBOM; `v*`
+images carry explicit `mode=max` provenance and an SPDX SBOM. Images are not
+signed (cosign: spec §12).
 
 ## Release manifest contract
 
@@ -75,7 +78,7 @@ yet (cosign is deferred, spec §12).
 
 `images` holds all eight keys from the table (one shown here).
 
-- `digest` is the multi-arch **index** digest. Pull by
+- `digest` is the pushed image's top-level (index) digest. Pull by
   `<ref without tag>@<digest>`; the tag in `ref` is informational and
   mutable.
 - `chart.version` is the tag without the leading `v`.
@@ -86,7 +89,7 @@ keeps `schemaVersion: 1`. Changing a field's meaning bumps `schemaVersion`.
 
 Dry runs: every Containers run uploads a `release-manifest` workflow artifact
 versioned `v0.0.0-dryrun.<run number>`. On builds that did not push, the
-digests are local image ids and are not pullable.
+digests come from the unpushed local build and are not pullable.
 
 ## Feeding the chart
 
