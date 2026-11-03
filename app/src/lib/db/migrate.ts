@@ -1639,6 +1639,34 @@ const MIGRATIONS = [
         WHERE status = 'pending';
     `,
   },
+  {
+    // Z-7 (virtual cube spec §8.1): the cube-server reads the enabled sinks
+    // through this NOLOGIN group role and nothing else — column-level SELECT
+    // on the five columns it needs, no ledger, no other table. The LOGIN user
+    // is a deployment concern (compose: the `cube-db-role` one-shot creates
+    // `cube_server IN ROLE stac_higher_cube_reader`), so no password lives
+    // here. Grants to the group reach its members whenever they are made, so
+    // the one-shot and this migration may run in either order.
+    //
+    // An app DB user without CREATEROLE (a managed database) must not take
+    // the app down: the block WARNs instead, and docs/backend.md gives the
+    // SQL an operator runs by hand.
+    name: "033_cube_reader_role",
+    sql: `
+      DO $do$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'stac_higher_cube_reader') THEN
+          CREATE ROLE stac_higher_cube_reader NOLOGIN;
+        END IF;
+        GRANT USAGE ON SCHEMA stac_higher TO stac_higher_cube_reader;
+        GRANT SELECT (id, cube_collection_id, enabled, config, source_prefixes) ON stac_higher.cube_sinks TO stac_higher_cube_reader;
+      EXCEPTION
+        WHEN insufficient_privilege THEN
+          RAISE WARNING 'migration 033: cannot create or grant stac_higher_cube_reader (%); create it by hand, see docs/backend.md', SQLERRM;
+      END
+      $do$;
+    `,
+  },
 ];
 
 // Idempotent reconcile: attach the outbox trigger to pgstac.items whenever that
