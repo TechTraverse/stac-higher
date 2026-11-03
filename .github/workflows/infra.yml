@@ -1,0 +1,111 @@
+name: Infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/terraform/**
+      - infra/examples/**
+      - scripts/check-partition-arns.sh
+      - scripts/check-partition-arns.test.sh
+      - scripts/check-terraform.sh
+      - .github/workflows/infra.yml
+  pull_request:
+    paths:
+      - infra/terraform/**
+      - infra/examples/**
+      - scripts/check-partition-arns.sh
+      - scripts/check-partition-arns.test.sh
+      - scripts/check-terraform.sh
+      - .github/workflows/infra.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Terraform · fmt, partition check, tflint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: opentofu/setup-opentofu@v2.0.2
+        with:
+          tofu_version: 1.13.2
+          tofu_wrapper: false
+      - name: Format
+        run: |
+          tofu fmt -check -recursive -diff infra/terraform
+          tofu fmt -check -recursive -diff infra/examples
+      - name: Partition-literal check
+        run: |
+          scripts/check-partition-arns.test.sh
+          scripts/check-partition-arns.sh
+      - uses: terraform-linters/setup-tflint@v6.3.2
+        with:
+          tflint_version: v0.65.0
+      - name: tflint init
+        run: tflint --init --config "$GITHUB_WORKSPACE/infra/terraform/.tflint.hcl"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: tflint
+        working-directory: infra
+        run: tflint --recursive --config "$GITHUB_WORKSPACE/infra/terraform/.tflint.hcl" --format compact
+
+  validate:
+    name: Terraform · validate + test (${{ matrix.engine }} ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+    strategy:
+      fail-fast: false
+      # The floor legs prove required_version = ">= 1.10"; the current legs
+      # catch deprecations.
+      matrix:
+        include:
+          - { engine: tofu, version: 1.10.10 }
+          - { engine: tofu, version: 1.13.2 }
+          - { engine: terraform, version: 1.10.5 }
+          - { engine: terraform, version: 1.17.1 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: opentofu/setup-opentofu@v2.0.2
+        if: matrix.engine == 'tofu'
+        with:
+          tofu_version: ${{ matrix.version }}
+          tofu_wrapper: false
+      - uses: hashicorp/setup-terraform@v4.0.1
+        if: matrix.engine == 'terraform'
+        with:
+          terraform_version: ${{ matrix.version }}
+          terraform_wrapper: false
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+      - run: scripts/check-terraform.sh "${{ matrix.engine }}"
+
+  trivy:
+    # security.yml's misconfig job also scans `.`; this job keeps the infra
+    # gate self-contained on path-filtered PRs.
+    name: Terraform · trivy config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/terraform
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/examples
+          skip-setup-trivy: true
+          severity: HIGH,CRITICAL
+          exit-code: "1"

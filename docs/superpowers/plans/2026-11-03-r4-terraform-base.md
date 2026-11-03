@@ -64,7 +64,7 @@
   - Before declaring the slice done: `npm run verify` from the worktree root (run `npm install` first if `node_modules/` is missing).
   - Every IaC command in Task 5's final step.
   - No pipeline change, so no pytest/ruff. No Docker, no dev server, no push, no AWS account.
-- **Commits:** message `R-4: <what>`, ending with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **Commits:** message `R-4: <what>`, ending with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 - **Docs carry no status** (AGENTS.md link rule). The infra README links #140's epic once in its header.
 
 ## Review Focus
