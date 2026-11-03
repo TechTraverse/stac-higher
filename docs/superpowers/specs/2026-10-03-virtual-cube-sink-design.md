@@ -97,6 +97,11 @@ Ledger statuses `pending | appended | skipped | failed`. Skip reasons: `late`,
 `duplicate`, `no_source_connection`, `unsupported_layout`, `source_missing`.
 Both runtimes import the list; the UI labels it.
 
+*As built (Z-8a): `duplicate` is written on `appended` rows (the step was
+already in the cube), so it is not a skip reason; `failed` rows carry
+`crash_loop` or free error text (≤ 500 chars). The fixture lists them as
+`appended_reasons` and `failed_reasons`.*
+
 ### 3.3 The collection asset (documented shape, not a fixture)
 
 The pipeline writes `assets.{asset_key}` on the **cube collection**:

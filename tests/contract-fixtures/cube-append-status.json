@@ -1,7 +1,10 @@
 {
-  "$comment": "Z-2 (virtual cube spec §3.2, §5.2): the stac_higher.cube_appends.status vocabulary and the closed skip-reason set. Consumed by app/src/lib/cubes/status.ts (whose label maps must cover every entry), pipeline/cubes/config.py, and migration 032's CHECK constraint (cubes-migration.test.ts). `no_datetime` is written by the dispatcher (§5.2) for an item with neither datetime nor start_datetime.",
+  "$comment": "Z-2, Z-8a (virtual cube spec §3.2, §5.2): the stac_higher.cube_appends status vocabulary and its reasons, as the pipeline writes them. pending rows carry null. skipped rows carry a skip reason (closed). appended rows carry null or an appended reason: `duplicate` means the step was already in the cube (write.py), a no-op that counts as appended. failed rows carry a failed reason (closed: `crash_loop`, append.py) OR free error text of at most failed_reason_max_chars (write.py MAX_ERROR_CHARS); readers show unknown failed text verbatim. `no_datetime` is written by the dispatcher (§5.2). Consumed by app/src/lib/cubes/status.ts (whose label maps must cover every closed reason), pipeline/cubes/config.py, and migration 032's CHECK constraint (cubes-migration.test.ts, statuses only).",
   "style": "pinned-enum",
   "statuses": ["pending", "appended", "skipped", "failed"],
   "terminal": ["appended", "skipped", "failed"],
-  "skip_reasons": ["late", "duplicate", "no_source_connection", "unsupported_layout", "source_missing", "no_datetime"]
+  "skip_reasons": ["late", "no_source_connection", "unsupported_layout", "source_missing", "no_datetime"],
+  "appended_reasons": ["duplicate"],
+  "failed_reasons": ["crash_loop"],
+  "failed_reason_max_chars": 500
 }

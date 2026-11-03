@@ -86,7 +86,7 @@ beforeEach(() => {
   vi.mocked(deleteCubeSink).mockReset().mockResolvedValue(true);
   vi.mocked(cubeLedgerSummary).mockReset().mockResolvedValue({ counts: { pending: 0, appended: 0, skipped: 0, failed: 0 }, recent: [] });
   vi.mocked(existingCollections).mockReset().mockResolvedValue(new Set([CUBE, SOURCE]));
-  vi.mocked(referenceIngestSources).mockReset().mockResolvedValue([{ association_id: "a1", connection_id: "c1", anonymous: true }]);
+  vi.mocked(referenceIngestSources).mockReset().mockResolvedValue([{ association_id: "a1", connection_id: "c1", protocol: "s3", anonymous: true }]);
   vi.mocked(collectionHasItem).mockReset().mockResolvedValue(false);
 });
 
@@ -133,7 +133,7 @@ describe("PUT", () => {
     ["cube_collection_not_found", () => vi.mocked(existingCollections).mockResolvedValue(new Set([SOURCE]))],
     ["source_collection_not_found", () => vi.mocked(existingCollections).mockResolvedValue(new Set([CUBE]))],
     ["no_reference_ingest", () => vi.mocked(referenceIngestSources).mockResolvedValue([])],
-    ["signed_source_unsupported", () => vi.mocked(referenceIngestSources).mockResolvedValue([{ association_id: "a1", connection_id: "c1", anonymous: false }])],
+    ["signed_source_unsupported", () => vi.mocked(referenceIngestSources).mockResolvedValue([{ association_id: "a1", connection_id: "c1", protocol: "s3", anonymous: false }])],
   ])("422s %s", async (code, arrange) => {
     arrange();
     const res = await put({ source_collection_id: SOURCE, config });
@@ -160,10 +160,19 @@ describe("PUT", () => {
   });
   it("refuses when any reference association is signed", async () => {
     vi.mocked(referenceIngestSources).mockResolvedValue([
-      { association_id: "a1", connection_id: "c1", anonymous: true },
-      { association_id: "a2", connection_id: "c2", anonymous: false },
+      { association_id: "a1", connection_id: "c1", protocol: "s3", anonymous: true },
+      { association_id: "a2", connection_id: "c2", protocol: "s3", anonymous: false },
     ]);
     expect((await (await put({ source_collection_id: SOURCE, config })).json()).code).toBe("signed_source_unsupported");
+  });
+  it("refuses a reference ingest on a non-s3 connection with its own code", async () => {
+    vi.mocked(referenceIngestSources).mockResolvedValue([
+      { association_id: "a1", connection_id: "c1", protocol: "sftp", anonymous: false },
+    ]);
+    const res = await put({ source_collection_id: SOURCE, config });
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe("unsupported_source_protocol");
+    expect(upsertCubeSink).not.toHaveBeenCalled();
   });
   it("creates (201) with the caller as creator and the parsed config", async () => {
     const res = await put({ source_collection_id: SOURCE, config });
@@ -307,7 +316,7 @@ describe("PATCH", () => {
     vi.mocked(referenceIngestSources).mockResolvedValue([]); // would refuse an enable
     const res = await patch(false);
     expect(res.status).toBe(200);
-    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, false);
+    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, false, "V1");
   });
   it("400s anything but {enabled}, 404s a missing sink", async () => {
     expect((await call(patchRoute, operator, { method: "PATCH", body: { config } })).status).toBe(400);
@@ -317,7 +326,8 @@ describe("PATCH", () => {
   it.each([
     ["source_collection_not_found", () => vi.mocked(existingCollections).mockResolvedValue(new Set([CUBE]))],
     ["no_reference_ingest", () => vi.mocked(referenceIngestSources).mockResolvedValue([])],
-    ["signed_source_unsupported", () => vi.mocked(referenceIngestSources).mockResolvedValue([{ association_id: "a1", connection_id: "c1", anonymous: false }])],
+    ["signed_source_unsupported", () => vi.mocked(referenceIngestSources).mockResolvedValue([{ association_id: "a1", connection_id: "c1", protocol: "s3", anonymous: false }])],
+    ["unsupported_source_protocol", () => vi.mocked(referenceIngestSources).mockResolvedValue([{ association_id: "a1", connection_id: "c1", protocol: "ftp", anonymous: false }])],
   ])("enabling re-runs the source checks: 422 %s", async (code, arrange) => {
     vi.mocked(getCubeSink).mockResolvedValue(sink({ enabled: false }));
     arrange();
@@ -334,7 +344,51 @@ describe("PATCH", () => {
   it("enables when the source still qualifies", async () => {
     vi.mocked(getCubeSink).mockResolvedValue(sink({ enabled: false }));
     expect((await patch(true)).status).toBe(200);
-    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, true);
+    expect(setCubeSinkEnabled).toHaveBeenCalledWith(CUBE, true, "V1");
+  });
+});
+
+describe("PATCH optimistic lock", () => {
+  const patch = (enabled: unknown) => call(patchRoute, operator, { method: "PATCH", body: { enabled } });
+
+  it("a lost toggle re-reads, re-checks the fresh row and retries once", async () => {
+    vi.mocked(getCubeSink)
+      .mockResolvedValueOnce(sink({ enabled: false, version: "V1" }))
+      .mockResolvedValueOnce(sink({ enabled: false, version: "V2" }));
+    vi.mocked(setCubeSinkEnabled).mockResolvedValueOnce(null).mockResolvedValueOnce(sink());
+    const res = await patch(true);
+    expect(res.status).toBe(200);
+    expect(setCubeSinkEnabled).toHaveBeenLastCalledWith(CUBE, true, "V2");
+    expect(referenceIngestSources).toHaveBeenCalledTimes(2);
+  });
+
+  it("a source deleted mid-request: the re-check on the fresh row refuses", async () => {
+    vi.mocked(getCubeSink)
+      .mockResolvedValueOnce(sink({ enabled: false }))
+      .mockResolvedValueOnce(sink({ enabled: false, last_error: "source_collection_deleted", version: "V2" }));
+    vi.mocked(setCubeSinkEnabled).mockResolvedValueOnce(null);
+    vi.mocked(existingCollections)
+      .mockResolvedValueOnce(new Set([CUBE, SOURCE]))
+      .mockResolvedValue(new Set([CUBE]));
+    const res = await patch(true);
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe("source_collection_not_found");
+    expect(setCubeSinkEnabled).toHaveBeenCalledTimes(1);
+  });
+
+  it("still losing after the re-check → 409 cube_sink_conflict", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ enabled: false }));
+    vi.mocked(setCubeSinkEnabled).mockResolvedValue(null);
+    const res = await patch(true);
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("cube_sink_conflict");
+    expect(setCubeSinkEnabled).toHaveBeenCalledTimes(2);
+  });
+
+  it("a sink deleted between attempts is a 404", async () => {
+    vi.mocked(getCubeSink).mockResolvedValueOnce(sink({ enabled: false })).mockResolvedValueOnce(null);
+    vi.mocked(setCubeSinkEnabled).mockResolvedValueOnce(null);
+    expect((await patch(true)).status).toBe(404);
   });
 });
 

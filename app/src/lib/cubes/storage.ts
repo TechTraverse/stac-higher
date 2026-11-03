@@ -7,7 +7,8 @@
 import { query } from "@/lib/db/connection";
 import { runMigrations } from "@/lib/db/migrate";
 import { iso } from "@/lib/associations/storage";
-import type { CubeSinkConfig } from "./schemas";
+import type { ConnectionProtocol } from "@/lib/connections/schemas";
+import { readCubeMaintenance, type CubeMaintenance, type CubeSinkConfig } from "./schemas";
 import { CUBE_APPEND_STATUSES, type CubeAppendStatus } from "./status";
 
 export interface ApiCubeSink {
@@ -20,7 +21,7 @@ export interface ApiCubeSink {
   last_snapshot_id: string | null;
   last_appended_at: string | null;
   last_maintained_at: string | null;
-  last_maintenance: unknown;
+  last_maintenance: CubeMaintenance | null;
   last_error: string | null;
   created_by: string;
   created_at: string;
@@ -31,7 +32,9 @@ export interface ApiCubeSink {
   version: string;
 }
 
-interface CubeSinkRow extends Omit<ApiCubeSink, "last_appended_at" | "last_maintained_at" | "created_at" | "updated_at"> {
+interface CubeSinkRow
+  extends Omit<ApiCubeSink, "last_appended_at" | "last_maintained_at" | "last_maintenance" | "created_at" | "updated_at"> {
+  last_maintenance: unknown;
   last_appended_at: Date | null;
   last_maintained_at: Date | null;
   created_at: Date;
@@ -56,6 +59,8 @@ export interface CubeLedgerSummary {
 export interface ReferenceIngestSource {
   association_id: string;
   connection_id: string;
+  protocol: ConnectionProtocol;
+  /** Only an s3 connection can read anonymously; any other protocol is false. */
   anonymous: boolean;
 }
 
@@ -75,7 +80,7 @@ function toApi(row: CubeSinkRow): ApiCubeSink {
     last_snapshot_id: row.last_snapshot_id,
     last_appended_at: iso(row.last_appended_at),
     last_maintained_at: iso(row.last_maintained_at),
-    last_maintenance: row.last_maintenance,
+    last_maintenance: readCubeMaintenance(row.last_maintenance),
     last_error: row.last_error,
     created_by: row.created_by,
     created_at: iso(row.created_at),
@@ -152,20 +157,26 @@ export async function upsertCubeSink(input: {
   return { sink: toApi(row as CubeSinkRow), created };
 }
 
-/** Enabling clears a stale `last_error` (e.g. `source_collection_deleted`
- * after the source came back); disabling keeps it. */
+/** Flipping a sink to enabled clears a stale `last_error` (e.g.
+ * `source_collection_deleted` after the source came back); a redundant enable
+ * and a disable keep it, so a pipeline `record_error` that landed between the
+ * read and the write is never wiped (it does not move the version). Optimistic (like the
+ * upsert): applies only at the row `version` the caller read and checked
+ * against; null when the row is gone or its version moved. */
 export async function setCubeSinkEnabled(
   cubeCollectionId: string,
   enabled: boolean,
+  expectedVersion: string,
 ): Promise<ApiCubeSink | null> {
   await runMigrations();
   const result = await query<CubeSinkRow>(
     `UPDATE stac_higher.cube_sinks
         SET enabled = $2,
-            last_error = CASE WHEN $2 THEN NULL ELSE last_error END,
+            last_error = CASE WHEN $2 AND NOT enabled THEN NULL ELSE last_error END,
             updated_at = now()
-      WHERE cube_collection_id = $1 RETURNING ${COLUMNS}`,
-    [cubeCollectionId, enabled],
+      WHERE cube_collection_id = $1 AND updated_at = $3::timestamptz
+      RETURNING ${COLUMNS}`,
+    [cubeCollectionId, enabled, expectedVersion],
   );
   return result.rows[0] ? toApi(result.rows[0]) : null;
 }
@@ -229,7 +240,7 @@ export async function cubeLedgerSummary(sinkId: string): Promise<CubeLedgerSumma
     query<Omit<CubeLedgerRow, "item_datetime" | "updated_at"> & { item_datetime: Date; updated_at: Date }>(
       `SELECT item_id, item_datetime, status, reason, snapshot_id, attempts, updated_at
          FROM stac_higher.cube_appends WHERE cube_sink_id = $1
-        ORDER BY item_datetime DESC LIMIT 20`,
+        ORDER BY updated_at DESC, id DESC LIMIT 20`,
       [sinkId],
     ),
   ]);
@@ -256,20 +267,65 @@ export async function existingCollections(ids: string[]): Promise<Set<string>> {
   return new Set(result.rows.map((r) => r.id));
 }
 
-/** The source's enabled, live, reference-mode ingest associations and
- * whether each connection reads anonymously (spec §7, §13). */
+/** The live, enabled, reference-mode ingest associations (and their
+ * connections) of every collection, as FROM and WHERE fragments so a caller
+ * can add joins between them and its own predicate after the WHERE. */
+const REFERENCE_INGEST_FROM = `FROM stac_higher.collection_connections cc
+       JOIN stac_higher.connections c ON c.id = cc.connection_id AND c.deleted_at IS NULL`;
+const REFERENCE_INGEST_WHERE = `WHERE cc.direction = 'ingest'
+        AND cc.enabled
+        AND cc.deleted_at IS NULL
+        AND cc.config->>'storage_mode' = 'reference'`;
+
+const REFERENCE_INGEST_COLUMNS = `cc.id AS association_id, cc.connection_id, c.protocol,
+       c.protocol = 's3' AND COALESCE(c.config->'anonymous' = 'true'::jsonb, false) AS anonymous`;
+
+export interface ReferenceSourceCollection {
+  collection_id: string;
+  title: string | null;
+  associations: ReferenceIngestSource[];
+}
+
+/**
+ * Every live collection with an enabled reference-mode ingest association,
+ * grouped per collection, for the cube sink's source picker. `groups` null =
+ * admin (all). Otherwise a collection is listed when it is unowned
+ * (`collection_settings` has no row or a NULL `group_id`, ADR 0003) or owned
+ * by one of the groups: `canManageCollection`'s rule, because PUT refuses any
+ * source the caller cannot manage, so a foreign one would be a dead choice.
+ */
+export async function listReferenceSourceCollections(
+  groups: string[] | null,
+): Promise<ReferenceSourceCollection[]> {
+  await runMigrations();
+  const result = await query<ReferenceIngestSource & { collection_id: string; title: string | null }>(
+    `SELECT cc.collection_id, pc.content->>'title' AS title, ${REFERENCE_INGEST_COLUMNS}
+       ${REFERENCE_INGEST_FROM}
+       JOIN pgstac.collections pc ON pc.id = cc.collection_id
+       LEFT JOIN stac_higher.collection_settings s ON s.collection_id = cc.collection_id
+      ${REFERENCE_INGEST_WHERE}
+        AND ($1::text[] IS NULL OR s.group_id IS NULL OR s.group_id = ANY($1::text[]))
+      ORDER BY cc.collection_id, cc.created_at, cc.id`,
+    [groups],
+  );
+  const out: ReferenceSourceCollection[] = [];
+  for (const { collection_id, title, ...association } of result.rows) {
+    const last = out[out.length - 1];
+    if (last?.collection_id === collection_id) last.associations.push(association);
+    else out.push({ collection_id, title, associations: [association] });
+  }
+  return out;
+}
+
+/** The source's enabled, live, reference-mode ingest associations, their
+ * protocol, and whether each connection reads anonymously (spec §7, §13). */
 export async function referenceIngestSources(collectionId: string): Promise<ReferenceIngestSource[]> {
   await runMigrations();
   const result = await query<ReferenceIngestSource>(
-    `SELECT cc.id AS association_id, cc.connection_id,
-            COALESCE(c.config->'anonymous' = 'true'::jsonb, false) AS anonymous
-       FROM stac_higher.collection_connections cc
-       JOIN stac_higher.connections c ON c.id = cc.connection_id AND c.deleted_at IS NULL
-      WHERE cc.collection_id = $1
-        AND cc.direction = 'ingest'
-        AND cc.enabled
-        AND cc.deleted_at IS NULL
-        AND cc.config->>'storage_mode' = 'reference'`,
+    `SELECT ${REFERENCE_INGEST_COLUMNS}
+       ${REFERENCE_INGEST_FROM}
+      ${REFERENCE_INGEST_WHERE}
+        AND cc.collection_id = $1`,
     [collectionId],
   );
   return result.rows;
