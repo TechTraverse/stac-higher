@@ -135,3 +135,17 @@ def test_lifespan_polls_and_serves(cube):
         while registry.get("c1") is None and time.monotonic() < deadline:
             time.sleep(0.05)
         assert client.get(TILE, params={**Q, "t": iso_ns(t_ns(0))}).status_code == 200
+
+
+def test_log_lines_carry_their_extra_fields():
+    import logging
+
+    from stac_higher_cube_server.app import ExtraFormatter
+
+    record = logging.LogRecord("x", logging.WARNING, __file__, 1, "cube not reloaded", None, None)
+    record.cube_collection_id = "c1"
+    record.error = "RuntimeError: store down"
+    line = ExtraFormatter("%(levelname)s %(message)s").format(record)
+    assert line.startswith("WARNING cube not reloaded")
+    assert '"cube_collection_id": "c1"' in line
+    assert '"error": "RuntimeError: store down"' in line

@@ -106,7 +106,14 @@ def _now() -> str:
 
 
 def _describe(err: BaseException) -> str:
+    """The full error, for the logs only."""
     return f"{type(err).__name__}: {err}"
+
+
+def _public(err: BaseException) -> str:
+    """What /health shows: the type alone. /health is anonymous, and error
+    text can carry DB hosts, store endpoints and paths."""
+    return type(err).__name__
 
 
 class CubeRegistry:
@@ -153,9 +160,9 @@ class CubeRegistry:
         try:
             sinks = self._source.enabled_sinks()
         except Exception as err:  # keep serving what is open (Decision 9)
-            self._last_reload_error = _describe(err)
+            self._last_reload_error = _public(err)
             log.warning("cube sinks unreadable; keeping open datasets",
-                        extra={"error": self._last_reload_error})
+                        extra={"error": _describe(err)})
             return []
         self._last_reload_error = None
 
@@ -168,9 +175,9 @@ class CubeRegistry:
             try:
                 status = self._refresh_sink(sink)
             except Exception as err:
-                errors[cid] = _describe(err)
+                errors[cid] = _public(err)
                 log.warning("cube not reloaded; keeping its previous dataset",
-                            extra={"cube_collection_id": cid, "error": errors[cid]})
+                            extra={"cube_collection_id": cid, "error": _describe(err)})
                 continue
             if status == "opened":
                 opened.append(cid)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -37,6 +38,20 @@ from stac_higher_cube_server.settings import Settings
 from stac_higher_cube_server.sinks import PgSinkSource
 
 log = logging.getLogger("stac_higher_cube_server")
+
+_RECORD_KEYS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime"}
+
+
+class ExtraFormatter(logging.Formatter):
+    """The standard line plus the record's ``extra={...}`` fields as JSON.
+
+    Errors reach /health as a type name only; their text lives here."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        line = super().format(record)
+        extra = {k: v for k, v in vars(record).items() if k not in _RECORD_KEYS}
+        return f"{line} {json.dumps(extra, default=str)}" if extra else line
+
 
 #: the warm-up tile's rendering (the spike's map.html query, z0)
 WARM_UP_QUERY = "style=raster/gray&width=256&height=256&f=png"
@@ -154,7 +169,9 @@ def create_app(registry: CubeRegistry, settings: Settings, *, poll: bool = True)
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    handler = logging.StreamHandler()
+    handler.setFormatter(ExtraFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
     settings = Settings.from_env()
     registry = CubeRegistry(PgSinkSource(settings.db_dsn), S3RepoOpener(settings))
     uvicorn.run(

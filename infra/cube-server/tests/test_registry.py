@@ -131,7 +131,7 @@ def test_failed_reopen_keeps_previous_dataset(c1):
     opener.error = RuntimeError("store down")
     assert registry.refresh() == []
     assert registry.get("c1") is first
-    assert "store down" in registry.health()["errors"]["c1"]
+    assert registry.health()["errors"]["c1"] == "RuntimeError"
     opener.error = None
     registry.refresh()
     assert registry.health()["errors"] == {}
@@ -149,3 +149,18 @@ def test_db_error_keeps_open_datasets_and_records_it(c1):
     source.error = None
     registry.refresh()
     assert registry.health()["last_reload_error"] is None
+
+
+def test_health_never_echoes_error_text(c1):
+    """/health is anonymous: error text (DSNs, hosts, paths) stays in the logs."""
+    source = FakeSource(row("c1"))
+    opener = LocalOpener({"c1": c1})
+    registry = CubeRegistry(source, opener)
+    opener.error = RuntimeError("store at http://internal-host:9000/secret-path is down")
+    registry.refresh()
+    source.error = psycopg.OperationalError('connection to "database" (10.0.0.5) failed')
+    registry.refresh()
+    text = repr(registry.health())
+    assert "internal-host" not in text
+    assert "10.0.0.5" not in text
+    assert registry.health()["last_reload_error"] == "OperationalError"
