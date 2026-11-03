@@ -119,7 +119,7 @@ and for the process-runtime images re-add the new `:latest` digest on
 | pipeline · obstore | 0.11.1 (object_store 0.14.1) | yes | yes | Config keys `aws_container_credentials_full_uri`, `aws_container_authorization_token_file`, `aws_web_identity_token_file`. Used only unsigned, for anonymous cube sources, so no platform credential reaches it. |
 | cube-server · Icechunk | 2.3.0 (aws-config 1.8.15) | yes | yes | As the pipeline Icechunk row. |
 | titiler · titiler-pgstac 1.7.2 base, rasterio 1.4.3 wheel (GDAL 3.9.3) | GDAL 3.9.3 | yes (GDAL 3.9 or later, OSGeo/gdal#9877; `libgdal` carries `AWS_CONTAINER_CREDENTIALS_FULL_URI` / `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`) | yes (`AssumeRoleWithWebIdentity`) | The image has no boto3, so rasterio hands GDAL nothing and GDAL's own chain applies. The chart must not set `AWS_ACCESS_KEY_ID` for titiler on AWS. |
-| app | | | | R-1. |
+| app | `@aws-sdk/client-s3` v3 (presigning) | pinned in `app/package.json` | yes | yes | The SDK default provider chain runs when both `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` are empty (`app/src/lib/storage/config.ts`); refreshable Pod Identity / IRSA credentials are handled by the SDK. Nothing S3 set at all → compose MinIO keys (R-1). |
 
 No workload needs the IRSA toggle for a library gap. The toggle remains for the role-chaining question (spec section 8, R-11).
 
