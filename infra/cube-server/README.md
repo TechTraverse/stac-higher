@@ -6,6 +6,14 @@ serves every **enabled** cube sink's Icechunk repository as XYZ tiles
 id. Design, routes and caching rules: [`docs/serving.md`](../../docs/serving.md)
 "Virtual cubes: the cube-server".
 
+The service is behind the compose profile `cube`, so it is not part of plain
+`docker compose up -d` (nor of the CI e2e job). Start it, with its
+`cube-db-role` and `cube-silo-user` one-shots, from the repo root:
+
+```
+docker compose --profile cube up -d --build cube-server
+```
+
 | Module | Job |
 |---|---|
 | `settings.py` | Env (below) |

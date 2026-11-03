@@ -211,9 +211,9 @@ jobs:
           wait_for auth-proxy "http://localhost:8081/" 60
           wait_for minio "http://localhost:9000/minio/health/live" 30
           wait_for pipeline "http://localhost:8083/health" 60
-          # Z-7: the compose bring-up check for the cube-server (it needs the
-          # cube-db-role and cube-silo-user one-shots to have succeeded).
-          wait_for cube-server "http://localhost:8086/health" 30
+          # The cube-server sits behind the `cube` compose profile, which this
+          # job does not start (no cube e2e test yet, #130); add the profile
+          # and a :8086/health wait together when one exists.
       - name: Run e2e suite
         working-directory: app
         run: npm run test:e2e:ci

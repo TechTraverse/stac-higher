@@ -227,12 +227,17 @@ services:
         mc mb --ignore-existing local/stac-higher-deliveries
     restart: "no"
 
+  # The three cube services (cube-silo-user, cube-db-role, cube-server) sit
+  # behind the `cube` profile: `docker compose --profile cube up -d` starts
+  # them; plain `up -d` (and the e2e job) does not (#130).
+  #
   # One-shot (Z-7): the cube-server's read-only Silo user. Its policy reads
   # only assets/*/_cube/* in the platform bucket (virtual cube spec §8.1). Its
   # own service, not part of minio-init, so a failure here stops only the
   # cube-server — `pipeline` waits on minio-init. The attach is skipped when
   # the user already carries cube-read, so re-runs are no-ops.
   cube-silo-user:
+    profiles: ["cube"]
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     depends_on:
       minio-init:
@@ -546,6 +551,7 @@ services:
   # read-only `stac_higher_cube_reader` group. Idempotent; runs in either order
   # with the app's migrations (infra/cube-server/compose-db-role.sql).
   cube-db-role:
+    profiles: ["cube"]
     image: ghcr.io/stac-utils/pgstac:v0.9.11@sha256:26d5c20c650736a65793ab61cb2e7113ecef0c036ec8c2d6c6838c7aa14e131d
     entrypoint: ["psql", "-v", "ON_ERROR_STOP=1", "-h", "database", "-f", "/sql/role.sql"]
     environment:
@@ -566,6 +572,7 @@ services:
   # the Silo user reads only assets/*/_cube/*. Anonymous like titiler until
   # #34; it reads the virtual sources (NODD) directly — network egress rides #68.
   cube-server:
+    profiles: ["cube"]
     build:
       context: ./infra/cube-server
     image: stac-higher-cube-server:local
