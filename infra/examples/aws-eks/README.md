@@ -44,6 +44,7 @@ tofu init -backend=false && tofu validate && tofu test
 (`external-secrets` + `pod-identity`), with placeholders only (account
 `000000000000`, `example.com` hosts). The R-5 half is the layout of
 `tofu output -raw helm_values`; the keys marked deployment-supplied (public
-URLs, CA bundle ConfigMap, secret store) are yours to set. R-5 adds the
-`helm_values` output it will come from. CI renders it alone with
+URLs, CA bundle ConfigMap, secret store) are yours to set. In a real
+deployment the R-5 half comes from `values-aws.yaml` (the render recipe
+above) rather than this file. CI renders it alone with
 `scripts/check-helm.sh`.
