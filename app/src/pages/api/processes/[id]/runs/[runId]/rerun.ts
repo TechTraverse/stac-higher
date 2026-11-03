@@ -10,12 +10,20 @@
  * claiming the same row. A non-dead (or unknown) run is a 409 with the reason,
  * not a silent no-op, because "I clicked re-run and nothing happened" is the
  * worst possible answer for an operator recovering a flow.
+ *
+ * A dead run whose source already has a queued run is also a 409
+ * (`run_already_queued`): one queued run per source is a partial unique
+ * index, so the second re-run has to wait until the first is claimed.
  */
 import type { APIRoute } from "astro";
 import { isUuid } from "@/lib/connections/access";
 import { jsonResponse } from "@/lib/http/response";
 import { loadVisibleProcess } from "@/lib/processes/access";
-import { getRun, rerunRun } from "@/lib/processes/storage";
+import {
+  getRun,
+  rerunRun,
+  RunAlreadyQueuedError,
+} from "@/lib/processes/storage";
 
 export const POST: APIRoute = async ({ params, locals }) => {
   const loaded = await loadVisibleProcess(locals.auth, params.id, true);
@@ -48,7 +56,11 @@ export const POST: APIRoute = async ({ params, locals }) => {
       error: `Only dead runs can be re-run; this one is '${existing.status}'`,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return jsonResponse(500, { error: message });
+    if (err instanceof RunAlreadyQueuedError) {
+      return jsonResponse(409, { error: err.message, code: "run_already_queued" });
+    }
+    // Never the raw database text (#74): log it, answer generically.
+    console.error(err instanceof Error ? err.message : "Unknown error");
+    return jsonResponse(500, { error: "internal error" });
   }
 };

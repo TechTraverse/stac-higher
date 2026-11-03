@@ -21,11 +21,19 @@ from __future__ import annotations
 import abc
 import datetime as dt
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.process.matcher import ProcessSource
+
+logger = logging.getLogger(__name__)
+
+#: How many times `_requeue` retries when a concurrent enqueue takes the slot
+#: between its check and its flip. Each retry finds that run and folds, so a
+#: second attempt is the most a single race needs.
+_REQUEUE_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -224,7 +232,11 @@ class ProcessRepo(abc.ABC):
         next_attempt_at: dt.datetime | None,
         output_items: Sequence[dict[str, Any]] | None = None,
     ) -> None:
-        """Write a run's terminal (or retry-pending) state."""
+        """Write a run's terminal (or retry-pending) state.
+
+        ``status="queued"`` (the could-not-start requeue) may instead FOLD the
+        run into the queued run already holding its coalescing slot (#67).
+        """
 
     @abc.abstractmethod
     async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
@@ -262,7 +274,9 @@ class ProcessRepo(abc.ABC):
 
         The crash direction stays safe: a run that actually finished has
         already left `running`, so the worst case is a duplicate execution,
-        not a lost one.
+        not a lost one. A run whose coalescing slot is taken by now folds
+        into that queued run rather than aborting the sweep (#67). Returns
+        how many runs were requeued or folded.
         """
 
     @abc.abstractmethod
@@ -656,6 +670,20 @@ class PgProcessRepo(ProcessRepo):
         next_attempt_at: dt.datetime | None,
         output_items: Sequence[dict[str, Any]] | None = None,
     ) -> None:
+        if status == "queued":
+            # The could-not-start requeue: back into a coalescing slot that a
+            # newer trigger may hold by now (#67) — see `_requeue`.
+            async with await self._connect() as conn:
+                await self._requeue(
+                    conn,
+                    run_id,
+                    set_sql=(
+                        "error = %(error)s, log_ref = coalesce(%(log_ref)s, log_ref),"
+                        " finished_at = coalesce(%(at)s, now())"
+                    ),
+                    params={"error": error, "log_ref": log_ref, "at": next_attempt_at},
+                )
+            return
         async with await self._connect() as conn:
             await conn.execute(
                 "UPDATE stac_higher.process_runs"
@@ -756,21 +784,150 @@ class PgProcessRepo(ProcessRepo):
     async def reset_stalled_runs(  # pragma: no cover
         self, older_than: dt.datetime, limit: int
     ) -> int:
+        # One run at a time, oldest first, each in its own transaction: a
+        # single UPDATE of every stalled row aborted on the first slot
+        # collision and recovered NOTHING, for any process (#67). Oldest
+        # first means a slot's earliest stalled run takes the slot and the
+        # later ones fold into it.
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "WITH stalled AS ("
-                "  SELECT id FROM stac_higher.process_runs"
-                "   WHERE status = 'running' AND started_at < %s"
-                "   ORDER BY started_at LIMIT %s FOR UPDATE SKIP LOCKED"
-                ")"
-                " UPDATE stac_higher.process_runs r"
-                "    SET status = 'queued', started_at = NULL,"
-                "        error = 'run was stranded by a worker or executor crash'"
-                "   FROM stalled WHERE r.id = stalled.id",
+                "SELECT id FROM stac_higher.process_runs"
+                " WHERE status = 'running' AND started_at < %s"
+                " ORDER BY started_at LIMIT %s",
                 (older_than, limit),
             )
+            stalled = [str(r[0]) for r in await cur.fetchall()]
             await conn.commit()
-        return cur.rowcount or 0
+            recovered = 0
+            for run_id in stalled:
+                outcome = await self._requeue(
+                    conn,
+                    run_id,
+                    set_sql=(
+                        "started_at = NULL,"
+                        " error = 'run was stranded by a worker or executor crash'"
+                    ),
+                    params={},
+                    # Re-checked under the row lock: a run that finished or
+                    # was re-claimed since the SELECT is not stalled.
+                    stalled_before=older_than,
+                )
+                if outcome != "skipped":
+                    recovered += 1
+        return recovered
+
+    async def _requeue(  # pragma: no cover
+        self,
+        conn: Any,
+        run_id: str,
+        *,
+        set_sql: str,
+        params: dict[str, Any],
+        stalled_before: dt.datetime | None = None,
+    ) -> str:
+        """Return a `running` run to `queued`, or FOLD it into the queued run
+        that already holds its coalescing slot (#67).
+
+        Migrations 025/027 allow one `queued` run per (process, source) and
+        per (process, association), and a newer trigger may have queued one
+        while this run was running — so flipping it back would violate the
+        index. Instead its items are appended to the queued run (the
+        `enqueue_run` ON CONFLICT rule, applied late), its `extracting`
+        ledger rows move to that run, and its own row is deleted.
+
+        The QUEUED run survives, not this one: an ITEMIZE that just folded
+        files into it is about to point their ledger rows at its id, and a
+        row that never started has no history to lose. Deleting the running
+        row also hands the M3-W-1 reaper its strongest orphan signal if a
+        container of it is somehow still alive.
+
+        Test runs never coalesce (`enqueue_run`), so they are only flipped.
+        A race that queues a run between the slot check and the flip raises
+        the unique violation; the next attempt finds that run and folds.
+
+        Returns ``"requeued"``, ``"merged"`` or ``"skipped"`` (no longer
+        `running`, or no longer stalled).
+        """
+        import psycopg
+
+        for _attempt in range(_REQUEUE_ATTEMPTS):
+            try:
+                outcome = await self._requeue_once(
+                    conn, run_id, set_sql=set_sql, params=params,
+                    stalled_before=stalled_before,
+                )
+                await conn.commit()
+                return outcome
+            except psycopg.errors.UniqueViolation:
+                await conn.rollback()
+        raise RuntimeError(
+            f"run {run_id}: its coalescing slot kept changing under the requeue"
+        )
+
+    async def _requeue_once(  # pragma: no cover
+        self,
+        conn: Any,
+        run_id: str,
+        *,
+        set_sql: str,
+        params: dict[str, Any],
+        stalled_before: dt.datetime | None,
+    ) -> str:
+        cur = await conn.execute(
+            "SELECT process_id, source_id, association_id, is_test"
+            "  FROM stac_higher.process_runs"
+            " WHERE id = %(run)s AND status = 'running'"
+            "   AND (%(before)s::timestamptz IS NULL OR started_at < %(before)s)"
+            "   FOR UPDATE",
+            {"run": run_id, "before": stalled_before},
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return "skipped"
+        process_id, source_id, association_id, is_test = row
+
+        holder = None
+        if not is_test:
+            # Either index can be the one occupied; NULL never matches.
+            cur = await conn.execute(
+                "SELECT id FROM stac_higher.process_runs"
+                " WHERE status = 'queued' AND process_id = %(process)s"
+                "   AND (source_id = %(source)s OR association_id = %(assoc)s)"
+                " ORDER BY created_at LIMIT 1 FOR UPDATE",
+                {"process": process_id, "source": source_id, "assoc": association_id},
+            )
+            holder = await cur.fetchone()
+
+        if holder is None:
+            await conn.execute(
+                f"UPDATE stac_higher.process_runs SET status = 'queued', {set_sql}"
+                " WHERE id = %(run)s",
+                {**params, "run": run_id},
+            )
+            return "requeued"
+
+        into = {"run": run_id, "into": holder[0]}
+        await conn.execute(
+            "UPDATE stac_higher.process_runs q"
+            "   SET input_items = q.input_items || r.input_items"
+            "  FROM stac_higher.process_runs r"
+            " WHERE q.id = %(into)s AND r.id = %(run)s",
+            into,
+        )
+        # Finalize only lands rows the run owns (extract_run.py), so moving
+        # the batch without moving ownership would strand them `extracting`.
+        await conn.execute(
+            "UPDATE stac_higher.ingest_files SET extract_run_id = %(into)s"
+            " WHERE extract_run_id = %(run)s AND status = 'extracting'",
+            into,
+        )
+        await conn.execute("DELETE FROM stac_higher.process_runs WHERE id = %(run)s", into)
+        logger.info(
+            "process run folded into the queued run holding its slot",
+            extra={"run_id": run_id, "into_run_id": str(holder[0]),
+                   "process_id": str(process_id)},
+        )
+        return "merged"
 
     async def run_statuses(  # pragma: no cover
         self, run_ids: Sequence[str]

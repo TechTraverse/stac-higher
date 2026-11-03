@@ -15,14 +15,26 @@ without importing the CLI module that imports it back.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 import boto3
 import psycopg
 from botocore.client import Config
+
+#: The checkout this module lives in (`services/pipeline/src/pipeline/demo/`).
+REPO_ROOT = Path(__file__).resolve().parents[5]
+#: Relative to REPO_ROOT — bake resolves its contexts against the working
+#: directory, not the file.
+RUNTIME_BAKE_FILE = "services/process-runtime/docker-bake.hcl"
+#: compose's `PROCESS_RUNTIME_IMAGE` default, and the bake `runtime` target's tag.
+DEFAULT_RUNTIME_IMAGE = "stac-higher-process-runtime:local"
+_BAKE_COMMAND = f"docker buildx bake -f {RUNTIME_BAKE_FILE} runtime"
 
 # --------------------------------------------------------------------------- #
 # small helpers
@@ -81,6 +93,53 @@ def ensure_bucket(client, bucket: str) -> None:
         client.head_bucket(Bucket=bucket)
     except Exception:
         client.create_bucket(Bucket=bucket)
+
+
+def ensure_runtime_image(*, build: bool = True) -> None:
+    """Build the process runtime image every demo run executes in, or refuse.
+
+    `docker compose up` does not build it, and without it every run fails to
+    start with `No such image` and is requeued without spending an attempt —
+    the demo shows its pipeline graph and never an item, and nothing says why.
+    So the seeders bake it (a cached bake is a no-op, and it also picks up a
+    pulled Dockerfile change) before they write anything.
+
+    `build=False` only checks the image exists. A `PROCESS_RUNTIME_IMAGE`
+    override names an image this checkout does not build, so it is only
+    checked, never built.
+    """
+    image = os.environ.get("PROCESS_RUNTIME_IMAGE") or DEFAULT_RUNTIME_IMAGE
+    try:
+        if build and image == DEFAULT_RUNTIME_IMAGE:
+            say(f"process runtime image ({_BAKE_COMMAND})")
+            built = subprocess.run(
+                ["docker", "buildx", "bake", "-f", RUNTIME_BAKE_FILE, "runtime"],
+                cwd=REPO_ROOT,
+            )
+            if built.returncode != 0:
+                raise SystemExit(
+                    f"building {image} failed (exit {built.returncode}). Is Docker running?\n"
+                    f"Retry by hand from the repo root:  {_BAKE_COMMAND}"
+                )
+            return
+        found = subprocess.run(
+            ["docker", "image", "inspect", image], capture_output=True
+        )
+    except FileNotFoundError as err:
+        raise SystemExit(
+            "the docker CLI is not on PATH, so the process runtime image cannot be\n"
+            f"built or checked. Build it from the repo root:  {_BAKE_COMMAND}"
+        ) from err
+    if found.returncode != 0:
+        hint = (
+            f"Build it from the repo root:  {_BAKE_COMMAND}"
+            if image == DEFAULT_RUNTIME_IMAGE
+            else "PROCESS_RUNTIME_IMAGE names it, so this checkout does not build it."
+        )
+        raise SystemExit(
+            f"the process runtime image {image} is not on this Docker daemon — every\n"
+            f"demo run would fail to start. {hint}"
+        )
 
 
 def check_migrations(database_url: str, required_migration: str) -> None:

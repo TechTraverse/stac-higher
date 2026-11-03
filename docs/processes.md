@@ -662,8 +662,12 @@ shows as a "rate limited" badge on the run.
 A failed run retries on its revision's `retry.max_attempts` budget, then goes
 `dead`. A run whose inputs could not be staged (a remote file unreachable)
 fails the same way — the ledger `error` names the item and asset — and no
-container ever started. A revision whose `network.level` exceeds the
-deployment cap dies immediately: that is configuration, not a fault. A dead run can be re-run from the UI — which re-executes **the same
+container ever started. A platform runtime image missing from the Docker
+daemon (create answers `404 No such image`) fails the same way, and the error
+names the image and the `docker buildx bake` command that builds it; an
+unreachable daemon or any other executor fault (a missing network, say)
+requeues the run without spending an attempt. A revision whose
+`network.level` exceeds the deployment cap dies immediately: that is configuration, not a fault. A dead run can be re-run from the UI — which re-executes **the same
 revision that failed**, not whatever is current. If you deployed a fix, trigger
 a new run; re-running an old row will run the old code. **Extractor** runs are
 the exception: re-run is refused for them, and their files are retried by the
@@ -673,4 +677,7 @@ A run stranded by a worker or executor crash is returned to `queued` by the
 stall sweep, so the crash direction is safe: a run may execute twice, never
 zero times. The container that crash left behind is removed separately, by the
 orphan reaper — so a second attempt does not collide with the first attempt's
-leftovers.
+leftovers. If a newer trigger queued a run for the same source (or ingest
+association) meanwhile, the returning run folds into it instead: its items
+join that run's batch, its extracting files move with them, and its own row is
+removed. The same happens to a run that could not start.

@@ -28,7 +28,12 @@ from pipeline.images.repo import ImagesRepo
 from pipeline.metrics import PROCESS_RUNS
 from pipeline.process.config import ProcessConfigError, parse_process_env, parse_process_runtime
 from pipeline.process.credentials import RunCredentialsError
-from pipeline.process.executor import Executor, ExecutorUnavailable, ImagePullFailed
+from pipeline.process.executor import (
+    Executor,
+    ExecutorUnavailable,
+    ImageMissing,
+    ImagePullFailed,
+)
 from pipeline.process.hardware import (
     HardwareProfileError,
     HardwareProfileSet,
@@ -297,9 +302,12 @@ async def run_one(
             priority="interactive" if run.is_test else "triggered",
             image=resolved,
         )
-    except ImagePullFailed as err:
+    except (ImagePullFailed, ImageMissing) as err:
         # Spec §8.4: the registry refused the digest. A per-run outcome that
         # spends an attempt, then dies on budget -- never an endless requeue.
+        # #108: so is an image the daemon does not have (never built); dying
+        # on budget is what raises the alert and, via on_dead, fails an
+        # extractor's ledger rows.
         transition = outcome_transition(
             exit_code=1,
             timed_out=False,

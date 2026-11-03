@@ -52,13 +52,17 @@ Flags exist for every endpoint (`--stac-url`, `--s3-endpoint`, `--database-url`,
    and runs migrations on its first API request (ADR 0001), so a freshly wiped
    volume needs the app to have started once. `seed` checks and tells you what
    to do rather than failing half-built.
-3. **The process runtime image exists** as `stac-higher-process-runtime:local`
-   (`docker buildx bake -f services/process-runtime/docker-bake.hcl runtime`
-   from the repo root; the bare `docker build -f
-   services/process-runtime/Dockerfile -t stac-higher-process-runtime:local
-   services/process-runtime` still works for the base alone). The bake file's
-   default group also builds `stac-higher-process-runtime-stactools:local`,
-   the built-in extractor library's image (X-2), which the demo does not need.
+3. **Docker on the host**, because `seed` and `goes-seed` build the process
+   runtime image `stac-higher-process-runtime:local` before they write
+   anything (`docker buildx bake -f services/process-runtime/docker-bake.hcl
+   runtime`, run from the repo root; a no-op when cached). `docker compose up`
+   does not build it, and without it every run fails to start with `No such
+   image` and is requeued forever: the pipeline graph appears, but no item
+   ever does. `--no-build-image` skips the build and only checks that the
+   image exists. If `PROCESS_RUNTIME_IMAGE` names another image, the seed
+   only checks it and never builds it. The bake file's default group also
+   builds `stac-higher-process-runtime-stactools:local`, the built-in
+   extractor library's image (X-2), which the demo does not need.
 
 ## What to look at afterwards
 

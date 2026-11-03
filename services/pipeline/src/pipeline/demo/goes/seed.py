@@ -7,7 +7,8 @@ against the LIVE NODD bucket (the manual recipe for spec §10's "full hour").
     goes-geocolor     <- the goes-geocolor process, triggered per source item
                           (optionally delivered to a MinIO bucket, --deliver)
 
-Needs the internet, the process runtime image, and CREDENTIALS_MASTER_KEY in
+Needs the internet, Docker (it builds the process runtime image first; pass
+--no-build-image to only check it exists), and CREDENTIALS_MASTER_KEY in
 the environment: the anonymous NODD connection stores an ENCRYPTED empty
 envelope (`{}`), exactly as the app does — the pipeline's build_adapter
 treats a NULL credentials column as a configuration error, not as anonymous —
@@ -30,6 +31,7 @@ from pipeline.demo.platform import (
     check_migrations,
     enable_serving,
     ensure_bucket,
+    ensure_runtime_image,
     install_process,
     put_collection,
     remove_process,
@@ -213,6 +215,8 @@ def seed(args: argparse.Namespace) -> int:
     check_migrations(args.database_url, REQUIRED_MIGRATION)
 
     master_key = _require_master_key()
+    # After the cheap checks, before any write: a refused build changes nothing.
+    ensure_runtime_image(build=args.build_image)
 
     # The connection opens FIRST so the competing-association refusal happens
     # before the catalog is touched, not after two collections were replaced.

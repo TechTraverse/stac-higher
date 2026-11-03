@@ -29,6 +29,11 @@ vi.mock("@/lib/processes/storage", () => ({
   DuplicateProcessNameError: class extends Error {},
   DuplicateSourceError: class extends Error {},
   DuplicateOutputError: class extends Error {},
+  RunAlreadyQueuedError: class extends Error {
+    constructor() {
+      super("A run for this source is already queued. Re-run this one after it starts.");
+    }
+  },
 }));
 vi.mock("@/lib/associations/access", () => ({
   canManageCollection: vi.fn(async () => true),
@@ -65,6 +70,7 @@ import {
   listRuns,
   getRun,
   rerunRun,
+  RunAlreadyQueuedError,
   softDeleteProcess,
   updateProcess,
   type ApiProcess,
@@ -773,6 +779,22 @@ describe("the run ledger and the re-run verb (M5-C)", () => {
     });
     expect(res.status).toBe(409);
     expect((await res.json()).error).toContain("running");
+  });
+
+  it("409s run_already_queued when the source's queued slot is taken", async () => {
+    // One queued run per source (a partial unique index): the storage layer
+    // turns the 23505 into RunAlreadyQueuedError, and the client gets the
+    // plain message plus a code — never the constraint text, never a 500.
+    vi.mocked(rerunRun).mockRejectedValueOnce(new RunAlreadyQueuedError());
+    const res = await call(rerunRoute, operator, {
+      method: "POST",
+      params: { runId: RUN_ID },
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("run_already_queued");
+    expect(body.error).toContain("already queued");
+    expect(body.error).not.toContain("duplicate key");
   });
 
   it("404s an unknown run", async () => {

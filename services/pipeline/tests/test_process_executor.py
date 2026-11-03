@@ -32,12 +32,19 @@ from pipeline.process.docker_executor import (
     CODE_ENV_VAR,
     SIGKILL_EXIT_CODE,
     DockerExecutor,
+    EngineHTTPError,
     UnsafeDockerHost,
     _demultiplex,
     assert_safe_docker_host,
     encode_code,
 )
-from pipeline.process.executor import ExecutorUnavailable, ExitStatus, RunHandle
+from pipeline.process.executor import (
+    ExecutorUnavailable,
+    ExitStatus,
+    ImageMissing,
+    RunHandle,
+    RunSpec,
+)
 from pipeline.process.inputs import input_env
 from pipeline.process.launch import (
     ImageUnusable,
@@ -187,6 +194,81 @@ def test_a_failed_start_reaps_the_created_container():
             )
         )
     assert any(m == "DELETE" for m, _p, _b in api.calls)
+
+
+NO_SUCH_IMAGE = '{"message":"No such image: stac-higher-process-runtime:local"}'
+
+
+def _create_404(detail: str) -> EngineHTTPError:
+    return EngineHTTPError(
+        f"docker POST /containers/create failed: 404 {detail}", status=404, detail=detail
+    )
+
+
+def _platform_spec(**overrides) -> RunSpec:
+    base = {"run_id": RUN, "process_id": PROC, "image": "stac-higher-process-runtime:local"}
+    base.update(overrides)
+    return RunSpec(**base)
+
+
+def test_a_create_404_no_such_image_is_image_missing_not_an_outage():
+    """#108: an outage requeues without spending an attempt, so a missing
+    image reported as one would requeue forever. It names the image and how
+    to build it."""
+    api = FakeApi({"create": _create_404(NO_SUCH_IMAGE)})
+    with pytest.raises(ImageMissing) as err:
+        executor_with(api).launch(_platform_spec())
+    assert not isinstance(err.value, ExecutorUnavailable)
+    message = str(err.value)
+    assert "stac-higher-process-runtime:local" in message
+    assert "docker buildx bake -f services/process-runtime/docker-bake.hcl runtime" in message
+    # Nothing was created, so nothing is started.
+    assert not any("/start" in p for _m, p, _b in api.calls)
+
+
+def test_a_user_image_missing_on_create_carries_no_build_hint():
+    """A user image was just pulled by digest (the inspect here says present);
+    the platform cannot build it, and the next attempt pulls again."""
+    pinned = "ghcr.io/example/tool@sha256:" + "a" * 64
+    api = FakeApi({"/images/": {"Id": "x"}, "create": _create_404(f"No such image: {pinned}")})
+    with pytest.raises(ImageMissing) as err:
+        executor_with(api).launch(_platform_spec(image=pinned, user_image=True))
+    assert pinned in str(err.value)
+    assert "buildx" not in str(err.value)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        # A missing network is a deployment fault the operator fixes in the
+        # compose stack; the run did nothing wrong, so it stays a requeue.
+        _create_404('{"message":"network stac-higher-runs not found"}'),
+        EngineHTTPError("docker POST failed: 500", status=500, detail="No such image: x"),
+        ExecutorUnavailable("docker POST /containers/create unreachable"),
+    ],
+)
+def test_every_other_create_failure_stays_an_outage(error):
+    api = FakeApi({"create": error})
+    with pytest.raises(ExecutorUnavailable) as err:
+        executor_with(api).launch(_platform_spec())
+    assert not isinstance(err.value, ImageMissing)
+
+
+def test_a_daemon_no_such_image_body_reaches_the_match_through_the_http_layer(monkeypatch):
+    """The match reads EngineHTTPError.detail; pin that _request fills it
+    from the daemon's real response body."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    def daemon(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 404, "Not Found", {}, io.BytesIO(NO_SUCH_IMAGE.encode())
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", daemon)
+    with pytest.raises(ImageMissing):
+        DockerExecutor(docker_host="tcp://proxy:2375").launch(_platform_spec())
 
 
 def test_wait_kills_and_reports_timed_out_when_the_budget_is_spent():

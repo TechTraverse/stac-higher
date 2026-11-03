@@ -64,6 +64,16 @@ class ImagePullFailed(ExecutorError):
     attempt rather than requeueing forever."""
 
 
+class ImageMissing(ExecutorError):
+    """The daemon has no image by the name the run launches on (#108): the
+    create call answered ``404 No such image``. A deployment fault retrying
+    will not fix -- the platform image was never built -- so, like
+    :class:`ImagePullFailed`, the caller spends an attempt and the run dies
+    on budget, which raises the ``process_failed`` alert instead of an
+    endless, silent requeue. Deliberately NOT an :class:`ExecutorUnavailable`:
+    that branch never spends an attempt."""
+
+
 @dataclass(frozen=True)
 class RegistryAuth:
     """A pull credential for one registry, resolved at launch (spec §8.4) and
@@ -171,7 +181,8 @@ class Executor(abc.ABC):
     @abc.abstractmethod
     def launch(self, spec: RunSpec) -> RunHandle:
         """Create and start the run. Raises :class:`ExecutorUnavailable` when
-        the backend itself is the problem."""
+        the backend itself is the problem, and :class:`ImagePullFailed` /
+        :class:`ImageMissing` when the run's image is."""
 
     @abc.abstractmethod
     def wait(self, handle: RunHandle, timeout_seconds: int) -> ExitStatus:

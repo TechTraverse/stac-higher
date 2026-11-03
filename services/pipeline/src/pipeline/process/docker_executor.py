@@ -47,6 +47,7 @@ from pipeline.process.executor import (
     Executor,
     ExecutorUnavailable,
     ExitStatus,
+    ImageMissing,
     ImagePullFailed,
     LaunchedRun,
     RegistryAuth,
@@ -83,6 +84,17 @@ _CONTAINER_NAME_PREFIX = {"process": "stac-run-", "image_scan": "stac-scan-"}
 #: timeout kill from any other SIGKILL, which is why `wait` tracks the kill
 #: itself rather than inferring it from the code.
 SIGKILL_EXIT_CODE = 137
+
+#: The daemon's wording for an absent image on create (lower-cased for the
+#: match): ``{"message":"No such image: <name>"}``.
+_NO_SUCH_IMAGE = "no such image"
+
+#: How a platform image is built (#108), named in the run's error.
+PLATFORM_IMAGE_BUILD_HINT = (
+    "build it from the repo root: docker buildx bake -f "
+    "services/process-runtime/docker-bake.hcl runtime (the stactools and "
+    "image-scanner images are targets of the same file)"
+)
 
 
 class UnsafeDockerHost(ExecutorUnavailable):
@@ -122,6 +134,15 @@ def _pull_stream_error(payload: bytes) -> str | None:
         if event.get("error"):
             return str(event["error"])[:500]
     return None
+
+
+def _image_missing_message(spec: RunSpec) -> str:
+    """A user image was pulled by digest a moment ago, so a 404 there means it
+    vanished in between and the next attempt pulls again; only a platform
+    image is something the operator has to build."""
+    if spec.user_image:
+        return f"image {spec.image!r} is not on the docker daemon (removed after its pull)"
+    return f"image {spec.image!r} is not on the docker daemon; {PLATFORM_IMAGE_BUILD_HINT}"
 
 
 def assert_safe_docker_host(docker_host: str) -> None:
@@ -305,11 +326,20 @@ class DockerExecutor(Executor):
             config["Cmd"] = list(spec.cmd)
 
         name = f"{_CONTAINER_NAME_PREFIX.get(spec.kind, 'stac-run-')}{spec.run_id}"
-        created = self._request(
-            "POST",
-            f"/containers/create?name={urllib.parse.quote(name)}",
-            body=config,
-        )
+        try:
+            created = self._request(
+                "POST",
+                f"/containers/create?name={urllib.parse.quote(name)}",
+                body=config,
+            )
+        except EngineHTTPError as err:
+            # #108: create does not pull, so an absent image is a 404 the
+            # daemon words "No such image". That is the deployment's fault,
+            # and retrying will not build it -- a per-run outcome. Every
+            # other 404 (a missing network) stays an outage.
+            if err.status == 404 and _NO_SUCH_IMAGE in err.detail.lower():
+                raise ImageMissing(_image_missing_message(spec)) from err
+            raise
         container_id = created.get("Id") if isinstance(created, dict) else None
         if not container_id:
             raise ExecutorUnavailable(f"docker create returned no Id: {created!r}")

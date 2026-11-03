@@ -28,7 +28,8 @@ already has the demo. It writes to pgstac through the STAC API and to
 
 PRECONDITION: the app must have run its migrations against this database (they
 run on its first API request). `seed` checks and says so rather than failing
-half-built.
+half-built. Both seeds build the process runtime image first (`docker buildx
+bake`, a no-op when cached); `--no-build-image` only checks it exists.
 """
 
 from __future__ import annotations
@@ -67,6 +68,7 @@ from pipeline.demo.images.seed import AppError, SeedError
 from pipeline.demo.platform import (
     check_migrations,
     enable_serving,
+    ensure_runtime_image,
     install_process,
     put_collection,
     remove_process,
@@ -199,6 +201,7 @@ def _install_process(conn: psycopg.Connection) -> None:
 
 def seed(args: argparse.Namespace) -> int:
     _check_migrations(args.database_url)
+    ensure_runtime_image(build=args.build_image)
 
     _say("catalog")
     _put_collection(
@@ -332,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         help="seed everything except the scene item, so no process run starts",
     )
+    _add_build_image_flag(seed_parser)
     seed_parser.set_defaults(func=seed, trigger=True)
 
     sub.add_parser("status", help="recent runs + item counts").set_defaults(func=status)
@@ -363,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         default="http://minio:9000",
         help="how the PIPELINE reaches MinIO (default: http://minio:9000)",
     )
+    _add_build_image_flag(goes_parser)
     goes_parser.set_defaults(func=goes.seed)
 
     sub.add_parser("goes-status", help="GOES loop: runs, ingest ledger, item counts").set_defaults(
@@ -449,6 +454,15 @@ def main(argv: list[str] | None = None) -> int:
         # one-line message, never a traceback.
         say(f"app answered {err}")
         return 1
+
+
+def _add_build_image_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-build-image",
+        dest="build_image",
+        action="store_false",
+        help="do not build the process runtime image; only check that it exists",
+    )
 
 
 def _exception_days(value: str) -> int:

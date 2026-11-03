@@ -352,6 +352,7 @@ def _goes_args(**overrides):
         "max_files": 2,
         "deliver": False,
         "internal_s3_endpoint": "http://minio:9000",
+        "build_image": True,
         "force": False,
     }
     defaults.update(overrides)
@@ -367,9 +368,29 @@ def goes_seed_module(monkeypatch):
     monkeypatch.setenv("CREDENTIALS_MASTER_KEY", _SEED_KEY_B64)
     monkeypatch.setattr(module.psycopg, "connect", lambda *a, **k: conn)
     monkeypatch.setattr(module, "check_migrations", lambda *a, **k: None)
+    monkeypatch.setattr(module, "ensure_runtime_image", lambda *a, **k: None)
     monkeypatch.setattr(module, "say", lambda *a, **k: None)
     module._test_conn = conn  # type: ignore[attr-defined]
     return module
+
+
+def test_goes_seed_builds_the_runtime_image_before_it_writes(goes_seed_module, monkeypatch):
+    module = goes_seed_module
+    written: list[tuple] = []
+    builds: list[bool] = []
+    monkeypatch.setattr(module, "put_collection", lambda *a, **k: written.append(a))
+
+    def failed_build(*, build):
+        builds.append(build)
+        raise SystemExit("docker buildx bake failed")
+
+    monkeypatch.setattr(module, "ensure_runtime_image", failed_build)
+
+    with pytest.raises(SystemExit):
+        module.seed(_goes_args(build_image=False))
+
+    assert builds == [False]
+    assert written == []  # a missing image changed nothing
 
 
 def test_goes_seed_refuses_before_it_writes_any_collection(goes_seed_module, monkeypatch):
