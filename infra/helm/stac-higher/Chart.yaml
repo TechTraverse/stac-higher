@@ -1,0 +1,10 @@
+apiVersion: v2
+name: stac-higher
+description: STAC Higher platform - app, pipeline worker and the database bootstrap/migrate hooks.
+type: application
+# R-9 sets version/appVersion from the release tag.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.34.0-0"
+sources:
+  - https://github.com/TechTraverse/stac-higher
