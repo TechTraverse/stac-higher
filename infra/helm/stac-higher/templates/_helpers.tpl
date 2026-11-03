@@ -122,7 +122,7 @@ capabilities:
 {{- end -}}
 
 {{/* Kubernetes Secret name the runtime pods read; "" for an unset dockerHub.
-Note: in external-secrets mode the five non-owner db roles resolve to the hook copy and rely on its persistence (I-156). (dict "root" $ "name" "platform") */}}
+Note: in external-secrets mode the non-owner db roles resolve to the hook copy, which is recreated each hook phase (I-156); R-6 pods never read them. (dict "root" $ "name" "platform") */}}
 {{- define "stac-higher.secretName" -}}
 {{- if eq .root.Values.secrets.mode "existing" -}}
 {{- get .root.Values.secrets.existing .name -}}

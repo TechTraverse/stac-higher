@@ -33,6 +33,9 @@ deployment.
 | [`demo-destination`](modules/demo-destination/README.md) | Optional second bucket, write-only IAM user, its access key in Secrets Manager | `name_prefix`, `kms_key_arn`, `name`, `force_destroy`, `recovery_window_in_days` | `bucket_name`, `user_name`, `credentials_secret_arn` |
 | [`stac-higher`](modules/stac-higher/README.md) | The composition: all of the above (cognito and demo-destination optional), the S3 prefix list lookup and the External Secrets read policy | `name_prefix`, `app_url`, `ghcr_credentials_secret_arn`, `vpc_id`, `db_subnet_ids`, `db_allowed_security_group_ids`, `cluster_name` or `oidc_provider_arn`, `enable_cognito`, `enable_demo_destination` | `helm_values`, `helm_values_yaml`, `external_secrets_policy_json`, plus every module output |
 
+The Kubernetes side (the Helm chart that consumes `helm_values`) is documented in
+[`../helm/stac-higher/README.md`](../helm/stac-higher/README.md).
+
 Every module also takes `name_prefix` and `tags`.
 
 ## Consuming by git ref

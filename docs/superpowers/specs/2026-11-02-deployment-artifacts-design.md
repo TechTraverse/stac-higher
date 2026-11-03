@@ -171,7 +171,7 @@ deferred (§12).
 
 ## 6. Artifact 2 — the Helm chart
 
-`charts/stac-higher/` in this repo, chart `apiVersion: v2`, works with Helm
+`infra/helm/stac-higher/` in this repo, chart `apiVersion: v2`, works with Helm
 3 and 4, published on release as an OCI artifact:
 `oci://ghcr.io/techtraverse/charts/stac-higher`, chart version = the release
 tag, `appVersion` = the same.
@@ -471,7 +471,7 @@ leg, GovCloud-specific instance families.
 
 ## 10. Validation in this repo's CI (no AWS account)
 
-A new workflow job (or jobs) on every PR touching `charts/`, `infra/terraform/`
+A new workflow job (or jobs) on every PR touching `infra/helm/`, `infra/terraform/`
 or the example:
 - `tofu fmt -check`, `tofu validate` and `terraform validate` on every module
   and on the example; `tflint` with the AWS ruleset; `trivy config` (already in

@@ -1836,6 +1836,74 @@ at R-11.
 
 Tracked in: GitHub #147.
 
+### I-156 · Hook-scoped role Secrets are recreated each hook phase; the master's is removed on success 🟡
+
+The `<fullname>-hook-db-master` ExternalSecret carries `hook-succeeded`
+(Argo: `HookSucceeded`), `refreshInterval: "0"` and `creationPolicy: Owner`, so
+the RDS master Secret is deleted once the hook phase succeeds. On Helm that
+happens only after every hook in the phase, so db-bootstrap (weight -20) still
+reads it. On Argo CD the `HookSucceeded` timing for a non-Job hook is
+unverified until a live check; if Argo deleted it before db-bootstrap, the
+bootstrap would fail loudly rather than leak.
+
+The five role hook ExternalSecrets keep `before-hook-creation` only. With
+`creationPolicy: Owner`, each upgrade or sync deletes the ExternalSecret and
+Kubernetes GC deletes its Secret, so they are recreated on every hook phase
+and do not persist. Helm does not wait for ExternalSecret readiness, so there
+is a short window, and a stale-password risk during rotation. R-6's runtime
+pods reference only runtime Secrets (`<fullname>-db-owner`, `-platform`),
+never hook copies; R-7 must use runtime copies or an explicit allowlist.
+
+The role passwords reach Postgres only as client-side SCRAM-SHA-256 verifiers
+(`files/db/run_sql.py`), never as plaintext, but a verifier can still be
+logged under `log_statement=all`.
+
+Follow-up idea: the bootstrap reads the master from Secrets Manager with its
+own workload identity, so no master copy enters the cluster.
+
+### I-157 · The role chain is proven on a superuser Postgres only 🟡
+
+The pytest bootstrap runs as a superuser. Three things are first exercised on
+RDS (master is not a superuser): pypgstac migrating as the non-superuser owner,
+the owner granting the `pgstac_*` roles it created (PG16 `CREATEROLE` rules),
+and the search_path. The owner's `CREATEROLE` is mandated by spec §7.2
+(pypgstac creates the `pgstac_*` roles); on PG16+ it is bounded to roles the
+owner created or administers. The bootstrap refuses a role name equal to
+`current_user` or shared by two keys.
+
+Tracked in: GitHub #147.
+
+### I-158 · `/api/internal` is blocked at the Ingress by rule order 🟡
+
+The block depends on the controller evaluating `/api/internal` before `/`
+(listed first; longest-prefix on nginx). The `Prefix` match is path-literal:
+encoded or case variants are not normalised by every controller (the ALB is
+case-sensitive), so the block is defence in depth. The route itself requires
+`x-internal-token` (`app/src/pages/api/internal/`) and fails closed without
+`INTERNAL_API_TOKEN`.
+
+### I-159 · `PROXY_AUTH_TOKEN` is generated but not wired 🟡
+
+Terraform generates it and the chart accepts `secrets.arns.proxy_auth_token`,
+but the chart does not set it: it would make `/api/proxy` require
+`X-Proxy-Auth`, and no client sends that header, which would break browsing
+external catalogs.
+
+### I-160 · The pipeline runs the Docker executor until K-5 🟡
+
+`PROCESS_EXECUTOR=kubernetes` is set and unread today. In a cluster, process
+runs fail at launch (no socket proxy). K-5 adds its own settings (runs
+namespace, etc.) to the chart.
+
+Tracked in: GitHub #13.
+
+### I-161 · Read-only root filesystems and the open app port are render-verified defaults 🟡
+
+Both are verified by rendering only, not on a cluster. Escape hatches:
+`app.readOnlyRootFilesystem`, `pipeline.readOnlyRootFilesystem`, and
+`networkPolicy.appIngressFrom`, which should be set to the VPC CIDR for ALB IP
+targets.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
