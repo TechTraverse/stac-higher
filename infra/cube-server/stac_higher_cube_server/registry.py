@@ -23,7 +23,7 @@ import xarray as xr
 
 from stac_higher_cube_server.datasets import prepare_dataset
 from stac_higher_cube_server.settings import Settings
-from stac_higher_cube_server.sinks import SinkRow
+from stac_higher_cube_server.sinks import BadSink, SinkRow
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ class UnsupportedSourceError(ValueError):
 
 
 class SinkSource(Protocol):
-    def enabled_sinks(self) -> list[SinkRow]: ...
+    def enabled_sinks(self) -> list[SinkRow | BadSink]: ...
 
 
 class RepoOpener(Protocol):
@@ -77,6 +77,8 @@ class S3RepoOpener:
         )
 
     def open(self, sink: SinkRow) -> ic.Repository | None:
+        if not sink.source_prefixes:
+            return None  # not recorded yet: every chunk read would be refused
         check_source_prefixes(sink.source_prefixes)
         cached = self._cache.get(sink.cube_collection_id)
         if cached is not None and cached[0] == sink.source_prefixes:
@@ -124,6 +126,7 @@ class CubeRegistry:
         self._pending: list[str] = []
         self._empty: list[str] = []
         self._errors: dict[str, str] = {}
+        self._warm_up_errors: dict[str, str] = {}
         self._last_reload_at: str | None = None
         self._last_reload_error: str | None = None
         # refresh() runs in a worker thread; readers only do dict lookups
@@ -145,10 +148,18 @@ class CubeRegistry:
             },
             "pending": list(self._pending),
             "empty": list(self._empty),
-            "errors": dict(self._errors),
+            "errors": {**self._warm_up_errors, **self._errors},
             "last_reload_at": self._last_reload_at,
             "last_reload_error": self._last_reload_error,
         }
+
+    def record_warm_up(self, collection_id: str, status: int | None) -> None:
+        """A warm-up tile that is not a 200 (``None``: the request failed) is an
+        error under the cube's id until its next successful warm-up."""
+        if status == 200:
+            self._warm_up_errors.pop(collection_id, None)
+        else:
+            self._warm_up_errors[collection_id] = f"WarmUpFailed({status})"
 
     def refresh(self) -> list[str]:
         """One poll; returns the collection ids (re)opened, for the warm-up."""
@@ -172,6 +183,9 @@ class CubeRegistry:
         errors: dict[str, str] = {}
         for sink in sinks:
             cid = sink.cube_collection_id
+            if isinstance(sink, BadSink):
+                errors[cid] = sink.error  # its open dataset, if any, stays
+                continue
             try:
                 status = self._refresh_sink(sink)
             except Exception as err:
@@ -191,11 +205,16 @@ class CubeRegistry:
             del self._entries[cid]
             log.info("cube unregistered", extra={"cube_collection_id": cid})
         self._pending, self._empty, self._errors = pending, empty, errors
+        self._warm_up_errors = {
+            c: e for c, e in self._warm_up_errors.items() if c in self._entries
+        }
         return opened
 
     def _refresh_sink(self, sink: SinkRow) -> str:
         cid = sink.cube_collection_id
-        repo = self._opener.open(sink)
+        # No recorded prefixes (first append, a provisional redo): the virtual
+        # chunks cannot be authorized, so every read would 500. Not servable yet.
+        repo = self._opener.open(sink) if sink.source_prefixes else None
         if repo is None:
             self._entries.pop(cid, None)
             return "pending"

@@ -3,6 +3,7 @@ import csv
 import io
 import time
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -77,6 +78,79 @@ def test_unknown_exact_t_is_not_cached_immutably(client):
     r = client.get(TILE, params={**Q, "t": "2000-01-01T00:00:00.000000000"})
     assert 400 <= r.status_code < 500, (r.status_code, r.text)
     assert r.headers["cache-control"] == "no-store"
+
+
+def writer_t(step: int) -> str:
+    """``t`` exactly as pipeline/cubes/collection.py::time_strings writes
+    ``stac_higher:time_values``: nanosecond ISO plus a trailing ``Z``."""
+    ns = np.datetime_as_string(np.array([t_ns(step)], dtype="datetime64[ns]"), unit="ns")
+    return f"{ns[0]}Z"
+
+
+def test_tile_accepts_the_writers_exact_t_with_z(client):
+    t = writer_t(1)
+    assert t.endswith("Z") and "." in t
+    r = client.get(TILE, params={**Q, "t": t})
+    assert r.status_code == 200, r.text
+    assert "immutable" in r.headers["cache-control"]
+
+
+def test_position_accepts_the_writers_exact_t_with_z(client):
+    r = client.get(POSITION, params={**POINT, "t": writer_t(1)})
+    assert r.status_code == 200, r.text
+    rows = _rows(r.text)
+    assert len(rows) == 1
+    assert float(rows[0]["CMI"]) == pytest.approx(float(step_values(1)[3, 4]))
+
+
+def test_position_linear_is_a_422(client):
+    r = client.get(POSITION, params={**POINT, "method": "linear"})
+    assert r.status_code == 422, r.text
+    assert "nearest" in r.json()["detail"]
+
+
+def test_position_linear_on_a_missing_step_is_not_a_500(cube, client):
+    cube.delete_source(1)
+    assert client.get(POSITION, params={**POINT, "method": "linear"}).status_code == 422
+
+
+def test_position_nearest_is_unchanged(client):
+    assert client.get(POSITION, params={**POINT, "method": "nearest"}).status_code == 200
+
+
+def test_warm_up_failure_lands_in_health_and_clears(cube, registry):
+    app = create_app(registry, SETTINGS, poll=False)
+    status = asyncio.run(warm_up(app, "nope", registry.get("c1")))
+    assert status == 404
+    registry.record_warm_up("nope", status)
+    assert registry.health()["errors"] == {"nope": "WarmUpFailed(404)"}
+    registry.record_warm_up("nope", None)
+    assert registry.health()["errors"] == {"nope": "WarmUpFailed(None)"}
+    registry.record_warm_up("nope", 200)
+    assert registry.health()["errors"] == {}
+
+
+def test_a_failed_warm_up_survives_the_next_unchanged_poll(registry):
+    registry.record_warm_up("c1", 500)
+    registry.refresh()  # unchanged snapshot: nothing is reopened
+    assert registry.health()["errors"] == {"c1": "WarmUpFailed(500)"}
+    registry.record_warm_up("c1", 200)
+    assert registry.health()["errors"] == {}
+
+
+def test_poll_records_a_failing_warm_up(cube, monkeypatch):
+    import stac_higher_cube_server.app as app_mod
+
+    async def failing(app, cid, ds):
+        return 500
+
+    monkeypatch.setattr(app_mod, "warm_up", failing)
+    registry = CubeRegistry(FakeSource(SINK), LocalOpener({"c1": cube}))
+    with TestClient(create_app(registry, SETTINGS)) as client:
+        deadline = time.monotonic() + 10
+        while not registry.health()["errors"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert client.get("/health").json()["errors"] == {"c1": "WarmUpFailed(500)"}
 
 
 def _rows(text: str) -> list[dict]:
