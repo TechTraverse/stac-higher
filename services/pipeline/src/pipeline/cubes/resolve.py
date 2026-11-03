@@ -43,6 +43,7 @@ from pipeline.config import Settings
 from pipeline.connections.egress import EgressBlocked
 from pipeline.connections.sources import association_for_href
 from pipeline.cubes.source import SourceConnectionError, SourceLibs, libs_from_connection
+from pipeline.cubes.write import error_text
 from pipeline.ingest.repo import IngestAssociation, PgIngestRepo
 from pipeline.process.repo import PgProcessRepo
 
@@ -178,7 +179,7 @@ class PgSourceResolver(SourceResolver):
             except (EgressBlocked, SourceConnectionError) as exc:
                 # A DNS failure keeps its gaierror cause: is_transport_error
                 # then retries the job instead of failing the row.
-                raise SourceUnavailable("failed", f"{type(exc).__name__}: {exc}") from exc
+                raise SourceUnavailable("failed", error_text(exc)) from exc
             self._libs[connection.id] = libs
         return ResolvedSource(libs, match.key)
 

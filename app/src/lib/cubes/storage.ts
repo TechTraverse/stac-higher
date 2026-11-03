@@ -157,8 +157,10 @@ export async function upsertCubeSink(input: {
   return { sink: toApi(row as CubeSinkRow), created };
 }
 
-/** Enabling clears a stale `last_error` (e.g. `source_collection_deleted`
- * after the source came back); disabling keeps it. Optimistic (like the
+/** Flipping a sink to enabled clears a stale `last_error` (e.g.
+ * `source_collection_deleted` after the source came back); a redundant enable
+ * and a disable keep it, so a pipeline `record_error` that landed between the
+ * read and the write is never wiped (it does not move the version). Optimistic (like the
  * upsert): applies only at the row `version` the caller read and checked
  * against; null when the row is gone or its version moved. */
 export async function setCubeSinkEnabled(
@@ -170,7 +172,7 @@ export async function setCubeSinkEnabled(
   const result = await query<CubeSinkRow>(
     `UPDATE stac_higher.cube_sinks
         SET enabled = $2,
-            last_error = CASE WHEN $2 THEN NULL ELSE last_error END,
+            last_error = CASE WHEN $2 AND NOT enabled THEN NULL ELSE last_error END,
             updated_at = now()
       WHERE cube_collection_id = $1 AND updated_at = $3::timestamptz
       RETURNING ${COLUMNS}`,

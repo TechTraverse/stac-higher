@@ -164,7 +164,7 @@ describe("cube sink storage", () => {
   it("enabling clears a stale last_error; disabling keeps it", async () => {
     mockQuery.mockResolvedValueOnce(result([row]));
     await setCubeSinkEnabled("goes19-c13-cube", true, "2026-10-05 01:00:00.123456+00");
-    expect(mockQuery.mock.calls[0][0]).toMatch(/last_error = CASE WHEN \$2 THEN NULL ELSE last_error END/);
+    expect(mockQuery.mock.calls[0][0]).toMatch(/last_error = CASE WHEN \$2 AND NOT enabled THEN NULL ELSE last_error END/);
   });
 
   it("the toggle applies only at the version it read", async () => {
