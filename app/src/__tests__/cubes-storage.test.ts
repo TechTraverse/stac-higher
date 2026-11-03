@@ -206,11 +206,13 @@ describe("cube sink storage", () => {
   });
 
   it("lists only enabled, live, reference-mode ingest associations with their anonymity", async () => {
-    mockQuery.mockResolvedValueOnce(result([{ association_id: "a1", connection_id: "c1", anonymous: false }]));
+    mockQuery.mockResolvedValueOnce(result([{ association_id: "a1", connection_id: "c1", protocol: "s3", anonymous: false }]));
     const out = await referenceIngestSources("goes19-cmipc");
-    expect(out).toEqual([{ association_id: "a1", connection_id: "c1", anonymous: false }]);
+    expect(out).toEqual([{ association_id: "a1", connection_id: "c1", protocol: "s3", anonymous: false }]);
     const sql = mockQuery.mock.calls[0][0] as string;
-    for (const clause of ["cc.direction = 'ingest'", "cc.enabled", "cc.deleted_at IS NULL", "c.deleted_at IS NULL", "storage_mode' = 'reference'"]) {
+    for (const clause of [
+      "c.protocol",
+      "c.protocol = 's3' AND COALESCE(c.config->'anonymous' = 'true'::jsonb, false)","cc.direction = 'ingest'", "cc.enabled", "cc.deleted_at IS NULL", "c.deleted_at IS NULL", "storage_mode' = 'reference'"]) {
       expect(sql).toContain(clause);
     }
   });

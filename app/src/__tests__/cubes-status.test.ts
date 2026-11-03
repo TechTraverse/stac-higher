@@ -10,6 +10,7 @@ import {
   CUBE_SKIP_REASON_LABEL,
   cubeLedgerReasonLabel,
   cubeSinkHealth,
+  referenceSourceRefusal,
 } from "@/lib/cubes/status";
 
 describe("cubeLedgerReasonLabel", () => {
@@ -135,5 +136,33 @@ describe("cubeSinkHealth", () => {
     expect(
       cubeSinkHealth(sink({ last_appended_at: null, last_maintenance: docs.measure_failed }), ledger([failedRow]), NOW).state,
     ).toBe("attention");
+  });
+});
+
+describe("referenceSourceRefusal", () => {
+  it("no reference ingest", () => {
+    expect(referenceSourceRefusal([])?.code).toBe("no_reference_ingest");
+  });
+  it("an anonymous s3 source qualifies", () => {
+    expect(referenceSourceRefusal([{ protocol: "s3", anonymous: true }])).toBeNull();
+  });
+  it("a non-s3 association refuses the source, naming the protocol", () => {
+    const refusal = referenceSourceRefusal([
+      { protocol: "s3", anonymous: true },
+      { protocol: "sftp", anonymous: false },
+    ]);
+    expect(refusal?.code).toBe("unsupported_source_protocol");
+    expect(refusal?.error).toContain("sftp");
+  });
+  it("a signed s3 association", () => {
+    expect(referenceSourceRefusal([{ protocol: "s3", anonymous: false }])?.code).toBe("signed_source_unsupported");
+  });
+  it("the protocol check comes before the signed check", () => {
+    expect(
+      referenceSourceRefusal([
+        { protocol: "ftp", anonymous: false },
+        { protocol: "s3", anonymous: false },
+      ])?.code,
+    ).toBe("unsupported_source_protocol");
   });
 });

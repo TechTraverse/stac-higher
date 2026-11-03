@@ -1,5 +1,5 @@
 import { durationSeconds } from "./duration";
-import type { ApiCubeSink, CubeLedgerSummary } from "./storage";
+import type { ApiCubeSink, CubeLedgerSummary, ReferenceIngestSource } from "./storage";
 
 /**
  * stac_higher.cube_appends vocabulary (virtual cube spec §3.2, §5.2). Pinned
@@ -175,4 +175,46 @@ export function cubeSinkHealth(
     return { state: "stale", reasons: ["no_append_within_window"] };
   }
   return { state: "ok", reasons: [] };
+}
+
+export const CUBE_SOURCE_REFUSAL_CODES = [
+  "no_reference_ingest",
+  "unsupported_source_protocol",
+  "signed_source_unsupported",
+] as const;
+export type CubeSourceRefusalCode = (typeof CUBE_SOURCE_REFUSAL_CODES)[number];
+
+/**
+ * Whether a source collection's reference-mode ingest associations qualify
+ * for a cube sink, as the 422 PUT/PATCH would answer (null = eligible). The
+ * order is the route's: nothing to read, then a non-s3 association, then a
+ * signed one. Shared by the routes and the source picker so the picker's
+ * pre-filter cannot disagree with PUT. Lives here, not in `storage.ts`,
+ * because the route tests mock the whole storage module.
+ */
+export function referenceSourceRefusal(
+  refs: readonly Pick<ReferenceIngestSource, "protocol" | "anonymous">[],
+  /** Named in the `no_reference_ingest` message when given. */
+  source?: string,
+): { code: CubeSourceRefusalCode; error: string } | null {
+  if (refs.length === 0) {
+    return {
+      code: "no_reference_ingest",
+      error: `Source collection${source === undefined ? "" : ` '${source}'`} has no enabled reference-mode ingest association`,
+    };
+  }
+  const foreign = [...new Set(refs.filter((r) => r.protocol !== "s3").map((r) => r.protocol))];
+  if (foreign.length > 0) {
+    return {
+      code: "unsupported_source_protocol",
+      error: `Cube sinks read reference-mode ingest from s3 connections only; this source also ingests by reference over ${foreign.join(", ")}`,
+    };
+  }
+  if (refs.some((r) => !r.anonymous)) {
+    return {
+      code: "signed_source_unsupported",
+      error: "Cube sinks support anonymous (public) source connections only in v1",
+    };
+  }
+  return null;
 }

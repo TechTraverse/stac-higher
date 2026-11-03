@@ -7,6 +7,7 @@
 import { query } from "@/lib/db/connection";
 import { runMigrations } from "@/lib/db/migrate";
 import { iso } from "@/lib/associations/storage";
+import type { ConnectionProtocol } from "@/lib/connections/schemas";
 import { readCubeMaintenance, type CubeMaintenance, type CubeSinkConfig } from "./schemas";
 import { CUBE_APPEND_STATUSES, type CubeAppendStatus } from "./status";
 
@@ -58,6 +59,8 @@ export interface CubeLedgerSummary {
 export interface ReferenceIngestSource {
   association_id: string;
   connection_id: string;
+  protocol: ConnectionProtocol;
+  /** Only an s3 connection can read anonymously; any other protocol is false. */
   anonymous: boolean;
 }
 
@@ -262,20 +265,26 @@ export async function existingCollections(ids: string[]): Promise<Set<string>> {
   return new Set(result.rows.map((r) => r.id));
 }
 
-/** The source's enabled, live, reference-mode ingest associations and
- * whether each connection reads anonymously (spec §7, §13). */
+/** The live, enabled, reference-mode ingest associations (and their
+ * connections) of every collection; callers add the collection predicate. */
+const REFERENCE_INGEST_FROM = `FROM stac_higher.collection_connections cc
+       JOIN stac_higher.connections c ON c.id = cc.connection_id AND c.deleted_at IS NULL
+      WHERE cc.direction = 'ingest'
+        AND cc.enabled
+        AND cc.deleted_at IS NULL
+        AND cc.config->>'storage_mode' = 'reference'`;
+
+const REFERENCE_INGEST_COLUMNS = `cc.id AS association_id, cc.connection_id, c.protocol,
+       c.protocol = 's3' AND COALESCE(c.config->'anonymous' = 'true'::jsonb, false) AS anonymous`;
+
+/** The source's enabled, live, reference-mode ingest associations, their
+ * protocol, and whether each connection reads anonymously (spec §7, §13). */
 export async function referenceIngestSources(collectionId: string): Promise<ReferenceIngestSource[]> {
   await runMigrations();
   const result = await query<ReferenceIngestSource>(
-    `SELECT cc.id AS association_id, cc.connection_id,
-            COALESCE(c.config->'anonymous' = 'true'::jsonb, false) AS anonymous
-       FROM stac_higher.collection_connections cc
-       JOIN stac_higher.connections c ON c.id = cc.connection_id AND c.deleted_at IS NULL
-      WHERE cc.collection_id = $1
-        AND cc.direction = 'ingest'
-        AND cc.enabled
-        AND cc.deleted_at IS NULL
-        AND cc.config->>'storage_mode' = 'reference'`,
+    `SELECT ${REFERENCE_INGEST_COLUMNS}
+       ${REFERENCE_INGEST_FROM}
+        AND cc.collection_id = $1`,
     [collectionId],
   );
   return result.rows;

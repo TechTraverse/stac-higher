@@ -22,8 +22,9 @@
  * Source checks (§7, §13), shared by PUT and enabling: the caller manages
  * the source (one they can't reads exactly like a missing one), both
  * collections exist, the source has an enabled reference-mode ingest
- * association, and every such association reads anonymously — else 422 with
- * a `code`.
+ * association (`no_reference_ingest`), every such association is on an s3
+ * connection (`unsupported_source_protocol`) and reads anonymously
+ * (`signed_source_unsupported`) — else 422 with a `code`.
  *
  * Group rule (§14.1): the sink follows the cube collection's ownership
  * (`canManageCollection`). Outside the caller's groups every verb is a 404.
@@ -37,6 +38,7 @@ import { canManageCollection } from "@/lib/associations/access";
 import { jsonResponse } from "@/lib/http/response";
 import { cubeSinkPatchSchema, cubeSinkPutSchema, layoutChanged } from "@/lib/cubes/schemas";
 import { CUBE_ITEM_ID } from "@/lib/cubes/reserved";
+import { referenceSourceRefusal } from "@/lib/cubes/status";
 import {
   collectionHasItem,
   cubeLedgerSummary,
@@ -91,14 +93,8 @@ async function refuseSource(
     return refuse(422, "cube_collection_not_found", `Collection '${cube}' does not exist`);
   }
   if (!existing.has(source)) return sourceNotFound();
-  if (refs.length === 0) {
-    return refuse(422, "no_reference_ingest",
-      `Source collection '${source}' has no enabled reference-mode ingest association`);
-  }
-  if (refs.some((r) => !r.anonymous)) {
-    return refuse(422, "signed_source_unsupported",
-      "Cube sinks support anonymous (public) source connections only in v1");
-  }
+  const refusal = referenceSourceRefusal(refs, source);
+  if (refusal) return refuse(422, refusal.code, refusal.error);
   return null;
 }
 
