@@ -346,3 +346,79 @@ readOnly: true
       name: {{ .secret }}
       key: password
 {{- end -}}
+
+{{/* Env for a db hook container: libpq PG* from the chart's database settings and one Secret.
+(dict "root" $ "secret" <name>). HOME and PYTHONDONTWRITEBYTECODE suit the Python containers and are harmless to node. */}}
+{{- define "stac-higher.dbJobEnv" -}}
+{{- $d := .root.Values.database -}}
+- name: PGHOST
+  value: {{ $d.host | quote }}
+- name: PGPORT
+  value: {{ $d.port | toString | quote }}
+- name: PGDATABASE
+  value: {{ $d.name | quote }}
+{{- if eq $d.sslMode "verify-full" }}
+- name: PGSSLMODE
+  value: verify-full
+- name: PGSSLROOTCERT
+  value: /etc/stac-higher/db-ca/ca-bundle.pem
+{{- end }}
+{{ include "stac-higher.dbCredentialEnv" (dict "secret" .secret) }}
+- name: HOME
+  value: /tmp
+- name: PYTHONDONTWRITEBYTECODE
+  value: "1"
+{{- end -}}
+
+{{/* One run_sql.py setting from a role Secret. (dict "name" "API" "secret" <name> "keys" (list "username" "password")) */}}
+{{- define "stac-higher.dbSqlEnv" -}}
+{{- $n := .name -}}
+{{- $s := .secret -}}
+{{- range $k := .keys }}
+- name: STAC_HIGHER_SQL_{{ $n }}_{{ upper $k | replace "USERNAME" "ROLE" }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $s }}
+      key: {{ $k }}
+{{- end }}
+{{- end -}}
+
+{{/* Hook Job pod pieces shared by the three db Jobs. */}}
+{{- define "stac-higher.dbJobVolumes" -}}
+- name: db-sql
+  configMap:
+    name: {{ include "stac-higher.fullname" .root }}-db-sql
+{{- with include "stac-higher.caVolume" (dict "root" .root "hook" true) }}
+- {{- . | nindent 2 }}
+{{- end }}
+- name: tmp
+  emptyDir:
+    sizeLimit: 64Mi
+{{- end -}}
+
+{{- define "stac-higher.dbJobMounts" -}}
+- name: db-sql
+  mountPath: /etc/stac-higher/db
+  readOnly: true
+{{- with include "stac-higher.caVolumeMount" (dict "root" .root) }}
+- {{- . | nindent 2 }}
+{{- end }}
+- name: tmp
+  mountPath: /tmp
+{{- end -}}
+
+{{- define "stac-higher.dbJobScheduling" -}}
+{{- $j := .root.Values.dbJobs -}}
+{{- with $j.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $j.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $j.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
