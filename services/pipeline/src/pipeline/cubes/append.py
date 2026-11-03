@@ -119,7 +119,7 @@ class AppendDeps:
     enqueue_next: Callable[[str], Awaitable[object]]
     #: the collection asset writer (``cubes.collection.production_after_batch``):
     #: awaited after every batch that reached the repository, once the tip is
-    #: recorded and BEFORE the ledger is written; must be idempotent
+    #: recorded and the ledger is written (a raise is caught, #128); idempotent
     after_batch: AfterBatch | None = None
     now: Callable[[], dt.datetime] = _utcnow
     batch_limit: int = BATCH_LIMIT
