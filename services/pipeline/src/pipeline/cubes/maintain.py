@@ -35,7 +35,7 @@ import asyncio
 import datetime as dt
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -274,10 +274,11 @@ def maintain_repository(
     may_trim: bool,
     published_snapshot_id: str | None = None,
     may_expire: bool = True,
+    source_prefixes: Sequence[str] = (),
 ) -> RepoPass:
     """Blocking: trim (windowed, recorded tip, nothing pending), expire and GC
     (windowed only), then read the tip's time values."""
-    repo = open_existing(storage)
+    repo = open_existing(storage, source_prefixes)
     if repo is None:
         return RepoPass(exists=False)
     durations: dict[str, int] = {}
@@ -472,6 +473,7 @@ async def _maintain(
             may_trim=may_trim,
             published_snapshot_id=published,
             may_expire=may_expire,
+            source_prefixes=sink.source_prefixes,
         )
     )
     summary["repository"] = rp.exists
