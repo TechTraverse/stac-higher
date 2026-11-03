@@ -73,6 +73,17 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     fails(base({ publicUrls: { catalgo: "https://x.example.com" } }), "catalgo");
   });
 
+  it.each(["AUTH_MODE", "AUTH_BYPASS_FORCE", "DEV_AUTH_IDENTITY"])("refuses %s as an app.env key", (k) => {
+    fails(base({ app: { env: { [k]: "bypass" } } }), `app.env.${k}`);
+  });
+
+  it("refuses a ServiceMonitor behind default-deny without metricsFrom", () => {
+    const sm = { pipeline: { metrics: { serviceMonitor: { enabled: true } } } };
+    fails(base({ ...sm, networkPolicy: { enabled: true, metricsFrom: [] } }), "networkPolicy.metricsFrom");
+    const ok = renderChart(base({ ...sm, networkPolicy: { enabled: false } }));
+    expect(ok.ok, ok.stderr).toBe(true);
+  });
+
   it("refuses dev-bypass without the override", () => {
     fails(base({ auth: { mode: "bypass" } }), "auth.allowDevBypass");
     const r = renderChart(base({ auth: { mode: "bypass", allowDevBypass: true } }));

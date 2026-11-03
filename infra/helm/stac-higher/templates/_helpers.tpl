@@ -263,6 +263,14 @@ spec:
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- range $k := list "AUTH_MODE" "AUTH_BYPASS_FORCE" "DEV_AUTH_IDENTITY" -}}
+{{- if hasKey ($v.app.env | default dict) $k -}}
+{{- fail (printf "app.env.%s is not allowed: it would bypass the dev-bypass guard; use auth.mode, auth.allowDevBypass and auth.devIdentity instead" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- if and $v.pipeline.metrics.serviceMonitor.enabled $v.networkPolicy.enabled (not $v.networkPolicy.metricsFrom) -}}
+{{- fail "pipeline.metrics.serviceMonitor.enabled with networkPolicy.enabled needs networkPolicy.metricsFrom (the Prometheus peers), or default-deny blocks scraping" -}}
+{{- end -}}
 {{- $keys := include "stac-higher.imageKeys" . | fromJsonArray -}}
 {{- $digests := $v.global.imageDigests | default dict -}}
 {{- range $k := keys $digests | sortAlpha -}}

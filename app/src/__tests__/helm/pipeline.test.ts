@@ -86,7 +86,7 @@ describe.skipIf(!helmReady())("chart pipeline workload", () => {
 
   it("the ServiceMonitor is opt-in", () => {
     expect(render().find((d: Doc) => d.kind === "ServiceMonitor")).toBeUndefined();
-    const docs = render({ pipeline: { metrics: { serviceMonitor: { enabled: true, interval: "15s", labels: { release: "prom" } } } } });
+    const docs = render({ pipeline: { metrics: { serviceMonitor: { enabled: true, interval: "15s", labels: { release: "prom" } } } }, networkPolicy: { metricsFrom: [{ ipBlock: { cidr: "10.0.0.0/16" } }] } });
     const sm = find(docs, "ServiceMonitor", "stac-higher-pipeline");
     expect(sm.apiVersion).toBe("monitoring.coreos.com/v1");
     expect(sm.metadata.labels.release).toBe("prom");
