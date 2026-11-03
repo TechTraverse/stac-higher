@@ -1,8 +1,11 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { parse } from "yaml";
-import { helmReady, renderChart, scenario } from "../../../../infra/helm/stac-higher/tests/render.mjs";
+import { parse, parseAllDocuments } from "yaml";
+import { CHART_DIR, KUBE_VERSION, helmReady, renderChart, scenario } from "../../../../infra/helm/stac-higher/tests/render.mjs";
 
 type Doc = any;
 const SCENARIOS = ["base", "existing-secrets", "irsa", "digests-mirror"];
@@ -99,5 +102,68 @@ describe.skipIf(!helmReady())("chart secrets layer", () => {
       ["username", hub, "username"],
       ["token", hub, "token"],
     ]);
+  });
+
+  // No chart template consumes the hook helpers yet (Task 4), so render them through a scratch copy of the
+  // chart with a test-only template; the real chart is untouched.
+  describe("hook copies (scratch chart with a probe template)", () => {
+    const LOGICAL = ["dbMaster", "dbOwner", "dbStacApi", "dbStacReader", "dbProxyPolicy", "dbCubeServer"];
+    const SUFFIX = ["hook-db-master", "hook-db-owner", "hook-db-stac-api", "hook-db-stac-reader", "hook-db-proxy-policy", "hook-db-cube-server"];
+    const probe = `${LOGICAL.map(
+      (n) => `---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: probe-${n}\ndata:\n  hook: {{ include "stac-higher.hookSecretName" (dict "root" $ "name" "${n}") | quote }}\n  runtime: {{ include "stac-higher.secretName" (dict "root" $ "name" "${n}") | quote }}`,
+    ).join("\n")}
+{{- if eq .Values.secrets.mode "external-secrets" }}
+---
+{{ include "stac-higher.externalSecret" (dict "root" . "name" (include "stac-higher.hookSecretName" (dict "root" . "name" "dbMaster")) "remoteKey" .Values.database.masterSecretArn "json" true "hook" true "keys" (list "username" "password")) }}
+{{- end }}
+`;
+    function render(files: string[], values: object = {}) {
+      const tmp = mkdtempSync(join(tmpdir(), "helm-probe-"));
+      try {
+        const chart = join(tmp, "chart");
+        cpSync(CHART_DIR, chart, { recursive: true });
+        writeFileSync(join(chart, "templates", "probe.yaml"), probe);
+        const inline = join(tmp, "inline.json");
+        writeFileSync(inline, JSON.stringify(values));
+        const args = ["template", "r", chart, "--namespace", "stac-higher", "--kube-version", KUBE_VERSION];
+        for (const f of [...files, inline]) args.push("-f", f);
+        const r = spawnSync("helm", args, { encoding: "utf8" });
+        expect(r.status, r.stderr).toBe(0);
+        return parseAllDocuments(r.stdout).map((d) => d.toJS()).filter(Boolean) as Doc[];
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+
+    it("external-secrets mode names the hook copies <fullname>-hook-db-*", () => {
+      const docs = render(scenario("base"));
+      LOGICAL.forEach((n, i) => {
+        const cm = docs.find((d) => d.metadata.name === `probe-${n}`);
+        expect(cm.data.hook).toBe(`r-stac-higher-${SUFFIX[i]}`);
+      });
+      expect(docs.find((d) => d.metadata.name === "probe-dbOwner").data.runtime).toBe("r-stac-higher-db-owner");
+      expect(docs.find((d) => d.metadata.name === "probe-dbMaster").data.runtime).toBe("r-stac-higher-hook-db-master");
+    });
+
+    it("renders a hook ExternalSecret at weight -30 with the db-hook label", () => {
+      const docs = render(scenario("base"));
+      const es = docs.find((d) => d.kind === "ExternalSecret" && d.metadata.name === "r-stac-higher-hook-db-master");
+      expect(es).toBeTruthy();
+      expect(es.metadata.annotations["helm.sh/hook"]).toBe("pre-install,pre-upgrade");
+      expect(es.metadata.annotations["helm.sh/hook-weight"]).toBe("-30");
+      expect(es.metadata.annotations["argocd.argoproj.io/sync-wave"]).toBe("-30");
+      expect(es.metadata.labels["app.kubernetes.io/component"]).toBe("db-hook");
+      expect(es.spec.target.name).toBe("r-stac-higher-hook-db-master");
+    });
+
+    it("existing mode uses the deployment's names for runtime and hook", () => {
+      const docs = render(scenario("existing-secrets"));
+      const want = ["stac-higher-db-master", "stac-higher-db-owner", "stac-higher-db-stac-api", "stac-higher-db-stac-reader", "stac-higher-db-proxy-policy", "stac-higher-db-cube-server"];
+      LOGICAL.forEach((n, i) => {
+        const cm = docs.find((d) => d.metadata.name === `probe-${n}`);
+        expect(cm.data.hook).toBe(want[i]);
+        expect(cm.data.runtime).toBe(want[i]);
+      });
+    });
   });
 });

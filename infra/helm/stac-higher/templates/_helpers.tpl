@@ -121,7 +121,8 @@ capabilities:
 {{- end -}}
 {{- end -}}
 
-{{/* Kubernetes Secret name the runtime pods read; "" for an unset dockerHub. (dict "root" $ "name" "platform") */}}
+{{/* Kubernetes Secret name the runtime pods read; "" for an unset dockerHub.
+Note: in external-secrets mode the five non-owner db roles resolve to the hook copy and rely on its persistence (I-156). (dict "root" $ "name" "platform") */}}
 {{- define "stac-higher.secretName" -}}
 {{- if eq .root.Values.secrets.mode "existing" -}}
 {{- get .root.Values.secrets.existing .name -}}
@@ -152,10 +153,10 @@ metadata:
   name: {{ .name }}
   namespace: {{ $r.Release.Namespace }}
   labels:
-    {{- include "stac-higher.labels" (dict "root" $r "component" "secrets") | nindent 4 }}
+    {{- include "stac-higher.labels" (dict "root" $r "component" (ternary "db-hook" "secrets" (default false .hook))) | nindent 4 }}
   {{- if .hook }}
   annotations:
-    {{- include "stac-higher.hookAnnotations" (dict "weight" -40) | nindent 4 }}
+    {{- include "stac-higher.hookAnnotations" (dict "weight" -30) | nindent 4 }}
   {{- end }}
 spec:
   refreshInterval: {{ $es.refreshInterval | quote }}
