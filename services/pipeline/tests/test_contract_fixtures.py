@@ -70,6 +70,7 @@ IMAGE_SCAN_DIFF = _load("image-scan-diff.json")
 REGISTRY_CONFIG = _load("registry-connection-config.json")
 CUBE_SINK_CONFIG = _load("cube-sink-config.json")
 CUBE_APPEND_STATUS = _load("cube-append-status.json")
+CUBE_MAINTENANCE = _load("cube-maintenance-summary.json")
 
 
 def _check(parser, case: dict[str, Any]) -> None:
@@ -577,8 +578,26 @@ def test_cube_append_vocabulary_matches_golden():
     assert list(SKIP_REASONS) == CUBE_APPEND_STATUS["skip_reasons"]
     assert list(APPENDED_REASONS) == CUBE_APPEND_STATUS["appended_reasons"]
     assert list(FAILED_REASONS) == CUBE_APPEND_STATUS["failed_reasons"]
-    assert MAX_ERROR_CHARS == CUBE_APPEND_STATUS["failed_reason_max_chars"]
+    assert CUBE_APPEND_STATUS["failed_reason_max_chars"] == MAX_ERROR_CHARS
     # The writers' constants sit in the right list (duplicate is written on appended rows).
     assert {REASON_LATE, REASON_UNSUPPORTED_LAYOUT, REASON_NO_DATETIME} <= set(SKIP_REASONS)
     assert REASON_DUPLICATE in APPENDED_REASONS and REASON_DUPLICATE not in SKIP_REASONS
     assert REASON_CRASH_LOOP in FAILED_REASONS
+
+
+def test_cube_maintenance_vocabulary_matches_golden():
+    from pipeline.cubes import maintain
+    from pipeline.cubes.collection import MISSING_COLLECTION, PUBLISHED, SUPERSEDED, UNCHANGED
+
+    m = CUBE_MAINTENANCE
+    assert m["statuses"] == [maintain.STATUS_OK, maintain.STATUS_ATTENTION, maintain.STATUS_FAILED]
+    written = sorted(v for k, v in vars(maintain).items() if k.startswith("ATTENTION_"))
+    assert sorted(m["attention"]) == written  # a new reason can't land unpinned
+    assert m["measure_reasons"] == list(maintain.MEASURE_REASONS)
+    outcomes = [PUBLISHED, UNCHANGED, SUPERSEDED, MISSING_COLLECTION, maintain.PUBLISH_ERROR]
+    assert m["publish_outcomes"] == outcomes
+    assert m["size_kinds"] == [*maintain.KINDS, maintain.OTHER_KIND]
+    assert m["gc_counts"] == [*maintain.GC_COUNTS, "delete_errors"]
+    for doc in m["documents"].values():
+        assert doc["status"] in m["statuses"] and set(doc["attention"]) <= set(m["attention"])
+        assert set(doc["durations_ms"]) <= set(m["duration_phases"])

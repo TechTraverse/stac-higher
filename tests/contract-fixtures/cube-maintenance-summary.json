@@ -1,0 +1,402 @@
+{
+  "$comment": "Z-8a: stac_higher.cube_sinks.last_maintenance (docs/monitoring.md 'Cube repositories'; virtual cube spec §10). Writer: pipeline/cubes/maintain.py run_cube_maintain + run_cube_measure (the readout merge). It is the STRICT side and has no reader, so pytest (tests/test_cube_maintenance_fixture.py) drives each named scenario through the real code and asserts the produced summary has the same key tree, JSON types and enum values as its document. Reader: app/src/lib/cubes/schemas.ts cubeMaintenanceSchema (LENIENT: unknown keys stripped, unknown attention reasons / publish outcomes / size kinds kept; strict on status and on types). Keys are ABSENT when the run never reached them (no repository, failed early, readout not landed yet); null only where the doc says so (expired_snapshots/gc without a window, publish_outcome when nothing was handed to the writer). Documents are illustrative: timestamps and byte counts are round numbers, only keys, JSON types and the enum fields (status, attention, window, repository, healed, published, publish_outcome, trimmed, ledger_pruned, warn_bytes) are compared. cases[] are app-only: the document `base` with `patch` merged over it and the `remove` keys deleted must be accepted or rejected by the reader.",
+  "style": "producer-shapes",
+  "statuses": [
+    "ok",
+    "attention",
+    "failed"
+  ],
+  "attention": [
+    "repo_size",
+    "gc_delete_failures",
+    "unrecorded_tip",
+    "publish_failed",
+    "expiry_skipped",
+    "measure_failed"
+  ],
+  "measure_reasons": [
+    "repo_size",
+    "measure_failed"
+  ],
+  "publish_outcomes": [
+    "published",
+    "unchanged",
+    "superseded",
+    "missing_collection",
+    "error"
+  ],
+  "size_kinds": [
+    "transactions",
+    "overwritten",
+    "manifests",
+    "snapshots",
+    "chunks",
+    "other"
+  ],
+  "gc_counts": [
+    "snapshots_deleted",
+    "manifests_deleted",
+    "chunks_deleted",
+    "transaction_logs_deleted",
+    "attributes_deleted",
+    "bytes_deleted",
+    "objects_failed_to_delete",
+    "delete_errors"
+  ],
+  "duration_phases": [
+    "trim",
+    "expire",
+    "gc",
+    "list"
+  ],
+  "documents": {
+    "windowed": {
+      "status": "ok",
+      "attention": [],
+      "started_at": "2026-11-03T14:00:00.000000+00:00",
+      "finished_at": "2026-11-03T14:00:02.000000+00:00",
+      "ledger_pruned": 0,
+      "healed": false,
+      "window": true,
+      "repository": true,
+      "trimmed": 0,
+      "expired_snapshots": 0,
+      "gc": {
+        "snapshots_deleted": 0,
+        "manifests_deleted": 0,
+        "chunks_deleted": 0,
+        "transaction_logs_deleted": 0,
+        "attributes_deleted": 0,
+        "bytes_deleted": 0,
+        "objects_failed_to_delete": 0,
+        "delete_errors": []
+      },
+      "published": true,
+      "publish_outcome": "published",
+      "sizes": {
+        "transactions": {
+          "objects": 4,
+          "bytes": 1200
+        },
+        "overwritten": {
+          "objects": 4,
+          "bytes": 2400
+        },
+        "manifests": {
+          "objects": 6,
+          "bytes": 1500
+        },
+        "snapshots": {
+          "objects": 2,
+          "bytes": 1700
+        },
+        "chunks": {
+          "objects": 0,
+          "bytes": 0
+        },
+        "other": {
+          "objects": 1,
+          "bytes": 1000
+        }
+      },
+      "total_objects": 17,
+      "total_bytes": 7800,
+      "warn_bytes": 1073741824,
+      "measured_at": "2026-11-03T14:00:05.000000+00:00",
+      "durations_ms": {
+        "trim": 7,
+        "expire": 2,
+        "gc": 3,
+        "list": 1
+      }
+    },
+    "windowless": {
+      "status": "ok",
+      "attention": [],
+      "started_at": "2026-11-03T14:00:00.000000+00:00",
+      "finished_at": "2026-11-03T14:00:02.000000+00:00",
+      "ledger_pruned": 0,
+      "healed": false,
+      "window": false,
+      "repository": true,
+      "trimmed": 0,
+      "expired_snapshots": null,
+      "gc": null,
+      "published": true,
+      "publish_outcome": "published",
+      "sizes": {
+        "transactions": {
+          "objects": 4,
+          "bytes": 1200
+        },
+        "overwritten": {
+          "objects": 4,
+          "bytes": 2400
+        },
+        "manifests": {
+          "objects": 6,
+          "bytes": 1500
+        },
+        "snapshots": {
+          "objects": 2,
+          "bytes": 1700
+        },
+        "chunks": {
+          "objects": 0,
+          "bytes": 0
+        },
+        "other": {
+          "objects": 1,
+          "bytes": 1000
+        }
+      },
+      "total_objects": 17,
+      "total_bytes": 7800,
+      "warn_bytes": 1073741824,
+      "measured_at": "2026-11-03T14:00:05.000000+00:00",
+      "durations_ms": {
+        "list": 1
+      }
+    },
+    "no_repository": {
+      "status": "ok",
+      "attention": [],
+      "started_at": "2026-11-03T14:00:00.000000+00:00",
+      "finished_at": "2026-11-03T14:00:02.000000+00:00",
+      "ledger_pruned": 0,
+      "window": true,
+      "repository": false,
+      "durations_ms": {}
+    },
+    "failed": {
+      "status": "failed",
+      "attention": [],
+      "started_at": "2026-11-03T14:00:00.000000+00:00",
+      "finished_at": "2026-11-03T14:00:02.000000+00:00",
+      "ledger_pruned": 0,
+      "window": false,
+      "error": "ConnectionError: platform bucket unreachable",
+      "durations_ms": {}
+    },
+    "publish_failed": {
+      "status": "attention",
+      "attention": [
+        "publish_failed"
+      ],
+      "started_at": "2026-11-03T14:00:00.000000+00:00",
+      "finished_at": "2026-11-03T14:00:02.000000+00:00",
+      "ledger_pruned": 0,
+      "healed": false,
+      "window": true,
+      "repository": true,
+      "trimmed": 2,
+      "expired_snapshots": 0,
+      "gc": {
+        "snapshots_deleted": 0,
+        "manifests_deleted": 0,
+        "chunks_deleted": 0,
+        "transaction_logs_deleted": 0,
+        "attributes_deleted": 0,
+        "bytes_deleted": 0,
+        "objects_failed_to_delete": 0,
+        "delete_errors": []
+      },
+      "published": false,
+      "publish_outcome": "error",
+      "publish_error": "TimeoutError: canceling statement due to lock timeout",
+      "durations_ms": {
+        "trim": 12,
+        "expire": 1,
+        "gc": 2
+      }
+    },
+    "measure_failed": {
+      "status": "attention",
+      "attention": [
+        "measure_failed"
+      ],
+      "started_at": "2026-11-03T14:00:00.000000+00:00",
+      "finished_at": "2026-11-03T14:00:02.000000+00:00",
+      "ledger_pruned": 0,
+      "healed": false,
+      "window": false,
+      "repository": true,
+      "trimmed": 0,
+      "expired_snapshots": null,
+      "gc": null,
+      "published": true,
+      "publish_outcome": "published",
+      "measure_error": "OSError: listing refused",
+      "measured_at": "2026-11-03T14:00:05.000000+00:00",
+      "durations_ms": {
+        "list": 1
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "unknown top-level key",
+      "base": "windowed",
+      "patch": {
+        "compaction": {
+          "ran": false
+        }
+      },
+      "app": "accept"
+    },
+    {
+      "name": "unknown attention reason from a newer writer",
+      "base": "windowed",
+      "patch": {
+        "status": "attention",
+        "attention": [
+          "manifest_bloat"
+        ]
+      },
+      "app": "accept"
+    },
+    {
+      "name": "unknown publish outcome",
+      "base": "windowed",
+      "patch": {
+        "publish_outcome": "deferred"
+      },
+      "app": "accept"
+    },
+    {
+      "name": "unknown size kind",
+      "base": "windowed",
+      "patch": {
+        "sizes": {
+          "transactions": {
+            "objects": 4,
+            "bytes": 1200
+          },
+          "overwritten": {
+            "objects": 4,
+            "bytes": 2400
+          },
+          "manifests": {
+            "objects": 6,
+            "bytes": 1500
+          },
+          "snapshots": {
+            "objects": 2,
+            "bytes": 1700
+          },
+          "chunks": {
+            "objects": 0,
+            "bytes": 0
+          },
+          "other": {
+            "objects": 1,
+            "bytes": 1000
+          },
+          "virtual_refs": {
+            "objects": 1,
+            "bytes": 2
+          }
+        }
+      },
+      "app": "accept"
+    },
+    {
+      "name": "finished_at absent",
+      "base": "windowed",
+      "remove": [
+        "finished_at"
+      ],
+      "app": "accept"
+    },
+    {
+      "name": "unknown status",
+      "base": "windowed",
+      "patch": {
+        "status": "degraded"
+      },
+      "app": "reject"
+    },
+    {
+      "name": "status missing",
+      "base": "windowed",
+      "remove": [
+        "status"
+      ],
+      "app": "reject"
+    },
+    {
+      "name": "started_at missing",
+      "base": "windowed",
+      "remove": [
+        "started_at"
+      ],
+      "app": "reject"
+    },
+    {
+      "name": "attention not a list",
+      "base": "windowed",
+      "patch": {
+        "attention": "repo_size"
+      },
+      "app": "reject"
+    },
+    {
+      "name": "durations_ms not an object",
+      "base": "windowed",
+      "patch": {
+        "durations_ms": [
+          1
+        ]
+      },
+      "app": "reject"
+    },
+    {
+      "name": "a size kind without bytes",
+      "base": "windowed",
+      "patch": {
+        "sizes": {
+          "transactions": {
+            "objects": 4,
+            "bytes": 1200
+          },
+          "overwritten": {
+            "objects": 4,
+            "bytes": 2400
+          },
+          "manifests": {
+            "objects": 6,
+            "bytes": 1500
+          },
+          "snapshots": {
+            "objects": 2
+          },
+          "chunks": {
+            "objects": 0,
+            "bytes": 0
+          },
+          "other": {
+            "objects": 1,
+            "bytes": 1000
+          }
+        }
+      },
+      "app": "reject"
+    },
+    {
+      "name": "total_bytes as a string",
+      "base": "windowed",
+      "patch": {
+        "total_bytes": "19316"
+      },
+      "app": "reject"
+    },
+    {
+      "name": "gc as a list",
+      "base": "windowed",
+      "patch": {
+        "gc": []
+      },
+      "app": "reject"
+    }
+  ]
+}
