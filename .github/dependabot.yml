@@ -27,6 +27,7 @@ updates:
       - /services/image-scanner
       - /services/process-runtime
       - /infra/titiler
+      - /infra/cube-server
       - /infra/proxy-policy
     schedule:
       interval: weekly

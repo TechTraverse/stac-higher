@@ -134,9 +134,8 @@ key moved. Details: `infra/titiler/README.md`.
 A cube sink (ADR 0022; spec `docs/superpowers/specs/2026-10-03-virtual-cube-sink-design.md`)
 publishes its Icechunk repository on the **cube collection** after every batch
 that reached the repository (`services/pipeline/src/pipeline/cubes/collection.py`).
-Z-6's hourly maintenance (#92, not yet merged) will republish through the same
-writer for sinks with a `window`. The `cube-server` that serves it as tiles and
-EDR is Z-7.
+Z-6's hourly maintenance republishes through the same writer for sinks with a
+`window`. The `cube-server` serves it as tiles and EDR (next section).
 
 ```jsonc
 "assets": {
@@ -201,3 +200,64 @@ EDR is Z-7.
 - **No audit row per publish** (spec §14.3). Each publish logs one
   `cube collection asset` line with `outcome`: `published`, `unchanged`,
   `superseded` or `missing_collection`.
+
+## Virtual cubes: the cube-server (:8086)
+
+`infra/cube-server` (Z-7, spec §8): xpublish 0.5.2 + xpublish-tiles 0.9.2 +
+xpublish-edr 0.11.1 over every **enabled** cube sink's Icechunk repository.
+Datasets are keyed by **cube collection id**:
+
+```
+GET /datasets/{cube_collection}/tiles/WebMercatorQuad/{z}/{y}/{x}
+      ?variables=CMI&t=<exact time value>&style=raster/gray
+      &colorscalerange=190,310&width=256&height=256&f=png
+GET /datasets/{cube_collection}/edr/position
+      ?coords=POINT(-97 38.5)&parameter-name=CMI&f=csv
+GET /health
+```
+
+- **Registry, not URLs.** Every `CUBE_POLL_SECONDS` (15) the server reads the
+  enabled sinks (`id, cube_collection_id, config, source_prefixes` through the
+  read-only role of migration 033) and `lookup_branch("main")` of each
+  repository at `s3://{PLATFORM_ASSET_BUCKET}/assets/{cube}/_cube`. A cube is
+  reopened only when its snapshot, variables, prefixes or append dimension
+  change; a disabled or deleted sink 404s from the next poll. The server never
+  takes a store URL, bucket or prefix from a request.
+- **Sources:** exactly `cube_sinks.source_prefixes`, anonymous `s3://` only
+  (v1). Any other prefix makes that sink an error, not an open. The server
+  reads NODD directly: network-level egress control rides #68.
+- **Geostationary rescale:** `x`/`y` in `rad` are served in metres
+  (× `perspective_point_height`), matching `cube:dimensions` on the asset. EDR
+  returns empty results on radians (spike Q2).
+- **Not served:** a sink whose repository does not exist yet (`pending` in
+  `/health`) or holds zero steps (`empty`).
+- **Time selection:** use the asset's `stac_higher:time_values` strings
+  verbatim (or `nearest::<value>`). A `t` the server's snapshot lacks — the
+  asset can be one poll ahead, or the step was just trimmed — is a 422.
+- **Caching** (no server-side chunk cache; Icechunk's did not help virtual
+  chunks): a 200 tile with an exact `t` is
+  `Cache-Control: public, max-age=31536000, immutable`; any other 200 tile
+  (no `t`, or a `nearest::` selector) is `public, max-age=60`; a non-200 tile
+  is `no-store`, so a not-yet-loaded `t` is retried, and so is every tile
+  requested with xpublish-tiles' `render_errors=true` (it draws an error as a
+  200 image). Other routes are left alone. After every (re)open the server renders one z0 tile of the newest step
+  to absorb the Numba JIT (2.4–2.6 s cold vs 0.44 s warm in the spike).
+- **`edr/position` is per-step tolerant and GET-only.** Each step loads
+  separately; a step whose source file is gone (Icechunk `StorageError`) is an
+  empty CSV field / JSON `null`, and `x-cube-missing-steps` carries the count
+  (`0` when none; exposed through CORS). `POST` is not offered.
+  `edr/area` and `edr/cube` are xpublish-edr's own and **fail** on a missing
+  step.
+- **`/health`** (always 200): `datasets` (snapshot, steps, opened_at),
+  `pending`, `empty`, `errors` and `last_reload_error`. Errors show the
+  exception **type** only, since the endpoint is anonymous; the text is in the
+  service log. A DB or per-sink failure keeps serving what is already open.
+- **Stale snapshot risk:** if reloads keep failing for longer than Z-6's
+  `CUBE_SNAPSHOT_RETENTION_SECONDS` (1 h), the open snapshot can be expired and
+  its manifests garbage-collected under the server. `last_reload_error` is the
+  signal.
+- **Auth posture:** anonymous reads, CORS `*` (GET/HEAD), the same as
+  titiler until #34. Read-only on both sides: the DB login sees five
+  `cube_sinks` columns and nothing else, and the Silo user
+  (`infra/cube-server/silo-cube-read-policy.json`) can only read and list
+  `assets/*/_cube/*`.

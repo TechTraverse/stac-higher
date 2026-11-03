@@ -62,3 +62,40 @@ describe("migration 032 (cube sinks — Z-2)", () => {
     );
   });
 });
+
+// Z-7 (spec §8.1, plan Decision 1): the cube-server's read-only group role.
+// Read lazily so a missing entry fails each test, not the whole file.
+const sql033 = () => migrationEntry("033_cube_reader_role");
+
+describe("migration 033 (cube reader role — Z-7)", () => {
+  it("runs after 032", () => {
+    expect(migrationSource.indexOf('"033_cube_reader_role"')).toBeGreaterThan(
+      migrationSource.indexOf('"032_cube_sinks"'),
+    );
+  });
+
+  it("creates the role NOLOGIN only if missing", () => {
+    expect(sql033()).toMatch(
+      /IF NOT EXISTS \(SELECT 1 FROM pg_roles WHERE rolname = 'stac_higher_cube_reader'\)/,
+    );
+    expect(sql033()).toContain("CREATE ROLE stac_higher_cube_reader NOLOGIN");
+  });
+
+  it("grants only the sink columns the server reads", () => {
+    expect(sql033()).toContain("GRANT USAGE ON SCHEMA stac_higher TO stac_higher_cube_reader");
+    expect(sql033()).toContain(
+      "GRANT SELECT (id, cube_collection_id, enabled, config, source_prefixes) ON stac_higher.cube_sinks TO stac_higher_cube_reader",
+    );
+    expect(sql033()).not.toMatch(/GRANT SELECT ON stac_higher\.cube_sinks/);
+    expect(sql033()).not.toContain("cube_appends");
+  });
+
+  it("never fails the app on a user without CREATEROLE", () => {
+    expect(sql033()).toMatch(/EXCEPTION\s+WHEN insufficient_privilege THEN\s+RAISE WARNING/);
+  });
+
+  it("never creates a login or sets a password", () => {
+    expect(sql033()).not.toContain("PASSWORD");
+    expect(sql033().replaceAll("NOLOGIN", "")).not.toMatch(/\bLOGIN\b/);
+  });
+});

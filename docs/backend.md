@@ -19,6 +19,21 @@ Astro server route with its access rule. Per-area design docs are linked from
 | **image scanner** | none (a run) | Not a service: `services/image-scanner/` is a platform image (Syft 1.52.0 + Grype 0.119.0, vulnerability DB baked at build) that the pipeline's `pipeline.image_scan_drain` launches once per `image_scans` row through the same executor as a process run (C-2, ADR 0021). It runs on the `scanner-egress` network (egress-capable, MinIO attached, nothing else), gets an STS credential bounded to `scans/{image_id}/{scan_id}/`, and writes the SBOM pair, the Grype findings and `result.json` there. Build: `docker buildx bake -f services/process-runtime/docker-bake.hcl image-scanner`. `allowed_registries` is enforced in software because the network cannot filter by host (I-123). |
 | **titiler-pgstac** | :8084 | OGC API Tiles for rasters, per STAC collection off pgstac. Derived image (`infra/titiler/`) maps platform `/api/assets/...` hrefs to the bucket (G-4). |
 | **tipg** | :8085 | OGC API Features/Tiles for vector tables in the shared PostGIS. |
+| **cube-server** | :8086 | XYZ tiles + OGC EDR for registered virtual Icechunk cubes (`infra/cube-server/`, Z-7; design in [`serving.md`](serving.md) "the cube-server"). Read-only: DB login `cube_server` (member of migration 033's `stac_higher_cube_reader`, created by the `cube-db-role` one-shot from `infra/cube-server/compose-db-role.sql`) and Silo user `cube-reader` (policy `cube-read`, created by the `cube-silo-user` one-shot, reads only `assets/*/_cube/*`). Env: `CUBE_DB_DSN`, `CUBE_S3_ENDPOINT`, `CUBE_S3_ACCESS_KEY_ID`, `CUBE_S3_SECRET_ACCESS_KEY`, `CUBE_S3_REGION` (default `us-east-1`), `PLATFORM_ASSET_BUCKET`, `CUBE_POLL_SECONDS` (15), `CUBE_CORS_ORIGINS` (`*`). |
+
+**The cube reader role outside compose.** Migration 033 creates the NOLOGIN
+group `stac_higher_cube_reader` with `USAGE` on `stac_higher` and
+`SELECT (id, cube_collection_id, enabled, config, source_prefixes)` on
+`stac_higher.cube_sinks`. If the app's DB user lacks `CREATEROLE` (a managed
+database), the migration only logs a WARNING; run, as an admin:
+
+```sql
+CREATE ROLE stac_higher_cube_reader NOLOGIN;
+GRANT USAGE ON SCHEMA stac_higher TO stac_higher_cube_reader;
+GRANT SELECT (id, cube_collection_id, enabled, config, source_prefixes)
+  ON stac_higher.cube_sinks TO stac_higher_cube_reader;
+CREATE ROLE cube_server LOGIN PASSWORD '<secret>' IN ROLE stac_higher_cube_reader;
+```
 
 OGC serving is **link-level** exposure only: the per-collection
 `serving_enabled` toggle (migration 019) controls whether the collection page
