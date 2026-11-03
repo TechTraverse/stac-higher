@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "stac-higher.fullname" . }}-app
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "app") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "stac-higher.selectorLabels" (dict "root" . "component" "app") | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,96 @@
+{{- $full := include "stac-higher.fullname" . -}}
+{{- $a := .Values.app -}}
+{{- $platform := include "stac-higher.secretName" (dict "root" . "name" "platform") -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-app
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "app") | nindent 4 }}
+spec:
+  {{- if not $a.autoscaling.enabled }}
+  replicas: {{ $a.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "stac-higher.selectorLabels" (dict "root" . "component" "app") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "stac-higher.labels" (dict "root" . "component" "app") | nindent 8 }}
+      annotations:
+        {{- $ann := merge (deepCopy ($a.podAnnotations | default dict)) (dict "checksum/config" (include "stac-higher.configChecksum" .)) }}
+        {{- toYaml $ann | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "stac-higher.serviceAccountName" (dict "root" . "component" "app") }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "stac-higher.podSecurityContext" (dict "uid" 1000) | nindent 8 }}
+      containers:
+        - name: app
+          image: {{ include "stac-higher.image" (dict "root" . "key" "app") | quote }}
+          ports:
+            - name: http
+              containerPort: 4321
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ $full }}-env-shared
+            - configMapRef:
+                name: {{ $full }}-env-app
+          env:
+            {{- include "stac-higher.dbCredentialEnv" (dict "secret" (include "stac-higher.secretName" (dict "root" . "name" "dbOwner"))) | nindent 12 }}
+            {{- range $k := list "SESSION_SECRET" "CATALOG_BFF_SHARED_SECRET" "INTERNAL_API_TOKEN" "CREDENTIALS_MASTER_KEY" }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $platform }}
+                  key: {{ $k }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+          resources:
+            {{- toYaml $a.resources | nindent 12 }}
+          securityContext:
+            {{- include "stac-higher.containerSecurityContext" (dict "readOnly" $a.readOnlyRootFilesystem) | nindent 12 }}
+          volumeMounts:
+            - name: config-files
+              mountPath: /etc/stac-higher/config
+              readOnly: true
+            {{- with include "stac-higher.caVolumeMount" (dict "root" .) }}
+            - {{- . | nindent 14 }}
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config-files
+          configMap:
+            name: {{ $full }}-config-files
+        {{- with include "stac-higher.caVolume" (dict "root" . "hook" false) }}
+        - {{- . | nindent 10 }}
+        {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      {{- with $a.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $a.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $a.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

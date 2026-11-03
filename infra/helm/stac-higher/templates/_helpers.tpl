@@ -101,9 +101,9 @@ capabilities:
     - ALL
 {{- end -}}
 
-{{/* Host of publicUrls.app, trailing slash trimmed. */}}
+{{/* Hostname of publicUrls.app: trailing slash trimmed and no port (an Ingress host must not carry one). */}}
 {{- define "stac-higher.appHost" -}}
-{{- (urlParse (trimSuffix "/" .Values.publicUrls.app)).host -}}
+{{- (urlParse (trimSuffix "/" .Values.publicUrls.app)).hostname -}}
 {{- end -}}
 
 {{/* Hook-copy Secret names in external-secrets mode, by logical name. */}}
@@ -331,4 +331,18 @@ readOnly: true
 {{- define "stac-higher.configChecksum" -}}
 {{- $b := .Template.BasePath -}}
 {{- cat (include (print $b "/config-files.yaml") .) (include (print $b "/config-env.yaml") .) (include (print $b "/db-ca.yaml") .) | sha256sum -}}
+{{- end -}}
+
+{{/* DB credentials from a Secret's username/password keys, never from a URL. (dict "secret" <name>) */}}
+{{- define "stac-higher.dbCredentialEnv" -}}
+- name: PGUSER
+  valueFrom:
+    secretKeyRef:
+      name: {{ .secret }}
+      key: username
+- name: PGPASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .secret }}
+      key: password
 {{- end -}}

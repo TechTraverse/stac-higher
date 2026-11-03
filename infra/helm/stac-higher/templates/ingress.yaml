@@ -1,0 +1,62 @@
+{{- if .Values.ingress.enabled }}
+{{- $full := include "stac-higher.fullname" . -}}
+{{- $host := include "stac-higher.appHost" . -}}
+# Selector matches no pod: /api/internal (pipeline-only routes) is answered by a Service with no endpoints.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-internal-blocked
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "app") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: stac-higher
+    app.kubernetes.io/component: none
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $full }}-app
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "app") | nindent 4 }}
+  {{- $ann := merge (deepCopy (.Values.ingress.app.annotations | default dict)) (deepCopy (.Values.ingress.annotations | default dict)) }}
+  {{- with $ann }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tlsSecretName }}
+  tls:
+    - hosts:
+        - {{ $host }}
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /api/internal
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-internal-blocked
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-app
+                port:
+                  name: http
+{{- end }}
