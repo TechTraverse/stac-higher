@@ -234,6 +234,40 @@ class FakeCubeRepo(CubeRepo):
             if maintained_at is not None:
                 s.last_maintained_at = maintained_at
 
+    async def record_measurement(
+        self,
+        cube_sink_id: str,
+        *,
+        measured_at: dt.datetime,
+        patch: Mapping[str, Any],
+        remove: Sequence[str],
+        durations_ms: Mapping[str, int],
+        attention: Sequence[str],
+        owned_reasons: Sequence[str],
+    ) -> bool:
+        s = self._sink(cube_sink_id)
+        current = s.last_maintenance if s is not None else None
+        if current is None:
+            return False
+        floor = dt.datetime.min.replace(tzinfo=dt.UTC)
+
+        def when(key: str) -> dt.datetime:
+            value = current.get(key)
+            return dt.datetime.fromisoformat(value) if value else floor
+
+        if measured_at < when("started_at") or measured_at <= when("measured_at"):
+            return False
+        merged = {k: v for k, v in current.items() if k not in remove}
+        merged.update(patch)
+        merged["measured_at"] = measured_at.isoformat()
+        merged["durations_ms"] = {**current.get("durations_ms", {}), **durations_ms}
+        reasons = [a for a in current.get("attention", []) if a not in owned_reasons]
+        merged["attention"] = reasons + list(attention)
+        if current.get("status") != "failed":
+            merged["status"] = "attention" if merged["attention"] else "ok"
+        s.last_maintenance = merged
+        return True
+
     def backdate(self, cube_sink_id: str, item_id: str, seconds: int) -> None:
         """Test helper: age one ledger row's created_at."""
         row = self.ledger[(cube_sink_id, item_id)]

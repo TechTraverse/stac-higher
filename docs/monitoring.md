@@ -147,10 +147,22 @@ by `cube_kick`, like an append. One run (`pipeline/cubes/maintain.py`):
      longer holds in one commit and records it (`last_snapshot_id`). The commit is tagged `stac_higher:writer =
      maintenance` in its snapshot metadata, so a trim whose record was lost is
      recognised and recorded on the next run (ADR 0023);
-   - runs `expire_snapshots` and then `garbage_collect`, both with the cutoff `now − CUBE_SNAPSHOT_RETENTION_SECONDS` (default 1 h), lowered so that every snapshot that was the tip within that window survives (`expiry_cutoff`): a reader still on the previous tip keeps working, and the recorded snapshot (the one the collection asset's `version` names) always survives;
+   - runs `expire_snapshots` and then `garbage_collect`, both with the cutoff `now − CUBE_SNAPSHOT_RETENTION_SECONDS` (default 1 h), lowered so that every snapshot that was the tip within that window survives (`expiry_cutoff`): a reader still on the previous tip keeps working, and two snapshots always survive: the recorded one and the one the collection asset's `version` names right now (they differ while a republish keeps failing). A cutoff can only protect a snapshot `main` still reaches (GC deletes whatever no ref reaches), so if either is off `main`, isn't a valid snapshot id, or the asset can't be read, the run skips expiry and GC (attention `expiry_skipped`) rather than guess;
 4. republishes the recorded tip on the cube collection (Z-5's writer,
-   idempotent);
-5. lists the prefix and records object counts and bytes per kind.
+   idempotent). A republish that raises (e.g. the 10 s lock timeout on the
+   collection row) is attention `publish_failed`, not a failed run; the trim
+   stays recorded and the next run republishes;
+5. records the summary, then enqueues `pipeline.cube_measure_sink` (a
+   failed run too, if it reached the repository). That job holds **no**
+   lock, so listing a large repository never delays the sink's appends
+   (#115). It lists the prefix and merges object counts and bytes per kind
+   into the sink's current `last_maintenance`, usually a few seconds later.
+   It isn't tied to one run, so a readout that waited behind a backlog still
+   lands; but a readout whose listing started before the current run, or
+   before the readout already merged, is dropped (its sizes predate that
+   run's GC). Each readout replaces its own reasons (`repo_size`,
+   `measure_failed`) and recomputes `status`, so a cleared alarm clears;
+   `failed` stays `failed`.
 
 The result goes into `cube_sinks.last_maintenance` on every run.
 `last_maintained_at` is set only on success.
@@ -158,13 +170,13 @@ The result goes into `cube_sinks.last_maintenance` on every run.
 | `last_maintenance` key | Meaning |
 |---|---|
 | `status` | `ok`, `attention` (see `attention`) or `failed` (see `error`) |
-| `attention` | Reasons: `repo_size` (total ≥ `CUBE_REPO_WARN_BYTES`, default 1 GiB) `gc_delete_failures` (GC could not delete some objects) and `unrecorded_tip` (the tip is not the recorded snapshot and nothing is pending, so no append is coming to record it). Each one also logs a WARNING. |
+| `attention` | Reasons: `repo_size` (total ≥ `CUBE_REPO_WARN_BYTES`, default 1 GiB; added by the size readout), `gc_delete_failures` (GC could not delete some objects), `unrecorded_tip` (the tip is not the recorded snapshot and nothing is pending, so no append is coming to record it), `publish_failed` (the collection republish raised; see `publish_error`), `expiry_skipped` (the published snapshot couldn't be read, so this run didn't expire or GC) and `measure_failed` (the size readout's listing failed; see `measure_error`). The readout's two reasons are recomputed by every readout. Each one also logs a WARNING or an ERROR. |
 | `started_at`, `finished_at`, `durations_ms` | ISO times; per-phase milliseconds (`trim`, `expire`, `gc`, `list`) |
 | `window`, `repository` | Whether the sink has a window, and whether its repository exists |
 | `healed` | `true` when this run found a maintenance trim that was committed but never recorded, and recorded it |
-| `trimmed`, `published`, `publish_outcome` | Steps the age trim dropped; whether the collection asset names the recorded tip after the run; and the writer's outcome: `published`, `unchanged` (already current), `superseded` (a newer tip was recorded meanwhile), `missing_collection`, or `null` when nothing was handed to the writer |
+| `trimmed`, `published`, `publish_outcome`, `publish_error` | Steps the age trim dropped; whether the collection asset names the recorded tip after the run; the writer's outcome: `published`, `unchanged` (already current), `superseded` (a newer tip was recorded meanwhile), `missing_collection`, `error` (it raised; `publish_error` has the message), or `null` when nothing was handed to the writer |
 | `expired_snapshots`, `gc` | Snapshots expired, and Icechunk's `GCSummary` counters (`snapshots_deleted`, `manifests_deleted`, `chunks_deleted`, `transaction_logs_deleted`, `attributes_deleted`, `bytes_deleted`, `objects_failed_to_delete`, the first 5 `delete_errors`). Both are `null` without a window. |
-| `sizes`, `total_objects`, `total_bytes`, `warn_bytes` | Per kind `{objects, bytes}` for `transactions`, `overwritten`, `manifests`, `snapshots`, `chunks` and `other` (the `repo` object, config) |
+| `sizes`, `total_objects`, `total_bytes`, `warn_bytes`, `measured_at`, `measure_error` | From the size readout (`cube_measure_sink`), merged in after the run: per kind `{objects, bytes}` for `transactions`, `overwritten`, `manifests`, `snapshots`, `chunks` and `other` (the `repo` object, config). Absent until the readout lands. When the listing fails, `measure_error` and attention `measure_failed` replace the sizes; the next successful readout removes both. `measured_at` is when the readout's listing started. `durations_ms.list` comes from the readout too. |
 | `ledger_pruned` | Ledger rows deleted |
 
 Expiry and GC keep snapshots, manifests and chunks flat. They never delete

@@ -18,6 +18,7 @@ from pipeline.jobs.cubes import (
     JOB_CUBE_KICK,
     JOB_CUBE_MAINTAIN,
     JOB_CUBE_MAINTAIN_SINK,
+    JOB_CUBE_MEASURE_SINK,
     KICK_CRON,
     KICK_STALE_SECONDS,
     MAINTAIN_CRON,
@@ -25,8 +26,10 @@ from pipeline.jobs.cubes import (
     cube_lock,
     enqueue_cube_append,
     enqueue_cube_maintain,
+    enqueue_cube_measure,
     production_append_deps,
     production_maintain_deps,
+    production_measure_deps,
     register,
 )
 from pipeline.queue.interface import QUEUE_DEFAULT, Enqueued, RetrySpec
@@ -241,6 +244,20 @@ def maintained(monkeypatch) -> list[str]:
 
 
 MAINTAIN_DEPS = object()
+MEASURE_DEPS = object()
+
+
+@pytest.fixture
+def measured(monkeypatch) -> list[str]:
+    """Sink ids the measure handler ran run_cube_measure for."""
+    calls: list[str] = []
+
+    async def fake_run(cube_sink_id: str, deps) -> None:
+        assert deps is MEASURE_DEPS
+        calls.append(cube_sink_id)
+
+    monkeypatch.setattr(cubes_jobs, "run_cube_measure", fake_run)
+    return calls
 
 
 @pytest.fixture
@@ -252,6 +269,7 @@ def mqueue(repo: FakeCubeRepo, maintained: list[str]) -> InMemoryQueue:
         repo=repo,
         deps_factory=lambda: DEPS,
         maintain_deps_factory=lambda: MAINTAIN_DEPS,
+        measure_deps_factory=lambda: MEASURE_DEPS,
     )
     return q
 
@@ -270,6 +288,32 @@ async def test_maintenance_takes_the_sink_lock_and_its_own_queueing_lock(
     assert (job.name, job.payload) == (JOB_CUBE_MAINTAIN_SINK, {"cube_sink_id": "s1"})
     # cube:s1 is the append's queueing lock: sharing it would coalesce the two
     assert (job.lock, job.queueing_lock) == ("cube:s1", "cube-maintain:s1")
+
+
+async def test_the_size_readout_takes_no_lock_and_runs_the_measure(
+    mqueue: InMemoryQueue, measured: list[str]
+):
+    assert mqueue.queues[JOB_CUBE_MEASURE_SINK] == QUEUE_DEFAULT
+    assert mqueue.retry_specs.get(JOB_CUBE_MEASURE_SINK) is None
+    append = await enqueue_cube_append(mqueue, "s1")
+    mqueue.strand(append.job_id)  # holds cube:s1: the readout must not wait on it
+    await enqueue_cube_measure(mqueue, "s1")
+    job = mqueue.jobs[-1]
+    assert (job.lock, job.queueing_lock) == (None, "cube-measure:s1")
+
+    await mqueue.run_pending()
+
+    assert measured == ["s1"]
+
+
+async def test_production_maintain_deps_enqueue_the_measure(
+    mqueue: InMemoryQueue, repo: FakeCubeRepo
+):
+    q = mqueue
+    deps = production_maintain_deps(Settings.from_env(env={}), q, repo)
+    await deps.enqueue_measure("s1")
+    jobs = [(j.name, j.payload) for j in q.jobs]
+    assert jobs == [(JOB_CUBE_MEASURE_SINK, {"cube_sink_id": "s1"})]
 
 
 async def test_the_hourly_tick_enqueues_every_enabled_sink(mqueue: InMemoryQueue):
@@ -360,9 +404,12 @@ async def test_production_maintain_deps_wire_the_real_seams(repo: FakeCubeRepo):
             "CUBE_REPO_WARN_BYTES": "4096",
         }
     )
-    deps = production_maintain_deps(settings, repo)
+    deps = production_maintain_deps(settings, InMemoryQueue(), repo)
     assert isinstance(deps, MaintainDeps)
-    assert (deps.retention_seconds, deps.warn_bytes) == (7200, 4096)
+    assert deps.retention_seconds == 7200
+    assert deps.enqueue_measure is not None
+    assert production_measure_deps(settings, repo).warn_bytes == 4096
     assert deps.after_batch is not None
+    assert isinstance(deps.published_snapshot.__self__, PgCollectionPublisher)
     sink = await repo.load_sink("s1")
     assert "prefix: assets/cube1/_cube" in repr(deps.storage_for(sink))

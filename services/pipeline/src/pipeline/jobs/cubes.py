@@ -31,6 +31,12 @@ drains every pending ledger row when it runs (§5.1).
   the same lock.
   ``cube_maintain_sink`` runs ``cubes.maintain.run_cube_maintain``: expiry and
   GC only on a sink with a window (ADR 0022). No retry: the next hour retries.
+- ``pipeline.cube_measure_sink`` is enqueued by a maintenance run once it has
+  recorded its summary (failed runs too), with NO ``lock`` (``queueing_lock``
+  ``cube-measure:{sink_id}``): listing a large repository never delays the
+  sink's appends (#115). It merges the per-kind sizes into the sink's current
+  ``last_maintenance`` (``cubes.maintain.run_cube_measure``), so a coalesced
+  enqueue loses nothing. No retry.
 """
 
 from __future__ import annotations
@@ -41,9 +47,16 @@ from collections.abc import Awaitable, Callable
 
 from pipeline.config import Settings
 from pipeline.cubes.append import AppendDeps, run_cube_append
-from pipeline.cubes.collection import production_after_batch
+from pipeline.cubes.collection import production_after_batch, production_published_snapshot
 from pipeline.cubes.icerepo import cube_storage
-from pipeline.cubes.maintain import MaintainDeps, platform_lister, run_cube_maintain
+from pipeline.cubes.maintain import (
+    ListObjects,
+    MaintainDeps,
+    MeasureDeps,
+    platform_lister,
+    run_cube_maintain,
+    run_cube_measure,
+)
 from pipeline.cubes.repo import CubeRepo, PgCubeRepo
 from pipeline.cubes.resolve import PgSourceResolver
 from pipeline.jobs._common import load_key_or_skip
@@ -56,6 +69,7 @@ JOB_CUBE_KICK = "pipeline.cube_kick"
 KICK_CRON = "*/5 * * * *"
 JOB_CUBE_MAINTAIN = "pipeline.cube_maintain"
 JOB_CUBE_MAINTAIN_SINK = "pipeline.cube_maintain_sink"
+JOB_CUBE_MEASURE_SINK = "pipeline.cube_measure_sink"
 MAINTAIN_CRON = "23 * * * *"
 #: jobs holding a sink's lock: a dead worker's copy of either wedges the sink
 LOCKED_JOBS = (JOB_CUBE_APPEND, JOB_CUBE_MAINTAIN_SINK)
@@ -111,6 +125,21 @@ async def enqueue_cube_maintain(queue: QueueBackend, cube_sink_id: str) -> Enque
         {"cube_sink_id": cube_sink_id},
         lock=cube_lock(cube_sink_id),
         queueing_lock=maintain_queueing_lock(cube_sink_id),
+    )
+
+
+def measure_queueing_lock(cube_sink_id: str) -> str:
+    """The size readout's ``queueing_lock``; it takes no ``lock``."""
+    return f"cube-measure:{cube_sink_id}"
+
+
+async def enqueue_cube_measure(queue: QueueBackend, cube_sink_id: str) -> Enqueued:
+    """One sink's size readout. A coalesced result means one is already
+    waiting; it measures whatever summary is current when it runs."""
+    return await queue.enqueue(
+        JOB_CUBE_MEASURE_SINK,
+        {"cube_sink_id": cube_sink_id},
+        queueing_lock=measure_queueing_lock(cube_sink_id),
     )
 
 
@@ -174,15 +203,33 @@ def production_append_deps(
     )
 
 
-def production_maintain_deps(settings: Settings, repo: CubeRepo) -> MaintainDeps:
+def production_maintain_deps(
+    settings: Settings, queue: QueueBackend, repo: CubeRepo
+) -> MaintainDeps:
     """The real seams. No master key: maintenance never reads a source."""
+
+    async def enqueue_measure(cube_sink_id: str) -> Enqueued:
+        return await enqueue_cube_measure(queue, cube_sink_id)
+
     return MaintainDeps(
         repo=repo,
         storage_for=lambda sink: cube_storage(settings, sink.cube_collection_id),
-        list_objects=platform_lister(settings),
         retention_seconds=settings.cube_snapshot_retention_seconds,
-        warn_bytes=settings.cube_repo_warn_bytes,
         after_batch=production_after_batch(settings),
+        published_snapshot=production_published_snapshot(settings),
+        enqueue_measure=enqueue_measure,
+    )
+
+
+def production_measure_deps(
+    settings: Settings, repo: CubeRepo, lister: ListObjects | None = None
+) -> MeasureDeps:
+    """``lister``: pass one built once per worker (``register`` does), so its
+    lazily built boto3 client is shared across readouts."""
+    return MeasureDeps(
+        repo=repo,
+        list_objects=lister if lister is not None else platform_lister(settings),
+        warn_bytes=settings.cube_repo_warn_bytes,
     )
 
 
@@ -193,9 +240,14 @@ def register(
     repo: CubeRepo | None = None,
     deps_factory: Callable[[], AppendDeps | None] | None = None,
     maintain_deps_factory: Callable[[], MaintainDeps] | None = None,
+    measure_deps_factory: Callable[[], MeasureDeps] | None = None,
 ) -> None:
     def _repo() -> CubeRepo:
         return repo if repo is not None else PgCubeRepo(settings.database_url)
+
+    # One lister per worker: its boto3 client is built on the first readout
+    # and reused by every later one.
+    lister = platform_lister(settings)
 
     async def cube_append(cube_sink_id: str) -> None:
         deps = (
@@ -231,13 +283,22 @@ def register(
         deps = (
             maintain_deps_factory()
             if maintain_deps_factory is not None
-            else production_maintain_deps(settings, _repo())
+            else production_maintain_deps(settings, queue, _repo())
         )
         await run_cube_maintain(cube_sink_id, deps)
+
+    async def cube_measure_sink(cube_sink_id: str) -> None:
+        deps = (
+            measure_deps_factory()
+            if measure_deps_factory is not None
+            else production_measure_deps(settings, _repo(), lister)
+        )
+        await run_cube_measure(cube_sink_id, deps)
 
     # Default queue: the append reads headers, not bytes (spec §6).
     queue.register_task(cube_append, name=JOB_CUBE_APPEND, retry=CUBE_APPEND_RETRY)
     queue.register_periodic(cube_kick, name=JOB_CUBE_KICK, cron=KICK_CRON)
     # Maintenance lists and deletes small Icechunk objects: default queue too.
     queue.register_task(cube_maintain_sink, name=JOB_CUBE_MAINTAIN_SINK)
+    queue.register_task(cube_measure_sink, name=JOB_CUBE_MEASURE_SINK)
     queue.register_periodic(cube_maintain, name=JOB_CUBE_MAINTAIN, cron=MAINTAIN_CRON)
