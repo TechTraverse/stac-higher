@@ -79,7 +79,9 @@ REASON_LATE = "late"
 REASON_SOURCE_MISSING = "source_missing"
 REASON_UNSUPPORTED_LAYOUT = "unsupported_layout"
 
-AfterBatch = Callable[[CubeSink, CubeSinkConfig, BatchResult], Awaitable[None]]
+#: returns the publish outcome (``cubes.collection``'s ``PUBLISHED`` etc.);
+#: ``cube_append`` ignores it, ``cube_maintain_sink`` records it
+AfterBatch = Callable[[CubeSink, CubeSinkConfig, BatchResult], Awaitable[str | None]]
 Parse = Callable[[str, ObjectStoreRegistry, CubeSinkConfig], Any]
 
 

@@ -354,8 +354,8 @@ class PgCollectionPublisher:
 
     async def after_batch(
         self, sink: CubeSink, config: CubeSinkConfig, result: BatchResult
-    ) -> None:
-        await self.publish(sink, config, result)
+    ) -> str:
+        return await self.publish(sink, config, result)
 
 
 def production_after_batch(settings: Settings) -> AfterBatch:

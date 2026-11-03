@@ -272,3 +272,36 @@ def test_the_docker_hub_token_never_prints():
 def test_image_scan_concurrency_must_be_positive():
     with pytest.raises(ValueError, match="IMAGE_SCAN_CONCURRENCY"):
         Settings.from_env({"IMAGE_SCAN_CONCURRENCY": "0"})
+
+
+def test_cube_maintenance_defaults_and_overrides():
+    from pipeline.config import (
+        DEFAULT_CUBE_REPO_WARN_BYTES,
+        DEFAULT_CUBE_SNAPSHOT_RETENTION_SECONDS,
+    )
+
+    settings = Settings.from_env(env={})
+    assert settings.cube_snapshot_retention_seconds == DEFAULT_CUBE_SNAPSHOT_RETENTION_SECONDS
+    assert DEFAULT_CUBE_SNAPSHOT_RETENTION_SECONDS == 3600
+    assert settings.cube_repo_warn_bytes == DEFAULT_CUBE_REPO_WARN_BYTES == 1024**3
+    custom = Settings.from_env(
+        env={"CUBE_SNAPSHOT_RETENTION_SECONDS": "7200", "CUBE_REPO_WARN_BYTES": "1000"}
+    )
+    assert (custom.cube_snapshot_retention_seconds, custom.cube_repo_warn_bytes) == (7200, 1000)
+    blank = Settings.from_env(
+        env={"CUBE_SNAPSHOT_RETENTION_SECONDS": "", "CUBE_REPO_WARN_BYTES": ""}
+    )
+    assert blank.cube_snapshot_retention_seconds == 3600
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CUBE_SNAPSHOT_RETENTION_SECONDS", "0"),
+        ("CUBE_SNAPSHOT_RETENTION_SECONDS", "299"),
+        ("CUBE_REPO_WARN_BYTES", "0"),
+    ],
+)
+def test_cube_maintenance_settings_refuse_dangerous_values(name, value):
+    with pytest.raises(ValueError, match=name):
+        Settings.from_env(env={name: value})
