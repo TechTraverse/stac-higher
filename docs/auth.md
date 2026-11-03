@@ -27,6 +27,7 @@ dev, unit tests, and e2e working with zero IdP setup.
 | `DEV_AUTH_IDENTITY` | — | JSON partial identity for bypass mode, e.g. `{"name":"Weather Admin","groups":["weather"],"roles":["admin"]}` |
 | `AUTH_BYPASS_FORCE` | — | `true` allows bypass in production builds. Dangerous; loudly logged. |
 | `AUTH_BEARER_AUDIENCES` | `stac-higher` | Comma-separated `aud` values accepted on `Authorization: Bearer` JWTs hitting `/api/*` (see below). Mirrors the proxy's `ALLOWED_JWT_AUDIENCES`. |
+| `AUTH_BEARER_AUDIENCE_CLAIM` | `aud` | The claim `AUTH_BEARER_AUDIENCES` is matched against. `aud` (Keycloak, Entra, most IdPs; unchanged behaviour), or `client_id` (Cognito access tokens): `AUTH_BEARER_AUDIENCES` then lists allowed client ids, and a token carrying any `aud` is rejected. Trimmed, case-sensitive; any other value fails config load, so every request 500s with the message. Same semantics at the enforced proxy (R-3). |
 
 Local OIDC login against the compose Keycloak needs only:
 
@@ -57,7 +58,7 @@ mapped output. Config fields (all optional; Keycloak defaults shown):
 service accounts carry no profile claims, but `azp` names the OAuth client.)
 
 After `roleMap`, anything outside `member`/`operator`/`admin` is dropped.
-Examples: Cognito → `{"groups":"cognito:groups","roles":"cognito:groups","roleMap":{"stac-operators":"operator"}}`;
+Examples: Cognito → `{"groups":"cognito:groups","roles":"cognito:groups","roleMap":{"stac-operators":"operator"}}` (Cognito access tokens carry `client_id` instead of `aud`, so also set `AUTH_BEARER_AUDIENCE_CLAIM=client_id` and list the app client id in `AUTH_BEARER_AUDIENCES`);
 Entra → `{"sub":"oid","email":"preferred_username","roles":"roles","roleMap":{"Operator":"operator"}}`.
 
 ## Session
@@ -81,8 +82,9 @@ accepts `Authorization: Bearer <JWT>` on `/api/*` requests
   the same cached OIDC discovery the session path uses — never re-discovered
   per request), standard `exp` and `iss` checks (`iss` may be either
   `OIDC_ISSUER` or `OIDC_ISSUER_INTERNAL` — which one a server-to-server
-  client sees depends on where it fetched its token), and `aud` must contain
-  one of `AUTH_BEARER_AUDIENCES` (default `stac-higher`, mirroring the
+  client sees depends on where it fetched its token), and the claim named by
+  `AUTH_BEARER_AUDIENCE_CLAIM` (`aud` by default) must contain one of
+  `AUTH_BEARER_AUDIENCES` (default `stac-higher`, mirroring the
   proxy's `ALLOWED_JWT_AUDIENCES`).
 - **Claims mapping**: verified claims run through the same claims mapper as
   session identities, so `locals.auth` is a normal `CanonicalIdentity` —

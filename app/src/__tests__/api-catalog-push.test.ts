@@ -74,6 +74,7 @@ function authCfg(mode: "bypass" | "oidc") {
     redirectUri: "http://localhost:4321/api/auth/callback",
     sessionSecret: mode === "oidc" ? "test-secret" : null,
     sessionMaxAgeS: 28800,
+    bearerAudienceClaim: "aud",
     prod: false,
   };
 }

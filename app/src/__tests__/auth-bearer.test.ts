@@ -57,7 +57,8 @@ function stubIdp(issuer: string) {
 
 interface TokenOpts {
   issuer: string;
-  audience?: string;
+  /** `null` omits `aud` (a Cognito access token has none). */
+  audience?: string | null;
   /** Unix seconds; defaults to 5 minutes from now. */
   exp?: number;
   payload?: Record<string, unknown>;
@@ -75,9 +76,9 @@ async function signBearer(opts: TokenOpts): Promise<string> {
     .setProtectedHeader({ alg: "RS256", kid: "test-key" })
     .setSubject("svc-push-1")
     .setIssuer(opts.issuer)
-    .setAudience(opts.audience ?? "stac-higher")
     .setIssuedAt()
     .setExpirationTime(opts.exp ?? Math.floor(Date.now() / 1000) + 300);
+  if (opts.audience !== null) jwt.setAudience(opts.audience ?? "stac-higher");
   return jwt.sign(privateKey);
 }
 
@@ -308,5 +309,37 @@ describe("resolveRequestAuth — precedence", () => {
       identity: null,
     });
     expect(result.bearerToken).toBeUndefined();
+  });
+});
+
+describe("AUTH_BEARER_AUDIENCE_CLAIM=client_id (Cognito access tokens)", () => {
+  const COGNITO = { client_id: "3example0client0id", token_use: "access", scope: "stac-higher/push" };
+  const clientIdEnv = (issuer: string) => ({
+    AUTH_MODE: "oidc", OIDC_ISSUER: issuer, AUTH_BEARER_AUDIENCE_CLAIM: "client_id",
+    AUTH_BEARER_AUDIENCES: "3example0client0id",
+  });
+
+  it("client_id mode accepts a Cognito-shaped access token (client_id, no aud)", async () => {
+    const issuer = "http://idp/realms/bearer-cognito-ok"; stubIdp(issuer);
+    const token = await signBearer({ issuer, audience: null, payload: COGNITO });
+    const result = await resolveRequestAuth(makeJar(), apiRequest(token), clientIdEnv(issuer));
+    expect(result.auth.authenticated).toBe(true);
+    expect(result.bearerToken).toBe(token);
+  });
+  it("client_id mode rejects a mismatched client_id", async () => {
+    const issuer = "http://idp/realms/bearer-cognito-mismatch"; stubIdp(issuer);
+    const token = await signBearer({ issuer, audience: null, payload: { ...COGNITO, client_id: "someone-else" } });
+    expect((await resolveRequestAuth(makeJar(), apiRequest(token), clientIdEnv(issuer))).auth.authenticated).toBe(false);
+  });
+  it("client_id mode rejects a token that carries aud, even with a matching client_id (mirrors the proxy)", async () => {
+    const issuer = "http://idp/realms/bearer-cognito-hasaud"; stubIdp(issuer);
+    const token = await signBearer({ issuer, audience: "3example0client0id", payload: COGNITO });
+    expect((await resolveRequestAuth(makeJar(), apiRequest(token), clientIdEnv(issuer))).auth.authenticated).toBe(false);
+  });
+  it("aud mode (default) is unchanged: a Cognito-shaped token is rejected", async () => {
+    const issuer = "http://idp/realms/bearer-cognito-audmode"; stubIdp(issuer);
+    const token = await signBearer({ issuer, audience: null, payload: COGNITO });
+    const env = { AUTH_MODE: "oidc", OIDC_ISSUER: issuer, AUTH_BEARER_AUDIENCES: "3example0client0id" };
+    expect((await resolveRequestAuth(makeJar(), apiRequest(token), env)).auth.authenticated).toBe(false);
   });
 });
