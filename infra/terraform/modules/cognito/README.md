@@ -4,7 +4,7 @@ Optional Amazon Cognito user pool for the STAC Higher app: admin-created users, 
 
 ## What it creates
 
-- `aws_cognito_user_pool`: email as username, email auto-verified, **admin-created users only** (no self sign-up), optional TOTP MFA, password minimum 12 characters, verified-email account recovery, deletion protection on by default.
+- `aws_cognito_user_pool`: email as username, email auto-verified, **admin-created users only** (no self sign-up), optional TOTP MFA, password minimum 12 characters plus the extra rules (lowercase, uppercase, number and symbol each required; temporary passwords valid 7 days), verified-email account recovery, deletion protection on by default.
 - `aws_cognito_user_group`: one per `role_groups` entry (default `stac-admins` to `admin`, `stac-operators` to `operator`, `stac-members` to `member`) and one per `data_groups` entry.
 - `aws_cognito_user_pool_client`: public (no secret), `code` flow, scopes `openid profile email`, only `ALLOW_REFRESH_TOKEN_AUTH`, token revocation on, user-existence errors hidden. Cognito accepts PKCE on a public client and has no flag to require it; the app always sends a challenge.
 - `aws_cognito_user_pool_domain`: `<prefix>.auth.<region>.amazoncognito.com`.
@@ -23,7 +23,7 @@ Settings are described in `docs/auth.md`.
 | `AUTH_CLAIMS_MAPPING` | `jsonencode(claims_mapping)` |
 | proxy `ALLOWED_JWT_AUDIENCES` | `<client id>`, same semantics as `AUTH_BEARER_AUDIENCES` |
 
-`claims_mapping` is `{ groups = "cognito:groups", roles = "cognito:groups", roleMap = <role_groups>, name = ["name", "email", "username"] }`. `username` is the last name fallback because Cognito access tokens carry no `name` or `email`.
+`claims_mapping` is `{ groups = "cognito:groups", roles = "cognito:groups", roleMap = <role_groups>, name = ["name", "email", "username"] }`. The `groups` claim is `cognito:groups`, so it includes the role groups (`stac-operators` and so on) as well as the data groups; the same claim feeds `roles` (I-153). `username` is the last name fallback because Cognito access tokens carry no `name` or `email`.
 
 ## Notes
 

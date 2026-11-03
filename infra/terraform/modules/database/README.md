@@ -72,6 +72,10 @@ The master password is RDS-managed (`manage_master_user_password = true`), store
 
 RDS ships `postgis`, `btree_gist` and `unaccent`. The chart's bootstrap Job creates them as master before `pypgstac migrate` (spec 7.2). The module installs nothing.
 
+## When changes take effect
+
+`apply_immediately` (default `false`) applies instance modifications (class, storage, engine version, CA) in the next maintenance window; set it `true` to apply them at once, which can restart the instance. Parameter changes are separate: see below.
+
 ## Static parameters apply at reboot
 
 Every parameter is `pending-reboot`: static parameters require it, and at creation the instance boots with the group anyway. Changing a parameter later takes effect at the next reboot. The group uses `name_prefix` and `create_before_destroy`, so a family change (a new major) swaps groups cleanly.

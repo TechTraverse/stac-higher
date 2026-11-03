@@ -1792,6 +1792,46 @@ OpenTofu/Terraform >= 1.11, above the modules' 1.10 floor.
 Mitigation: the deployment's state backend must be encrypted and
 access-controlled. Revisit when the floor moves.
 
+### I-151 · Run credentials carry no KMS permission 🟡
+
+`session_policy()` lists S3 actions only. On the SSE-KMS bucket, a run's PUT
+and GET then depend on the key policy's `Principal "*"` + `kms:ViaService`
+statement applying to the session principal past the session policy. AWS
+documents that only for policies naming the session ARN. R-11 settles it with
+one PUT under run credentials. If it is denied, `session_policy()` gains
+`kms:GenerateDataKey`/`kms:Decrypt` on the platform key (with #158). The run
+role already grants both.
+
+Tracked in: GitHub #158.
+
+### I-152 · The pipeline's STS client reuses the S3 endpoint 🟡
+
+`build_sts_client` passes `STAGING_S3_ENDPOINT` as the STS endpoint, so on AWS
+that variable must stay blank (botocore's defaults). Set to the regional S3
+URL, every run fails `RunCredentialsError`. The chart (R-6) leaves it unset on
+AWS. A separate STS endpoint setting is the fix if a deployment ever needs one.
+
+### I-153 · Cognito residuals 🟡
+
+- Cognito's discovery document has no `end_session_endpoint`, so
+  `/api/auth/logout` ends only the app session.
+- `cognito:groups` feeds both `groups` and `roles`, so role groups
+  (`stac-operators`) also appear as data groups.
+- Access tokens carry no `email`, so identities show `username`.
+
+### I-154 · The demo-destination key is a long-lived IAM user key in state 🟡
+
+Accepted for the test environment (spec §7.1, lead decision 2026-11-02). It is
+the user-credential path by design, not the platform's own access. Destroy the
+module with the environment.
+
+### I-155 · The Pod Identity trust is not scoped to the cluster 🟡
+
+The roles trust `pods.eks.<dns_suffix>` without `aws:SourceArn`. Any
+association in the account may bind them, and creating one needs
+`iam:PassRole`. Adding the cluster-ARN condition is a hardening step to verify
+at R-11.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
