@@ -232,8 +232,10 @@ GET /health
 - **Geostationary rescale:** `x`/`y` in `rad` are served in metres
   (× `perspective_point_height`), matching `cube:dimensions` on the asset. EDR
   returns empty results on radians (spike Q2).
-- **Not served:** a sink whose repository does not exist yet (`pending` in
-  `/health`) or holds zero steps (`empty`).
+- **Not served:** a sink whose repository does not exist yet or has no
+  recorded `source_prefixes` (`pending` in `/health`; the prefixes are empty
+  during a sink's first append and on a provisional redo, and without them no
+  chunk could be read), or whose repository holds zero steps (`empty`).
 - **Time selection:** use the asset's `stac_higher:time_values` strings
   verbatim (or `nearest::<value>`). A `t` the server's snapshot lacks — the
   asset can be one poll ahead, or the step was just trimmed — is a 422.
@@ -250,11 +252,17 @@ GET /health
   empty CSV field / JSON `null`, and `x-cube-missing-steps` carries the count
   (`0` when none; exposed through CORS). `POST` is not offered.
   `edr/area` and `edr/cube` are xpublish-edr's own and **fail** on a missing
-  step.
+  step. `position` accepts only `method=nearest` (the default): `linear`
+  interpolates before the tolerant load, so it is a 422. A time selector on the
+  append dimension (`t=…`) may be the asset's `…Z` string verbatim.
 - **`/health`** (always 200): `datasets` (snapshot, steps, opened_at),
   `pending`, `empty`, `errors` and `last_reload_error`. Errors show the
   exception **type** only, since the endpoint is anonymous; the text is in the
   service log. A DB or per-sink failure keeps serving what is already open.
+  `errors` is keyed by cube collection id and also holds a sink whose config is
+  rejected (`InvalidSinkConfig`; its open dataset stays) and a cube whose
+  warm-up tile was not a 200 (`WarmUpFailed(<status>)`, `None` when the request
+  failed), cleared by the next successful warm-up or when the cube goes.
 - **Stale snapshot risk:** if reloads keep failing for longer than Z-6's
   `CUBE_SNAPSHOT_RETENTION_SECONDS` (1 h), the open snapshot can be expired and
   its manifests garbage-collected under the server. `last_reload_error` is the
