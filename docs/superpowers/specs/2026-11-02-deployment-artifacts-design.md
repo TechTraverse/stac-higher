@@ -4,7 +4,7 @@
 **Status:** **approved 2026-11-03** by the lead, with Q2 and Q3 settled as recorded in §13; Q1 stays open for the cluster team.
 **Tracking:** epic to be created on approval (new queue `deploy artifacts (R)`).
 **Decision record:** [ADR 0024](../../decisions/0024-deployment-artifacts.md)
-(proposed) — publish-don't-deploy, Terraform/OpenTofu for AWS, Helm for
+(accepted) — publish-don't-deploy, Terraform/OpenTofu for AWS, Helm for
 Kubernetes, eoapi-cdk not adopted, services on EKS.
 **Scope source:** ROADMAP §9 Phase 8; the K spec
 ([2026-09-02 process compute](2026-09-02-process-compute-k8s-kueue-design.md))
@@ -156,7 +156,11 @@ username/password registry auth, not ECR's 12-hour tokens. So:
   The scanner and drift checker read GHCR anonymously, as today.
 - The Kubernetes executor rewrites the registry host at launch through a new
   **registry mirror map** setting (`ghcr.io` → `<ecr>/ghcr`, …). The digest is
-  unchanged, so approval-by-digest (ADR 0021) is unaffected. (§8, R-1.)
+  unchanged, so approval-by-digest (ADR 0021) is unaffected. (§8, R-8.)
+- **Untested: an uncached pull by digest through the pull-through cache.**
+  The first pull of a never-cached image is by digest; no AWS statement says
+  it resolves through the cache. R-8 tests it before anything relies on it: a
+  failure means no process run starts on a fresh cluster.
 - Consequence, accepted for the first environment: **user images in a private
   ECR repository are not supported** (they would need an ECR token path from
   the pipeline's workload identity). Recorded as a follow-up.
@@ -177,11 +181,11 @@ tag, `appVersion` = the same.
 | Component | Kind | Notes |
 |---|---|---|
 | app | Deployment + Service + HPA | `node app/dist/server/entry.mjs`; ServiceAccount with workload identity |
-| pipeline | Deployment, **1 replica** | worker + scheduler; `PROCESS_EXECUTOR=kubernetes`; ServiceAccount + Role in the runs namespace (K spec §6.3); `/metrics` |
+| pipeline | Deployment, **1 replica**, `strategy: Recreate` (a rolling update would briefly run two schedulers) | worker + scheduler; `PROCESS_EXECUTOR=kubernetes`; ServiceAccount + Role in the runs namespace (K spec §6.3); `/metrics` |
 | catalog plane | eoapi-k8s subchart | stac, raster (our titiler image), vector, stac-auth-proxy (our derived image) |
 | cube-server | Deployment + Service | `infra/cube-server/`; read-only identity scoped to `assets/*/_cube/*` |
-| db bootstrap | Job, runs first | creates the login roles (§7.2) using the RDS master secret |
-| pgstac migrate | Job, after bootstrap | `pypgstac migrate` from the pipeline image as the owner role, the compose `pgstac-migrate` equivalent |
+| db bootstrap | Job, runs first | as the RDS master: creates the login roles and the three extensions (§7.2) |
+| pgstac migrate | Job, after bootstrap | `pypgstac migrate` from the pipeline image as the owner role (the compose `pgstac-migrate` equivalent), **then**, as the same role, the memberships of `stac_api`/`stac_reader` in the `pgstac_*` roles it created (§7.2) |
 | app migrate | Job, after pgstac migrate | `runMigrations()` via a new CLI entry in the app image (§8, R-1), as the owner role. The first-request path stays as a fallback (it is advisory-locked, and the app runs as the owner role, §7.2) |
 | demo seed | Job, **off by default** | `pipeline.demo seed / goes-seed / images-seed` against the deployed stack (§8, R-9) |
 | ingress | Ingress per public host | className, annotations and hosts from values; nothing AWS-specific in templates |
@@ -269,7 +273,9 @@ ships an `eks-cpu` hardware-profile default for the first environment, whose
 
 Every secret the platform reads — the per-role DB credentials (§7.2),
 `SESSION_SECRET`, `CATALOG_BFF_SHARED_SECRET`, `INTERNAL_API_TOKEN`,
-`CREDENTIALS_MASTER_KEY`, `PROXY_AUTH_TOKEN` — reaches pods through named
+`CREDENTIALS_MASTER_KEY`, `PROXY_AUTH_TOKEN`, the scanner's Docker Hub
+credentials (`REGISTRY_DOCKERHUB_USER`/`REGISTRY_DOCKERHUB_TOKEN`, optional)
+— reaches pods through named
 Kubernetes Secrets. (The app's OIDC login is a public PKCE client; no client
 secret is read.) The builder re-audits this list against the code.
 `secrets.mode`:
@@ -327,7 +333,7 @@ close to today as AWS allows:
 
 | Login role | Used by | Grants |
 |---|---|---|
-| `stac_higher_owner` | app, pipeline, both migrate Jobs | owns the `pgstac` and `stac_higher` schemas and their objects (the app's migrations attach `item_events_capture_trg` to `pgstac.items`, so they need ownership); `CREATEROLE` for migration 033; **not** superuser |
+| `stac_higher_owner` | app, pipeline, both migrate Jobs | owns the `stac_higher` schema. For pgstac it has **owner rights by membership**: pypgstac 0.9.11's migration creates `pgstac_admin`/`pgstac_read`/`pgstac_ingest`, grants `pgstac_admin` to the migrating role, and makes `pgstac_admin` the owner of every pgstac object (`pgstac_admin_owns()`). That membership is what lets the app's migrations attach `item_events_capture_trg` to `pgstac.items`. `CREATEROLE`, needed by the pgstac migration itself and by migration 033; **not** superuser |
 | `stac_api` | stac-fastapi | member of pgstac's own `pgstac_ingest` (transactions enabled) |
 | `stac_reader` | titiler, tipg | member of `pgstac_read`; tipg also `SELECT` on the vector tables it serves |
 | `stac_proxy_policy` | the enforced auth-proxy's `POLICY_DATABASE_URL` | read-only, the role ADR 0015 says the cloud must provision — exact grants from ADR 0015 |
@@ -336,6 +342,20 @@ close to today as AWS allows:
 - The **RDS master** is used only by the db-bootstrap Job, which reads the
   current secret each run, so Secrets Manager's master-password rotation
   breaks nothing.
+- **Extensions are pre-created by the bootstrap Job as master.** The pgstac
+  migration runs `CREATE EXTENSION IF NOT EXISTS postgis / btree_gist /
+  unaccent`; a non-superuser on RDS can do that only as the database owner
+  (trusted extensions). Pre-creating them as master (our call, over making
+  `stac_higher_owner` the database owner) turns the migration's statements
+  into no-ops and keeps the owner role smaller.
+- **Ordering on Postgres ≥ 16.** `CREATEROLE` lets a role grant membership
+  only in roles it created or holds ADMIN on. `stac_higher_owner` creates the
+  `pgstac_*` roles during the pgstac migration, so the `stac_api` →
+  `pgstac_ingest` and `stac_reader` → `pgstac_read` memberships are granted
+  **after** that migration, by the owner (the pgstac migrate Job's second
+  step, §6.1), not by the bootstrap Job, which runs first and as master. The
+  same holds for `cube_server` → `stac_higher_cube_reader` (migration 033,
+  run by the owner).
 - Per-role passwords are generated by the Terraform `secrets` module and
   reach the Job and the workloads through §6.4.
 - Splitting the app's runtime role from the migration owner is deferred;
@@ -394,8 +414,13 @@ AWS. Each becomes a slice or folds into one (§12).
   - the chart's `eks-cpu` profile carries a `max_queue_wait_seconds` that
     leaves room for GeoColor's timeout (the builder measures it).
 
-  Longer runs on AWS are a later design. **Also** re-measure I-90 (the
-  2048-char session-policy cap) against real STS.
+  Longer runs on AWS are a later design. **Untested: whether the cap also
+  applies under IRSA** (a web-identity session calling `AssumeRole`). AWS
+  defines role chaining as using one role's session to assume another, which
+  suggests it does; the PR #125 review recalls otherwise. R-11 settles it
+  with one call; if the cap does not apply, the IRSA toggle lifts it and the
+  later design shrinks to "run the pipeline on IRSA". **Also** re-measure I-90
+  (the 2048-char session-policy cap) against real STS.
 - **The bearer-token audience claim is configurable** (lead decision
   2026-11-02). The app (`app/src/lib/auth/bearer.ts`, `AUTH_BEARER_AUDIENCES`)
   and the enforced proxy (`ALLOWED_JWT_AUDIENCES`) both match a token's `aud`.
@@ -485,16 +510,16 @@ The module needs no publishing step; the tag is its version.
 | # | Slice | Depends on |
 |---|---|---|
 | R-1 | App: runtime config for every browser-visible URL; S3 default credential chain; RDS TLS (node-postgres); `PROCESS_MAX_CREDENTIAL_SECONDS` deploy refusal; configurable audience claim; migrate CLI | — |
-| R-2 | Pipeline + cube-server: S3 default credential chain (boto3, obstore, Icechunk); RDS TLS (psycopg, pypgstac); credential cap at mint | — |
+| R-2 | Pipeline + cube-server: S3 default credential chain (boto3, obstore, Icechunk); RDS TLS (psycopg, pypgstac); credential cap at mint; confirm the titiler base image's GDAL is ≥ 3.9 (Pod Identity token-file support, OSGeo/gdal#9877) | — |
 | R-3 | Publish the auth-proxy image (with the configurable audience claim if it lands in our derived image); provenance + SBOM; release manifest | — |
 | R-4 | Terraform `kms`, `storage`, `secrets`, `registry` + the CI validation job + example skeleton | — |
 | R-5 | Terraform `database` (TLS on, pgstac tuning), `identity` (Pod Identity + IRSA), `cognito`, `demo-destination`, `helm_values` output | R-4 |
 | R-6 | Chart skeleton: app, pipeline, db-bootstrap + migrate Jobs (§7.2 roles), config ConfigMaps into both Deployments, secrets modes, ingress, `stac-higher` NetworkPolicies, Helm + Argo compatibility, render tests | R-1, R-2 |
 | R-7 | Chart: eoapi-k8s catalog plane (fit check first, §6.1) + cube-server | R-6 |
-| R-8 | Chart: runs namespace, pipeline RBAC, runs NetworkPolicies, Kueue + NodePool cluster objects from #14; registry mirror map in the Kubernetes executor | R-6, #13, #14 |
+| R-8 | Chart: runs namespace, pipeline RBAC, runs NetworkPolicies, Kueue + NodePool cluster objects from #14; registry mirror map in the Kubernetes executor; test an uncached by-digest pull through the ECR cache (§5) | R-6, #13, #14 |
 | R-9 | Release workflow: chart push to GHCR OCI; first `v0.x` tag | R-3, R-6 |
 | R-10 | Demo seed as an in-cluster Job, sealing the `demo-destination` key into the deliver connection | R-6, R-5 |
-| R-11 | **Lead-only**: first deploy rehearsal from a deployment repo into the test account; GOES loop + GeoColor + cube demo; record gaps | all, cluster |
+| R-11 | **Lead-only**: first deploy rehearsal from a deployment repo into the test account; GOES loop + GeoColor + cube demo; test whether the 1 h cap applies under IRSA (§8); record gaps | all, cluster |
 
 R-6 sets `PROCESS_EXECUTOR=kubernetes` and the `eks-cpu` profile's
 `backend.kubernetes` block against the K spec's contract (§6, §3.4); #13
@@ -547,7 +572,10 @@ module (with the SQS backend); per-group Kueue queues (I-96).
 ## 15. Risks
 
 - **eoapi-k8s fit** (§6.1) — mitigated by the fallback.
-- **Workload-identity support in GDAL/obstore/Icechunk** (§8) — IRSA fallback.
+- **Workload-identity support in obstore/Icechunk** (§8) — IRSA fallback.
+  GDAL supports Pod Identity's token file from 3.9 (OSGeo/gdal#9877); R-2
+  confirms the titiler image's version.
+- **ECR pull-through by digest** (§5) — untested until R-8.
 - **Role-chaining 1 h cap** limits long process runs on AWS (§8) — explicit
   refusal now, design later.
 - **Kueue + Auto Mode** — the K spec §7.3 coupling (quota = NodePool limits)
