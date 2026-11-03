@@ -16,6 +16,7 @@ import {
   deleteCubeSink,
   existingCollections,
   getCubeSink,
+  listReferenceSourceCollections,
   referenceIngestSources,
   setCubeSinkEnabled,
   upsertCubeSink,
@@ -215,5 +216,57 @@ describe("cube sink storage", () => {
       "c.protocol = 's3' AND COALESCE(c.config->'anonymous' = 'true'::jsonb, false)","cc.direction = 'ingest'", "cc.enabled", "cc.deleted_at IS NULL", "c.deleted_at IS NULL", "storage_mode' = 'reference'"]) {
       expect(sql).toContain(clause);
     }
+  });
+});
+
+describe("listReferenceSourceCollections", () => {
+  const assoc = (collection_id: string, title: string | null, id: string, protocol: string, anonymous: boolean) => ({
+    collection_id, title, association_id: id, connection_id: `c-${id}`, protocol, anonymous,
+  });
+
+  it("filters by the caller's groups, keeping unowned collections", async () => {
+    mockQuery.mockResolvedValue(result([]));
+    await listReferenceSourceCollections(["earth-observation"]);
+    await listReferenceSourceCollections(null);
+    const sql = mockQuery.mock.calls[0][0] as string;
+    expect(sql).toContain("LEFT JOIN stac_higher.collection_settings s ON s.collection_id = cc.collection_id");
+    expect(sql).toContain("($1::text[] IS NULL OR s.group_id IS NULL OR s.group_id = ANY($1::text[]))");
+    expect(mockQuery.mock.calls[0][1]).toEqual([["earth-observation"]]);
+    expect(mockQuery.mock.calls[1][1]).toEqual([null]);
+  });
+
+  it("joins live pgstac collections for the title and reuses the reference clauses", async () => {
+    mockQuery.mockResolvedValueOnce(result([]));
+    await listReferenceSourceCollections(null);
+    const sql = mockQuery.mock.calls[0][0] as string;
+    for (const clause of [
+      "JOIN pgstac.collections pc ON pc.id = cc.collection_id",
+      "pc.content->>'title'",
+      "cc.direction = 'ingest'",
+      "cc.enabled",
+      "cc.deleted_at IS NULL",
+      "c.deleted_at IS NULL",
+      "storage_mode' = 'reference'",
+      "c.protocol",
+    ]) {
+      expect(sql).toContain(clause);
+    }
+    expect(sql).toMatch(/ORDER BY cc\.collection_id/);
+  });
+
+  it("groups association rows per collection, in order", async () => {
+    mockQuery.mockResolvedValueOnce(
+      result([
+        assoc("a", "Alpha", "1", "s3", true),
+        assoc("a", "Alpha", "2", "sftp", false),
+        assoc("b", null, "3", "s3", true),
+      ]),
+    );
+    const out = await listReferenceSourceCollections(null);
+    expect(out.map((c) => c.collection_id)).toEqual(["a", "b"]);
+    expect(out[0].title).toBe("Alpha");
+    expect(out[0].associations).toHaveLength(2);
+    expect(out[0].associations[1]).toEqual({ association_id: "2", connection_id: "c-2", protocol: "sftp", anonymous: false });
+    expect(out[1].title).toBeNull();
   });
 });

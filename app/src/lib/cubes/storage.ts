@@ -266,16 +266,54 @@ export async function existingCollections(ids: string[]): Promise<Set<string>> {
 }
 
 /** The live, enabled, reference-mode ingest associations (and their
- * connections) of every collection; callers add the collection predicate. */
+ * connections) of every collection, as FROM and WHERE fragments so a caller
+ * can add joins between them and its own predicate after the WHERE. */
 const REFERENCE_INGEST_FROM = `FROM stac_higher.collection_connections cc
-       JOIN stac_higher.connections c ON c.id = cc.connection_id AND c.deleted_at IS NULL
-      WHERE cc.direction = 'ingest'
+       JOIN stac_higher.connections c ON c.id = cc.connection_id AND c.deleted_at IS NULL`;
+const REFERENCE_INGEST_WHERE = `WHERE cc.direction = 'ingest'
         AND cc.enabled
         AND cc.deleted_at IS NULL
         AND cc.config->>'storage_mode' = 'reference'`;
 
 const REFERENCE_INGEST_COLUMNS = `cc.id AS association_id, cc.connection_id, c.protocol,
        c.protocol = 's3' AND COALESCE(c.config->'anonymous' = 'true'::jsonb, false) AS anonymous`;
+
+export interface ReferenceSourceCollection {
+  collection_id: string;
+  title: string | null;
+  associations: ReferenceIngestSource[];
+}
+
+/**
+ * Every live collection with an enabled reference-mode ingest association,
+ * grouped per collection, for the cube sink's source picker. `groups` null =
+ * admin (all). Otherwise a collection is listed when it is unowned
+ * (`collection_settings` has no row or a NULL `group_id`, ADR 0003) or owned
+ * by one of the groups: `canManageCollection`'s rule, because PUT refuses any
+ * source the caller cannot manage, so a foreign one would be a dead choice.
+ */
+export async function listReferenceSourceCollections(
+  groups: string[] | null,
+): Promise<ReferenceSourceCollection[]> {
+  await runMigrations();
+  const result = await query<ReferenceIngestSource & { collection_id: string; title: string | null }>(
+    `SELECT cc.collection_id, pc.content->>'title' AS title, ${REFERENCE_INGEST_COLUMNS}
+       ${REFERENCE_INGEST_FROM}
+       JOIN pgstac.collections pc ON pc.id = cc.collection_id
+       LEFT JOIN stac_higher.collection_settings s ON s.collection_id = cc.collection_id
+      ${REFERENCE_INGEST_WHERE}
+        AND ($1::text[] IS NULL OR s.group_id IS NULL OR s.group_id = ANY($1::text[]))
+      ORDER BY cc.collection_id, cc.created_at, cc.id`,
+    [groups],
+  );
+  const out: ReferenceSourceCollection[] = [];
+  for (const { collection_id, title, ...association } of result.rows) {
+    const last = out[out.length - 1];
+    if (last?.collection_id === collection_id) last.associations.push(association);
+    else out.push({ collection_id, title, associations: [association] });
+  }
+  return out;
+}
 
 /** The source's enabled, live, reference-mode ingest associations, their
  * protocol, and whether each connection reads anonymously (spec §7, §13). */
@@ -284,6 +322,7 @@ export async function referenceIngestSources(collectionId: string): Promise<Refe
   const result = await query<ReferenceIngestSource>(
     `SELECT ${REFERENCE_INGEST_COLUMNS}
        ${REFERENCE_INGEST_FROM}
+      ${REFERENCE_INGEST_WHERE}
         AND cc.collection_id = $1`,
     [collectionId],
   );
