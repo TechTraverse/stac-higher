@@ -293,6 +293,38 @@ async def test_a_trim_whose_record_was_lost_heals_on_the_next_run(tmp_path):
     assert cube.commits() == before  # nothing left to trim
 
 
+async def test_two_lost_trim_records_in_a_row_still_heal(tmp_path):
+    # Run 1 trims and loses its record; run 2 heals that trim, trims again,
+    # and loses its record too. Run 3 must heal the two-commit chain, or a
+    # stopped source stays unrecorded until an append that never comes.
+    cube = Cube(tmp_path, window={"max_age": "30m"})
+    recorded = cube.append(0, 1, 2, 3, 4, 5, now=scan(5))
+    real = cube.repo.record_snapshot
+    lose = [True, True]
+
+    async def flaky(*a, **kw):
+        if lose and lose.pop(0):
+            raise ConnectionError("db blip")
+        return await real(*a, **kw)
+
+    cube.repo.record_snapshot = flaky
+    with pytest.raises(ConnectionError):
+        await cube.run(now=scan(5) + dt.timedelta(minutes=20))  # trims 0-2
+    with pytest.raises(ConnectionError):
+        await cube.run(now=scan(5) + dt.timedelta(minutes=25))  # heals, trims 3
+    assert cube.sink.last_snapshot_id == recorded
+    before = cube.commits()
+
+    summary = await cube.run(now=scan(5) + dt.timedelta(minutes=25))
+
+    assert summary["healed"] is True
+    assert cube.sink.last_snapshot_id == cube.tip()
+    assert summary["published"] is True
+    assert summary["status"] == "ok"
+    assert cube.commits() == before
+    assert cube.times() == [as_ns(scan(4)), as_ns(scan(5))]
+
+
 async def test_only_a_commit_tagged_as_maintenance_is_healed(tmp_path):
     # The heal reads the snapshot metadata, not the message: a commit that
     # merely says "(maintenance)" is someone else's tip.

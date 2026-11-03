@@ -182,6 +182,20 @@ def expiry_cutoff(
     return lowest
 
 
+def _maintenance_chain_to(repo: ic.Repository, recorded_snapshot_id: str) -> bool:
+    """True when every commit from ``main``'s tip back to the recorded
+    snapshot is tagged as a maintenance commit. A run that heals a lost
+    record trims again, and its own record can be lost too, so the unrecorded
+    commits can be more than one deep. The walk stops at the first commit
+    another writer made, so it is bounded by the unrecorded maintenance runs."""
+    for snapshot in repo.ancestry(branch=BRANCH):
+        if snapshot.id == recorded_snapshot_id:
+            return True
+        if (snapshot.metadata or {}).get(WRITER_METADATA_KEY) != MAINTENANCE_WRITER:
+            return False
+    return False
+
+
 def maintain_repository(
     storage: ic.Storage,
     config: CubeSinkConfig,
@@ -201,17 +215,15 @@ def maintain_repository(
     trimmed = 0
     healed = False
     owned = recorded_snapshot_id
-    if recorded_snapshot_id is not None and tip != recorded_snapshot_id:
+    if (
+        recorded_snapshot_id is not None
+        and tip != recorded_snapshot_id
+        and _maintenance_chain_to(repo, recorded_snapshot_id)
+    ):
         # A trim committed, then the job died before recording it: that tip
         # is maintenance's own, and a stopped source has no append to record it.
-        head = next(iter(repo.ancestry(branch=BRANCH)), None)
-        if (
-            head is not None
-            and head.parent_id == recorded_snapshot_id
-            and (head.metadata or {}).get(WRITER_METADATA_KEY) == MAINTENANCE_WRITER
-        ):
-            healed = True
-            owned = tip
+        healed = True
+        owned = tip
     if config.window is not None and may_trim and tip == owned:
         started = time.monotonic()
         session = repo.writable_session(BRANCH)
