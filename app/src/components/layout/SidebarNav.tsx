@@ -28,6 +28,7 @@ import {
   Share2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { BRAND_NAME, BRAND_TAGLINE, StratusMark } from "@/components/layout/StratusMark";
 import {
   Sidebar,
   SidebarContent,
@@ -168,14 +169,14 @@ export function SidebarNav() {
           className="flex items-center gap-2.5 px-2 py-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:justify-center"
         >
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-sidebar-primary">
-            <Layers className="h-4 w-4 text-sidebar-primary-foreground" />
+            <StratusMark className="h-5 w-5 text-sidebar-primary-foreground" />
           </span>
           <span className="min-w-0 group-data-[collapsible=icon]:hidden">
             <span className="block truncate text-[15px] font-bold leading-tight text-white">
-              STAC Higher
+              {BRAND_NAME}
             </span>
             <span className="block truncate text-[10px] font-semibold uppercase tracking-[0.09em] text-sidebar-muted">
-              Geospatial Data Platform
+              {BRAND_TAGLINE}
             </span>
           </span>
         </a>

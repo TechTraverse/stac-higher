@@ -17,6 +17,7 @@ import type { LucideIcon } from "lucide-react";
 import { Input, ThemeToggle } from "@stac-higher/shared";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AlertBell } from "@/components/layout/AlertBell";
+import { BRAND_NAME } from "@/components/layout/StratusMark";
 import { UserMenu } from "@/components/layout/UserMenu";
 import { $builtInCatalog } from "@/stores/catalogStore";
 import { useCollections } from "@/lib/query/collections";
@@ -57,7 +58,7 @@ function titleForPath(pathname: string): string {
   for (const [pattern, label] of ROUTE_TITLES) {
     if (pattern.test(pathname)) return label;
   }
-  return "STAC Higher";
+  return BRAND_NAME;
 }
 
 interface Hit {
