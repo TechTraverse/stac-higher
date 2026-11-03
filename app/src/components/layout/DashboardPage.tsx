@@ -20,7 +20,6 @@ import {
   ArrowRight,
   ChevronDown,
   Database,
-  Layers,
   Plug,
   Plus,
 } from "lucide-react";
@@ -36,6 +35,7 @@ import {
   type LineageHealth,
 } from "@stac-higher/shared";
 import { AppShell } from "@/components/layout/AppShell";
+import { BRAND_NAME, BRAND_TAGLINE, StratusMark } from "@/components/layout/StratusMark";
 import { $builtInCatalog, $catalogs } from "@/stores/catalogStore";
 import { useCollections } from "@/lib/query/collections";
 import { useLandingPage } from "@/lib/query/search";
@@ -315,11 +315,14 @@ function DashboardContent() {
       <main className="flex-1 p-6">
         <div className="mx-auto max-w-2xl py-20 text-center">
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
-            <Layers className="h-8 w-8 text-primary" />
+            <StratusMark className="h-9 w-9 text-primary" />
           </div>
-          <h1 className="mb-3 text-3xl font-bold">Welcome to STAC Higher</h1>
+          <h1 className="mb-2 text-3xl font-bold">Welcome to {BRAND_NAME}</h1>
+          <p className="mb-4 text-sm font-semibold uppercase tracking-[0.12em] text-primary">
+            {BRAND_TAGLINE}
+          </p>
           <p className="mb-8 text-lg text-muted-foreground">
-            A modern interface for managing SpatioTemporal Asset Catalogs.
+            Ingest, catalog and process geospatial data at scale.
             Connect to a STAC catalog to get started.
           </p>
           <a href="/catalogs">
