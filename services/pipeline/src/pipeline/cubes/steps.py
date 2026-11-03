@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
+from obspec_utils.readers import BlockStoreReader
 from obspec_utils.registry import ObjectStoreRegistry
 from virtualizarr import open_virtual_dataset  # also registers the .vz accessor
 from virtualizarr.parsers import HDFParser
@@ -60,12 +61,33 @@ def build_step(vds: xr.Dataset, config: CubeSinkConfig) -> xr.Dataset:
     return step
 
 
+def sized_reader(store: Any, path: str) -> BlockStoreReader:
+    """A ``BlockStoreReader`` whose size is already fetched.
+
+    ``BlockStoreReader`` HEADs lazily, from inside h5py's C file-driver
+    callback (``seek`` to the end). When that HEAD fails (a 404, a 503 after
+    obstore's retries: the very errors :func:`is_transport_error` classifies),
+    h5py leaves the exception pending while HDF5 unwinds and calls the driver
+    again; CPython then fails the next method lookup that misses the first
+    class in the MRO (``store.head`` lives on obstore's ``ObjectStoreMethods``,
+    not on ``S3Store``) and raises ``AttributeError: 'S3Store' object has no
+    attribute 'head'`` in place of the real error. That turned a transport
+    error into a file-specific one (issue #104). HEADing here, outside the
+    callback, raises the typed error cleanly and leaves the callback nothing
+    to look up.
+    """
+    reader = BlockStoreReader(store, path)
+    reader.seek(0, 2)  # SEEK_END: fetches and caches the size
+    reader.seek(0)
+    return reader
+
+
 def parse_header(url: str, registry: ObjectStoreRegistry, config: CubeSinkConfig) -> xr.Dataset:
     """Blocking: run it through ``asyncio.to_thread``."""
     vds = open_virtual_dataset(
         url,
         registry=registry,
-        parser=HDFParser(),
+        parser=HDFParser(reader_factory=sized_reader),
         loadable_variables=list(config.loadable_variables),
     )
     return build_step(vds, config)
