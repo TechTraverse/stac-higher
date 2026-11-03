@@ -126,6 +126,8 @@ No workload needs the IRSA toggle for a library gap. The toggle remains for the 
 
 **Database TLS.** Set `PGSSLMODE=verify-full` and `PGSSLROOTCERT=<path to the RDS CA bundle>` (for example `/etc/rds/ca-bundle.pem`), or put both keys in the DSN as `?sslmode=verify-full&sslrootcert=/etc/rds/ca-bundle.pem`. libpq reads them for every connection the pipeline makes: the async pool, Procrastinate, the LISTEN connection, the query-queue drainer, pypgstac's `PgstacDB` (it passes the DSN through), and `pypgstac migrate`, which with no `--dsn` reads `PG*` variables. The cube-server's `CUBE_DB_DSN` behaves the same. `sslrootcert=system` (libpq 16 or later) uses the OS trust store instead. Unset keeps today's behaviour. Pinned by both `test_db_tls.py` files (`services/pipeline/tests/`, `infra/cube-server/tests/`).
 
+**Migrations as a command**: `node app/dist/server/migrate.mjs` in the app image (`npm run migrate --workspace app` locally after a build) applies `runMigrations()` and exits 0/1. It is used by the chart's app-migrate Job. The first-request path stays (advisory-locked, so both can race safely).
+
 ## Astro server routes
 
 Access shorthand: **member+** = any member of the owning group (admin sees
