@@ -1802,7 +1802,7 @@ one PUT under run credentials. If it is denied, `session_policy()` gains
 `kms:GenerateDataKey`/`kms:Decrypt` on the platform key (with #158). The run
 role already grants both.
 
-Tracked in: GitHub #158.
+Tracked in: GitHub #158 (the session-policy change) and GitHub #147 (R-11's first-deploy rehearsal settles it).
 
 ### I-152 · The pipeline's STS client reuses the S3 endpoint 🟡
 
@@ -1817,7 +1817,9 @@ AWS. A separate STS endpoint setting is the fix if a deployment ever needs one.
   `/api/auth/logout` ends only the app session.
 - `cognito:groups` feeds both `groups` and `roles`, so role groups
   (`stac-operators`) also appear as data groups.
-- Access tokens carry no `email`, so identities show `username`.
+- Access tokens carry no `email`, so identities show `username`. In an
+  email-as-username pool Cognito's `username` claim is the sub UUID, so bearer
+  identities display a UUID.
 
 ### I-154 · The demo-destination key is a long-lived IAM user key in state 🟡
 
@@ -1831,6 +1833,8 @@ The roles trust `pods.eks.<dns_suffix>` without `aws:SourceArn`. Any
 association in the account may bind them, and creating one needs
 `iam:PassRole`. Adding the cluster-ARN condition is a hardening step to verify
 at R-11.
+
+Tracked in: GitHub #147.
 
 ## Resolved — archived
 

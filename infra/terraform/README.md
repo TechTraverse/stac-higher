@@ -53,9 +53,11 @@ because the whole repo is fetched at the ref.
 
 The composition's `helm_values` output (and `helm_values_yaml`, the same
 object as YAML) is what the Helm chart (R-6) consumes verbatim. Its keys are
-fixed; the chart's values schema sets `additionalProperties: false` on these
-sections, so **changing a key is a breaking change and needs the matching chart
-change**.
+fixed; the chart's values schema sets `additionalProperties: false` on `registry`,
+`aws`, `publicUrls`, `database`, `identity` (including `roleArns` and
+`serviceAccounts`), `demoDestination` and `secrets.arns`, while `global`,
+`auth` and `secrets` themselves are open. **Changing a key is a breaking
+change and needs the matching chart change.**
 
 ```yaml
 global:
@@ -128,7 +130,7 @@ differ, the chart wins.
 | `identity.roleArns.app`, `.pipeline` | `identity.role_arns` | IRSA annotation (`irsa` only) | consumed today |
 | `identity.serviceAccounts.titiler`, `.cubeServer`, `identity.roleArns.titiler`, `.cubeServer` | `identity` outputs | the titiler and cube-server ServiceAccounts | consumed by R-7 (not yet rendered) |
 | `secrets.mode` | fixed `external-secrets` | the ExternalSecrets mode | consumed today |
-| `secrets.arns` | `secrets.secret_arns` | one ExternalSecret `remoteRef.key` per platform secret (`externalsecrets.yaml`); `proxy_auth_token` is accepted and ignored (I-159) | consumed today |
+| `secrets.arns` | `secrets.secret_arns` | one ExternalSecret `remoteRef.key` per platform secret (`externalsecrets.yaml`); `proxy_auth_token` is accepted and ignored (R-6's ISSUES entry I-159) | consumed today |
 | `auth.mode` | fixed `oidc` | `AUTH_MODE` | consumed today |
 | `auth.issuer` | `cognito.issuer_url` | `OIDC_ISSUER` | consumed today |
 | `auth.clientId` | `cognito.client_id` | `OIDC_CLIENT_ID` | consumed today |
@@ -155,6 +157,9 @@ Rules:
   and `database.caBundle` (spec section 6.2). Hostnames and the CA bundle are
   deployment choices; the deployment puts them in its own values file, passed
   last (see the example README).
+- **`secrets.dockerHubArn` is not covered by `external_secrets_policy_json`.**
+  The chart's optional `secrets.dockerHubArn` is deployment-supplied, so a
+  deployment that sets it must add that ARN to the ESO role's read policy.
 - The module READMEs list the inputs behind each value; the composition's
   tests pin the keys.
 

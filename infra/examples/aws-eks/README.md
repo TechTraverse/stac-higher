@@ -20,7 +20,7 @@ The GHCR credentials secret is looked up by name; the deployment creates it
 
 ```bash
 tofu output -raw helm_values_yaml > values-aws.yaml
-helm upgrade --install stac-higher <chart> -f values-aws.yaml -f values.yaml
+helm upgrade --install stac-higher <chart> --namespace stac-higher --create-namespace -f values-aws.yaml -f values.yaml
 ```
 
 The deployment's own `values.yaml` goes last, so it wins. It carries what
