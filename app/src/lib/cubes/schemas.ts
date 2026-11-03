@@ -5,18 +5,12 @@
  * tests/contract-fixtures/cube-sink-config.json.
  */
 import { z } from "zod";
+import { durationSeconds } from "./duration";
 import { CUBE_MAINTENANCE_STATUSES } from "./status";
 
+export { durationSeconds };
+
 export const MAX_AGE_LIMIT_SECONDS = 30 * 86_400;
-const UNIT_SECONDS = { m: 60, h: 3_600, d: 86_400 } as const;
-
-/** `^\d+[mhd]$` → seconds, else null. */
-export function durationSeconds(value: string): number | null {
-  const match = /^(\d+)([mhd])$/.exec(value);
-  if (!match) return null;
-  return Number(match[1]) * UNIT_SECONDS[match[2] as keyof typeof UNIT_SECONDS];
-}
-
 const name = z.string().trim().min(1);
 const uniqueNames = (min: number, max: number) =>
   z

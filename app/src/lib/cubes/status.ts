@@ -1,3 +1,6 @@
+import { durationSeconds } from "./duration";
+import type { ApiCubeSink, CubeLedgerSummary } from "./storage";
+
 /**
  * stac_higher.cube_appends vocabulary (virtual cube spec §3.2, §5.2). Pinned
  * by tests/contract-fixtures/cube-append-status.json against
@@ -117,3 +120,59 @@ export const CUBE_PUBLISH_OUTCOME_LABEL: Record<CubePublishOutcome, string> = {
   missing_collection: "Cube collection missing",
   error: "Republish failed",
 };
+
+export const CUBE_SINK_HEALTH_STATES = ["disabled", "error", "attention", "stale", "waiting", "ok"] as const;
+export type CubeSinkHealthState = (typeof CUBE_SINK_HEALTH_STATES)[number];
+
+export const CUBE_SINK_HEALTH_LABEL: Record<CubeSinkHealthState, string> = {
+  disabled: "Disabled",
+  error: "Error",
+  attention: "Needs attention",
+  stale: "No recent data",
+  waiting: "Waiting for the first append",
+  ok: "Healthy",
+};
+
+export interface CubeSinkHealth {
+  state: CubeSinkHealthState;
+  /** `last_error`, `maintenance_failed`, the maintenance attention reasons
+   * verbatim, `failed_rows` and `no_append_within_window`. */
+  reasons: string[];
+}
+
+/**
+ * The one state a sink card shows; first match wins:
+ * disabled > error > attention > stale > waiting > ok.
+ *
+ * - `disabled` is the operator's choice, even when broken (`last_error` still
+ *   shows in `reasons`).
+ * - `stale` only with `window.max_age`: once nothing was appended for the whole
+ *   age, every step has aged out and the next trim empties the cube. A sink
+ *   with only `max_steps`, or no window, is never stale: nothing in the row
+ *   knows the source's cadence.
+ * - `failed_rows` reads `recent` (activity order), not the 7-day counts, so one
+ *   old failure cannot pin the card.
+ */
+export function cubeSinkHealth(
+  sink: Pick<ApiCubeSink, "enabled" | "last_error" | "last_maintenance" | "last_appended_at" | "config">,
+  ledger: Pick<CubeLedgerSummary, "recent">,
+  now: Date = new Date(),
+): CubeSinkHealth {
+  if (!sink.enabled) return { state: "disabled", reasons: sink.last_error ? ["last_error"] : [] };
+  if (sink.last_error) return { state: "error", reasons: ["last_error"] };
+  const maintenance = sink.last_maintenance;
+  if (maintenance?.status === "failed") return { state: "error", reasons: ["maintenance_failed"] };
+
+  const attention = [...(maintenance?.attention ?? [])];
+  if (ledger.recent.some((r) => r.status === "failed")) attention.push("failed_rows");
+  if (attention.length > 0) return { state: "attention", reasons: attention };
+
+  if (sink.last_appended_at === null) return { state: "waiting", reasons: [] };
+
+  const maxAge = sink.config.window?.max_age;
+  const seconds = maxAge === undefined ? null : durationSeconds(maxAge);
+  if (seconds !== null && now.getTime() - Date.parse(sink.last_appended_at) > seconds * 1000) {
+    return { state: "stale", reasons: ["no_append_within_window"] };
+  }
+  return { state: "ok", reasons: [] };
+}
