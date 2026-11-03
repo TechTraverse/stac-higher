@@ -54,9 +54,10 @@ class S3RepoOpener:
     """The platform bucket, read-only, plus anonymous access to the sources.
 
     Opened exactly like the writer (``pipeline/cubes/icerepo.py::cube_storage``):
-    path-style, explicit endpoint. One ``Repository`` handle is cached per
-    collection and replaced when its prefixes change; a cached handle sees new
-    commits on ``lookup_branch``.
+    path-style, explicit endpoint. Unset keys reach ``ic.s3_storage`` as ``None``,
+    which selects Icechunk's ``FromEnv`` credentials (the AWS default chain). One
+    ``Repository`` handle is cached per collection and replaced when its prefixes
+    change; a cached handle sees new commits on ``lookup_branch``.
     """
 
     def __init__(self, settings: Settings) -> None:
