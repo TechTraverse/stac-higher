@@ -12,6 +12,19 @@
 > "exactly one writer, `pipeline.cube_append`" below now reads "one writer
 > at a time": `pipeline.cube_maintain_sink` also commits a repository's age
 > trim, under the same per-sink `lock`.
+
+> **Superseded in part by the approved spec (2026-10-05, built by Z-5):**
+> "The collection asset" below describes the shape proposed here. The shape
+> as built is spec §3.3 / §6.3
+> (`docs/superpowers/specs/2026-10-03-virtual-cube-sink-design.md`) and
+> `docs/serving.md` "Virtual cubes": `href` is the `s3://` repository
+> location, not a server URL; the fields are
+> `stac_higher:virtual_chunk_prefixes`, `stac_higher:cube_sink_id` and
+> `stac_higher:time_values` (no `stac_higher:repo`, no `rel: store` link);
+> `cube:dimensions` carries extents, not step values; the write runs on a
+> plain pool connection under `FOR NO KEY UPDATE`, not the writer GUCs. The
+> decisions (one asset on the cube collection, the pipeline owning only its
+> keys, the row lock) stand.
 - **Related:** ADR 0011 (retention & GC), ADR 0013 (executor
   isolation — why this is not a process), ADR 0014 (process output path),
   ADR 0018 (process inputs and network profiles — the staging copy this

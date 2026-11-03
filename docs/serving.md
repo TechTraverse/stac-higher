@@ -256,7 +256,8 @@ GET /health
   `CUBE_SNAPSHOT_RETENTION_SECONDS` (1 h), the open snapshot can be expired and
   its manifests garbage-collected under the server. `last_reload_error` is the
   signal.
-- **Auth posture:** anonymous reads, CORS `*` (GET/HEAD), the same as
+- **Auth posture:** anonymous reads, CORS `*` (the preflight allows GET and
+  HEAD, but a tile answers HEAD with 405; MapLibre only GETs), the same as
   titiler until #34. Read-only on both sides: the DB login sees five
   `cube_sinks` columns and nothing else, and the Silo user
   (`infra/cube-server/silo-cube-read-policy.json`) can only read and list

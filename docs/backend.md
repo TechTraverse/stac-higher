@@ -25,7 +25,8 @@ Astro server route with its access rule. Per-area design docs are linked from
 group `stac_higher_cube_reader` with `USAGE` on `stac_higher` and
 `SELECT (id, cube_collection_id, enabled, config, source_prefixes)` on
 `stac_higher.cube_sinks`. If the app's DB user lacks `CREATEROLE` (a managed
-database), the migration only logs a WARNING; run, as an admin:
+database), the migration only raises a Postgres WARNING (visible in the
+database server's log, not the app's); run, as an admin:
 
 ```sql
 CREATE ROLE stac_higher_cube_reader NOLOGIN;
