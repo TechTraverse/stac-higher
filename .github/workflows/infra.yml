@@ -61,8 +61,6 @@ jobs:
     name: Terraform · validate + test (${{ matrix.engine }} ${{ matrix.version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
     strategy:
       fail-fast: false
       # The floor legs prove required_version = ">= 1.10"; the current legs
@@ -85,7 +83,12 @@ jobs:
         with:
           terraform_version: ${{ matrix.version }}
           terraform_wrapper: false
-      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+      # The runner context is not available in a job-level env, so the
+      # provider cache dir is exported from a step.
+      - name: Provider plugin cache
+        run: |
+          echo "TF_PLUGIN_CACHE_DIR=$RUNNER_TEMP/tf-plugin-cache" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/tf-plugin-cache"
       - run: scripts/check-terraform.sh "${{ matrix.engine }}"
 
   trivy:
