@@ -33,7 +33,7 @@ The deploying principal needs `iam:PassRole` and `eks:CreatePodIdentityAssociati
 
 The run role's identity policy is the full ceiling for `session_policy()`: the per-run session policy only narrows it, and any prefix `session_policy()` grants must appear here. It mirrors `session_policy()` in `services/pipeline/src/pipeline/process/credentials.py` and the prefixes in `services/pipeline/src/pipeline/storage/keys.py`; change both together.
 
-- `RunWritablePrefixes`: `PutObject`, `GetObject`, `DeleteObject` on `bucket/staging/runs/*` and `bucket/scans/*`. The `scans/*` grant also covers the rescan read prefix `scans/{image_id}/{scan_id}/` (`image_scan_prefix`), which the plan text did not list.
+- `RunWritablePrefixes`: `PutObject`, `GetObject`, `DeleteObject` on `bucket/staging/runs/*` and `bucket/scans/*`. The `scans/*` grant includes the rescan read prefix `scans/{image_id}/{scan_id}/` (`image_scan_prefix`).
 - `SourceCollectionsRead`: `GetObject` on `bucket/assets/*`.
 - `RunPrefixList`: `ListBucket` on the bucket, `s3:prefix` in `staging/runs/*`, `scans/*`, `assets/*`.
 - `BucketKms`: `Decrypt`, `GenerateDataKey` via S3.

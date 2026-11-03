@@ -102,31 +102,42 @@ demoDestination:                # only when enable_demo_destination
   credentialsSecretArn: <arn>
 ```
 
-| Key | Source (module output) | Feeds in the chart |
-|---|---|---|
-| `global.imageRegistry` | `registry.ghcr_mirror_prefix` | image repository prefix; the R-8 mirror map starts from `registry.mirrorPrefixes` |
-| `publicUrls.app` | `app_url` | the app's public origin |
-| `publicUrls.objectStore` | partition `dns_suffix`, region | `S3_ENDPOINT` (browser-facing presigned URLs) |
-| `aws.region` | `data.aws_region` | `S3_REGION`, `STAGING_S3_REGION` |
-| `aws.bucket` | `storage.bucket_name` | `S3_BUCKET`, `STAGING_BUCKET`, `PLATFORM_ASSET_BUCKET` |
-| `aws.kmsKeyArn` | `kms.key_arn` | SSE-KMS settings and ExternalSecrets decryption |
-| `aws.processRunRoleArn` | `identity.process_run_role_arn` | `PROCESS_STS_ROLE_ARN` |
-| `aws.processMaxCredentialSeconds` | fixed 3600 (STS role-chaining cap) | `PROCESS_MAX_CREDENTIAL_SECONDS` |
-| `aws.s3PrefixListCidrs` | regional S3 managed prefix list | the runs NetworkPolicy egress |
-| `aws.partition` | `data.aws_partition` | ARN construction in the chart |
-| `registry.host`, `registry.mirrorPrefixes` | `registry.registry_host`, `registry.mirror_prefixes` | the R-8 mirror map |
-| `database.host`, `port`, `name` | `database.address`, `port`, `db_name` | every DSN |
-| `database.masterSecretArn` | `database.master_user_secret_arn` | the bootstrap Job's ExternalSecret |
-| `database.caCertIdentifier` | `database.ca_cert_identifier` | which regional RDS CA bundle the deployment supplies |
-| `identity.*` | `identity` outputs, `namespace`, `service_accounts` | ServiceAccount names and role annotations (IRSA) |
-| `secrets.arns` | `secrets.secret_arns` | ExternalSecrets, one per platform secret |
-| `auth.issuer` | `cognito.issuer_url` | `OIDC_ISSUER` |
-| `auth.clientId` | `cognito.client_id` | `OIDC_CLIENT_ID` |
-| `auth.audienceClaim` | fixed `client_id` | `AUTH_BEARER_AUDIENCE_CLAIM` |
-| `auth.audiences` | `[cognito.client_id]` | `AUTH_BEARER_AUDIENCES`, proxy `ALLOWED_JWT_AUDIENCES` |
-| `auth.claimsMapping` | `cognito.claims_mapping` | `AUTH_CLAIMS_MAPPING` (JSON) |
-| `auth.hostedDomain` | `cognito.hosted_domain` | informational |
-| `demoDestination.*` | `demo_destination` outputs | the demo destination's connection and its ExternalSecret |
+Status is what the R-6 chart renders today; where this table and the chart
+differ, the chart wins.
+
+| Key | Source (module output) | Feeds in the chart | Status |
+|---|---|---|---|
+| `global.imageRegistry` | `registry.ghcr_mirror_prefix` | the prefix that replaces the leading `ghcr.io` of pulled images | consumed today (`pullRef`) |
+| `registry.mirrorPrefixes` | `registry.mirror_prefixes` | pulled images are rewritten through it per upstream host; it is the fallback for `ghcr.io` when `global.imageRegistry` is blank | consumed today (`pullRef`) |
+| `registry.host` | `registry.registry_host` | nothing | informational |
+| `publicUrls.app` | `app_url` | `OIDC_REDIRECT_URI` (`<app>/api/auth/callback`) | consumed today |
+| `publicUrls.objectStore` | partition `dns_suffix`, region | the app's `S3_ENDPOINT` only | consumed today |
+| `aws.region` | `data.aws_region` | `AWS_REGION`, `AWS_DEFAULT_REGION`, `S3_REGION`, `STAGING_S3_REGION` | consumed today |
+| `aws.bucket` | `storage.bucket_name` | `S3_BUCKET` (app), `STAGING_BUCKET` (pipeline) | consumed today |
+| `aws.processRunRoleArn` | `identity.process_run_role_arn` | `PROCESS_STS_ROLE_ARN` | consumed today |
+| `aws.processMaxCredentialSeconds` | fixed 3600 (STS role-chaining cap) | `PROCESS_MAX_CREDENTIAL_SECONDS` | consumed today |
+| `aws.kmsKeyArn` | `kms.key_arn` | nothing: the bucket's default SSE-KMS applies without a client header | informational |
+| `aws.partition` | `data.aws_partition` | nothing: no template builds ARNs from it | informational |
+| `aws.s3PrefixListCidrs` | regional S3 managed prefix list | the runs NetworkPolicy egress | consumed by R-8 (not yet rendered) |
+| `database.host`, `port`, `name` | `database.address`, `port`, `db_name` | `DATABASE_URL` | consumed today |
+| `database.masterSecretArn` | `database.master_user_secret_arn` | the bootstrap Job's master ExternalSecret (`hooks/db-resources.yaml`) | consumed today |
+| `database.caCertIdentifier` | `database.ca_cert_identifier` | nothing: names the CA bundle the deployment must supply | informational |
+| `identity.mode` | `workload_identity` | `eks.amazonaws.com/role-arn` annotation on app and pipeline ServiceAccounts under `irsa` | consumed today |
+| `identity.namespace` | `namespace` | install-time check that the release namespace equals it | consumed today |
+| `identity.serviceAccounts.app`, `.pipeline` | `service_accounts` | the ServiceAccount names | consumed today |
+| `identity.roleArns.app`, `.pipeline` | `identity.role_arns` | IRSA annotation (`irsa` only) | consumed today |
+| `identity.serviceAccounts.titiler`, `.cubeServer`, `identity.roleArns.titiler`, `.cubeServer` | `identity` outputs | the titiler and cube-server ServiceAccounts | consumed by R-7 (not yet rendered) |
+| `secrets.mode` | fixed `external-secrets` | the ExternalSecrets mode | consumed today |
+| `secrets.arns` | `secrets.secret_arns` | one ExternalSecret `remoteRef.key` per platform secret (`externalsecrets.yaml`); `proxy_auth_token` is accepted and ignored (I-159) | consumed today |
+| `auth.mode` | fixed `oidc` | `AUTH_MODE` | consumed today |
+| `auth.issuer` | `cognito.issuer_url` | `OIDC_ISSUER` | consumed today |
+| `auth.clientId` | `cognito.client_id` | `OIDC_CLIENT_ID` | consumed today |
+| `auth.audienceClaim` | fixed `client_id` | `AUTH_BEARER_AUDIENCE_CLAIM` | consumed today |
+| `auth.audiences` | `[cognito.client_id]` | `AUTH_BEARER_AUDIENCES` (comma-joined) | consumed today |
+| `auth.audiences` (proxy side) | same | the auth proxy's `ALLOWED_JWT_AUDIENCES` | consumed by R-7 (catalog plane, not yet rendered) |
+| `auth.claimsMapping` | `cognito.claims_mapping` | `AUTH_CLAIMS_MAPPING` (compact JSON) | consumed today |
+| `auth.hostedDomain` | `cognito.hosted_domain` | nothing: no app env reads it | informational |
+| `demoDestination.bucket`, `.region`, `.credentialsSecretArn` | `demo_destination` outputs | the demo destination; `credentialsSecretArn` is not wired to an ExternalSecret yet | consumed by R-10 (not yet rendered) |
 
 Rules:
 
@@ -140,11 +151,10 @@ Rules:
 - **On AWS, leave `STAGING_S3_ENDPOINT` blank for the pipeline** (I-152): the
   pipeline's STS client reuses it, so a regional S3 URL there makes every run
   fail.
-- **Not emitted: hostnames and the CA bundle.** `helm_values` deliberately
-  omits spec section 6.2's `publicUrls.{catalog,titiler,tipg,cubeServer}` and
-  `database.caBundle`. Hostnames and the CA bundle are deployment choices; the
-  deployment supplies them in its own values file, passed last (see the
-  example README).
+- **Deployment-supplied, not emitted by R-5:** `publicUrls.{catalog,titiler,tipg,cubeServer}`
+  and `database.caBundle` (spec section 6.2). Hostnames and the CA bundle are
+  deployment choices; the deployment puts them in its own values file, passed
+  last (see the example README).
 - The module READMEs list the inputs behind each value; the composition's
   tests pin the keys.
 
