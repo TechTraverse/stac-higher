@@ -216,6 +216,25 @@ run "rejects_force_ssl_override" {
   expect_failures = [var.parameter_overrides]
 }
 
+run "major_upgrade_flag" {
+  command = plan
+  assert {
+    condition     = aws_db_instance.this.allow_major_version_upgrade == false
+    error_message = "major version upgrades are off by default"
+  }
+}
+
+run "major_upgrade_flag_on" {
+  command = plan
+  variables {
+    allow_major_version_upgrade = true
+  }
+  assert {
+    condition     = aws_db_instance.this.allow_major_version_upgrade == true
+    error_message = "allow_major_version_upgrade is passed to the instance"
+  }
+}
+
 run "family_follows_major" {
   command = plan
   variables {
@@ -247,6 +266,10 @@ run "security_group_ingress_per_allowed_sg" {
   assert {
     condition     = length(aws_vpc_security_group_ingress_rule.postgres) == 2
     error_message = "one ingress rule per allowed security group"
+  }
+  assert {
+    condition     = toset(keys(aws_vpc_security_group_ingress_rule.postgres)) == toset(["0", "1"])
+    error_message = "ingress rules are keyed by list index so unknown SG ids stay plan-safe"
   }
   assert {
     condition = alltrue([

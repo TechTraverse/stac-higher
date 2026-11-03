@@ -117,6 +117,10 @@ run "helm_values_values" {
     error_message = "partition and region come from data sources"
   }
   assert {
+    condition     = output.helm_values.aws.bucket == "stac-test-platform"
+    error_message = "aws.bucket is the platform bucket"
+  }
+  assert {
     condition     = output.helm_values.publicUrls.objectStore == "https://s3.us-gov-west-1.dns-suffix.example" && output.helm_values.publicUrls.app == "https://app.example.com"
     error_message = "public URLs"
   }
@@ -209,6 +213,13 @@ run "cognito_and_demo_on" {
     enable_demo_destination = true
   }
   override_resource {
+    target = module.demo_destination[0].module.bucket.aws_s3_bucket.this
+    values = {
+      id  = "stac-test-demo-destination"
+      arn = "arn:aws-us-gov:s3:::stac-test-demo-destination"
+    }
+  }
+  override_resource {
     target = module.demo_destination[0].aws_secretsmanager_secret.this
     values = {
       arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
@@ -236,7 +247,7 @@ run "cognito_and_demo_on" {
     error_message = "demoDestination section shape"
   }
   assert {
-    condition     = output.helm_values.demoDestination.bucket == "stac-test-platform" && output.helm_values.demoDestination.credentialsSecretArn == "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
+    condition     = output.helm_values.demoDestination.bucket == "stac-test-demo-destination" && output.helm_values.aws.bucket == "stac-test-platform" && output.helm_values.demoDestination.credentialsSecretArn == "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
     error_message = "demoDestination carries the bucket name (not ARN) and the credentials secret ARN"
   }
   assert {

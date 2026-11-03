@@ -81,7 +81,7 @@ run "pod_identity_associations" {
 run "app_policy" {
   command = plan
   assert {
-    condition     = toset(keys({ for s in jsondecode(aws_iam_role_policy.workload["app"].policy).Statement : s.Sid => s })) == toset(["PresignGet", "PresignPut", "BucketKms"])
+    condition     = toset(keys({ for s in jsondecode(aws_iam_role_policy.workload["app"].policy).Statement : s.Sid => s })) == toset(["PresignGet", "PresignPut", "DenyProcessRunPrefix", "BucketKms"])
     error_message = "app statements"
   }
   assert {
@@ -97,6 +97,14 @@ run "app_policy" {
       toset({ for s in jsondecode(aws_iam_role_policy.workload["app"].policy).Statement : s.Sid => s }["PresignPut"].Resource) == toset(["arn:aws-us-gov:s3:::stac-test-platform/staging/*", "arn:aws-us-gov:s3:::stac-test-platform/assets/*"])
     )
     error_message = "PresignPut is staging/* and assets/* only"
+  }
+  assert {
+    condition = (
+      { for s in jsondecode(aws_iam_role_policy.workload["app"].policy).Statement : s.Sid => s }["DenyProcessRunPrefix"].Effect == "Deny" &&
+      { for s in jsondecode(aws_iam_role_policy.workload["app"].policy).Statement : s.Sid => s }["DenyProcessRunPrefix"].Action == ["s3:PutObject"] &&
+      { for s in jsondecode(aws_iam_role_policy.workload["app"].policy).Statement : s.Sid => s }["DenyProcessRunPrefix"].Resource == ["arn:aws-us-gov:s3:::stac-test-platform/staging/runs/*"]
+    )
+    error_message = "the app role is explicitly denied PutObject under staging/runs/*"
   }
   assert {
     condition = (
