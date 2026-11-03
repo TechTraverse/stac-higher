@@ -13,7 +13,7 @@ this repo publishes artifacts and a private repo deploys them.
   pre-release tags: `v1.2.3-rc.1` publishes `1.2.3-rc.1` and `sha-…` only.
 - **A GitHub release** (`release.yml`) carrying the app dist tarball, the
   pipeline wheel and sdist, and `release-manifest.json` (attached by the
-  `release-manifest` job in `containers.yml`).
+  `release-attach` job in `containers.yml`).
 - **The Helm chart**, at `oci://ghcr.io/<owner>/charts/stac-higher`, version =
   the tag without `v`.
 - **The Terraform modules**: the tag itself is the version; the manifest's
