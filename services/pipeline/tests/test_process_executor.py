@@ -23,8 +23,10 @@ from pipeline.process.config import (
     parse_process_runtime,
 )
 from pipeline.process.credentials import (
+    CredentialBudgetExceeded,
     RunCredentials,
     RunCredentialsError,
+    mint_prefix_credentials,
     mint_run_credentials,
     session_policy,
 )
@@ -966,3 +968,39 @@ async def test_resolve_run_image_raises_cleanly_if_the_row_check_is_bypassed(mon
             master_key=None,
             now=local_dt.datetime.now(local_dt.UTC),
         )
+
+
+_OK_STS = {"Credentials": {"AccessKeyId": "A", "SecretAccessKey": "S", "SessionToken": "T"}}
+
+
+def test_mint_refuses_above_the_cap_and_never_calls_sts():
+    sts = FakeSts(_OK_STS)
+    with pytest.raises(CredentialBudgetExceeded) as err:
+        mint_run_credentials(
+            settings(PROCESS_MAX_CREDENTIAL_SECONDS=3600), RUN, 3301, sts_client=sts
+        )
+    assert (err.value.requested_seconds, err.value.max_seconds) == (3601, 3600)
+    message = str(err.value)
+    assert "3601 s" in message and "PROCESS_MAX_CREDENTIAL_SECONDS is 3600 s" in message
+    assert sts.kwargs is None  # FakeSts records kwargs only when assume_role is called
+
+
+def test_mint_at_the_cap_is_allowed():
+    sts = FakeSts(_OK_STS)
+    mint_run_credentials(settings(PROCESS_MAX_CREDENTIAL_SECONDS=3600), RUN, 3300, sts_client=sts)
+    assert sts.kwargs["DurationSeconds"] == 3600
+
+
+def test_scans_are_bounded_by_the_same_cap():
+    with pytest.raises(CredentialBudgetExceeded):
+        mint_prefix_credentials(
+            settings(PROCESS_MAX_CREDENTIAL_SECONDS=900),
+            session_name="stac-scan-x",
+            prefix="scans/i/s/",
+            timeout_seconds=900,
+            sts_client=FakeSts({}),
+        )
+
+
+def test_the_budget_refusal_is_not_an_infrastructure_error():
+    assert not issubclass(CredentialBudgetExceeded, RunCredentialsError)

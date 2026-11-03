@@ -305,3 +305,48 @@ def test_cube_maintenance_defaults_and_overrides():
 def test_cube_maintenance_settings_refuse_dangerous_values(name, value):
     with pytest.raises(ValueError, match=name):
         Settings.from_env(env={name: value})
+
+
+@pytest.mark.parametrize(
+    "env", [{}, {"STAGING_S3_ACCESS_KEY_ID": "", "STAGING_S3_SECRET_ACCESS_KEY": "  "}]
+)
+def test_staging_s3_keys_unset_or_blank_mean_the_default_chain(env):
+    s = Settings.from_env(env=env)
+    assert s.staging_s3_access_key is None and s.staging_s3_secret_key is None
+
+
+@pytest.mark.parametrize(
+    "env", [{"STAGING_S3_ACCESS_KEY_ID": "AK"}, {"STAGING_S3_SECRET_ACCESS_KEY": "SK"}]
+)
+def test_staging_s3_keys_must_be_set_together(env):
+    with pytest.raises(
+        ValueError, match="STAGING_S3_ACCESS_KEY_ID and STAGING_S3_SECRET_ACCESS_KEY"
+    ):
+        Settings.from_env(env=env)
+
+
+def test_explicit_staging_keys_are_kept_and_the_secret_never_prints():
+    s = Settings.from_env(
+        env={"STAGING_S3_ACCESS_KEY_ID": "AK", "STAGING_S3_SECRET_ACCESS_KEY": "SK-secret"}
+    )
+    assert (s.staging_s3_access_key, s.staging_s3_secret_key) == ("AK", "SK-secret")
+    assert "SK-secret" not in repr(s)
+
+
+@pytest.mark.parametrize(
+    "env", [{}, {"PROCESS_MAX_CREDENTIAL_SECONDS": ""}, {"PROCESS_MAX_CREDENTIAL_SECONDS": " "}]
+)
+def test_max_credential_seconds_unset_or_blank_is_no_limit(env):
+    assert Settings.from_env(env=env).process_max_credential_seconds is None
+
+
+@pytest.mark.parametrize(("raw", "want"), [("3600", 3600), ("900", 900)])
+def test_max_credential_seconds_parses(raw, want):
+    s = Settings.from_env(env={"PROCESS_MAX_CREDENTIAL_SECONDS": raw})
+    assert s.process_max_credential_seconds == want
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "899", "1h", "3600.5"])
+def test_max_credential_seconds_refuses_anything_but_an_integer_of_at_least_900(raw):
+    with pytest.raises(ValueError, match="PROCESS_MAX_CREDENTIAL_SECONDS"):
+        Settings.from_env(env={"PROCESS_MAX_CREDENTIAL_SECONDS": raw})

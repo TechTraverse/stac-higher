@@ -36,9 +36,37 @@ def test_rejects_the_fixture_cases_about_its_fields():
 def test_settings_names_every_missing_var():
     with pytest.raises(ValueError) as err:
         Settings.from_env({})
-    for var in ("CUBE_DB_DSN", "CUBE_S3_ENDPOINT", "CUBE_S3_ACCESS_KEY_ID",
-                "CUBE_S3_SECRET_ACCESS_KEY", "PLATFORM_ASSET_BUCKET"):
+    for var in ("CUBE_DB_DSN", "CUBE_S3_ENDPOINT", "PLATFORM_ASSET_BUCKET"):
         assert var in str(err.value)
+    assert "CUBE_S3_ACCESS_KEY_ID" not in str(err.value)
+
+
+BASE_ENV = {
+    "CUBE_DB_DSN": "postgresql://x", "CUBE_S3_ENDPOINT": "http://minio:9000",
+    "PLATFORM_ASSET_BUCKET": "stac-higher",
+}
+
+
+def test_settings_without_keys_use_the_default_chain():
+    for extra in ({}, {"CUBE_S3_ACCESS_KEY_ID": "", "CUBE_S3_SECRET_ACCESS_KEY": " "}):
+        settings = Settings.from_env({**BASE_ENV, **extra})
+        assert settings.s3_access_key_id is None
+        assert settings.s3_secret_access_key is None
+
+
+@pytest.mark.parametrize("half", ["CUBE_S3_ACCESS_KEY_ID", "CUBE_S3_SECRET_ACCESS_KEY"])
+def test_settings_keys_must_be_set_together(half):
+    with pytest.raises(ValueError, match="CUBE_S3_ACCESS_KEY_ID and CUBE_S3_SECRET_ACCESS_KEY"):
+        Settings.from_env({**BASE_ENV, half: "v"})
+
+
+def test_settings_secret_never_prints():
+    settings = Settings.from_env({
+        **BASE_ENV, "CUBE_S3_ACCESS_KEY_ID": "k", "CUBE_S3_SECRET_ACCESS_KEY": "hunter2-secret",
+    })
+    assert settings.s3_access_key_id == "k"
+    assert settings.s3_secret_access_key == "hunter2-secret"
+    assert "hunter2-secret" not in repr(settings)
 
 
 def test_settings_defaults():

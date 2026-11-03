@@ -20,7 +20,10 @@ Two properties are load-bearing and worth stating plainly:
 
 Expiry is the run's timeout plus a grace window: long enough that a run using
 its full budget can still finish a final upload, short enough that a leaked
-credential ages out on its own.
+credential ages out on its own. A deployment may cap that duration
+(``PROCESS_MAX_CREDENTIAL_SECONDS``): a run that would need more is refused at
+mint with :class:`CredentialBudgetExceeded` -- never clamped, because a
+refusal beats credentials expiring mid-run.
 """
 
 from __future__ import annotations
@@ -28,16 +31,17 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import ClassVar
 
 import boto3
 from botocore.client import Config
 
-from pipeline.config import Settings
+from pipeline.config import STS_MIN_DURATION_SECONDS, Settings
 from pipeline.storage.keys import run_staging_prefix
-from pipeline.storage.platform import pinned_endpoint_url
+from pipeline.storage.platform import pinned_endpoint_url, static_s3_credentials
 
 #: STS minimum is 900s; a shorter ask is rejected by AWS outright.
-MIN_DURATION_SECONDS = 900
+MIN_DURATION_SECONDS = STS_MIN_DURATION_SECONDS
 
 #: Real STS caps an inline session policy at 2048 characters; each read
 #: prefix costs two ARN-ish strings. Eight keeps a worst-case policy under the
@@ -47,6 +51,31 @@ MAX_READ_PREFIXES = 8
 
 class RunCredentialsError(Exception):
     """Run-scoped credentials could not be minted — the run must not start."""
+
+
+class CredentialBudgetExceeded(Exception):
+    """The run's credentials would outlive ``PROCESS_MAX_CREDENTIAL_SECONDS``.
+
+    Deliberately NOT a :class:`RunCredentialsError`: that one is our
+    infrastructure failing and is requeued without spending an attempt, whereas
+    this is configuration no retry fixes -- the runner finishes the run dead.
+    """
+
+    code: ClassVar[str] = "credential_budget_exceeded"
+
+    def __init__(
+        self, *, requested_seconds: int, max_seconds: int, timeout_seconds: int, grace_seconds: int
+    ) -> None:
+        self.requested_seconds = requested_seconds
+        self.max_seconds = max_seconds
+        self.timeout_seconds = timeout_seconds
+        self.grace_seconds = grace_seconds
+        super().__init__(
+            f"{self.code}: run credentials would need {requested_seconds} s "
+            f"(timeout {timeout_seconds} s + grace {grace_seconds} s, "
+            f"STS minimum {MIN_DURATION_SECONDS} s) but "
+            f"PROCESS_MAX_CREDENTIAL_SECONDS is {max_seconds} s"
+        )
 
 
 def _validate_scoped_prefix(prefix: str, *, what: str) -> None:
@@ -135,7 +164,7 @@ def session_policy(bucket: str, prefix: str, read_prefixes: Sequence[str] = ()) 
     return {"Version": "2012-10-17", "Statement": statements}
 
 
-def build_sts_client(settings: Settings):  # pragma: no cover - thin boto3 wrapper
+def build_sts_client(settings: Settings):
     endpoint = pinned_endpoint_url(
         settings.staging_s3_endpoint,
         settings.staging_s3_region,
@@ -145,9 +174,8 @@ def build_sts_client(settings: Settings):  # pragma: no cover - thin boto3 wrapp
         "sts",
         endpoint_url=endpoint,
         region_name=settings.staging_s3_region,
-        aws_access_key_id=settings.staging_s3_access_key,
-        aws_secret_access_key=settings.staging_s3_secret_key,
         config=Config(signature_version="s3v4"),
+        **static_s3_credentials(settings),
     )
 
 
@@ -164,7 +192,9 @@ def mint_prefix_credentials(
     ``read_prefixes``. A process run's prefix is ``staging/runs/{run_id}/``;
     an image scan's is ``scans/{image_id}/{scan_id}/`` (C-2, spec §6.2).
 
-    Raises :class:`RunCredentialsError` on any STS failure -- the caller must
+    Raises :class:`CredentialBudgetExceeded` (before any STS call) when the
+    duration would exceed the deployment cap, and
+    :class:`RunCredentialsError` on any STS failure -- the caller must
     fail the run rather than start it with wider access.
     """
     _validate_scoped_prefix(prefix, what="prefix")
@@ -179,6 +209,14 @@ def mint_prefix_credentials(
     duration = max(
         MIN_DURATION_SECONDS, timeout_seconds + settings.process_credential_grace_seconds
     )
+    cap = settings.process_max_credential_seconds
+    if cap is not None and duration > cap:
+        raise CredentialBudgetExceeded(
+            requested_seconds=duration,
+            max_seconds=cap,
+            timeout_seconds=timeout_seconds,
+            grace_seconds=settings.process_credential_grace_seconds,
+        )
     client = sts_client if sts_client is not None else build_sts_client(settings)
 
     try:

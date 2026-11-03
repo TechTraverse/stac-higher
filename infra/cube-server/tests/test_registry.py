@@ -1,3 +1,4 @@
+import icechunk as ic
 import psycopg
 import pytest
 
@@ -222,3 +223,25 @@ def test_rejected_config_keeps_the_open_dataset_and_reports_the_error(c1):
     source.rows = [row("c1")]
     registry.refresh()
     assert registry.health()["errors"] == {}
+
+
+def test_keyless_opener_selects_icechunk_from_env(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "stac_higher_cube_server.registry.ic.s3_storage",
+        lambda **kwargs: seen.update(kwargs),
+    )
+    keyless = Settings(
+        db_dsn="postgresql://unused",
+        s3_endpoint="http://127.0.0.1:9",
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        platform_bucket="stac-higher",
+    )
+    S3RepoOpener(keyless)._storage("c1")
+    assert seen["access_key_id"] is None
+    assert seen["secret_access_key"] is None
+    creds = ic.s3_credentials(
+        access_key_id=seen["access_key_id"], secret_access_key=seen["secret_access_key"]
+    )
+    assert isinstance(creds, ic.S3Credentials.FromEnv)

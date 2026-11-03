@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from pipeline.config import Settings
 from pipeline.connections.adapters.s3 import parse_s3_config
 from pipeline.cubes.config import (
     APPEND_STATUSES,
@@ -37,6 +38,7 @@ from pipeline.process.config import (
     parse_process_runtime,
     parse_process_trigger,
 )
+from pipeline.process.credentials import CredentialBudgetExceeded, mint_run_credentials
 from pipeline.storage.keys import InvalidKeySegment, is_staged_href, parse_staged_href
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "contract-fixtures"
@@ -601,3 +603,36 @@ def test_cube_maintenance_vocabulary_matches_golden():
     for doc in m["documents"].values():
         assert doc["status"] in m["statuses"] and set(doc["attention"]) <= set(m["attention"])
         assert set(doc["durations_ms"]) <= set(m["duration_phases"])
+
+
+BUDGET = _load("process-credential-budget.json")
+
+
+class _Sts:
+    def assume_role(self, **kwargs):
+        return {"Credentials": {"AccessKeyId": "A", "SecretAccessKey": "S", "SessionToken": "T"}}
+
+
+@pytest.mark.parametrize("case", BUDGET["cases"], ids=lambda c: c["name"])
+def test_process_credential_budget_mint_cases(case):
+    # Mint ignores max_queue_wait_seconds until K-4 (#12) adds it to the duration.
+    cap = case["max_credential_seconds"]
+    settings = Settings.from_env(
+        {
+            BUDGET["setting"]: "" if cap is None else str(cap),
+            BUDGET["grace_setting"]: str(case["grace_seconds"]),
+            "STAGING_BUCKET": "stac-higher",
+        }
+    )
+    if case["mint_allowed"]:
+        mint_run_credentials(settings, "run-1", case["timeout_seconds"], sts_client=_Sts())
+    else:
+        with pytest.raises(CredentialBudgetExceeded) as err:
+            mint_run_credentials(settings, "run-1", case["timeout_seconds"], sts_client=_Sts())
+        assert err.value.code == BUDGET["mint_refusal"]["error"]
+        assert str(err.value).startswith(BUDGET["mint_refusal"]["error"])
+
+
+def test_process_credential_budget_defaults_match_golden():
+    assert Settings.from_env({}).process_credential_grace_seconds == BUDGET["grace_default_seconds"]
+    assert Settings.from_env({}).process_max_credential_seconds is None  # unset_means: no limit
