@@ -1,11 +1,10 @@
-import icechunk as ic
 import psycopg
 import pytest
 
 from stac_higher_cube_server.registry import CubeRegistry, S3RepoOpener, UnsupportedSourceError
 from stac_higher_cube_server.settings import Settings
 from stac_higher_cube_server.sinks import SinkRow
-from tests.cubes import LocalCube, make_local_cube
+from tests.cubes import FakeSource, LocalOpener, make_local_cube
 
 SETTINGS = Settings(
     db_dsn="postgresql://unused",
@@ -24,35 +23,6 @@ def row(collection_id: str, *, variables=("CMI",), prefixes=("s3://noaa-goes19/"
         variables=tuple(variables),
         source_prefixes=tuple(prefixes),
     )
-
-
-class FakeSource:
-    def __init__(self, *rows: SinkRow) -> None:
-        self.rows = list(rows)
-        self.error: Exception | None = None
-
-    def enabled_sinks(self) -> list[SinkRow]:
-        if self.error is not None:
-            raise self.error
-        return list(self.rows)
-
-
-class LocalOpener:
-    """Opens each collection's local cube; ``None`` for one with no cube yet."""
-
-    def __init__(self, cubes: dict[str, LocalCube]) -> None:
-        self.cubes = cubes
-        self.error: Exception | None = None
-
-    def open(self, sink: SinkRow) -> ic.Repository | None:
-        if self.error is not None:
-            raise self.error
-        cube = self.cubes.get(sink.cube_collection_id)
-        if cube is None:
-            return None
-        return ic.Repository.open(
-            cube.storage, authorize_virtual_chunk_access=ic.containers_credentials(cube.credentials)
-        )
 
 
 @pytest.fixture

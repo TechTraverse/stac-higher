@@ -112,7 +112,7 @@ class TolerantEdrPlugin(CfEdrPlugin):
         def position(
             request: Request,
             query: Annotated[EDRPositionQuery, Query()],
-            dataset: Annotated[xr.Dataset, Depends(deps.dataset)],
+            dataset: xr.Dataset = Depends(deps.dataset),  # noqa: B008 (xpublish-edr's own form)
         ) -> Response:
             """A point time series. A step whose source file is gone is ``null``
             and counted in the ``x-cube-missing-steps`` header."""
