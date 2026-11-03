@@ -7,7 +7,7 @@
 import { query } from "@/lib/db/connection";
 import { runMigrations } from "@/lib/db/migrate";
 import { iso } from "@/lib/associations/storage";
-import type { CubeSinkConfig } from "./schemas";
+import { readCubeMaintenance, type CubeMaintenance, type CubeSinkConfig } from "./schemas";
 import { CUBE_APPEND_STATUSES, type CubeAppendStatus } from "./status";
 
 export interface ApiCubeSink {
@@ -20,7 +20,7 @@ export interface ApiCubeSink {
   last_snapshot_id: string | null;
   last_appended_at: string | null;
   last_maintained_at: string | null;
-  last_maintenance: unknown;
+  last_maintenance: CubeMaintenance | null;
   last_error: string | null;
   created_by: string;
   created_at: string;
@@ -31,7 +31,9 @@ export interface ApiCubeSink {
   version: string;
 }
 
-interface CubeSinkRow extends Omit<ApiCubeSink, "last_appended_at" | "last_maintained_at" | "created_at" | "updated_at"> {
+interface CubeSinkRow
+  extends Omit<ApiCubeSink, "last_appended_at" | "last_maintained_at" | "last_maintenance" | "created_at" | "updated_at"> {
+  last_maintenance: unknown;
   last_appended_at: Date | null;
   last_maintained_at: Date | null;
   created_at: Date;
@@ -75,7 +77,7 @@ function toApi(row: CubeSinkRow): ApiCubeSink {
     last_snapshot_id: row.last_snapshot_id,
     last_appended_at: iso(row.last_appended_at),
     last_maintained_at: iso(row.last_maintained_at),
-    last_maintenance: row.last_maintenance,
+    last_maintenance: readCubeMaintenance(row.last_maintenance),
     last_error: row.last_error,
     created_by: row.created_by,
     created_at: iso(row.created_at),

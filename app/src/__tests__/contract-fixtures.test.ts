@@ -60,7 +60,7 @@ import { isImageDigest, isImageReference } from "@/lib/images/reference";
 import { imagePolicySchema, registryAllowed } from "@/lib/images/policy";
 import { imageScanResultSchema } from "@/lib/images/scan-result";
 import { imageScanDiffSchema, readScanDiff } from "@/lib/images/scan-diff";
-import { cubeSinkConfigSchema } from "@/lib/cubes/schemas";
+import { cubeMaintenanceSchema, cubeSinkConfigSchema } from "@/lib/cubes/schemas";
 import {
   CUBE_APPEND_STATUSES,
   CUBE_APPENDED_REASON_LABEL,
@@ -69,6 +69,13 @@ import {
   CUBE_FAILED_REASONS,
   CUBE_APPEND_STATUS_LABEL,
   CUBE_APPEND_TERMINAL,
+  CUBE_MAINTENANCE_ATTENTION,
+  CUBE_MAINTENANCE_ATTENTION_LABEL,
+  CUBE_MAINTENANCE_STATUS_LABEL,
+  CUBE_MAINTENANCE_STATUSES,
+  CUBE_PUBLISH_OUTCOME_LABEL,
+  CUBE_PUBLISH_OUTCOMES,
+  CUBE_SIZE_KINDS,
   CUBE_SKIP_REASONS,
   CUBE_SKIP_REASON_LABEL,
 } from "@/lib/cubes/status";
@@ -600,5 +607,52 @@ describe("cube append status vocabulary (tests/contract-fixtures/cube-append-sta
     expect(Object.keys(CUBE_SKIP_REASON_LABEL).sort()).toEqual([...fixture.skip_reasons].sort());
     expect(Object.keys(CUBE_APPENDED_REASON_LABEL).sort()).toEqual([...fixture.appended_reasons].sort());
     expect(Object.keys(CUBE_FAILED_REASON_LABEL).sort()).toEqual([...fixture.failed_reasons].sort());
+  });
+});
+
+describe("cube maintenance summary contract (tests/contract-fixtures/cube-maintenance-summary.json)", () => {
+  interface MaintenanceCase {
+    name: string;
+    base: string;
+    patch?: Record<string, unknown>;
+    remove?: string[];
+    app: "accept" | "reject";
+  }
+  const fixture = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../../tests/contract-fixtures/cube-maintenance-summary.json", import.meta.url)),
+      "utf8",
+    ),
+  ) as {
+    statuses: string[];
+    attention: string[];
+    publish_outcomes: string[];
+    size_kinds: string[];
+    documents: Record<string, Record<string, unknown>>;
+    cases: MaintenanceCase[];
+  };
+
+  it("pins the vocabularies", () => {
+    expect([...CUBE_MAINTENANCE_STATUSES]).toEqual(fixture.statuses);
+    expect([...CUBE_MAINTENANCE_ATTENTION]).toEqual(fixture.attention);
+    expect([...CUBE_PUBLISH_OUTCOMES]).toEqual(fixture.publish_outcomes);
+    expect([...CUBE_SIZE_KINDS]).toEqual(fixture.size_kinds);
+  });
+
+  it("labels every status, attention reason and publish outcome", () => {
+    expect(Object.keys(CUBE_MAINTENANCE_STATUS_LABEL).sort()).toEqual([...fixture.statuses].sort());
+    expect(Object.keys(CUBE_MAINTENANCE_ATTENTION_LABEL).sort()).toEqual([...fixture.attention].sort());
+    expect(Object.keys(CUBE_PUBLISH_OUTCOME_LABEL).sort()).toEqual([...fixture.publish_outcomes].sort());
+  });
+
+  it.each(Object.entries(fixture.documents))("reads the %s document back to itself", (_name, doc) => {
+    // Unknown keys are stripped, so a key the schema forgot fails this.
+    expect(cubeMaintenanceSchema.parse(doc)).toEqual(doc);
+  });
+
+  it.each(fixture.cases)("$app: $name", (c) => {
+    const doc: Record<string, unknown> = { ...fixture.documents[c.base], ...c.patch };
+    for (const key of c.remove ?? []) delete doc[key];
+    expect(cubeMaintenanceSchema.safeParse(doc).success).toBe(c.app === "accept");
   });
 });

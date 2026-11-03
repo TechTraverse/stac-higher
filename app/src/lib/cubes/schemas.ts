@@ -5,6 +5,7 @@
  * tests/contract-fixtures/cube-sink-config.json.
  */
 import { z } from "zod";
+import { CUBE_MAINTENANCE_STATUSES } from "./status";
 
 export const MAX_AGE_LIMIT_SECONDS = 30 * 86_400;
 const UNIT_SECONDS = { m: 60, h: 3_600, d: 86_400 } as const;
@@ -78,4 +79,63 @@ export function layoutChanged(stored: CubeSinkConfig, next: CubeSinkConfig): boo
     sorted(stored.variables) !== sorted(next.variables) ||
     sorted(stored.loadable_variables) !== sorted(next.loadable_variables)
   );
+}
+
+const count = z.number().int();
+
+/**
+ * `cube_sinks.last_maintenance`, as the pipeline writes it
+ * (`pipeline/cubes/maintain.py`). The LENIENT reader: unknown keys are
+ * stripped, and attention reasons, publish outcomes and size kinds stay free
+ * strings so a newer writer does not break the card. `status` and every type
+ * are strict. A key is ABSENT when the run never reached it (no repository, a
+ * failed run, a readout not landed yet); `null` only where the pipeline says
+ * so. Pinned by tests/contract-fixtures/cube-maintenance-summary.json.
+ */
+export const cubeMaintenanceSchema = z.object({
+  status: z.enum(CUBE_MAINTENANCE_STATUSES),
+  started_at: z.string(),
+  finished_at: z.string().optional(),
+  attention: z.array(z.string()),
+  durations_ms: z.record(z.string(), z.number()),
+  error: z.string().optional(),
+  ledger_pruned: count.optional(),
+  window: z.boolean().optional(),
+  repository: z.boolean().optional(),
+  healed: z.boolean().optional(),
+  trimmed: count.optional(),
+  published: z.boolean().optional(),
+  publish_outcome: z.string().nullable().optional(),
+  publish_error: z.string().optional(),
+  expired_snapshots: count.nullable().optional(),
+  gc: z
+    .object({
+      snapshots_deleted: count,
+      manifests_deleted: count,
+      chunks_deleted: count,
+      transaction_logs_deleted: count,
+      attributes_deleted: count,
+      bytes_deleted: count,
+      objects_failed_to_delete: count,
+      delete_errors: z.array(z.string()),
+    })
+    .nullable()
+    .optional(),
+  sizes: z.record(z.string(), z.object({ objects: count, bytes: count })).optional(),
+  total_objects: count.optional(),
+  total_bytes: count.optional(),
+  warn_bytes: count.optional(),
+  measured_at: z.string().optional(),
+  measure_error: z.string().optional(),
+});
+
+export type CubeMaintenance = z.output<typeof cubeMaintenanceSchema>;
+
+/** An unreadable stored summary is `null` (with a warning), never a throw. */
+export function readCubeMaintenance(raw: unknown): CubeMaintenance | null {
+  if (raw === null || raw === undefined) return null;
+  const parsed = cubeMaintenanceSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  console.warn("[cubes] unreadable last_maintenance", parsed.error.issues);
+  return null;
 }

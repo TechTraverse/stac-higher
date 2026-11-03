@@ -5,6 +5,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/db/connection", () => ({ query: vi.fn(), getClient: vi.fn() }));
 vi.mock("@/lib/db/migrate", () => ({ runMigrations: vi.fn(async () => {}) }));
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { query } from "@/lib/db/connection";
 import {
   collectionHasItem,
@@ -36,7 +38,38 @@ const result = (rows: unknown[]) => ({ rows, rowCount: rows.length }) as never;
 
 beforeEach(() => mockQuery.mockReset());
 
+const maintenanceDocs = (
+  JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../../tests/contract-fixtures/cube-maintenance-summary.json", import.meta.url)),
+      "utf8",
+    ),
+  ) as { documents: Record<string, { sizes: Record<string, { objects: number; bytes: number }> }> }
+).documents;
+
 describe("cube sink storage", () => {
+  it("types last_maintenance from the stored summary", async () => {
+    mockQuery.mockResolvedValueOnce(result([{ ...row, last_maintenance: maintenanceDocs.windowed }]));
+    const sink = await getCubeSink("goes19-c13-cube");
+    expect(sink!.last_maintenance?.sizes?.chunks).toEqual(maintenanceDocs.windowed.sizes.chunks);
+  });
+
+  it("an unreadable stored summary is null, never a 500", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockQuery.mockResolvedValueOnce(result([{ ...row, last_maintenance: { status: "degraded" } }]));
+      expect((await getCubeSink("goes19-c13-cube"))!.last_maintenance).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      warn.mockClear();
+      mockQuery.mockResolvedValueOnce(result([{ ...row, last_maintenance: null }]));
+      expect((await getCubeSink("goes19-c13-cube"))!.last_maintenance).toBeNull();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("maps timestamps to ISO strings and carries the full-precision row version", async () => {
     mockQuery.mockResolvedValueOnce(result([row]));
     const sink = await getCubeSink("goes19-c13-cube");
