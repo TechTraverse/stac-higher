@@ -207,6 +207,26 @@ async def test_release_rows_undoes_the_take_on_pending_rows_only(db):
     ]
 
 
+async def test_release_rows_forgive_crash_clears_a_crash_suspect_not_real_history(db):
+    from pipeline.cubes.repo import LedgerEntry, PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    await repo.record_appends(
+        [LedgerEntry(sink, "a", T0), LedgerEntry(sink, "b", T0), LedgerEntry(sink, "c", T0)]
+    )
+    await repo.take_pending(sink, 50)  # all at 1: a worker dies
+    ids = {r.item_id: r.id for r in await repo.take_pending(sink, 50)}  # all at 2
+    await conn.execute(
+        "UPDATE stac_higher.cube_appends SET attempts = 4"
+        " WHERE cube_sink_id = %s AND item_id = 'c'",
+        (sink,),
+    )
+    assert await repo.release_rows(sink, list(ids.values()), forgive_crash=True) == 3
+    assert [(r[0], r[4]) for r in await _rows(conn, sink)] == [("a", 0), ("b", 0), ("c", 3)]
+
+
 async def test_finish_rows_changes_pending_rows_only(db):
     from pipeline.cubes.repo import LedgerEntry, PgCubeRepo, RowOutcome
 

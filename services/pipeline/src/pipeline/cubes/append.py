@@ -50,7 +50,7 @@ from obstore.exceptions import NotFoundError
 
 from pipeline.cubes.config import CubeSinkConfig, CubeSinkConfigError, parse_cube_sink_config
 from pipeline.cubes.icerepo import BRANCH, open_repository, read_state, reset_to_root
-from pipeline.cubes.repo import CubeRepo, CubeSink, PendingRow, RowOutcome
+from pipeline.cubes.repo import CRASHED_ATTEMPTS, CubeRepo, CubeSink, PendingRow, RowOutcome
 from pipeline.cubes.resolve import (
     ResolvedSource,
     SourceResolver,
@@ -69,11 +69,6 @@ BATCH_LIMIT = 50
 PARSE_CONCURRENCY = 4
 #: a row claimed more often than this is failed instead of parsed (#90)
 MAX_ROW_ATTEMPTS = 6
-#: a row claimed more than this often was in a job that died (the exception
-#: path and the quiet returns give attempts back): such a take keeps only its
-#: oldest row, so a poison file crash-loops alone instead of taking the rest
-#: of its batch to `crash_loop` with it (#90; plan Decision 9)
-CRASHED_ATTEMPTS = 1
 #: ``cube_sinks.last_error`` starts with this when the append-time collection
 #: publish failed (the batch itself is finished); maintenance clears it again
 #: when its republish succeeds
@@ -159,12 +154,17 @@ async def run_cube_append(cube_sink_id: str, deps: AppendDeps) -> AppendReport:
         return report
 
     rows = await deps.repo.take_pending(sink.id, deps.batch_limit)
-    if len(rows) > 1 and any(r.attempts > CRASHED_ATTEMPTS for r in rows):
-        # A previous claim never finished: a worker died somewhere in this
-        # batch. Work the oldest row alone (rows come in (item_datetime, id)
-        # order); has_pending -> enqueue_next carries the backlog on.
+    if len(rows) > 1 and rows[0].attempts > CRASHED_ATTEMPTS:
+        # The oldest row's previous claim never finished: a worker died in
+        # that batch. Work it alone (rows come in (item_datetime, id) order);
+        # has_pending -> enqueue_next carries the backlog on. Only the oldest
+        # row decides: a younger row's old claim (a transport-kept row, say)
+        # must not isolate a healthy oldest one.
         rest = [r.id for r in rows[1:]]
-        await deps.repo.release_rows(sink.id, rest)
+        # forgive_crash: the rest are cleared, not put back at the count the
+        # crash left, or every take would isolate the oldest of them again
+        # (one job per row of the crashed batch, #127)
+        await deps.repo.release_rows(sink.id, rest, forgive_crash=True)
         logger.warning(
             "cube_append: a previous job died; working one row alone",
             extra={"cube_sink_id": sink.id, "row_id": rows[0].id, "released": len(rest)},

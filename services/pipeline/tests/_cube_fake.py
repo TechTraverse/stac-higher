@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.cubes.repo import (
+    CRASHED_ATTEMPTS,
     CubeRepo,
     CubeSink,
     CubeSinkRef,
@@ -137,12 +138,17 @@ class FakeCubeRepo(CubeRepo):
             r.attempts += 1
         return [PendingRow(r.id, r.item_id, r.item_datetime, r.attempts) for r in rows]
 
-    async def release_rows(self, cube_sink_id: str, row_ids: Sequence[int]) -> int:
+    async def release_rows(
+        self, cube_sink_id: str, row_ids: Sequence[int], *, forgive_crash: bool = False
+    ) -> int:
         wanted = set(row_ids)
         changed = 0
         for r in self.ledger.values():
             if r.cube_sink_id == cube_sink_id and r.id in wanted and r.status == "pending":
-                r.attempts = max(r.attempts - 1, 0)
+                if forgive_crash and r.attempts <= CRASHED_ATTEMPTS + 1:
+                    r.attempts = 0
+                else:
+                    r.attempts = max(r.attempts - 1, 0)
                 changed += 1
         return changed
 

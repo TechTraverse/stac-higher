@@ -17,6 +17,13 @@ async def test_take_finish_and_record_commit():
     assert [(r.item_id, r.attempts) for r in taken] == [("a", 1), ("b", 1)]
     assert await repo.release_rows("s1", [taken[1].id]) == 1
     assert repo.rows("s1")[1].attempts == 0
+    again = await repo.take_pending("s1", 50)  # a, b(0 -> 1 -> 2 for a)
+    assert [r.attempts for r in again] == [2, 1]
+    assert await repo.release_rows("s1", [r.id for r in again], forgive_crash=True) == 2
+    assert [r.attempts for r in repo.rows("s1")] == [0, 0]  # crash suspicion cleared
+    repo.rows("s1")[0].attempts = 4
+    await repo.release_rows("s1", [taken[0].id], forgive_crash=True)
+    assert repo.rows("s1")[0].attempts == 3  # real history: the plain undo
     assert await repo.finish_rows("s1", [RowOutcome(taken[0].id, "appended", None, "S1")]) == 1
     assert await repo.has_pending("s1")
     kw = {"appended_at": T0, "source_prefixes": ["s3://b/"]}
