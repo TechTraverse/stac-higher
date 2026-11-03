@@ -130,6 +130,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   delete globalThis.process.env.PROCESS_HARDWARE_PROFILES_FILE;
   resetHardwareProfilesCache();
 });
@@ -177,6 +178,18 @@ describe("POST /api/processes/builtin (create-or-reuse)", () => {
       network: { level: "isolated", hosts: [] },
     });
     expect(input.revision.env).toEqual([]);
+  });
+
+  it("refuses a built-in whose credential budget exceeds the cap (422 credential_budget_exceeded)", async () => {
+    vi.stubEnv("PROCESS_MAX_CREDENTIAL_SECONDS", "900");
+    vi.mocked(findBuiltinProcess).mockResolvedValue(null);
+    const res = await call(builtinRoute, operator, {
+      method: "POST",
+      body: { builtin_id: "stactools-goes", group_id: EO },
+    });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { code: string }).code).toBe("credential_budget_exceeded");
+    expect(createBuiltinProcess).not.toHaveBeenCalled();
   });
 
   it("reuses the group's live process on a second pick — idempotent per group", async () => {
@@ -306,6 +319,15 @@ describe("POST /api/processes/[id]/revisions on a built-in process", () => {
     expect(((await res.json()) as { error: string }).error).toBe(
       "memory_mb 2048 is outside profile 'standard' bounds 128–1024",
     );
+    expect(deployRevision).not.toHaveBeenCalled();
+  });
+
+  it("refuses 'Update to current' over the credential cap (422 credential_budget_exceeded)", async () => {
+    vi.stubEnv("PROCESS_MAX_CREDENTIAL_SECONDS", "900");
+    vi.mocked(getProcess).mockResolvedValue(process());
+    const res = await call(deployRoute, operator, { method: "POST", body: { from_builtin: true } });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { code: string }).code).toBe("credential_budget_exceeded");
     expect(deployRevision).not.toHaveBeenCalled();
   });
 

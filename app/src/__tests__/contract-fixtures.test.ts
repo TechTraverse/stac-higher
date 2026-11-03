@@ -9,6 +9,14 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
+import {
+  CREDENTIAL_BUDGET_CODE,
+  CREDENTIAL_BUDGET_STATUS,
+  CREDENTIAL_GRACE_SECONDS_ENV,
+  DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS,
+  MAX_CREDENTIAL_SECONDS_ENV,
+  credentialBudgetError,
+} from "@/lib/processes/credential-budget";
 import type { ZodType } from "zod";
 import {
   deliveryConfigSchema,
@@ -654,5 +662,24 @@ describe("cube maintenance summary contract (tests/contract-fixtures/cube-mainte
     const doc: Record<string, unknown> = { ...fixture.documents[c.base], ...c.patch };
     for (const key of c.remove ?? []) delete doc[key];
     expect(cubeMaintenanceSchema.safeParse(doc).success).toBe(c.app === "accept");
+  });
+});
+
+describe("process credential budget contract (tests/contract-fixtures/process-credential-budget.json)", () => {
+  const fx = loadFixture("process-credential-budget.json") as unknown as {
+    setting: string; grace_setting: string; grace_default_seconds: number;
+    deploy_refusal: { status: number; code: string };
+    cases: { name: string; max_credential_seconds: number | null; max_queue_wait_seconds: number;
+             timeout_seconds: number; grace_seconds: number; deploy_allowed: boolean }[];
+  };
+  it("pins the setting names, the grace default and the refusal", () => {
+    expect(fx.setting).toBe(MAX_CREDENTIAL_SECONDS_ENV);
+    expect(fx.grace_setting).toBe(CREDENTIAL_GRACE_SECONDS_ENV);
+    expect(fx.grace_default_seconds).toBe(DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS);
+    expect(fx.deploy_refusal).toEqual({ status: CREDENTIAL_BUDGET_STATUS, code: CREDENTIAL_BUDGET_CODE });
+  });
+  it.each(fx.cases)("$name", (c) => {
+    expect(credentialBudgetError({ maxCredentialSeconds: c.max_credential_seconds, maxQueueWaitSeconds: c.max_queue_wait_seconds,
+      timeoutSeconds: c.timeout_seconds, graceSeconds: c.grace_seconds }) === null).toBe(c.deploy_allowed);
   });
 });

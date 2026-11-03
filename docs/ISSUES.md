@@ -1774,6 +1774,17 @@ refused in `client_id` mode.
 Tracked in: `services/proxy-policy/src/stac_higher_proxy_policy/app.py`; ADR
 0015 bump procedure.
 
+### I-149 · Credential budget is checked at deploy only 🟡
+
+A revision deployed before `PROCESS_MAX_CREDENTIAL_SECONDS` was set, or
+before its hardware profile's `max_queue_wait_seconds` grew, is not
+re-checked. The pipeline's mint refusal (R-2) is the backstop and fails the
+run naming the cap. Until K-4 (#12) the pipeline mints `timeout + grace`
+without the queue wait, so the deploy gate is deliberately stricter than the
+mint.
+
+Tracked in: GitHub #136
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
