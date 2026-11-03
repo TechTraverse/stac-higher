@@ -1,0 +1,47 @@
+{{- $full := include "stac-higher.fullname" . -}}
+{{- $s := dict "root" . -}}
+{{- $sec := dict -}}
+{{- range $n := list "dbMaster" "dbOwner" "dbStacApi" "dbStacReader" "dbProxyPolicy" "dbCubeServer" -}}
+{{- $_ := set $sec $n (include "stac-higher.hookSecretName" (dict "root" $ "name" $n)) -}}
+{{- end -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $full }}-db-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "db-hook") | nindent 4 }}
+  annotations:
+    {{- include "stac-higher.hookAnnotations" (dict "weight" -20) | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.dbJobs.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.dbJobs.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "stac-higher.labels" (dict "root" . "component" "db-hook") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "stac-higher.podSecurityContext" (dict "uid" 999) | nindent 8 }}
+      containers:
+        - name: db-bootstrap
+          image: {{ include "stac-higher.image" (dict "root" . "key" "pipeline") | quote }}
+          command: ["python", "/etc/stac-higher/db/run_sql.py", "/etc/stac-higher/db/bootstrap.sql"]
+          env:
+            {{- include "stac-higher.dbJobEnv" (dict "root" . "secret" $sec.dbMaster) | nindent 12 }}
+            {{- include "stac-higher.dbSqlEnv" (dict "name" "OWNER" "secret" $sec.dbOwner "keys" (list "username" "password")) | nindent 12 }}
+            {{- include "stac-higher.dbSqlEnv" (dict "name" "API" "secret" $sec.dbStacApi "keys" (list "username" "password")) | nindent 12 }}
+            {{- include "stac-higher.dbSqlEnv" (dict "name" "READER" "secret" $sec.dbStacReader "keys" (list "username" "password")) | nindent 12 }}
+            {{- include "stac-higher.dbSqlEnv" (dict "name" "PROXY" "secret" $sec.dbProxyPolicy "keys" (list "username" "password")) | nindent 12 }}
+            {{- include "stac-higher.dbSqlEnv" (dict "name" "CUBE" "secret" $sec.dbCubeServer "keys" (list "username" "password")) | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dbJobs.resources | nindent 12 }}
+          securityContext:
+            {{- include "stac-higher.containerSecurityContext" (dict "readOnly" true) | nindent 12 }}
+          volumeMounts:
+            {{- include "stac-higher.dbJobMounts" $s | nindent 12 }}
+      volumes:
+        {{- include "stac-higher.dbJobVolumes" $s | nindent 8 }}
+      {{- include "stac-higher.dbJobScheduling" $s | nindent 6 }}

@@ -1,0 +1,49 @@
+# Placeholder deployment: external-secrets + pod-identity + oidc + verify-full.
+global:
+  imageRegistry: ""
+aws:
+  partition: aws
+  region: us-east-1
+  bucket: stac-higher-example-platform
+  processRunRoleArn: arn:aws:iam::000000000000:role/stac-higher-example-process-run
+publicUrls:
+  app: https://app.example.com
+  objectStore: https://s3.us-east-1.amazonaws.com
+  catalog: https://catalog.example.com
+  titiler: https://titiler.example.com
+  tipg: https://tipg.example.com
+  cubeServer: https://cube.example.com
+database:
+  host: db.example.com
+  port: 5432
+  name: stac_higher
+  masterSecretArn: arn:aws:secretsmanager:us-east-1:000000000000:secret:rds!db-00000000
+  sslMode: verify-full
+  caBundle:
+    existingConfigMap: rds-ca-bundle
+auth:
+  mode: oidc
+  issuer: https://idp.example.com/realms/example
+  clientId: stac-higher-example
+  audiences: [stac-higher-example]
+  audienceClaim: client_id
+  claimsMapping: { sub: sub, email: email, groups: groups }
+identity:
+  mode: pod-identity
+  namespace: stac-higher
+secrets:
+  mode: external-secrets
+  arns:
+    db_stac_higher_owner: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/db/stac_higher_owner-AbCdEf
+    db_stac_api: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/db/stac_api-AbCdEf
+    db_stac_reader: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/db/stac_reader-AbCdEf
+    db_stac_proxy_policy: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/db/stac_proxy_policy-AbCdEf
+    db_cube_server: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/db/cube_server-AbCdEf
+    session_secret: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/platform/session_secret-AbCdEf
+    catalog_bff_shared_secret: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/platform/catalog_bff_shared_secret-AbCdEf
+    internal_api_token: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/platform/internal_api_token-AbCdEf
+    credentials_master_key: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/platform/credentials_master_key-AbCdEf
+    proxy_auth_token: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/platform/proxy_auth_token-AbCdEf
+  externalSecrets:
+    storeRef:
+      name: aws-secrets-manager

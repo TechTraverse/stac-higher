@@ -51,3 +51,6 @@ pgdata/
 *.tfstate.*
 *.tfplan
 *.tfvars
+
+__pycache__/
+*.pyc

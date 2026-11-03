@@ -1,0 +1,39 @@
+{{- /* Hook-scoped inputs for the db Jobs, all weight -30 (before every Job). */ -}}
+{{- $full := include "stac-higher.fullname" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-db-sql
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "db-hook") | nindent 4 }}
+  annotations:
+    {{- include "stac-higher.hookAnnotations" (dict "weight" -30) | nindent 4 }}
+data:
+  {{- range $f := list "run_sql.py" "bootstrap.sql" "pgstac-grants.sql" "app-grants.sql" }}
+  {{ $f }}: |
+    {{- $.Files.Get (printf "files/db/%s" $f) | nindent 4 }}
+  {{- end }}
+{{- if and (eq .Values.database.sslMode "verify-full") .Values.database.caBundle.pem }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-hook-db-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "db-hook") | nindent 4 }}
+  annotations:
+    {{- include "stac-higher.hookAnnotations" (dict "weight" -30) | nindent 4 }}
+data:
+  ca-bundle.pem: |
+    {{- .Values.database.caBundle.pem | trim | nindent 4 }}
+{{- end }}
+{{- if eq .Values.secrets.mode "external-secrets" }}
+{{- $a := .Values.secrets.arns }}
+{{- range $p := list (list "dbMaster" $.Values.database.masterSecretArn) (list "dbOwner" $a.db_stac_higher_owner) (list "dbStacApi" $a.db_stac_api) (list "dbStacReader" $a.db_stac_reader) (list "dbProxyPolicy" $a.db_stac_proxy_policy) (list "dbCubeServer" $a.db_cube_server) }}
+---
+{{- /* The RDS master credential is deleted once the phase succeeds (the Secret goes with it, creationPolicy Owner). Helm deletes hook-succeeded resources only after every hook in the phase succeeds, so db-bootstrap at -20 still has it. refreshInterval "0" = no periodic re-read. */}}
+{{ include "stac-higher.externalSecret" (dict "root" $ "name" (include "stac-higher.hookSecretName" (dict "root" $ "name" (index $p 0))) "remoteKey" (index $p 1) "json" true "hook" true "deleteOnSuccess" (eq (index $p 0) "dbMaster") "refreshInterval" (ternary "0" "" (eq (index $p 0) "dbMaster")) "keys" (list "username" "password")) }}
+{{- end }}
+{{- end }}
