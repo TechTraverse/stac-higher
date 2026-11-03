@@ -1783,6 +1783,15 @@ run naming the cap. Until K-4 (#12) the pipeline mints `timeout + grace`
 without the queue wait, so the deploy gate is deliberately stricter than the
 mint.
 
+### I-150 · Generated platform secrets sit in Terraform state 🟡
+
+The `secrets` module's `random_*` values are stored in state in plaintext.
+Write-only arguments (`secret_string_wo`) would avoid that but need
+OpenTofu/Terraform >= 1.11, above the modules' 1.10 floor.
+
+Mitigation: the deployment's state backend must be encrypted and
+access-controlled. Revisit when the floor moves.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
