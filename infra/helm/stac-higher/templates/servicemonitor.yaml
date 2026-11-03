@@ -1,0 +1,22 @@
+{{- $sm := .Values.pipeline.metrics.serviceMonitor -}}
+{{- if $sm.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "stac-higher.fullname" . }}-pipeline
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $l := merge (deepCopy ($sm.labels | default dict)) (include "stac-higher.labels" (dict "root" . "component" "pipeline") | fromYaml) }}
+    {{- toYaml $l | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "stac-higher.selectorLabels" (dict "root" . "component" "pipeline") | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $sm.interval | quote }}
+{{- end }}
