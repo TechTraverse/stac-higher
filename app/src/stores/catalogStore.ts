@@ -1,5 +1,6 @@
 import { computed } from "nanostores";
 import { persistentAtom } from "@nanostores/persistent";
+import { getRuntimeConfig } from "@/lib/runtime-config";
 
 export interface StacCatalog {
   id: string;
@@ -14,16 +15,10 @@ export interface StacCatalog {
 /** Stable id of the built-in (local stac-fastapi) catalog entry. */
 export const BUILT_IN_CATALOG_ID = "built-in";
 
-const DEFAULT_BUILT_IN_URL = "http://localhost:8081";
-
 function builtInCatalogUrl(): string {
-  // PUBLIC_BUILTIN_CATALOG_URL is inlined by Astro/Vite at build time; the
-  // guard keeps this module usable in non-Vite runtimes (plain node, tests).
-  const fromEnv =
-    typeof import.meta !== "undefined" && import.meta.env
-      ? (import.meta.env.PUBLIC_BUILTIN_CATALOG_URL as string | undefined)
-      : undefined;
-  return fromEnv?.trim() || DEFAULT_BUILT_IN_URL;
+  // The server renders the URL into every page per request (Layout.astro), so
+  // changing it needs a restart, not a rebuild.
+  return getRuntimeConfig().builtInCatalogUrl;
 }
 
 function createBuiltInCatalog(): StacCatalog {

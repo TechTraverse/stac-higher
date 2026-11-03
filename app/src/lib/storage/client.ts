@@ -4,20 +4,25 @@
  * The app only ever *presigns* — it hands short-lived URLs to the browser and
  * never streams bytes itself — so this client makes no network calls in the
  * request path. `defaultClient()` memoizes one built from the process env.
+ *
+ * With `credentials: null` the SDK default chain resolves (and refreshes) Pod
+ * Identity / IRSA credentials itself; the 300 s / 900 s presign TTLs sit well
+ * inside a session.
  */
-import { S3Client } from "@aws-sdk/client-s3";
+import { S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
 import { getStorageConfig, type StorageConfig } from "./config";
 
-export function buildClient(config: StorageConfig): S3Client {
-  return new S3Client({
+export function s3ClientConfig(config: StorageConfig): S3ClientConfig {
+  return {
     endpoint: config.endpoint,
     region: config.region,
     forcePathStyle: config.forcePathStyle,
-    credentials: {
-      accessKeyId: config.accessKeyId,
-      secretAccessKey: config.secretAccessKey,
-    },
-  });
+    ...(config.credentials ? { credentials: config.credentials } : {}),
+  };
+}
+
+export function buildClient(config: StorageConfig): S3Client {
+  return new S3Client(s3ClientConfig(config));
 }
 
 let cached: { client: S3Client; config: StorageConfig } | null = null;

@@ -383,6 +383,9 @@ Defaults for an extractor: **600 runs/hour** (applied whether you create the
 process through the UI or the API) and a **120 s timeout** — that one is a
 default of the deploy FORM only, so an API caller posting a revision should
 set `runtime.timeout_seconds` explicitly (the schema default is 900 s).
+On a deployment with a credential cap, `timeout_seconds` plus the hardware
+profile's queue wait plus the grace must fit the cap, or the deploy is refused
+with 422 `credential_budget_exceeded`. On AWS the cap is 3600 s.
 Back-to-back files coalesce into one run while a run is still queued.
 
 **Built-in extractors.** The platform ships a library of extractors backed

@@ -7,7 +7,9 @@
  * client). The token is signature-verified with `jose` against the issuer
  * JWKS (discovered through the existing `discover()` cache — never
  * per-request), with standard `exp`/`iss` checks and an audience check
- * mirroring the auth proxy's `ALLOWED_JWT_AUDIENCES`. Verified claims run
+ * mirroring the auth proxy's `ALLOWED_JWT_AUDIENCES`: the check is on `aud`,
+ * or on `client_id` for Cognito access tokens, per `AUTH_BEARER_AUDIENCE_CLAIM`
+ * (spec §8; same semantics as the R-3 proxy half). Verified claims run
  * through the SAME claims mapper as session identities, so `locals.auth` is
  * a normal `CanonicalIdentity` and every downstream consumer — permission
  * guard, group scoping, audit rows (`actor` = token `sub`) — works
@@ -82,7 +84,8 @@ function getJwks(jwksUri: string) {
 /**
  * Verify a bearer JWT (signature via issuer JWKS, `iss`, `exp`, audience)
  * and map its claims to a canonical identity. Returns `null` on ANY failure
- * — the caller degrades to anonymous; this never throws. No-op outside
+ * — the caller degrades to anonymous; this never throws, except for an
+ * invalid `AUTH_BEARER_AUDIENCE_CLAIM` (a config error, thrown by `getAuthConfig`). No-op outside
  * `oidc` mode.
  */
 export async function verifyBearerToken(
@@ -97,10 +100,26 @@ export async function verifyBearerToken(
     // server-to-server client sees in `iss` depends on where it fetched its
     // token (the compose stack's localhost:8180 vs keycloak:8080 split).
     const issuers = [...new Set([cfg.issuer, cfg.internalIssuer])];
-    const { payload } = await jwtVerify(token, getJwks(endpoints.jwksUri), {
-      issuer: issuers,
-      audience: getBearerAudiences(env),
-    });
+    const jwks = getJwks(endpoints.jwksUri);
+    let payload;
+    if (cfg.bearerAudienceClaim === "aud") {
+      ({ payload } = await jwtVerify(token, jwks, {
+        issuer: issuers,
+        audience: getBearerAudiences(env),
+      }));
+    } else {
+      // Cognito access tokens carry `client_id`, not `aud`.
+      ({ payload } = await jwtVerify(token, jwks, { issuer: issuers }));
+      if (payload.aud !== undefined) {
+        throw new Error("client_id mode: token carries an aud claim");
+      }
+      const clientId = payload.client_id;
+      if (typeof clientId !== "string" || !getBearerAudiences(env).includes(clientId)) {
+        throw new Error(
+          `client_id ${JSON.stringify(clientId)} is not one of AUTH_BEARER_AUDIENCES`,
+        );
+      }
+    }
     const identity = mapClaims(
       payload as Record<string, unknown>,
       loadClaimsMapping(env),

@@ -32,7 +32,7 @@ Local-first platform substrate; everything runs under `docker compose up`.
 | Full local stack | ✅ | `docker-compose.yml`: pgstac (:5433), stac-fastapi (:8082), stac-auth-proxy (:8081), Keycloak (:8180), MinIO (:9000/:9001), pipeline (:8083) |
 | Pipeline service | ✅ | `services/pipeline/` — worker + scheduler + `/health` in one process; backend-agnostic `QueueBackend` (Procrastinate default, SQS reserved for Phase 8); no-op heartbeat proves the periodic path |
 | Extension storage + migrations | ✅ | `stac_higher.*` schema in pgstac's Postgres; app-owned migrations run via middleware on first request |
-| Built-in catalog | ✅ | seeded, undeletable entry pointing at the auth-proxy (`PUBLIC_BUILTIN_CATALOG_URL`) |
+| Built-in catalog | ✅ | seeded, undeletable entry pointing at the auth-proxy (`BUILTIN_CATALOG_PUBLIC_URL`, fallback `PUBLIC_*`) |
 
 Decisions: [ADR 0001 — migration ownership](decisions/0001-migration-ownership.md).
 
@@ -61,7 +61,7 @@ mutations route through `/api/catalog/[...path]`
 (`app/src/pages/api/catalog/`): transaction endpoints only, writes only; the
 route injects the session access token server-side and forwards to the
 configured built-in catalog (`BUILTIN_CATALOG_URL` /
-`PUBLIC_BUILTIN_CATALOG_URL`). `stacFetch` routes built-in writes there
+`BUILTIN_CATALOG_PUBLIC_URL`, fallback `PUBLIC_*`). `stacFetch` routes built-in writes there
 unconditionally (dev pass-through included); the guard gates the paths
 (operator+, `catalog_collection`/`catalog_item` resource types) so every UI
 catalog mutation is audited. UI-path enforcement leg:
@@ -676,7 +676,7 @@ Spec: `docs/superpowers/specs/2026-09-01-m3-noaa-scale-design.md`; evidence
 | M3-C · bounded-memory byte path | ✅ | EXTRACT opens rasters in place (`/vsis3` `RasterLocation`, `ingest/raster_io.py`); copy-mode FETCH server-side-copies when the platform can read the source, else streams a bounded multipart upload (`ingest/transfer.py`); the envelope is `GDAL_CACHEMAX` + `FETCH_CHUNK_BYTES × FETCH_TRANSFER_CONCURRENCY` per job (README "Memory envelope"). Closes I-19/I-26 for object stores; I-83 remains. Measured: `TODO.md` follow-ups. |
 | M3-D · concurrency | ✅ (2026-09-21) | Worker concurrency 12 across a `default` (8) and a `bytes` (4: FETCH/ITEMIZE/deliver) queue — two Procrastinate workers in one process, one stop handler for both (`queue/procrastinate_backend.py`); the FETCH claim is a compare-and-set (`IngestRepo.transition_ledger`); ITEMIZE's `flow_stats` writes are batched per `FLOW_STATS_FLUSH_SECONDS` (`flow/batcher.py`); the blocking-call executor is sized to the slots; `pipeline_jobs_in_flight{job}`. README "Concurrency (M3-D)" has the queue table, the honest memory envelope (delivery still buffers whole objects — I-134 / M3-K), the 40-connection budget and the shared-state audit. Measured 2026-09-21 (README "Concurrency (M3-D)" → "Measured"): 84.8 items/s at saturation, RSS flat 131–143 MiB, bytes queue at its 4 slots, no double FETCH; the deadlock that run exposed is I-135 (#43). |
 
-## Phase 8 — Not started ⬜
+## Phase 8 — In progress 🔄
 
 Cloud deployment, scale gate & visualization. See
 [`../ROADMAP.md`](../ROADMAP.md).
@@ -696,3 +696,4 @@ gate (K-9) are Phase 8. Spec:
 |---|---|---|
 | R-3 · release artifacts | ✅ | Derived `auth-proxy` image published with `AUTH_BEARER_AUDIENCE_CLAIM` support; provenance + SBOM on `v*` images; `release-manifest.json` (image digests, chart and module refs) on each release and as a dry-run artifact on every Containers run. `docs/releases.md` |
 | R-2 · Pipeline + cube-server: S3 credential chain, RDS TLS, credential cap at mint | ✅ | Blank `STAGING_S3_*` / `CUBE_S3_*` keys mean the default chain for boto3, STS, GDAL (via botocore) and Icechunk; keys come as a pair; compose is unchanged. A signed connection without keys is refused. `PROCESS_MAX_CREDENTIAL_SECONDS` refuses at mint (`credential_budget_exceeded`, dead run, scans too, fixture `process-credential-budget.json`). TLS is libpq's `PGSSLMODE`/`PGSSLROOTCERT` (no code). Library findings: `backend.md` "Deployment: S3 credentials and database TLS (R-2)". |
+| **R-1 · app runtime config** | ✅ | Browser URLs injected at runtime (`app/src/lib/runtime-config/`, `window.__STAC_HIGHER_CONFIG__`; `BUILTIN_CATALOG_PUBLIC_URL`/`TITILER_URL`/`TIPG_URL`/`CUBE_SERVER_URL`, `PUBLIC_*` fallbacks); S3 default credential chain; `PGSSLROOTCERT` TLS; `PROCESS_MAX_CREDENTIAL_SECONDS` deploy refusal (422 `credential_budget_exceeded`, fixture `process-credential-budget.json`); `AUTH_BEARER_AUDIENCE_CLAIM`; `node app/dist/server/migrate.mjs`. |

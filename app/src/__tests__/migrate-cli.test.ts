@@ -1,0 +1,63 @@
+// @vitest-environment node
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it, vi } from "vitest";
+import { redactDatabaseUrl, runMigrateCli } from "@/lib/db/migrate-cli";
+
+const BUNDLE = fileURLToPath(new URL("../../dist/server/migrate.mjs", import.meta.url));
+
+describe("redactDatabaseUrl", () => {
+  it("hides a password that contains @", () => {
+    expect(redactDatabaseUrl("postgresql://u:p@ss@h:5432/db")).toBe("postgresql://***@h:5432/db");
+  });
+  it("hides a percent-encoded password", () => {
+    expect(redactDatabaseUrl("postgresql://u:p%40ss@h/db")).toBe("postgresql://***@h/db");
+  });
+  it("never echoes a password with an unencoded slash", () => {
+    const out = redactDatabaseUrl("postgresql://u:p/ss@h/db");
+    expect(out).not.toContain("p/ss");
+    expect(out).not.toContain("u:p");
+  });
+  it("drops the query string and fragment, where libpq secrets can hide", () => {
+    expect(redactDatabaseUrl("postgresql://u:p@h/db?password=qs3cret&sslmode=require#x")).toBe("postgresql://***@h/db");
+    expect(redactDatabaseUrl("postgresql://h/db?sslpassword=qs3cret")).toBe("postgresql://h/db");
+  });
+  it("returns a placeholder, not the input, for an unparseable URL", () => {
+    expect(redactDatabaseUrl("not a url with secret")).toBe("(unparseable DATABASE_URL)");
+  });
+  it("leaves a URL without credentials unchanged", () => {
+    expect(redactDatabaseUrl("postgresql://h:5432/db")).toBe("postgresql://h:5432/db");
+  });
+});
+
+describe("runMigrateCli", () => {
+  it("returns 0 and logs a redacted URL when migrations apply", async () => {
+    const log = vi.fn();
+    const code = await runMigrateCli({ migrate: async () => {}, databaseUrl: "postgresql://owner:s3cret@db.example.org:5432/app", log });
+    expect(code).toBe(0);
+    const out = log.mock.calls.flat().join("\n");
+    expect(out).toContain("postgresql://***@db.example.org:5432/app");
+    expect(out).not.toContain("s3cret");
+    expect(out).toContain("Migrations applied.");
+  });
+  it("names the dev default when DATABASE_URL is unset", async () => {
+    const log = vi.fn();
+    await runMigrateCli({ migrate: async () => {}, log });
+    expect(log.mock.calls.flat().join("\n")).toContain("DATABASE_URL unset");
+  });
+  it("returns 1 and reports the error when migrations fail", async () => {
+    const error = vi.fn();
+    const code = await runMigrateCli({ migrate: async () => { throw new Error("boom"); }, log: () => {}, error });
+    expect(code).toBe(1);
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ message: "boom" }));
+  });
+  it.skipIf(!existsSync(BUNDLE))("the built bundle exits 1 against an unreachable database, without leaking the password", () => {
+    const r = spawnSync(process.execPath, [BUNDLE], {
+      env: { ...process.env, DATABASE_URL: "postgresql://owner:s3cret@127.0.0.1:1/none", PGSSLROOTCERT: "" },
+      encoding: "utf8", timeout: 20_000,
+    });
+    expect(r.status).toBe(1);
+    expect(`${r.stdout}${r.stderr}`).not.toContain("s3cret");
+  }, 30_000);
+});

@@ -26,7 +26,8 @@ dev, unit tests, and e2e working with zero IdP setup.
 | `AUTH_CLAIMS_MAPPING_FILE` | — | Path to a JSON claims-mapping config |
 | `DEV_AUTH_IDENTITY` | — | JSON partial identity for bypass mode, e.g. `{"name":"Weather Admin","groups":["weather"],"roles":["admin"]}` |
 | `AUTH_BYPASS_FORCE` | — | `true` allows bypass in production builds. Dangerous; loudly logged. |
-| `AUTH_BEARER_AUDIENCES` | `stac-higher` | Comma-separated `aud` values accepted on `Authorization: Bearer` JWTs hitting `/api/*` (see below). Mirrors the proxy's `ALLOWED_JWT_AUDIENCES`. |
+| `AUTH_BEARER_AUDIENCES` | `stac-higher` | Comma-separated values matched against the claim named by `AUTH_BEARER_AUDIENCE_CLAIM` (`aud` values, or allowed client ids in `client_id` mode) on `Authorization: Bearer` JWTs hitting `/api/*` (see below). The default `stac-higher` stays in force in `client_id` mode, so the app client id must be listed. Mirrors the proxy's `ALLOWED_JWT_AUDIENCES`. |
+| `AUTH_BEARER_AUDIENCE_CLAIM` | `aud` | The claim `AUTH_BEARER_AUDIENCES` is matched against. `aud` (Keycloak, Entra, most IdPs; unchanged behaviour), or `client_id` (Cognito access tokens): `AUTH_BEARER_AUDIENCES` then lists allowed client ids, and a token carrying any `aud` is rejected. Trimmed, case-sensitive; any other value fails config load, so every request 500s with the message. Same semantics at the enforced proxy (R-3). |
 
 Local OIDC login against the compose Keycloak needs only:
 
@@ -57,7 +58,7 @@ mapped output. Config fields (all optional; Keycloak defaults shown):
 service accounts carry no profile claims, but `azp` names the OAuth client.)
 
 After `roleMap`, anything outside `member`/`operator`/`admin` is dropped.
-Examples: Cognito → `{"groups":"cognito:groups","roles":"cognito:groups","roleMap":{"stac-operators":"operator"}}`;
+Examples: Cognito → `{"groups":"cognito:groups","roles":"cognito:groups","roleMap":{"stac-operators":"operator"}}` (Cognito access tokens carry `client_id` instead of `aud`, so also set `AUTH_BEARER_AUDIENCE_CLAIM=client_id` and list the app client id in `AUTH_BEARER_AUDIENCES`);
 Entra → `{"sub":"oid","email":"preferred_username","roles":"roles","roleMap":{"Operator":"operator"}}`.
 
 ## Session
@@ -81,8 +82,9 @@ accepts `Authorization: Bearer <JWT>` on `/api/*` requests
   the same cached OIDC discovery the session path uses — never re-discovered
   per request), standard `exp` and `iss` checks (`iss` may be either
   `OIDC_ISSUER` or `OIDC_ISSUER_INTERNAL` — which one a server-to-server
-  client sees depends on where it fetched its token), and `aud` must contain
-  one of `AUTH_BEARER_AUDIENCES` (default `stac-higher`, mirroring the
+  client sees depends on where it fetched its token), and the claim named by
+  `AUTH_BEARER_AUDIENCE_CLAIM` (`aud` by default) must contain one of
+  `AUTH_BEARER_AUDIENCES` (default `stac-higher`, mirroring the
   proxy's `ALLOWED_JWT_AUDIENCES`).
 - **Claims mapping**: verified claims run through the same claims mapper as
   session identities, so `locals.auth` is a normal `CanonicalIdentity` —
@@ -157,7 +159,7 @@ mutations from the UI therefore go through `POST/PUT/PATCH/DELETE
 /api/catalog/[...path]` (transaction endpoints only): the route reads the
 session server-side, injects `Authorization: Bearer <access token>`, and
 forwards to `BUILTIN_CATALOG_URL` (falls back to
-`PUBLIC_BUILTIN_CATALOG_URL`, then `http://localhost:8081`). In dev-bypass
+the public catalog URL (`BUILTIN_CATALOG_PUBLIC_URL`, then `PUBLIC_BUILTIN_CATALOG_URL`). In dev-bypass
 mode there is no token and none is attached — the pass-through proxy accepts
 the write, so both postures share one code path. These routes are gated
 (operator+) and audited like every other mutation. `stacFetch` routes

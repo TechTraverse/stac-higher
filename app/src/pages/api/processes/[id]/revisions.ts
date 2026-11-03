@@ -30,9 +30,17 @@
  * 409, and the only body it accepts is `{ from_builtin: true }` — "Update to
  * current", a new revision from the registry template the app was built with.
  * Same verb, same audit row (`deploy`), one place that moves a revision.
+ *
+ * All three deploy paths (this route twice, and `POST /api/processes/builtin`)
+ * also refuse a credential budget above `PROCESS_MAX_CREDENTIAL_SECONDS`
+ * (422 `credential_budget_exceeded`, R-1; the pipeline refuses at mint, R-2).
  */
 import type { APIRoute } from "astro";
 import { jsonResponse } from "@/lib/http/response";
+import {
+  credentialBudgetRefused,
+  revisionCredentialBudgetError,
+} from "@/lib/processes/credential-budget";
 import {
   findUnresolvableSecretRef,
   loadVisibleProcess,
@@ -92,12 +100,15 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       // hand-written revision — a registry entry that outgrows this
       // deployment's profile ceiling is refused here, not left to die at
       // launch (final review Item 1).
+      const builtinProfiles = loadHardwareProfiles();
       const builtinHardwareError = hardwareBoundsError(
         template.runtime.hardware,
         template.runtime.memory_mb,
-        loadHardwareProfiles(),
+        builtinProfiles,
       );
       if (builtinHardwareError) return jsonResponse(400, { error: builtinHardwareError });
+      const builtinBudgetError = revisionCredentialBudgetError(template.runtime, builtinProfiles);
+      if (builtinBudgetError) return credentialBudgetRefused(builtinBudgetError);
 
       const revision = await deployRevision({
         processId: loaded.process.id,
@@ -134,12 +145,15 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     // K-1 (spec §4): the profile must exist here and the numbers must sit
     // inside its bounds; the pipeline re-checks at launch. Refused at deploy
     // time so the operator hears it at the form.
+    const profiles = loadHardwareProfiles();
     const hardwareError = hardwareBoundsError(
       data.runtime.hardware,
       data.runtime.memory_mb,
-      loadHardwareProfiles(),
+      profiles,
     );
     if (hardwareError) return jsonResponse(400, { error: hardwareError });
+    const budgetError = revisionCredentialBudgetError(data.runtime, profiles);
+    if (budgetError) return credentialBudgetRefused(budgetError);
 
     const unresolvable = await findUnresolvableSecretRef(
       data.env,

@@ -139,3 +139,17 @@ describe("resolveAuthContext — bypass mode", () => {
     expect(auth.identity).toBeNull();
   });
 });
+
+describe("AUTH_BEARER_AUDIENCE_CLAIM (config load, R-3-agreed semantics)", () => {
+  it("unset or blank means aud", () => {
+    expect(getAuthConfig({}).bearerAudienceClaim).toBe("aud");
+    expect(getAuthConfig({ AUTH_BEARER_AUDIENCE_CLAIM: "  " }).bearerAudienceClaim).toBe("aud");
+  });
+  it("accepts aud and client_id, trimmed", () => {
+    expect(getAuthConfig({ AUTH_BEARER_AUDIENCE_CLAIM: "aud" }).bearerAudienceClaim).toBe("aud");
+    expect(getAuthConfig({ AUTH_BEARER_AUDIENCE_CLAIM: " client_id " }).bearerAudienceClaim).toBe("client_id");
+  });
+  it.each(["azp", "Client_ID", "AUD", "client-id"])("fails config load on %j, naming the setting (Review Focus 5)", (raw) => {
+    expect(() => getAuthConfig({ AUTH_BEARER_AUDIENCE_CLAIM: raw })).toThrow(/AUTH_BEARER_AUDIENCE_CLAIM must be "aud" or "client_id"/);
+  });
+});

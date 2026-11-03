@@ -25,6 +25,7 @@ COPY --from=fixtures builtin-extractors.json tests/contract-fixtures/builtin-ext
 # The SSR bundle externalizes runtime deps (pg, @aws-sdk, react, zod, ...), so
 # prune to production node_modules and ship them alongside dist/.
 RUN npm run build --workspace app \
+    && test -f app/dist/server/migrate.mjs \
     && npm prune --omit=dev \
     && mkdir -p app/node_modules
 
@@ -56,4 +57,7 @@ USER node
 EXPOSE 4321
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD ["node", "-e", "fetch(`http://127.0.0.1:${process.env.PORT ?? 4321}/`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+# The chart's app-migrate Job runs `node app/dist/server/migrate.mjs` (spec
+# section 6.1) as the owner role. It exits 0 on success and 1 on failure; the
+# first-request migration path stays as the fallback.
 CMD ["node", "app/dist/server/entry.mjs"]

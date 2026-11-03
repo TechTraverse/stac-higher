@@ -12,16 +12,13 @@
  * `/api/assets/...` hrefs to the platform bucket, so items ingested by the
  * platform render without any change to what the catalog stores.
  */
-const DEFAULT_TITILER_URL = "http://localhost:8084";
+import { getRuntimeConfig, type RuntimeConfig } from "@/lib/runtime-config";
 
 /** The browser-facing titiler base, without a trailing slash. */
 export function titilerBaseUrl(
-  env: Record<string, string | undefined> = import.meta.env as Record<
-    string,
-    string | undefined
-  >,
+  config: Pick<RuntimeConfig, "titilerUrl"> = getRuntimeConfig(),
 ): string {
-  return (env.PUBLIC_TITILER_URL ?? DEFAULT_TITILER_URL).replace(/\/+$/, "");
+  return config.titilerUrl.replace(/\/+$/, "");
 }
 
 const enc = encodeURIComponent;
@@ -99,16 +96,11 @@ export function collectionViewerUrl(
 // tipg (OGC API Features + Tiles for vector tables) — same rules as titiler:
 // one browser-facing base, link-level only (docs/serving.md).
 
-const DEFAULT_TIPG_URL = "http://localhost:8085";
-
 /** The browser-facing tipg base, without a trailing slash. */
 export function tipgBaseUrl(
-  env: Record<string, string | undefined> = import.meta.env as Record<
-    string,
-    string | undefined
-  >,
+  config: Pick<RuntimeConfig, "tipgUrl"> = getRuntimeConfig(),
 ): string {
-  return (env.PUBLIC_TIPG_URL ?? DEFAULT_TIPG_URL).replace(/\/+$/, "");
+  return config.tipgUrl.replace(/\/+$/, "");
 }
 
 /** tipg's landing page — the stack-wide vector surface the product pages link. */

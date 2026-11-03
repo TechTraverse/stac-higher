@@ -4,7 +4,7 @@
  * and the ADR 0004 test-run bridge. Storage and the collection-side checks
  * are mocked — this pins ROUTE behavior, not SQL.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/processes/storage", () => ({
   listProcesses: vi.fn(),
@@ -324,6 +324,32 @@ describe("GET/PUT/DELETE /api/processes/[id]", () => {
 });
 
 describe("POST /api/processes/[id]/revisions (deploy)", () => {
+  beforeEach(() => {
+    vi.stubEnv("PROCESS_MAX_CREDENTIAL_SECONDS", "");
+    vi.stubEnv("PROCESS_CREDENTIAL_GRACE_SECONDS", "");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([[1499, 201], [1500, 201], [1501, 422]])("cap 3600: timeout %i → %i (below, at, above the budget)", async (timeout, status) => {
+    vi.stubEnv("PROCESS_MAX_CREDENTIAL_SECONDS", "3600");
+    vi.mocked(deployRevision).mockResolvedValue({ id: "5c9f1c2e-0000-4000-8000-0000000000f1" } as never);
+    const res = await call(deployRoute, operator, { method: "POST",
+      body: { runtime: { kind: "inline_python", timeout_seconds: timeout }, code: "print(1)", env: [] } });
+    expect(res.status).toBe(status);
+    if (status === 422) {
+      expect(await res.json()).toEqual({ code: "credential_budget_exceeded",
+        error: "credential budget 3601s (max_queue_wait_seconds 1800 + timeout_seconds 1501 + grace 300) exceeds this deployment's cap of 3600s (PROCESS_MAX_CREDENTIAL_SECONDS)" });
+      expect(deployRevision).not.toHaveBeenCalled();
+    }
+  });
+
+  it("deploys an 86400 s timeout when the cap is unset (today's behaviour)", async () => {
+    vi.mocked(deployRevision).mockResolvedValue({ id: "5c9f1c2e-0000-4000-8000-0000000000f1" } as never);
+    const res = await call(deployRoute, operator, { method: "POST",
+      body: { runtime: { kind: "inline_python", timeout_seconds: 86400 }, code: "print(1)", env: [] } });
+    expect(res.status).toBe(201);
+  });
+
   it("refuses a user image no scan has approved (C-1: 422 image_not_approved)", async () => {
     const res = await call(deployRoute, operator, {
       method: "POST",
