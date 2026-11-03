@@ -1781,3 +1781,17 @@ Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs her
 - **I-55** · No queue-level ingest retry / `stored` stall — 🟢 resolved (2026-07-30)
 - **I-56** · Delivery pre-record + stall sweep — 🟢 resolved (M2-0)
 - **I-100** · `file_mtime` was the ledger settle time, not the object's modified time — 🟢 resolved (G-6: DISCOVER persists `source_mtime`; `file_mtime` prefers it)
+
+### I-148 · The proxy's client_id audience mode rides on upstream internals 🟡
+
+Upstream stac-auth-proxy (through v1.3.1) matches the `aud` claim only. To
+support `AUTH_BEARER_AUDIENCE_CLAIM=client_id` (Cognito access tokens), the
+derived image swaps `EnforceAuthMiddleware` in `app.user_middleware`. The swap
+is guarded by a startup `RuntimeError` when upstream no longer registers
+exactly one such entry, and by the lockstep pin test
+(`test_dev_pin_matches_the_dockerfile_base`). It goes away if upstream gains a
+claim setting, which is worth proposing upstream. Tokens carrying `aud` are
+refused in `client_id` mode.
+
+Tracked in: `services/proxy-policy/src/stac_higher_proxy_policy/app.py`; ADR
+0015 bump procedure.
