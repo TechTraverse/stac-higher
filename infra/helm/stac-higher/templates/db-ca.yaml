@@ -1,0 +1,15 @@
+{{- if and (eq .Values.database.sslMode "verify-full") .Values.database.caBundle.pem }}
+{{- /* A pre-install hook (no delete-after policy) so the db-bootstrap/migrate hooks can mount it before the release's own objects exist; it persists for the runtime pods like the hook Secret copies. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "stac-higher.fullname" . }}-db-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "db-hook") | nindent 4 }}
+  annotations:
+    {{- include "stac-higher.hookAnnotations" (dict "weight" -35) | nindent 4 }}
+data:
+  ca-bundle.pem: |
+    {{- .Values.database.caBundle.pem | trim | nindent 4 }}
+{{- end }}

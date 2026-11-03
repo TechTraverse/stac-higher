@@ -243,6 +243,22 @@ spec:
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if not (kindIs "invalid" $v.aws.processMaxCredentialSeconds) -}}
+{{- $doc := include "stac-higher.hardwareProfilesJson" . | fromJson -}}
+{{- range $p := $doc.profiles -}}
+{{- $wait := int $p.max_queue_wait_seconds -}}
+{{- if ge (add $wait (int $v.processRuns.credentialGraceSeconds)) (int $v.aws.processMaxCredentialSeconds) -}}
+{{- fail (printf "config.hardwareProfiles: profile %q has max_queue_wait_seconds %d, which with the %ds grace leaves no run time under aws.processMaxCredentialSeconds %d" $p.id $wait (int $v.processRuns.credentialGraceSeconds) (int $v.aws.processMaxCredentialSeconds)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $c := list "app" "pipeline" -}}
+{{- range $k := keys (get $v $c).env | sortAlpha -}}
+{{- if regexMatch "(SECRET|TOKEN|PASSWORD|_KEY$|_KEY_ID$)" (upper $k) -}}
+{{- fail (printf "%s.env.%s looks like a secret; env values are rendered into a ConfigMap, so wire secrets through the secrets layer instead" $c $k) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $keys := include "stac-higher.imageKeys" . | fromJsonArray -}}
 {{- $digests := $v.global.imageDigests | default dict -}}
 {{- range $k := keys $digests | sortAlpha -}}
@@ -260,4 +276,57 @@ spec:
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+
+{{/* Hardware-profile document: the deployment's, else the chart's eks-cpu set. Pretty JSON. */}}
+{{- define "stac-higher.hardwareProfilesJson" -}}
+{{- if .Values.config.hardwareProfiles -}}
+{{- .Values.config.hardwareProfiles | toPrettyJson -}}
+{{- else -}}
+{{- .Files.Get "files/hardware-profiles/eks-cpu.json" | trim -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Image-policy document: the deployment's, else the chart's copy of infra/image-policy/default.json. */}}
+{{- define "stac-higher.imagePolicyJson" -}}
+{{- if .Values.config.imagePolicy -}}
+{{- .Values.config.imagePolicy | toPrettyJson -}}
+{{- else -}}
+{{- .Files.Get "files/image-policy/default.json" | trim -}}
+{{- end -}}
+{{- end -}}
+
+{{/* CA volume, or nothing when database.sslMode=disable. (dict "root" $ "hook" bool); the volume is the same for hooks. */}}
+{{- define "stac-higher.caVolume" -}}
+{{- $d := .root.Values.database -}}
+{{- if eq $d.sslMode "verify-full" -}}
+name: db-ca
+configMap:
+  {{- if $d.caBundle.existingConfigMap }}
+  name: {{ $d.caBundle.existingConfigMap }}
+  items:
+    - key: {{ $d.caBundle.key }}
+      path: ca-bundle.pem
+  {{- else }}
+  name: {{ include "stac-higher.fullname" .root }}-db-ca
+  items:
+    - key: ca-bundle.pem
+      path: ca-bundle.pem
+  {{- end }}
+{{- end -}}
+{{- end -}}
+
+{{/* Matching mount, or nothing when database.sslMode=disable. (dict "root" $) */}}
+{{- define "stac-higher.caVolumeMount" -}}
+{{- if eq .root.Values.database.sslMode "verify-full" -}}
+name: db-ca
+mountPath: /etc/stac-higher/db-ca
+readOnly: true
+{{- end -}}
+{{- end -}}
+
+{{/* Rolls pods when the config changes: sha256 of the rendered config ConfigMaps. */}}
+{{- define "stac-higher.configChecksum" -}}
+{{- $b := .Template.BasePath -}}
+{{- cat (include (print $b "/config-files.yaml") .) (include (print $b "/config-env.yaml") .) (include (print $b "/db-ca.yaml") .) | sha256sum -}}
 {{- end -}}

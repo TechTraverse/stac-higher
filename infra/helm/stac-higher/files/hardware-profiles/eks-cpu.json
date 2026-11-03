@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "standard",
+      "label": "Standard",
+      "description": "General purpose. Metadata extraction, small rasters.",
+      "tier": "cpu",
+      "accelerator": null,
+      "cpu": {
+        "min": 0.25,
+        "max": 4,
+        "default": 1
+      },
+      "memory_mb": {
+        "min": 128,
+        "max": 16384,
+        "default": 512
+      },
+      "gpu_count": null,
+      "max_queue_wait_seconds": 900,
+      "image": null,
+      "backend": {
+        "kubernetes": {
+          "queue": "process-runs",
+          "node_selector": {},
+          "tolerations": [],
+          "runtime_class": null,
+          "extended_resources": {}
+        }
+      }
+    },
+    {
+      "id": "cpu-large",
+      "label": "CPU — large",
+      "description": "Many cores and memory. Mosaics, reprojection, big rasters.",
+      "tier": "cpu-large",
+      "accelerator": null,
+      "cpu": {
+        "min": 2,
+        "max": 8,
+        "default": 4
+      },
+      "memory_mb": {
+        "min": 4096,
+        "max": 32768,
+        "default": 8192
+      },
+      "gpu_count": null,
+      "max_queue_wait_seconds": 900,
+      "image": null,
+      "backend": {
+        "kubernetes": {
+          "queue": "process-runs",
+          "node_selector": {},
+          "tolerations": [],
+          "runtime_class": null,
+          "extended_resources": {}
+        }
+      }
+    }
+  ]
+}
