@@ -212,17 +212,11 @@ run "cognito_and_demo_on" {
     enable_cognito          = true
     enable_demo_destination = true
   }
-  override_resource {
-    target = module.demo_destination[0].module.bucket.aws_s3_bucket.this
-    values = {
-      id  = "stac-test-demo-destination"
-      arn = "arn:aws-us-gov:s3:::stac-test-demo-destination"
-    }
-  }
-  override_resource {
-    target = module.demo_destination[0].aws_secretsmanager_secret.this
-    values = {
-      arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
+  override_module {
+    target = module.demo_destination
+    outputs = {
+      bucket_name            = "stac-test-demo-destination"
+      credentials_secret_arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
     }
   }
   assert {
@@ -287,10 +281,11 @@ run "external_secrets_policy" {
   variables {
     enable_demo_destination = true
   }
-  override_resource {
-    target = module.demo_destination[0].aws_secretsmanager_secret.this
-    values = {
-      arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
+  override_module {
+    target = module.demo_destination
+    outputs = {
+      bucket_name            = "stac-test-demo-destination"
+      credentials_secret_arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
     }
   }
   assert {
