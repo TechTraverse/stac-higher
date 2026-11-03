@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-02
 **Status:** **approved 2026-11-03** by the lead, with Q2 and Q3 settled as recorded in §13; Q1 stays open for the cluster team.
-**Tracking:** epic to be created on approval (new queue `deploy artifacts (R)`).
+**Tracking:** epic #136.
 **Decision record:** [ADR 0024](../../decisions/0024-deployment-artifacts.md)
 (accepted) — publish-don't-deploy, Terraform/OpenTofu for AWS, Helm for
 Kubernetes, eoapi-cdk not adopted, services on EKS.
