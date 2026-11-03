@@ -434,9 +434,9 @@ Residuals in [`ISSUES.md`](ISSUES.md): I-58 (M2-C notification semantics), I-59 
 
 | Feature | Status | Entry points |
 |---|---|---|
-| CI gate | ✅ | `.github/workflows/ci.yml` — app job (the same app-scoped `astro check` + build + vitest that root `npm run verify` runs locally; aligned 2026-08-21 after the M2 promotion exposed the gap), pipeline job (ruff + pytest incl. the pgstac DB integration tests), Storybook build, and a Playwright e2e job against the compose stack |
+| CI gate | ✅ | `.github/workflows/ci.yml` — app job (the same app-scoped `astro check` + build + vitest that root `npm run verify` runs locally; aligned 2026-08-21 after the M2 promotion exposed the gap), proxy-policy job, pipeline job (ruff + pytest incl. the pgstac DB integration tests), Storybook build, and a Playwright e2e job against the compose stack |
 | Security scanning | ✅ | `.github/workflows/security.yml` (npm audit — high-severity gate on prod deps since the Astro 7 upgrade resolved I-57 — plus gitleaks), `codeql.yml`, Trivy in `containers.yml` |
-| Container images + releases | ✅ | `containers.yml` → GHCR images for the app and pipeline; `release.yml` |
+| Container images + releases | ✅ | All eight GHCR images incl. the derived auth-proxy, provenance + SBOM on `v*` builds, and `release-manifest.json` attached to each release — `containers.yml`, `release.yml`, `.github/scripts/release-manifest.mjs`, `docs/releases.md` |
 
 ---
 
@@ -689,3 +689,9 @@ async executor + cancel, `KubernetesExecutor`, Kueue manifests + kind CI,
 CUDA image) is the K queue — GitHub epic #2 (`queue: k8s compute (K)`); the EKS deployment (K-8) and the
 gate (K-9) are Phase 8. Spec:
 `docs/superpowers/specs/2026-09-02-process-compute-k8s-kueue-design.md`.
+
+### Deployment artifacts (R queue)
+
+| Feature | Status | Notes |
+|---|---|---|
+| R-3 · release artifacts | ✅ | Derived `auth-proxy` image published with `AUTH_BEARER_AUDIENCE_CLAIM` support; provenance + SBOM on `v*` images; `release-manifest.json` (image digests, chart and module refs) on each release and as a dry-run artifact on every Containers run. `docs/releases.md` |
