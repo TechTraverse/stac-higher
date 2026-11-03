@@ -13,7 +13,8 @@ RDS PostgreSQL 17 for the platform catalog: a DB subnet group, a security group 
 | `subnet_ids` | list(string) | required | At least two private subnets. |
 | `allowed_security_group_ids` | list(string) | required | At least one security group allowed on 5432. No CIDR ingress is offered. |
 | `instance_class` | string | `"db.t4g.medium"` | Must start with `db.`. |
-| `engine_version` | string | `"17"` | Major or major.minor; major 16 or later. The parameter-group family is `postgres<major>`. |
+| `engine_version` | string | `"17"` | Pin the major only (e.g. `"17"`): a major.minor pin drifts under `auto_minor_version_upgrade` and the next plan tries to downgrade. Major 16 or later. The parameter-group family is `postgres<major>`. |
+| `allow_major_version_upgrade` | bool | `false` | Required to apply a major `engine_version` bump. |
 | `db_name` | string | `"postgis"` | Initial database; the pgstac image and every chart DSN use it. |
 | `master_username` | string | `"stac_higher_master"` | Master user; its password is RDS-managed. |
 | `allocated_storage` | number | `50` | GiB, at least 20. |
@@ -66,7 +67,7 @@ Source: eoapi-cdk v11.8.1, `lib/database/index.ts`, `PgStacDatabase.getParameter
 
 ## Master credentials
 
-The master password is RDS-managed (`manage_master_user_password = true`), stored in a Secrets Manager secret encrypted with `kms_key_arn`. Terraform never holds a master password. The chart's bootstrap Job is the only reader of `master_user_secret_arn`. Rotation is safe: the Job re-reads the secret each run (spec 7.2).
+The master password is RDS-managed (`manage_master_user_password = true`), stored in a Secrets Manager secret encrypted with `kms_key_arn`. Terraform never holds a master password. The chart's bootstrap Job is the only reader of `master_user_secret_arn`. Rotation is safe: the Job reads the Kubernetes Secret that External Secrets syncs from the RDS secret. RDS rotates the password every 7 days by default, and the synced Secret can lag a rotation by up to the ESO refresh interval, so a Job run in that window may see the previous password (spec 7.2).
 
 ## Extensions
 
@@ -78,7 +79,7 @@ RDS ships `postgis`, `btree_gist` and `unaccent`. The chart's bootstrap Job crea
 
 ## Static parameters apply at reboot
 
-Every parameter is `pending-reboot`: static parameters require it, and at creation the instance boots with the group anyway. Changing a parameter later takes effect at the next reboot. The group uses `name_prefix` and `create_before_destroy`, so a family change (a new major) swaps groups cleanly.
+Every parameter is `pending-reboot`: static parameters require it, and at creation the instance boots with the group anyway. Changing a parameter later takes effect at the next reboot. The group uses `name_prefix` and `create_before_destroy`, so a family change (a new major) swaps groups cleanly. A major bump needs both `allow_major_version_upgrade = true` and the matching parameter-group family (which follows `engine_version`); without the flag RDS refuses the modification.
 
 ## Security group
 

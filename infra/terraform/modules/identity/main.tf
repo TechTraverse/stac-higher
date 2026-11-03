@@ -73,6 +73,13 @@ locals {
         Resource = ["${var.bucket_arn}/staging/*", "${var.bucket_arn}/assets/*"]
       },
       {
+        # staging/runs/* belongs to process runs; the app never presigns there.
+        Sid      = "DenyProcessRunPrefix"
+        Effect   = "Deny"
+        Action   = ["s3:PutObject"]
+        Resource = ["${var.bucket_arn}/staging/runs/*"]
+      },
+      {
         Sid       = "BucketKms"
         Effect    = "Allow"
         Action    = ["kms:Decrypt", "kms:GenerateDataKey"]

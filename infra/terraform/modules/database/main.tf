@@ -35,7 +35,7 @@ resource "aws_security_group" "this" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "postgres" {
-  for_each = toset(var.allowed_security_group_ids)
+  for_each = { for i, sg in var.allowed_security_group_ids : tostring(i) => sg }
 
   security_group_id            = aws_security_group.this.id
   ip_protocol                  = "tcp"
@@ -102,8 +102,9 @@ resource "aws_db_instance" "this" {
   final_snapshot_identifier = var.skip_final_snapshot ? null : "${var.name_prefix}-db-final"
   copy_tags_to_snapshot     = true
 
-  auto_minor_version_upgrade = true
-  apply_immediately          = var.apply_immediately
+  auto_minor_version_upgrade  = true
+  allow_major_version_upgrade = var.allow_major_version_upgrade
+  apply_immediately           = var.apply_immediately
 
   performance_insights_enabled    = var.performance_insights_enabled
   performance_insights_kms_key_id = var.performance_insights_enabled ? var.kms_key_arn : null

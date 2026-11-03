@@ -84,7 +84,7 @@ output "role_arns" {
 }
 
 output "process_run_role_arn" {
-  description = "ARN of the role the app assumes to mint process-run credentials."
+  description = "ARN of the role the pipeline assumes to mint process-run credentials."
   value       = module.identity.process_run_role_arn
 }
 

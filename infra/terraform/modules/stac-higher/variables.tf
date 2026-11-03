@@ -135,7 +135,7 @@ variable "db_instance_class" {
 }
 
 variable "db_engine_version" {
-  description = "PostgreSQL engine version (major, or major.minor)."
+  description = "PostgreSQL engine version; pin the major only (e.g. 17)."
   type        = string
   default     = "17"
 }

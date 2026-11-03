@@ -66,7 +66,7 @@ variable "instance_class" {
 }
 
 variable "engine_version" {
-  description = "PostgreSQL engine version, a major (17) or major.minor (16.4); major 16 or later. The parameter-group family follows the major."
+  description = "PostgreSQL engine version; major 16 or later. Pin the major only (the default, 17): with auto_minor_version_upgrade on, a major.minor pin drifts as RDS patches and the next plan tries to downgrade. major.minor is accepted but not recommended. The parameter-group family follows the major."
   type        = string
   default     = "17"
 
@@ -74,6 +74,12 @@ variable "engine_version" {
     condition     = can(regex("^[0-9]{2}(\\.[0-9]+)?$", var.engine_version)) && tonumber(split(".", var.engine_version)[0]) >= 16
     error_message = "engine_version must be a PostgreSQL major or major.minor such as 17 or 16.4, with a major of 16 or later (the role-ordering design needs PostgreSQL 16+)."
   }
+}
+
+variable "allow_major_version_upgrade" {
+  description = "Permit RDS to apply a major engine_version bump. A major bump also needs the matching parameter-group family, which follows engine_version automatically."
+  type        = bool
+  default     = false
 }
 
 variable "db_name" {
