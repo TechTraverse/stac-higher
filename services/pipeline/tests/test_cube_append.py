@@ -686,7 +686,7 @@ async def test_after_batch_runs_after_every_batch_that_reached_the_cube(h):
     assert calls == [(SINK, "cube", first), (SINK, "cube", first)]
 
 
-async def test_the_asset_hook_runs_after_the_record_and_before_the_ledger(h):
+async def test_the_asset_hook_runs_after_the_record_and_the_ledger(h):
     seen = []
 
     async def hook(sink, config, result):
@@ -694,50 +694,86 @@ async def test_the_asset_hook_runs_after_the_record_and_before_the_ledger(h):
 
     await h.pend(0)
     await run_cube_append(SINK, h.deps(after_batch=hook))
-    assert seen == [(True, {"i0": ("pending", None)})]
-    assert h.ledger() == {"i0": ("appended", None)}
+    assert seen == [(True, {"i0": ("appended", None)})]
 
 
-async def test_a_failing_asset_hook_releases_the_rows_and_the_redo_publishes(h):
+async def test_a_publish_that_always_raises_finishes_the_rows_and_ends_the_loop(h):
+    attempts = 0
+
+    async def hook(sink, config, result):
+        nonlocal attempts
+        attempts += 1
+        raise ConnectionError("pgstac went away")
+
+    await h.pend(0, 1)
+    report = await run_cube_append(SINK, h.deps(after_batch=hook))  # does not raise
+    tip = h.sink().last_snapshot_id
+    assert tip is not None
+    assert (report.appended, report.publish_failed, report.requeued) == (2, True, False)
+    assert attempts == 1
+    assert h.ledger() == {"i0": ("appended", None), "i1": ("appended", None)}
+    assert h.sink().last_error == "publish failed: ConnectionError: pgstac went away"
+    assert h.enqueued == []
+
+    parsed = len(h.resolver.resolved)
+    rerun = await run_cube_append(SINK, h.deps(after_batch=hook))  # nothing pending
+    assert rerun.taken == 0
+    assert len(h.resolver.resolved) == parsed  # no header was re-read
+    assert attempts == 1 and h.sink().last_snapshot_id == tip
+
+
+async def test_the_next_successful_batch_clears_a_publish_error_and_publishes(h):
     tips: list[str] = []
+    fail = True
 
     async def hook(sink, config, result):
         tips.append(result.snapshot_id)
-        if len(tips) == 1:
+        if fail:
             raise ConnectionError("pgstac went away")
 
-    await h.pend(0, 1)
-    with pytest.raises(ConnectionError):
-        await run_cube_append(SINK, h.deps(after_batch=hook))
-    tip = h.sink().last_snapshot_id
-    assert tips == [tip]  # the commit is recorded; the publish failed
-    assert h.ledger() == {"i0": ("pending", None), "i1": ("pending", None)}
-    assert [r.attempts for r in h.repo.rows(SINK)] == [0, 0]  # an outage, not a crash
-    assert h.sink().last_error == "ConnectionError: pgstac went away"
-    await run_cube_append(SINK, h.deps(after_batch=hook))  # the retry: duplicates only
-    assert tips == [tip, tip]
-    assert h.sink().last_snapshot_id == tip
-    assert h.ledger() == {"i0": ("appended", "duplicate"), "i1": ("appended", "duplicate")}
-    # nothing new to record, but the error is resolved: it must not linger
-    # (a stopped source would otherwise show it for good)
+    await h.pend(0)
+    await run_cube_append(SINK, h.deps(after_batch=hook))
+    assert h.sink().last_error.startswith("publish failed: ")
+    fail = False
+    await h.pend(1)
+    await run_cube_append(SINK, h.deps(after_batch=hook))
+    assert h.sink().last_error is None
+    assert tips == [tips[0], h.sink().last_snapshot_id] and tips[0] != tips[1]
+    assert h.ledger() == {"i0": ("appended", None), "i1": ("appended", None)}
+
+
+async def test_a_batch_with_no_new_tip_clears_a_publish_error_once_published(h):
+    fail = True
+
+    async def hook(sink, config, result):
+        if fail:
+            raise ConnectionError("pgstac went away")
+
+    await h.pend(0)
+    await run_cube_append(SINK, h.deps(after_batch=hook))
+    assert h.sink().last_error is not None
+    fail = False
+    await h.pend(-1)  # late: nothing committed, the publish re-confirms the tip
+    await run_cube_append(SINK, h.deps(after_batch=hook))
     assert h.sink().last_error is None
 
 
-async def test_a_ledger_failure_after_the_publish_republishes_the_same_tip(h):
+async def test_a_ledger_failure_after_the_record_republishes_the_same_tip(h):
     tips: list[str] = []
 
     async def hook(sink, config, result):
         tips.append(result.snapshot_id)
 
     await h.pend(0)
-    h.repo.finish_error = RuntimeError("worker killed")  # published, ledger not written
+    h.repo.finish_error = RuntimeError("worker killed")  # committed, ledger not written
     with pytest.raises(RuntimeError):
         await run_cube_append(SINK, h.deps(after_batch=hook))
     tip = h.sink().last_snapshot_id
-    assert tips == [tip]
+    assert tips == []  # the publish follows the ledger, so it did not run
     assert h.ledger() == {"i0": ("pending", None)}
+    h.repo.finish_error = None
     await run_cube_append(SINK, h.deps(after_batch=hook))  # the redo: a duplicate
-    assert tips == [tip, tip]  # the writer sees an unchanged document
+    assert tips == [tip]
     assert h.ledger() == {"i0": ("appended", "duplicate")}
 
 

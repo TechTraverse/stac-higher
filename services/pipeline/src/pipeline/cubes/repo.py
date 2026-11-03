@@ -58,6 +58,8 @@ class CubeSink:
     last_snapshot_id: str | None
     #: ``updated_at::text``: the app's optimistic-lock version (#98)
     version: str
+    #: ``cube_sinks.last_error`` (maintenance clears an append-time publish error)
+    last_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -263,7 +265,8 @@ class PgCubeRepo(CubeRepo):
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "SELECT id::text, source_collection_id, cube_collection_id, enabled,"
-                "       config, source_prefixes, last_snapshot_id, updated_at::text"
+                "       config, source_prefixes, last_snapshot_id, updated_at::text,"
+                "       last_error"
                 "  FROM stac_higher.cube_sinks WHERE id = %s",
                 (cube_sink_id,),
             )
@@ -279,6 +282,7 @@ class PgCubeRepo(CubeRepo):
             source_prefixes=tuple(row[5] or ()),
             last_snapshot_id=row[6],
             version=row[7],
+            last_error=row[8],
         )
 
     async def take_pending(  # pragma: no cover

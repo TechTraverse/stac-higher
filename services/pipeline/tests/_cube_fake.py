@@ -124,6 +124,7 @@ class FakeCubeRepo(CubeRepo):
             source_prefixes=tuple(s.source_prefixes),
             last_snapshot_id=s.last_snapshot_id,
             version=s.version,
+            last_error=s.last_error,
         )
 
     async def take_pending(self, cube_sink_id: str, limit: int) -> list[PendingRow]:

@@ -151,7 +151,12 @@ by `cube_kick`, like an append. One run (`pipeline/cubes/maintain.py`):
 4. republishes the recorded tip on the cube collection (Z-5's writer,
    idempotent). A republish that raises (e.g. the 10 s lock timeout on the
    collection row) is attention `publish_failed`, not a failed run; the trim
-   stays recorded and the next run republishes;
+   stays recorded and the next run republishes. This also covers an append
+   whose own publish failed (#128): the append finishes its ledger rows and
+   sets `cube_sinks.last_error` to `publish failed: <error>` without raising,
+   so the signal for a stuck asset is that `last_error` plus this run's
+   `publish_failed`. A successful republish here clears a `publish failed:`
+   `last_error` (and only that one);
 5. records the summary, then enqueues `pipeline.cube_measure_sink` (a
    failed run too, if it reached the repository). That job holds **no**
    lock, so listing a large repository never delays the sink's appends

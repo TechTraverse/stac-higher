@@ -317,6 +317,11 @@ the pipeline's **first production collection write**. It gets its own test
 against a real pgstac (DB-gated) and its own `extra={…}` log line. It writes no
 audit row per commit (§14.3).
 
+*As built (#128):* the hook runs after the tip is recorded **and** the ledger
+rows are finished; a publish failure is caught and set on `last_error`
+(`publish failed: …`), never released or raised, and maintenance's hourly
+republish (`publish_failed` attention) is the backstop.
+
 ## 7. App: API, BFF guard, collection lifecycle
 
 - **Routes** (operator+, registered in `lib/authz/permissions.ts`, one
