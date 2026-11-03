@@ -178,7 +178,8 @@ rest of the ecosystem where it fits — with eyes open about maturity:
 | [cql2-rs](https://github.com/developmentseed/cql2-rs) (Python bindings) | Evaluating delivery `item_filter` expressions in the dispatcher | Library |
 | [eoapi-notifier](https://github.com/developmentseed/eoapi-notifier) / eoapi-k8s trigger SQL | **Pattern source only.** The NOTIFY trigger is a custom SQL file in eoapi-k8s, not a pgstac feature; raw NOTIFY is at-most-once with an 8 KB payload cap. We vendor the trigger pattern into a durable outbox (§5.4) instead. Watch pgstac's incoming `items_deleted_log`/`pgstac_updated_at` change-feed primitives — they may replace the vendored trigger. | Vendor pattern |
 | [titiler-pgstac](https://github.com/stac-utils/titiler-pgstac) | Dynamic raster tiles for map previews of ingested imagery | Adopt in Phase 8 (stretch) |
-| [eoapi-cdk](https://github.com/developmentseed/eoapi-cdk) / [eoapi-k8s](https://github.com/developmentseed/eoapi-k8s) | AWS/K8s deployment of the catalog-plane slice; extended with our app, pipeline, and storage | Adopt in Phase 8 |
+| [eoapi-k8s](https://github.com/developmentseed/eoapi-k8s) | Helm chart for the catalog plane (stac-fastapi, titiler-pgstac, tipg, stac-auth-proxy); a subchart of our `stac-higher` chart with an external RDS | Adopt in Phase 8 (ADR 0024) |
+| [eoapi-cdk](https://github.com/developmentseed/eoapi-cdk) | CDK constructs; its services are Lambda + API Gateway, which do not fit EKS | Not adopted (ADR 0024); its pgstac RDS tuning is a reference |
 | [stac-manager](https://github.com/developmentseed/stac-manager) | Dev Seed's OIDC STAC-CRUD admin UI — overlaps our curation UI | Watch for form-builder/plugin patterns; not adopted |
 
 **Prior art worth mining, not adopting:** NASA **Cumulus** validates the
@@ -1110,12 +1111,16 @@ provisionally approved; human review of spec + code pending):
   M-gate style) and the promotion PR remain.
 
 ### Phase 8 — Cloud deployment, scale gate & visualization ⬜ **Not started**
-- AWS stack via eoapi-cdk extended: RDS (pgstac), S3, KMS, Cognito-or-
-  Keycloak decision per deployment (GovCloud-compatible service choices).
-  **Where the app, pipeline and proxies run is an open Phase 8 question**
-  (2026-09-02): ECS/Fargate as originally planned, or co-located on the
-  EKS cluster that process compute now requires (separate namespaces —
-  likely simpler than two orchestrators). Decide in the Phase 8 spec.
+- **Deployment artifacts (ADR 0024, 2026-11-03; spec
+  `docs/superpowers/specs/2026-11-02-deployment-artifacts-design.md`).** This
+  repo publishes versioned artifacts — images, a Helm chart (eoapi-k8s as a
+  subchart), Terraform/OpenTofu modules for RDS, S3, KMS, IAM, Secrets
+  Manager, ECR pull-through and optional Cognito — and a private repo
+  deploys them. The app, pipeline and proxies run on EKS beside the process
+  runs (settles the 2026-09-02 question); the cluster comes from a separate
+  repo. Replaces the earlier "eoapi-cdk extended" plan. First target: a
+  team test/demo environment in commercial us-east-1, GovCloud-portable
+  where cheap.
 - **Process compute: EKS + Kueue (ADR 0019, proposed 2026-09-02).** EKS
   Auto Mode (managed Karpenter, NVIDIA driver + device plugin built in,
   available in both GovCloud regions), Kueue v0.19+ on Kubernetes 1.34+,
