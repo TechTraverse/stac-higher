@@ -1,8 +1,11 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { parseAllDocuments } from "yaml";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CHART_DIR, helmReady, renderChart, scenario } from "../../../../infra/helm/stac-higher/tests/render.mjs";
+import { CHART_DIR, KUBE_VERSION, helmReady, renderChart, scenario } from "../../../../infra/helm/stac-higher/tests/render.mjs";
 import { parseHardwareProfiles } from "@/lib/processes/hardware";
 import { credentialBudgetError } from "@/lib/processes/credential-budget";
 
@@ -157,7 +160,18 @@ describe.skipIf(!helmReady())("chart config layer", () => {
   });
 
   it("app.env wins over derived values", () => {
-    expect(data(render({ app: { env: { AUTH_MODE: "oidc", FOO: "bar" } } }), "env-app")).toMatchObject({ FOO: "bar" });
+    const e = data(render({ app: { env: { TITILER_URL: "https://override.example.com", FOO: "bar" } } }), "env-app");
+    expect(e.TITILER_URL).toBe("https://override.example.com");
+    expect(e.FOO).toBe("bar");
+  });
+
+  it("pipeline.env wins over derived values", () => {
+    const e = data(
+      render({ pipeline: { egressAllowHosts: ["a.example"], env: { EGRESS_ALLOW_HOSTS: "z.example", PROCESS_RUNTIME_IMAGE: "x/y:1" } } }),
+      "env-pipeline",
+    );
+    expect(e.EGRESS_ALLOW_HOSTS).toBe("z.example");
+    expect(e.PROCESS_RUNTIME_IMAGE).toBe("x/y:1");
   });
 
   it("pipeline env keeps upstream runtime image refs", () => {
@@ -190,5 +204,66 @@ describe.skipIf(!helmReady())("chart config layer", () => {
     const docs = render({ database: { caBundle: { existingConfigMap: "", pem: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n" } } });
     expect(cm(docs, "db-ca").data["ca-bundle.pem"]).toContain("BEGIN CERTIFICATE");
     expect(cm(render(), "db-ca")).toBeUndefined();
+  });
+
+  it("the db-ca ConfigMap is a plain runtime object", () => {
+    const d = cm(render({ database: { caBundle: { existingConfigMap: "", pem: "-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----" } } }), "db-ca");
+    expect(d.metadata.annotations).toBeUndefined();
+    expect(d.metadata.labels["app.kubernetes.io/component"]).toBe("config");
+  });
+
+  describe("caVolume helper", () => {
+    const probe = `{{- range $h := list false true }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: probe-{{ $h }}
+data:
+  volume: {{ include "stac-higher.caVolume" (dict "root" $ "hook" $h) | quote }}
+  mount: {{ include "stac-higher.caVolumeMount" (dict "root" $) | quote }}
+{{- end }}`;
+    function probeRender(values: object) {
+      const tmp = mkdtempSync(join(tmpdir(), "helm-probe-"));
+      try {
+        const chart = join(tmp, "chart");
+        cpSync(CHART_DIR, chart, { recursive: true });
+        writeFileSync(join(chart, "templates", "probe.yaml"), probe);
+        const inline = join(tmp, "inline.json");
+        writeFileSync(inline, JSON.stringify(values));
+        const args = ["template", "r", chart, "--namespace", "stac-higher", "--kube-version", KUBE_VERSION, "-f", scenario("base")[0], "-f", inline];
+        const r = spawnSync("helm", args, { encoding: "utf8" });
+        expect(r.status, r.stderr).toBe(0);
+        const docs = parseAllDocuments(r.stdout).map((x) => x.toJS()).filter(Boolean) as Doc[];
+        const out = (n: string) => docs.find((x) => x.metadata.name === `probe-${n}`).data;
+        return { plain: out("false"), hook: out("true") };
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+
+    it("existingConfigMap maps its key to ca-bundle.pem in both modes", () => {
+      const r = probeRender({ database: { caBundle: { existingConfigMap: "my-ca", key: "root.pem" } } });
+      for (const o of [r.plain, r.hook]) {
+        expect(o.volume).toContain("name: db-ca");
+        expect(o.volume).toContain("name: my-ca");
+        expect(o.volume).toMatch(/- key: root\.pem\s+path: ca-bundle\.pem/);
+        expect(o.mount).toContain("mountPath: /etc/stac-higher/db-ca");
+      }
+    });
+
+    it("chart-owned bundle: hook -> hook-db-ca, runtime -> db-ca", () => {
+      const r = probeRender({ database: { caBundle: { existingConfigMap: "", pem: "x" } } });
+      expect(r.plain.volume).toContain("name: r-stac-higher-db-ca\n");
+      expect(r.hook.volume).toContain("name: r-stac-higher-hook-db-ca\n");
+    });
+
+    it("sslMode disable yields no CA volume or mount", () => {
+      const r = probeRender({ database: { sslMode: "disable", caBundle: { existingConfigMap: "" } } });
+      for (const o of [r.plain, r.hook]) {
+        expect(o.volume).toBe("");
+        expect(o.mount).toBe("");
+      }
+    });
   });
 });

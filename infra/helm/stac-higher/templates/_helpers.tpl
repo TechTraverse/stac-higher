@@ -253,7 +253,7 @@ spec:
 {{- end -}}
 {{- end -}}
 {{- range $c := list "app" "pipeline" -}}
-{{- range $k := keys (get $v $c).env | sortAlpha -}}
+{{- range $k := keys ((get $v $c).env | default dict) | sortAlpha -}}
 {{- if regexMatch "(SECRET|TOKEN|PASSWORD|_KEY$|_KEY_ID$)" (upper $k) -}}
 {{- fail (printf "%s.env.%s looks like a secret; env values are rendered into a ConfigMap, so wire secrets through the secrets layer instead" $c $k) -}}
 {{- end -}}
@@ -296,7 +296,9 @@ spec:
 {{- end -}}
 {{- end -}}
 
-{{/* CA volume, or nothing when database.sslMode=disable. (dict "root" $ "hook" bool); the volume is the same for hooks. */}}
+{{/* CA volume, or nothing when database.sslMode=disable. (dict "root" $ "hook" bool)
+With existingConfigMap both modes use it (items maps its key to ca-bundle.pem). With the chart-owned bundle
+(caBundle.pem): hook=true -> <fullname>-hook-db-ca (rendered by the hooks), hook=false -> <fullname>-db-ca. */}}
 {{- define "stac-higher.caVolume" -}}
 {{- $d := .root.Values.database -}}
 {{- if eq $d.sslMode "verify-full" -}}
@@ -308,7 +310,7 @@ configMap:
     - key: {{ $d.caBundle.key }}
       path: ca-bundle.pem
   {{- else }}
-  name: {{ include "stac-higher.fullname" .root }}-db-ca
+  name: {{ include "stac-higher.fullname" .root }}-{{ ternary "hook-db-ca" "db-ca" (default false .hook) }}
   items:
     - key: ca-bundle.pem
       path: ca-bundle.pem
