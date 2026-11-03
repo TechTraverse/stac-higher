@@ -122,5 +122,6 @@ resource "aws_ecr_repository_creation_template" "this" {
     kms_key         = var.kms_key_arn
   }
 
-  depends_on = [aws_ecr_pull_through_cache_rule.this]
+  # The template's custom role must carry its policy before ECR assumes it on the first pull.
+  depends_on = [aws_iam_role_policy.repository_creation]
 }

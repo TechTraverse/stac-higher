@@ -80,6 +80,8 @@ resource "aws_s3_bucket_policy" "this" {
 # staging sweep (ADR 0011), never to S3 lifecycle.
 resource "aws_s3_bucket_lifecycle_configuration" "this" {
   bucket = aws_s3_bucket.this.id
+  # Provider-recommended ordering: lifecycle and versioning updates race on a new bucket.
+  depends_on = [aws_s3_bucket_versioning.this]
 
   rule {
     id     = "abort-incomplete-multipart-uploads"
