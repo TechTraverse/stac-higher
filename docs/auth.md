@@ -114,6 +114,23 @@ curl -s http://localhost:8180/realms/stac-higher/protocol/openid-connect/token \
   -d client_secret=stac-higher-push-secret
 ```
 
+### Audience claim at the proxy
+
+`AUTH_BEARER_AUDIENCE_CLAIM` also configures the derived stac-auth-proxy image
+(`services/proxy-policy`). Cognito access tokens carry `client_id`, not `aud`,
+and upstream stac-auth-proxy matches `aud` only, so every such token would be
+refused. The setting picks the claim `ALLOWED_JWT_AUDIENCES` is checked
+against:
+
+- unset, blank or `aud`: upstream behaviour, unchanged.
+- `client_id`: `ALLOWED_JWT_AUDIENCES` lists app client ids and the token's
+  `client_id` must equal one of them. A token carrying `aud` is rejected in
+  this mode.
+- Any other value stops the proxy at startup with an error naming the setting.
+
+The app half is R-1's `AUTH_BEARER_AUDIENCE_CLAIM`; it has the same name and
+values, and the two must agree.
+
 ## Routes & request context
 
 - `GET /api/auth/login?returnTo=/path` — redirect to the IdP (PKCE + state +

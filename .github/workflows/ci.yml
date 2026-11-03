@@ -172,6 +172,25 @@ jobs:
           DATABASE_URL: postgresql://username:password@localhost:5433/postgis
         run: uv run pytest -q
 
+  proxy-policy:
+    name: Proxy policy · ruff, pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/proxy-policy
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/proxy-policy/uv.lock
+      - run: uv sync --frozen --extra dev
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+      - name: Tests
+        run: uv run pytest -q
+
   e2e:
     name: E2E · Playwright vs compose stack
     runs-on: ubuntu-latest

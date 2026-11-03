@@ -7,7 +7,14 @@
 # The base tag is PINNED (not :latest): the factory consumes an internal,
 # undocumented context shape (Cql2BuildFilterMiddleware.__call__), so upstream
 # bumps must be deliberate — bump the tag here AND in docker-compose.yml
-# together, then re-run the P7-Z live confirm (ADR 0015).
+# together, then re-run the P7-Z live confirm (ADR 0015). The same tag also
+# moves in lockstep with the `stac-auth-proxy` dev pin in
+# services/proxy-policy/pyproject.toml (test_dev_pin_matches_the_dockerfile_base
+# enforces that pairing).
+#
+# The image also carries the AUTH_BEARER_AUDIENCE_CLAIM check (spec §8, R-3):
+# its process is `python -m stac_higher_proxy_policy`, upstream's app with the
+# auth middleware swapped for the claim-aware one.
 #
 # Build context is the REPO ROOT (set by infra/compose.auth-enforced.yml):
 #   docker build -f infra/proxy-policy/Dockerfile .
@@ -22,3 +29,5 @@ COPY services/proxy-policy /opt/stac-higher/proxy-policy
 RUN pip install --no-cache-dir /opt/stac-higher/proxy-policy
 
 USER user
+
+CMD ["python", "-m", "stac_higher_proxy_policy"]
