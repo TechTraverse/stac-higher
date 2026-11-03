@@ -4,9 +4,22 @@
  * calls `process.exit`; the entry points decide how to exit.
  */
 
-/** Hide the userinfo (user and password) of a connection URL. */
+/**
+ * Hide the userinfo (user and password) of a connection URL. It parses with
+ * `new URL`, so the output is the normalised form (`URL` conventions), and an
+ * unparseable value is never echoed: a malformed URL may still hold a secret.
+ */
 export function redactDatabaseUrl(url: string): string {
-  return url.replace(/\/\/[^/?#]*@/, "//***@");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "(unparseable DATABASE_URL)";
+  }
+  if (!parsed.username && !parsed.password) return parsed.toString();
+  parsed.username = "";
+  parsed.password = "";
+  return `${parsed.protocol}//***@${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
 export async function runMigrateCli(deps: {

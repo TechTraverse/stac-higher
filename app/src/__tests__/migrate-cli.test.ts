@@ -11,6 +11,17 @@ describe("redactDatabaseUrl", () => {
   it("hides a password that contains @", () => {
     expect(redactDatabaseUrl("postgresql://u:p@ss@h:5432/db")).toBe("postgresql://***@h:5432/db");
   });
+  it("hides a percent-encoded password", () => {
+    expect(redactDatabaseUrl("postgresql://u:p%40ss@h/db")).toBe("postgresql://***@h/db");
+  });
+  it("never echoes a password with an unencoded slash", () => {
+    const out = redactDatabaseUrl("postgresql://u:p/ss@h/db");
+    expect(out).not.toContain("p/ss");
+    expect(out).not.toContain("u:p");
+  });
+  it("returns a placeholder, not the input, for an unparseable URL", () => {
+    expect(redactDatabaseUrl("not a url with secret")).toBe("(unparseable DATABASE_URL)");
+  });
   it("leaves a URL without credentials unchanged", () => {
     expect(redactDatabaseUrl("postgresql://h:5432/db")).toBe("postgresql://h:5432/db");
   });
