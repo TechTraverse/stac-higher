@@ -4,6 +4,7 @@ import {
   credentialBudgetError,
   getCredentialGraceSeconds,
   getMaxCredentialSeconds,
+  revisionCredentialBudgetError,
 } from "@/lib/processes/credential-budget";
 
 describe("credential budget settings and message", () => {
@@ -30,5 +31,16 @@ describe("credential budget settings and message", () => {
     ).toBe(
       "credential budget 3601s (max_queue_wait_seconds 600 + timeout_seconds 2701 + grace 300) exceeds this deployment's cap of 3600s (PROCESS_MAX_CREDENTIAL_SECONDS)",
     );
+  });
+
+  it("reads no grace when no cap is set (a bad grace never throws)", () => {
+    const profiles = { profiles: [] } as never;
+    expect(
+      revisionCredentialBudgetError(
+        { timeout_seconds: 60, hardware: { profile: "x" } },
+        profiles,
+        { PROCESS_CREDENTIAL_GRACE_SECONDS: "+300" },
+      ),
+    ).toBeNull();
   });
 });

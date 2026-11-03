@@ -3,7 +3,8 @@
 // TLS (RDS): when PGSSLROOTCERT names a CA bundle, the pool verifies the server
 // certificate against it. Node's TLS also checks the hostname (`servername` is
 // the host), so this is libpq's `verify-full`. PGSSLROOTCERT is the libpq
-// variable name, so the pipeline and the app share one setting. An unreadable
+// variable name, so the pipeline and the app share one setting (libpq clients also need
+// `PGSSLMODE=verify-full`; node-postgres verifies whenever the bundle is set). An unreadable
 // or empty bundle throws, naming the path; there is never a silent fallback to
 // unverified or plaintext.
 //

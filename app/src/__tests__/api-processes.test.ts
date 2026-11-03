@@ -324,6 +324,10 @@ describe("GET/PUT/DELETE /api/processes/[id]", () => {
 });
 
 describe("POST /api/processes/[id]/revisions (deploy)", () => {
+  beforeEach(() => {
+    vi.stubEnv("PROCESS_MAX_CREDENTIAL_SECONDS", "");
+    vi.stubEnv("PROCESS_CREDENTIAL_GRACE_SECONDS", "");
+  });
   afterEach(() => vi.unstubAllEnvs());
 
   it.each([[1499, 201], [1500, 201], [1501, 422]])("cap 3600: timeout %i → %i (below, at, above the budget)", async (timeout, status) => {

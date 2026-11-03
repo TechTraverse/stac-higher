@@ -1783,8 +1783,6 @@ run naming the cap. Until K-4 (#12) the pipeline mints `timeout + grace`
 without the queue wait, so the deploy gate is deliberately stricter than the
 mint.
 
-Tracked in: GitHub #136
-
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

@@ -26,7 +26,7 @@ dev, unit tests, and e2e working with zero IdP setup.
 | `AUTH_CLAIMS_MAPPING_FILE` | — | Path to a JSON claims-mapping config |
 | `DEV_AUTH_IDENTITY` | — | JSON partial identity for bypass mode, e.g. `{"name":"Weather Admin","groups":["weather"],"roles":["admin"]}` |
 | `AUTH_BYPASS_FORCE` | — | `true` allows bypass in production builds. Dangerous; loudly logged. |
-| `AUTH_BEARER_AUDIENCES` | `stac-higher` | Comma-separated `aud` values accepted on `Authorization: Bearer` JWTs hitting `/api/*` (see below). Mirrors the proxy's `ALLOWED_JWT_AUDIENCES`. |
+| `AUTH_BEARER_AUDIENCES` | `stac-higher` | Comma-separated values matched against the claim named by `AUTH_BEARER_AUDIENCE_CLAIM` (`aud` values, or allowed client ids in `client_id` mode) on `Authorization: Bearer` JWTs hitting `/api/*` (see below). The default `stac-higher` stays in force in `client_id` mode, so the app client id must be listed. Mirrors the proxy's `ALLOWED_JWT_AUDIENCES`. |
 | `AUTH_BEARER_AUDIENCE_CLAIM` | `aud` | The claim `AUTH_BEARER_AUDIENCES` is matched against. `aud` (Keycloak, Entra, most IdPs; unchanged behaviour), or `client_id` (Cognito access tokens): `AUTH_BEARER_AUDIENCES` then lists allowed client ids, and a token carrying any `aud` is rejected. Trimmed, case-sensitive; any other value fails config load, so every request 500s with the message. Same semantics at the enforced proxy (R-3). |
 
 Local OIDC login against the compose Keycloak needs only:

@@ -6,7 +6,7 @@
 
 /** Hide the userinfo (user and password) of a connection URL. */
 export function redactDatabaseUrl(url: string): string {
-  return url.replace(/:\/\/[^@]*@/, "://***@");
+  return url.replace(/\/\/[^/?#]*@/, "//***@");
 }
 
 export async function runMigrateCli(deps: {

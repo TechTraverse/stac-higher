@@ -3,9 +3,18 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { runMigrateCli } from "@/lib/db/migrate-cli";
+import { redactDatabaseUrl, runMigrateCli } from "@/lib/db/migrate-cli";
 
 const BUNDLE = fileURLToPath(new URL("../../dist/server/migrate.mjs", import.meta.url));
+
+describe("redactDatabaseUrl", () => {
+  it("hides a password that contains @", () => {
+    expect(redactDatabaseUrl("postgresql://u:p@ss@h:5432/db")).toBe("postgresql://***@h:5432/db");
+  });
+  it("leaves a URL without credentials unchanged", () => {
+    expect(redactDatabaseUrl("postgresql://h:5432/db")).toBe("postgresql://h:5432/db");
+  });
+});
 
 describe("runMigrateCli", () => {
   it("returns 0 and logs a redacted URL when migrations apply", async () => {

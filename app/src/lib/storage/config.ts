@@ -44,7 +44,7 @@ const DEFAULT_BUCKET = "stac-higher";
 const DEFAULT_ACCESS_KEY = "minioadmin";
 const DEFAULT_SECRET_KEY = "minioadmin";
 
-const isEmpty = (v: string | undefined): v is undefined => v === undefined || v.trim() === "";
+const isEmpty = (v: string | undefined): boolean => v === undefined || v.trim() === "";
 
 function resolveCredentials(env: Record<string, string | undefined>): StorageCredentials | null {
   const id = env.S3_ACCESS_KEY_ID;
@@ -54,12 +54,12 @@ function resolveCredentials(env: Record<string, string | undefined>): StorageCre
     const bare = env.S3_ENDPOINT === undefined && id === undefined && secret === undefined;
     return bare ? { accessKeyId: DEFAULT_ACCESS_KEY, secretAccessKey: DEFAULT_SECRET_KEY } : null;
   }
-  if (isEmpty(id) || isEmpty(secret)) {
+  if (id === undefined || secret === undefined || isEmpty(id) || isEmpty(secret)) {
     throw new Error(
       "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together, or both left empty to use the AWS default credential chain",
     );
   }
-  return { accessKeyId: id as string, secretAccessKey: secret as string };
+  return { accessKeyId: id, secretAccessKey: secret };
 }
 
 function parseBool(value: string | undefined, fallback: boolean): boolean {

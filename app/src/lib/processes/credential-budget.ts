@@ -67,6 +67,7 @@ export function revisionCredentialBudgetError(
   env: Env = process.env,
 ): string | null {
   const maxCredentialSeconds = getMaxCredentialSeconds(env);
+  if (maxCredentialSeconds === null) return null;
   const graceSeconds = getCredentialGraceSeconds(env);
   const profile = findProfile(profiles, runtime.hardware.profile);
   if (!profile) return null;

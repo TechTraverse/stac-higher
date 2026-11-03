@@ -175,6 +175,20 @@ describe("resolveRequestAuth — bearer path", () => {
     expect(result.bearerToken).toBe(token);
   });
 
+  it("fails loud on an invalid AUTH_BEARER_AUDIENCE_CLAIM", async () => {
+    const issuer = "http://idp/realms/bearer-bad-claim";
+    stubIdp(issuer);
+    const token = await signBearer({ issuer });
+
+    await expect(
+      resolveRequestAuth(makeJar(), apiRequest(token), {
+        AUTH_MODE: "oidc",
+        OIDC_ISSUER: issuer,
+        AUTH_BEARER_AUDIENCE_CLAIM: "azp",
+      }),
+    ).rejects.toThrow(/AUTH_BEARER_AUDIENCE_CLAIM/);
+  });
+
   it("degrades a wrong-audience token to anonymous", async () => {
     const issuer = "http://idp/realms/bearer-wrong-aud";
     stubIdp(issuer);

@@ -88,6 +88,7 @@ describe("getRuntimeConfig", () => {
 
 describe("builtinCatalogUrl (BFF target)", () => {
   it("BUILTIN_CATALOG_URL wins, else the public URL (new name, then PUBLIC_)", () => {
+    for (const k of ["BUILTIN_CATALOG_URL", "BUILTIN_CATALOG_PUBLIC_URL", "PUBLIC_BUILTIN_CATALOG_URL"]) vi.stubEnv(k, "");
     vi.stubEnv("BUILTIN_CATALOG_PUBLIC_URL", "https://catalog.example.org/");
     expect(builtinCatalogUrl()).toBe("https://catalog.example.org");
     vi.stubEnv("BUILTIN_CATALOG_URL", "http://stac-auth-proxy:8000");

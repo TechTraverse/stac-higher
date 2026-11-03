@@ -127,6 +127,8 @@ function call(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("PROCESS_MAX_CREDENTIAL_SECONDS", "");
+  vi.stubEnv("PROCESS_CREDENTIAL_GRACE_SECONDS", "");
 });
 
 afterEach(() => {

@@ -32,7 +32,7 @@ Local-first platform substrate; everything runs under `docker compose up`.
 | Full local stack | ✅ | `docker-compose.yml`: pgstac (:5433), stac-fastapi (:8082), stac-auth-proxy (:8081), Keycloak (:8180), MinIO (:9000/:9001), pipeline (:8083) |
 | Pipeline service | ✅ | `services/pipeline/` — worker + scheduler + `/health` in one process; backend-agnostic `QueueBackend` (Procrastinate default, SQS reserved for Phase 8); no-op heartbeat proves the periodic path |
 | Extension storage + migrations | ✅ | `stac_higher.*` schema in pgstac's Postgres; app-owned migrations run via middleware on first request |
-| Built-in catalog | ✅ | seeded, undeletable entry pointing at the auth-proxy (`PUBLIC_BUILTIN_CATALOG_URL`) |
+| Built-in catalog | ✅ | seeded, undeletable entry pointing at the auth-proxy (`BUILTIN_CATALOG_PUBLIC_URL`, fallback `PUBLIC_*`) |
 
 Decisions: [ADR 0001 — migration ownership](decisions/0001-migration-ownership.md).
 
@@ -61,7 +61,7 @@ mutations route through `/api/catalog/[...path]`
 (`app/src/pages/api/catalog/`): transaction endpoints only, writes only; the
 route injects the session access token server-side and forwards to the
 configured built-in catalog (`BUILTIN_CATALOG_URL` /
-`PUBLIC_BUILTIN_CATALOG_URL`). `stacFetch` routes built-in writes there
+`BUILTIN_CATALOG_PUBLIC_URL`, fallback `PUBLIC_*`). `stacFetch` routes built-in writes there
 unconditionally (dev pass-through included); the guard gates the paths
 (operator+, `catalog_collection`/`catalog_item` resource types) so every UI
 catalog mutation is audited. UI-path enforcement leg:
