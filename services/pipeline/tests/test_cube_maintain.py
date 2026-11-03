@@ -582,3 +582,30 @@ async def test_the_platform_lister_lists_only_the_cube_prefix(monkeypatch):
     assert platform_lister(settings)(sink) == [("repo", 3), ("snapshots/S", 4)]
     # The trailing slash: a sibling item "_cube2" must never be counted.
     assert seen == [("plat", "assets/cube1/_cube/")]
+
+
+async def test_a_platform_lister_builds_one_client_for_all_its_calls(monkeypatch):
+    import pipeline.cubes.maintain as maintain_mod
+    from pipeline.config import Settings
+    from pipeline.cubes.maintain import platform_lister
+
+    built: list[object] = []
+    used: list[object] = []
+
+    def fake_build(settings):
+        built.append(object())
+        return built[-1]
+
+    monkeypatch.setattr(maintain_mod, "build_platform_client", fake_build)
+    monkeypatch.setattr(
+        maintain_mod, "list_sizes", lambda client, bucket, prefix: used.append(client) or []
+    )
+    lister = platform_lister(Settings.from_env(env={"STAGING_BUCKET": "plat"}))
+    sink = await FakeCubeRepo(sinks=[FakeSink("s1", "src", "cube1")]).load_sink("s1")
+
+    assert built == []  # nothing built until the first listing
+    lister(sink)
+    lister(sink)
+
+    assert len(built) == 1
+    assert used == [built[0], built[0]]

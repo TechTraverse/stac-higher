@@ -267,9 +267,15 @@ def platform_lister(settings: Settings) -> ListObjects:
     """Production ``list_objects``: the cube prefix in the platform bucket.
     The trailing slash keeps ``_cube`` from matching a ``_cube…`` sibling."""
 
+    client: Any = None
+
     def _list(sink: CubeSink) -> list[tuple[str, int]]:
+        # One client for the lister's life (boto3 clients are thread-safe);
+        # built on first use, so constructing the deps stays cheap.
+        nonlocal client
+        if client is None:
+            client = build_platform_client(settings)
         prefix = f"{cube_prefix(sink.cube_collection_id)}/"
-        client = build_platform_client(settings)
         return [
             (key[len(prefix) :], size)
             for key, size in list_sizes(client, settings.staging_bucket, prefix)

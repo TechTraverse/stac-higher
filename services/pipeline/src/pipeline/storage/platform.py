@@ -11,7 +11,7 @@ the platform's own bucket rather than a user connection.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Protocol
 from urllib.parse import urlparse
@@ -293,6 +293,14 @@ def delete_object(client: S3Like, bucket: str, key: str) -> None:
     client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": key}]})
 
 
+def _iter_objects(client: S3Like, bucket: str, prefix: str) -> Iterator[dict[str, Any]]:
+    """Every ``list_objects_v2`` ``Contents`` entry under ``prefix``, across
+    pages. The one paginator the ``list_*`` projections below share."""
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        yield from page.get("Contents", [])
+
+
 def list_keys(client: S3Like, bucket: str, prefix: str) -> list[str]:
     """Every object key under ``prefix``, paginated.
 
@@ -301,33 +309,21 @@ def list_keys(client: S3Like, bucket: str, prefix: str) -> list[str]:
     the caller bounds it (a process run's output prefix is one run's work);
     a cap here would silently truncate someone's outputs.
     """
-    keys: list[str] = []
-    paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        keys.extend(obj["Key"] for obj in page.get("Contents", []))
-    return keys
+    return [obj["Key"] for obj in _iter_objects(client, bucket, prefix)]
 
 
 def list_objects(client: S3Like, bucket: str, prefix: str) -> list[tuple[str, dt.datetime]]:
     """Every ``(key, LastModified)`` under ``prefix``, paginated (C-4: the
     scan retention leg judges objects by key AND age). Pure over an injected
     client; synchronous boto3, so wrap it in ``asyncio.to_thread``."""
-    found: list[tuple[str, dt.datetime]] = []
-    paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        found.extend((obj["Key"], obj["LastModified"]) for obj in page.get("Contents", []))
-    return found
+    return [(obj["Key"], obj["LastModified"]) for obj in _iter_objects(client, bucket, prefix)]
 
 
 def list_sizes(client: S3Like, bucket: str, prefix: str) -> list[tuple[str, int]]:
     """Every ``(key, Size)`` under ``prefix``, paginated (Z-6: a cube
     repository's per-kind size readout). Pure over an injected client;
     synchronous boto3, so wrap it in ``asyncio.to_thread``."""
-    found: list[tuple[str, int]] = []
-    paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        found.extend((obj["Key"], int(obj["Size"])) for obj in page.get("Contents", []))
-    return found
+    return [(obj["Key"], int(obj["Size"])) for obj in _iter_objects(client, bucket, prefix)]
 
 
 def delete_keys(client: S3Like, bucket: str, keys: Sequence[str]) -> int:
