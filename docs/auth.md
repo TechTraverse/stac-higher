@@ -157,7 +157,7 @@ mutations from the UI therefore go through `POST/PUT/PATCH/DELETE
 /api/catalog/[...path]` (transaction endpoints only): the route reads the
 session server-side, injects `Authorization: Bearer <access token>`, and
 forwards to `BUILTIN_CATALOG_URL` (falls back to
-`PUBLIC_BUILTIN_CATALOG_URL`, then `http://localhost:8081`). In dev-bypass
+the public catalog URL (`BUILTIN_CATALOG_PUBLIC_URL`, then `PUBLIC_BUILTIN_CATALOG_URL`). In dev-bypass
 mode there is no token and none is attached — the pass-through proxy accepts
 the write, so both postures share one code path. These routes are gated
 (operator+) and audited like every other mutation. `stacFetch` routes

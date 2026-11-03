@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   titilerBaseUrl,
   itemTileJsonUrl,
@@ -13,11 +13,24 @@ import { pickPreviewAsset } from "@/lib/serving/preview";
 import type { StacItem } from "@/lib/stac-api/types";
 
 describe("serving urls", () => {
-  it("defaults the base and strips a trailing slash", () => {
-    expect(titilerBaseUrl({})).toBe("http://localhost:8084");
-    expect(titilerBaseUrl({ PUBLIC_TITILER_URL: "https://tiles.example/" })).toBe(
-      "https://tiles.example",
-    );
+  afterEach(() => {
+    delete globalThis.__STAC_HIGHER_CONFIG__;
+    vi.unstubAllEnvs();
+  });
+
+  it("defaults the bases and strips a trailing slash", () => {
+    expect(titilerBaseUrl()).toBe("http://localhost:8084");
+    expect(titilerBaseUrl({ titilerUrl: "https://tiles.example.org/" })).toBe("https://tiles.example.org");
+    expect(tipgBaseUrl()).toBe("http://localhost:8085");
+    expect(tipgBaseUrl({ tipgUrl: "https://features.example.org//" })).toBe("https://features.example.org");
+  });
+
+  it("reads the server-injected config, not the build-time env (no rebuild for a URL change)", () => {
+    vi.stubEnv("PUBLIC_TITILER_URL", "https://inlined.example.org");
+    expect(titilerBaseUrl()).toBe("http://localhost:8084");
+    globalThis.__STAC_HIGHER_CONFIG__ = { titilerUrl: "https://runtime.example.org", tipgUrl: "https://vt.example.org" };
+    expect(titilerBaseUrl()).toBe("https://runtime.example.org");
+    expect(tipgLandingUrl()).toBe("https://vt.example.org/");
   });
 
   it("builds the item tilejson url with encoded segments", () => {
@@ -34,13 +47,6 @@ describe("serving urls", () => {
 
   it("builds the collection info url", () => {
     expect(collectionInfoUrl("c", "http://t")).toBe("http://t/collections/c/info");
-  });
-
-  it("defaults the tipg base and strips a trailing slash", () => {
-    expect(tipgBaseUrl({})).toBe("http://localhost:8085");
-    expect(tipgBaseUrl({ PUBLIC_TIPG_URL: "https://features.example//" })).toBe(
-      "https://features.example",
-    );
   });
 
   it("builds the tipg landing, collections and tilejson urls", () => {

@@ -33,6 +33,7 @@ function persistedCatalogs(catalogs: StacCatalog[]): Record<string, string> {
 }
 
 afterEach(() => {
+  delete globalThis.__STAC_HIGHER_CONFIG__;
   vi.unstubAllEnvs();
 });
 
@@ -85,13 +86,21 @@ describe("catalogStore built-in seeding", () => {
     expect(store.$catalogs.get()).toHaveLength(1);
   });
 
-  it("uses PUBLIC_BUILTIN_CATALOG_URL when set", async () => {
-    vi.stubEnv("PUBLIC_BUILTIN_CATALOG_URL", "http://example.test:9999");
-
+  it("seeds the built-in URL from the server-injected config", async () => {
+    globalThis.__STAC_HIGHER_CONFIG__ = { builtInCatalogUrl: "https://catalog.example.org" };
     const store = await importStore();
-    const builtIn = store.$catalogs.get().find((c) => c.builtIn);
+    expect(store.$builtInCatalog.get()?.url).toBe("https://catalog.example.org");
+  });
 
-    expect(builtIn?.url).toBe("http://example.test:9999");
+  it("ignores an inlined PUBLIC_BUILTIN_CATALOG_URL and re-pins a persisted entry to the runtime URL", async () => {
+    vi.stubEnv("PUBLIC_BUILTIN_CATALOG_URL", "http://example.test:9999");
+    globalThis.__STAC_HIGHER_CONFIG__ = { builtInCatalogUrl: "https://catalog-b.example.org" };
+    const store = await importStore(
+      persistedCatalogs([
+        { id: "built-in", name: "Built-in Catalog", url: "https://catalog-a.example.org", isDefault: true, builtIn: true },
+      ]),
+    );
+    expect(store.$builtInCatalog.get()?.url).toBe("https://catalog-b.example.org");
   });
 
   it("repairs a persisted built-in entry that lost its builtIn flag", async () => {

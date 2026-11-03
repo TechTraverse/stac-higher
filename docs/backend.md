@@ -11,7 +11,7 @@ Astro server route with its access rule. Per-area design docs are linked from
 |---|---|---|
 | **pgstac** (PostgreSQL + PostGIS) | :5433 | Also backs the app's `stac_higher.*` schema (`DATABASE_URL` overrides the default connection string; app migrations run on the first API request via middleware). The `pgstac-migrate` one-shot migrates a persisted volume's pgstac schema to the pinned version on every `up` — the pgstac image only installs its schema on fresh volumes (ADR 0001, I-54). |
 | **stac-fastapi-pgstac** | :8082 | Transaction extension enabled (full CRUD). |
-| **stac-auth-proxy** | :8081 | In front of stac-fastapi. Pass-through by default (`DEFAULT_PUBLIC=true`, no login needed). The client's **built-in catalog** points here (`PUBLIC_BUILTIN_CATALOG_URL`, default `http://localhost:8081`) and is seeded as an undeletable entry on `/catalogs`. |
+| **stac-auth-proxy** | :8081 | In front of stac-fastapi. Pass-through by default (`DEFAULT_PUBLIC=true`, no login needed). The client's **built-in catalog** points here (`BUILTIN_CATALOG_PUBLIC_URL`, default `http://localhost:8081`) and is seeded as an undeletable entry on `/catalogs`. |
 | **Keycloak** | :8180 | admin/admin, realm `stac-higher` imported from `infra/keycloak/realm-stac-higher.json`. Realm import is **skipped once the realm exists in the persisted volume** — edits to the realm file only take effect after `docker compose down -v`. |
 | **MinIO** | :9000 API / :9001 console | minioadmin/minioadmin, bucket `stac-higher`. |
 | **pipeline** (`services/pipeline`, Python) | :8083 | Queue worker + scheduler; `/health`, Prometheus `/metrics` (`docs/monitoring.md`). Reference: `services/pipeline/README.md`. |
@@ -90,7 +90,8 @@ and for the process-runtime images re-add the new `:latest` digest on
 
 | Variable | Purpose |
 |---|---|
-| `PUBLIC_BUILTIN_CATALOG_URL` | The built-in catalog (default `http://localhost:8081`). |
+| **Browser runtime config**: `BUILTIN_CATALOG_PUBLIC_URL` (fallback `PUBLIC_BUILTIN_CATALOG_URL`; default `http://localhost:8081`), `TITILER_URL` (`PUBLIC_TITILER_URL`; `http://localhost:8084`), `TIPG_URL` (`PUBLIC_TIPG_URL`; `http://localhost:8085`), `CUBE_SERVER_URL` (`http://localhost:8086`), `PROCESS_NETWORK_MAX` (`PUBLIC_PROCESS_NETWORK_MAX`; `isolated`) | Read by the server per request and injected into every page as `window.__STAC_HIGHER_CONFIG__`, so a change needs a restart, not a rebuild. A non-http(s) URL fails every page render with the variable named. |
+| `BUILTIN_CATALOG_URL` | Server-side BFF forward target; falls back to the public catalog URL. In a cluster it is the internal service address, and that host must then be in `SAFE_FETCH_ALLOW_HOSTS`, because `forwardUpstream` and `snapshotPriorItem` go through `safeFetch`. |
 | `DATABASE_URL` | Overrides the default `stac_higher` connection string (port 5433). |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_FORCE_PATH_STYLE` | Object storage (MinIO defaults work locally). `S3_ENDPOINT` must be **browser-reachable** — `app/src/lib/storage/` presigns offline and never streams bytes (ADR 0005). |
 | `CREDENTIALS_MASTER_KEY` | AES-256-GCM key for write-only connection credentials — dev key command in [`connections.md`](connections.md). |

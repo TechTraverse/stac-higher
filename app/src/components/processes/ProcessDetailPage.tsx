@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
+import { getRuntimeConfig } from "@/lib/runtime-config";
 import {
   Badge,
   Button,
@@ -225,8 +226,8 @@ function SettingsCard({
 /**
  * Network profile options (GOES spec §4). Slice 1 realises `isolated` only:
  * the other levels are shown, disabled, so the operator can see what is
- * coming — and the cap (`PUBLIC_PROCESS_NETWORK_MAX`, the UI mirror of the
- * pipeline's `PROCESS_NETWORK_MAX`) is read now so nothing changes shape
+ * coming — and the cap (the server-injected runtime config mirror of the
+ * enforced `PROCESS_NETWORK_MAX`) is read now so nothing changes shape
  * when the egress proxy lands.
  */
 const NETWORK_LEVEL_LABELS: Record<NetworkLevel, string> = {
@@ -242,9 +243,7 @@ const NETWORK_LEVELS_AVAILABLE: readonly NetworkLevel[] = ["isolated"];
 function readUiNetworkMax(): NetworkLevel {
   try {
     return getNetworkMax({
-      PROCESS_NETWORK_MAX: import.meta.env.PUBLIC_PROCESS_NETWORK_MAX as
-        | string
-        | undefined,
+      PROCESS_NETWORK_MAX: getRuntimeConfig().processNetworkMax,
     });
   } catch {
     // A misconfigured mirror must not break the page; the pipeline enforces

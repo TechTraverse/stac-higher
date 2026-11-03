@@ -25,18 +25,18 @@ Version pins follow eoAPI's tested combination for pgstac 0.9.x.
 - **What the collection page links to.** The serving panel (visible when the
   toggle is on) links:
   - *Raster tiles* → the titiler-pgstac **collection** endpoints
-    (`{PUBLIC_TITILER_URL}/collections/{collection_id}/info` as the entry
+    (`{TITILER_URL}/collections/{collection_id}/info` as the entry
     point; tilejson/tile/viewer routes hang off the same prefix). These are
     true per-STAC-collection endpoints — titiler queries pgstac directly.
   - *Vector features/tiles* → the tipg **landing page**
-    (`{PUBLIC_TIPG_URL}/`). tipg serves database tables and functions, not
+    (`{TIPG_URL}/`). tipg serves database tables and functions, not
     STAC collections, so this is a stack-wide surface, linked for the OGC
     Features/Tiles API story rather than per-collection data.
 - **Item preview (G-5).** When a collection has serving on and an item carries
   a `visual`-role (or GeoTIFF/COG-typed) asset, the product item page's
   Geometry tab overlays that item's tiles beneath its footprint, taken from
   the tile server's item TileJSON
-  (`{PUBLIC_TITILER_URL}/collections/{c}/items/{i}/WebMercatorQuad/tilejson.json?assets={asset}`),
+  (`{TITILER_URL}/collections/{c}/items/{i}/WebMercatorQuad/tilejson.json?assets={asset}`),
   with a link to titiler's own viewer. The read-only catalog browser never
   does this. Every failure is silent — no tile server, no serving, no
   previewable asset, or a tiler that cannot open the asset all mean "no
@@ -46,7 +46,7 @@ Version pins follow eoAPI's tested combination for pgstac 0.9.x.
 - **Collection preview.** With serving on, a product page gains a **Preview**
   tab: an animated raster map of the product, one frame per timestep. Frames
   are the collection mosaic endpoint with `datetime` pinned —
-  `{PUBLIC_TITILER_URL}/collections/{c}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets={a}&datetime={t}`
+  `{TITILER_URL}/collections/{c}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets={a}&datetime={t}`
   — so a timestep tiled across several items composites for free, and no
   search registration, POST or CORS handling is involved. Three things about
   it are load-bearing:
@@ -83,9 +83,9 @@ Version pins follow eoAPI's tested combination for pgstac 0.9.x.
   the deployment's bucket) and presign integration.
 
 The `/map` page (V-4) is the third consumer of the tilers: its Add-layer picker
-lists `GET {PUBLIC_TIPG_URL}/collections` (only while the picker is open, no
+lists `GET {TIPG_URL}/collections` (only while the picker is open, no
 credentials) and draws a chosen collection from
-`{PUBLIC_TIPG_URL}/collections/{id}/tiles/WebMercatorQuad/tilejson.json` — a
+`{TIPG_URL}/collections/{id}/tiles/WebMercatorQuad/tilejson.json` — a
 TileJSON 3.0 document whose `vector_layers[0].id` is `default`, the MVT
 source-layer name every tipg tile carries (verified against tipg 1.0.1 on
 2026-09-09). The local stack's tipg exposes only PostGIS function collections
@@ -95,8 +95,9 @@ source-layer name every tipg tile carries (verified against tipg 1.0.1 on
 
 | Var | Default | Meaning |
 |---|---|---|
-| `PUBLIC_TITILER_URL` | `http://localhost:8084` | Browser-facing titiler base the UI links to |
-| `PUBLIC_TIPG_URL` | `http://localhost:8085` | Browser-facing tipg base the UI links to |
+| `TITILER_URL` (fallback `PUBLIC_TITILER_URL`) | `http://localhost:8084` | Browser-facing titiler base the UI links to; read by the server per request and injected into the page (restart, not rebuild) |
+| `TIPG_URL` (fallback `PUBLIC_TIPG_URL`) | `http://localhost:8085` | Browser-facing tipg base the UI links to; same mechanism |
+| `CUBE_SERVER_URL` | `http://localhost:8086` | Carried in the runtime config for the chart; no UI consumer yet |
 | `PLATFORM_ASSET_BUCKET` | `${STAGING_BUCKET:-stac-higher}` | (titiler) The platform bucket canonical hrefs map into — mirrors the pipeline's `STAGING_BUCKET`. Required; the derived image refuses to start without it |
 | `ASSET_HREF_BASE` | `/api/assets` | (titiler) The href base the pipeline writes — mirrors the pipeline's `ASSET_HREF_BASE` |
 

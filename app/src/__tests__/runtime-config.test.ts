@@ -8,11 +8,13 @@ import {
   buildRuntimeConfig,
   serializeRuntimeConfig,
 } from "@/lib/runtime-config/server";
+import { builtinCatalogUrl } from "@/lib/catalog/transactions";
 import { DEFAULT_NETWORK_MAX } from "@/lib/processes/network";
 
 afterEach(() => {
   delete globalThis.__STAC_HIGHER_CONFIG__;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("buildRuntimeConfig", () => {
@@ -81,5 +83,14 @@ describe("getRuntimeConfig", () => {
   });
   it("pins the network default to the server's DEFAULT_NETWORK_MAX", () => {
     expect(DEFAULT_RUNTIME_CONFIG.processNetworkMax).toBe(DEFAULT_NETWORK_MAX);
+  });
+});
+
+describe("builtinCatalogUrl (BFF target)", () => {
+  it("BUILTIN_CATALOG_URL wins, else the public URL (new name, then PUBLIC_)", () => {
+    vi.stubEnv("BUILTIN_CATALOG_PUBLIC_URL", "https://catalog.example.org/");
+    expect(builtinCatalogUrl()).toBe("https://catalog.example.org");
+    vi.stubEnv("BUILTIN_CATALOG_URL", "http://stac-auth-proxy:8000");
+    expect(builtinCatalogUrl()).toBe("http://stac-auth-proxy:8000");
   });
 });
