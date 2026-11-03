@@ -119,6 +119,59 @@ jobs:
           DATABASE_URL: postgresql://username:password@localhost:5433/postgis
         run: uv run pytest -q
 
+  cube-server:
+    # infra/cube-server (Z-7): the package's own lint + tests. The DB-gated
+    # test checks migration 033's grant as the cube-server's role sees it, so
+    # this job applies the app's migrations to a pgstac service like `pipeline`.
+    name: Cube server · ruff, pytest (with pgstac)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: infra/cube-server
+    services:
+      pgstac:
+        image: ghcr.io/stac-utils/pgstac:v0.9.11@sha256:26d5c20c650736a65793ab61cb2e7113ecef0c036ec8c2d6c6838c7aa14e131d
+        env:
+          POSTGRES_USER: username
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: postgis
+          PGUSER: username
+          PGPASSWORD: password
+          PGDATABASE: postgis
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U username -d postgis"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: infra/cube-server/uv.lock
+      - run: uv sync --frozen --extra dev
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install node deps (repo root — single lockfile)
+        working-directory: ${{ github.workspace }}
+        run: npm ci
+      - name: Apply the app's stac_higher schema
+        working-directory: ${{ github.workspace }}
+        env:
+          DATABASE_URL: postgresql://username:password@localhost:5433/postgis
+        run: npm run db:migrate
+      - name: Tests (DB-gated grant test included)
+        env:
+          DATABASE_URL: postgresql://username:password@localhost:5433/postgis
+        run: uv run pytest -q
+
   e2e:
     name: E2E · Playwright vs compose stack
     runs-on: ubuntu-latest
@@ -158,6 +211,9 @@ jobs:
           wait_for auth-proxy "http://localhost:8081/" 60
           wait_for minio "http://localhost:9000/minio/health/live" 30
           wait_for pipeline "http://localhost:8083/health" 60
+          # Z-7: the compose bring-up check for the cube-server (it needs the
+          # cube-db-role and minio-init one-shots to have succeeded).
+          wait_for cube-server "http://localhost:8086/health" 30
       - name: Run e2e suite
         working-directory: app
         run: npm run test:e2e:ci

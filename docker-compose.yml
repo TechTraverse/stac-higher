@@ -218,13 +218,22 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    # Z-7: the cube-server's read-only user. Its policy reads only
+    # assets/*/_cube/* in the platform bucket (virtual cube spec §8.1); the
+    # attach is skipped when it is already in place, so re-runs are no-ops.
+    volumes:
+      - ./infra/cube-server/silo-cube-read-policy.json:/policy/cube-read.json:ro
     entrypoint:
       - /bin/sh
       - -c
       - |
         mc alias set local http://minio:9000 minioadmin minioadmin &&
         mc mb --ignore-existing local/stac-higher &&
-        mc mb --ignore-existing local/stac-higher-deliveries
+        mc mb --ignore-existing local/stac-higher-deliveries &&
+        mc admin policy create local cube-read /policy/cube-read.json &&
+        mc admin user add local cube-reader cube-reader-secret &&
+        { mc admin policy entities local --user cube-reader | grep -q cube-read ||
+          mc admin policy attach local cube-read --user cube-reader; }
     restart: "no"
 
   # Data plane (ROADMAP §3). Source lives in services/pipeline (separate
@@ -515,6 +524,59 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  # One-shot (Z-7): the cube-server's LOGIN user, a member of migration 033's
+  # read-only `stac_higher_cube_reader` group. Idempotent; runs in either order
+  # with the app's migrations (infra/cube-server/compose-db-role.sql).
+  cube-db-role:
+    image: ghcr.io/stac-utils/pgstac:v0.9.11@sha256:26d5c20c650736a65793ab61cb2e7113ecef0c036ec8c2d6c6838c7aa14e131d
+    entrypoint: ["psql", "-v", "ON_ERROR_STOP=1", "-h", "database", "-f", "/sql/role.sql"]
+    environment:
+      - PGUSER=username
+      - PGPASSWORD=password
+      - PGDATABASE=postgis
+    volumes:
+      - ./infra/cube-server/compose-db-role.sql:/sql/role.sql:ro
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: "no"
+
+  # Virtual cubes as XYZ tiles + OGC EDR (Z-7, virtual cube spec §8;
+  # infra/cube-server). Serves only the repositories registered in
+  # stac_higher.cube_sinks, keyed by cube collection id; never a client-given
+  # store. Read-only on both sides: the DB login sees five cube_sinks columns,
+  # the Silo user reads only assets/*/_cube/*. Anonymous like titiler until
+  # #34; it reads the virtual sources (NODD) directly — network egress rides #68.
+  cube-server:
+    build:
+      context: ./infra/cube-server
+    image: stac-higher-cube-server:local
+    environment:
+      - CUBE_DB_DSN=postgresql://cube_server:cube_server@database:5432/postgis
+      - CUBE_S3_ENDPOINT=http://minio:9000
+      - CUBE_S3_ACCESS_KEY_ID=cube-reader
+      - CUBE_S3_SECRET_ACCESS_KEY=cube-reader-secret
+      - PLATFORM_ASSET_BUCKET=${STAGING_BUCKET:-stac-higher}
+      - CUBE_POLL_SECONDS=15
+    ports:
+      - "8086:8086"
+    depends_on:
+      database:
+        condition: service_healthy
+      cube-db-role:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8086/health")'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
 
 networks:
   # Dedicated network for process-run containers (ADR 0013: the egress-policy

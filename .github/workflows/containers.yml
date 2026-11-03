@@ -50,6 +50,11 @@ jobs:
             context: .
             # upstream base is linux/amd64 only
             platforms: linux/amd64
+          - name: cube-server
+            # Tiles + EDR for registered virtual cubes (Z-7, virtual cube
+            # spec §8). Its own context: it needs pyproject.toml + uv.lock.
+            dockerfile: infra/cube-server/Dockerfile
+            context: infra/cube-server
           - name: image-scanner
             # The platform image scanner (C-2): Syft + Grype, DB baked at
             # build. Tagged by date too so the baked DB's age is visible.

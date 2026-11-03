@@ -64,6 +64,11 @@ jobs:
         run: |
           uv export --format requirements-txt --no-dev --no-emit-project -o /tmp/requirements.txt
           uvx pip-audit -r /tmp/requirements.txt --disable-pip
+      - name: pip-audit against infra/cube-server's uv.lock (Z-7)
+        working-directory: infra/cube-server
+        run: |
+          uv export --format requirements-txt --no-dev --no-emit-project -o /tmp/cube-requirements.txt
+          uvx pip-audit -r /tmp/cube-requirements.txt --disable-pip
 
   misconfig:
     name: IaC misconfig (trivy config)
