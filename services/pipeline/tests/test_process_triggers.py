@@ -1522,3 +1522,20 @@ async def test_failing_a_dead_extractor_batch_only_touches_rows_it_still_owns():
     assert ingest.rows[mine].status == "failed" and "boom" in ingest.rows[mine].reason
     assert ingest.rows[theirs].status == "extracting"
     assert ingest.rows[landed].status == "itemized" and ingest.rows[landed].item_id == "c"
+
+
+@pytest.mark.asyncio
+async def test_a_run_over_the_credential_budget_dies_once_naming_the_budget():
+    repo, executor = FakeProcessRepo(), MemoryExecutor(results=[ExitStatus(0)])
+    run = queued(
+        runtime={"kind": "inline_python", "timeout_seconds": 3301, "retry": {"max_attempts": 3}}
+    )
+    result = await _run(
+        run,
+        executor,
+        repo,
+        settings=Settings.from_env({"PROCESS_MAX_CREDENTIAL_SECONDS": "3600"}),
+    )
+    assert result.status == "dead" and repo.finished[0]["status"] == "dead"
+    assert result.error.startswith("credential_budget_exceeded")
+    assert executor.launched == []

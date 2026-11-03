@@ -27,7 +27,7 @@ from pipeline.images.registry_auth import RegistryAuthUnavailable
 from pipeline.images.repo import ImagesRepo
 from pipeline.metrics import PROCESS_RUNS
 from pipeline.process.config import ProcessConfigError, parse_process_env, parse_process_runtime
-from pipeline.process.credentials import RunCredentialsError
+from pipeline.process.credentials import CredentialBudgetExceeded, RunCredentialsError
 from pipeline.process.executor import (
     Executor,
     ExecutorUnavailable,
@@ -347,6 +347,11 @@ async def run_one(
             extra={"run_id": run.id, "process_id": run.process_id, "error": str(err)},
         )
         return RunResult(run.id, transition.status, error=str(err))
+    except CredentialBudgetExceeded as err:
+        # The run's timeout + grace needs longer credentials than the
+        # deployment allows. Configuration, not infrastructure: dead, no retry.
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
+        return RunResult(run.id, "dead", error=str(err))
     except SecretResolutionError as err:
         # The revision names a secret that cannot be resolved. That is
         # configuration, and no amount of retrying fixes it.

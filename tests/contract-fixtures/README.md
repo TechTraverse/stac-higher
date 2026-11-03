@@ -244,6 +244,10 @@ are not in the registry (I-107).
   message both sides produce (empty on accept). The deployment sets are
   NOT fixtures: `infra/hardware-profiles/{local,kind,eks}.json`.
 
+## Additional fixture styles (R queue, R-1/R-2)
+
+- `process-credential-budget.json` — a settings contract (no `style` marker). It pins the deployment cap `PROCESS_MAX_CREDENTIAL_SECONDS` (unset = no limit), the grace setting `PROCESS_CREDENTIAL_GRACE_SECONDS` and its default (300 s), the deploy refusal (422, `code` `credential_budget_exceeded`) and the mint refusal's error. Each `cases[]` entry gives the three budget inputs and the cap, with `deploy_allowed` (the app's deploy gate, `app/src/lib/processes/credential-budget.ts`: `max_queue_wait_seconds + timeout_seconds + grace ≤ cap`) and `mint_allowed` (the pipeline's STS mint, `pipeline/process/credentials.py`). The vitest consumer checks `deploy_allowed`; pytest checks `mint_allowed`.
+
 ## Why `app` and `pipeline` expectations can differ
 
 The contract is deliberately asymmetric. Zod is the **strict write gatekeeper**
