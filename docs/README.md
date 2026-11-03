@@ -22,6 +22,7 @@ Delivery is planned in phases — see [`../ROADMAP.md`](../ROADMAP.md) for the f
 - [`push-ingest.md`](push-ingest.md) — the external push-client contract: bearer auth, staged uploads, the brokered write path, finalize semantics and rejection reasons (Phase 7).
 - [`processes.md`](processes.md) — writing a process: the run environment, how to publish items, and the rules that surprise (Phase 9).
 - [`releases.md`](releases.md) — what a v* tag publishes, the image list, attestations, and the release-manifest contract the chart reads (Phase 8).
+- [`../infra/terraform/README.md`](../infra/terraform/README.md) — the Terraform/OpenTofu modules a deployment repo consumes, their rules and how to validate them (Phase 8, ADR 0024).
 - [`AI-STRATEGY.md`](AI-STRATEGY.md) — how `AGENTS.md`, the skills, and per-harness shims fit together for AI coding agents.
 
 ## Conventions
