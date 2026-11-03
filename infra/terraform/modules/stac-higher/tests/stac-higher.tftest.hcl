@@ -187,7 +187,7 @@ run "s3_prefix_list_lookup" {
 }
 
 run "optional_modules_off" {
-  command = plan
+  command = apply
   assert {
     condition     = output.cognito_client_id == null && output.demo_destination_bucket_name == null
     error_message = "optional module outputs are null when off"
@@ -196,6 +196,10 @@ run "optional_modules_off" {
     condition     = !contains(keys(output.helm_values), "auth") && !contains(keys(output.helm_values), "demoDestination")
     error_message = "auth and demoDestination are omitted, not null, when off"
   }
+  assert {
+    condition     = length([for s in jsondecode(output.external_secrets_policy_json).Statement : s.Resource if s.Sid == "ReadPlatformSecrets"][0]) == 11
+    error_message = "read statement lists 10 platform secrets and the master secret when the demo destination is off"
+  }
 }
 
 run "cognito_and_demo_on" {
@@ -203,6 +207,12 @@ run "cognito_and_demo_on" {
   variables {
     enable_cognito          = true
     enable_demo_destination = true
+  }
+  override_resource {
+    target = module.demo_destination[0].aws_secretsmanager_secret.this
+    values = {
+      arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
+    }
   }
   assert {
     condition     = keys(output.helm_values) == ["auth", "aws", "database", "demoDestination", "global", "identity", "publicUrls", "registry", "secrets"]
@@ -224,6 +234,23 @@ run "cognito_and_demo_on" {
   assert {
     condition     = keys(output.helm_values.demoDestination) == ["bucket", "credentialsSecretArn", "region"] && output.helm_values.demoDestination.region == "us-gov-west-1"
     error_message = "demoDestination section shape"
+  }
+  assert {
+    condition     = output.helm_values.demoDestination.bucket == "stac-test-platform" && output.helm_values.demoDestination.credentialsSecretArn == "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
+    error_message = "demoDestination carries the bucket name (not ARN) and the credentials secret ARN"
+  }
+  assert {
+    condition     = output.helm_values.auth.hostedDomain == "stac-test.auth.us-gov-west-1.amazoncognito.com"
+    error_message = "auth.hostedDomain comes from the cognito module"
+  }
+  assert {
+    condition = jsonencode(output.helm_values.auth.claimsMapping) == jsonencode({
+      groups  = "cognito:groups"
+      name    = ["name", "email", "username"]
+      roleMap = { "stac-admins" = "admin", "stac-members" = "member", "stac-operators" = "operator" }
+      roles   = "cognito:groups"
+    })
+    error_message = "auth.claimsMapping comes from the cognito module"
   }
   assert {
     condition     = jsonencode(output.cognito_callback_urls) == jsonencode(["https://app.example.com/api/auth/callback"]) && jsonencode(output.cognito_logout_urls) == jsonencode(["https://app.example.com/"])
@@ -249,6 +276,12 @@ run "external_secrets_policy" {
   variables {
     enable_demo_destination = true
   }
+  override_resource {
+    target = module.demo_destination[0].aws_secretsmanager_secret.this
+    values = {
+      arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf"
+    }
+  }
   assert {
     condition = (
       toset([for s in jsondecode(output.external_secrets_policy_json).Statement : s.Sid]) == toset(["ReadPlatformSecrets", "DecryptPlatformSecrets"])
@@ -264,11 +297,23 @@ run "external_secrets_policy" {
     error_message = "read statement covers platform, master and demo secrets"
   }
   assert {
+    condition     = contains([for s in jsondecode(output.external_secrets_policy_json).Statement : s.Resource if s.Sid == "ReadPlatformSecrets"][0], "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:stac-test/demo-AbCdEf")
+    error_message = "read statement must include the demo destination credentials secret"
+  }
+  assert {
+    condition     = length([for s in jsondecode(output.external_secrets_policy_json).Statement : s.Resource if s.Sid == "ReadPlatformSecrets"][0]) == 12
+    error_message = "read statement lists 10 platform secrets, the master secret and the demo secret"
+  }
+  assert {
     condition = (
       [for s in jsondecode(output.external_secrets_policy_json).Statement : s.Action if s.Sid == "DecryptPlatformSecrets"][0] == ["kms:Decrypt"]
       && [for s in jsondecode(output.external_secrets_policy_json).Statement : s.Condition.StringEquals["kms:ViaService"] if s.Sid == "DecryptPlatformSecrets"][0] == "secretsmanager.us-gov-west-1.dns-suffix.example"
     )
     error_message = "decrypt only through Secrets Manager"
+  }
+  assert {
+    condition     = jsonencode([for s in jsondecode(output.external_secrets_policy_json).Statement : s.Resource if s.Sid == "DecryptPlatformSecrets"][0]) == jsonencode(["arn:aws-us-gov:kms:us-gov-west-1:000000000000:key/00000000-0000-0000-0000-000000000000"])
+    error_message = "decrypt is scoped to the platform key only"
   }
 }
 
