@@ -55,10 +55,23 @@ export interface LineageStripProps {
   className?: string;
 }
 
-const KIND_ICON: Record<LineageKind, LucideIcon> = {
+/**
+ * Node-TYPE icons — the sidebar's icons for Connections, Products and
+ * Processes, so a node in any lineage picture reads as the same thing the nav
+ * calls it. `PipelineDag` draws one on every chip: the type bar alone could
+ * not tell a process from the same-named product it writes.
+ */
+export const KIND_ICON: Record<LineageKind, LucideIcon> = {
   connection: Plug,
   collection: Layers,
   process: Cpu,
+};
+
+/** Node-type names as the UI says them — a collection is a "Product". */
+export const KIND_LABEL: Record<LineageKind, string> = {
+  connection: "Connection",
+  collection: "Product",
+  process: "Process",
 };
 
 /**
