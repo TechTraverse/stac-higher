@@ -19,6 +19,7 @@ from typing import Annotated
 
 import icechunk as ic
 import numpy as np
+import pandas as pd
 import xarray as xr
 from fastapi import Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -56,6 +57,31 @@ def _as_missing(step: xr.Dataset, dim: str) -> xr.Dataset:
                 np.full(var.shape, np.nan), dims=var.dims, coords=var.coords, attrs=var.attrs
             )
     return filled
+
+
+def _naive_utc(value: str) -> str:
+    """``value`` as a naive nanosecond UTC string; anything else is returned as is.
+
+    The writer's ``stac_higher:time_values`` end in ``Z``. xpublish-edr hands a
+    ``Z`` string to ``DatetimeIndex.get_indexer``, which raises ``TypeError``
+    (a 500), so the append dimension's selector is normalised first."""
+    try:
+        stamp = pd.Timestamp(value)
+    except (ValueError, TypeError):
+        return value
+    if stamp.tzinfo is not None:
+        stamp = stamp.tz_convert("UTC").tz_localize(None)
+    return np.datetime_as_string(np.datetime64(stamp.value, "ns"), unit="ns")
+
+
+def normalise_time_selector(params: dict[str, str], dataset: xr.Dataset, dim: str) -> None:
+    """Rewrite ``params[dim]`` (``a`` or ``a/b``) in place for a datetime ``dim``."""
+    value = params.get(dim)
+    if value is None or dim not in dataset.coords:
+        return
+    if not np.issubdtype(dataset[dim].dtype, np.datetime64):
+        return
+    params[dim] = "/".join(_naive_utc(part) for part in value.split("/"))
 
 
 def load_steps_tolerant(
@@ -127,9 +153,15 @@ class TolerantEdrPlugin(CfEdrPlugin):
                     422, "Could not parse coordinates to geometry, "
                     "check the format of the 'coords' query parameter",
                 ) from err
+            if query.method != "nearest":
+                raise HTTPException(
+                    422, f"method={query.method!r} is not supported on a cube; use method=nearest"
+                )
             append_dim = dataset.attrs.get(APPEND_DIM_ATTR, "t")
+            params = dict(request.query_params)
+            normalise_time_selector(params, dataset, append_dim)
             try:
-                ds = query.select(dataset, dict(request.query_params))
+                ds = query.select(dataset, params)
             except ValueError as err:
                 raise HTTPException(404, f"Error selecting from query: {err.args[0]}") from err
             try:

@@ -123,7 +123,7 @@ async def _poll(app: FastAPI, registry: CubeRegistry, settings: Settings) -> Non
         for collection_id in opened:
             ds = registry.get(collection_id)
             if ds is not None:
-                await warm_up(app, collection_id, ds)
+                registry.record_warm_up(collection_id, await warm_up(app, collection_id, ds))
         await asyncio.sleep(settings.poll_seconds)
 
 

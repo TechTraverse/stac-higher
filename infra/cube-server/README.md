@@ -57,4 +57,5 @@ need a database the app's migrations ran on (`npm run db:migrate`).
 exactly (spec §8.1). `edr.py` reuses xpublish-edr 0.11.1's position pipeline
 (`_run_position_query`) and replaces its `/position` route, so re-read that
 function and re-run `tests/test_app.py` before moving the xpublish-edr pin.
+`icechunk` is also the writer's version (`services/pipeline/uv.lock`, 2.3.0): bump the two together.
 The image's bases are the pipeline's; move them together.

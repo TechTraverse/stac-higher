@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from stac_higher_cube_server.settings import Settings
-from stac_higher_cube_server.sinks import parse_sink_config
+from stac_higher_cube_server.sinks import BadSink, SinkRow, parse_sink_config, rows_to_sinks
 
 FIXTURE = Path(__file__).resolve().parents[3] / "tests/contract-fixtures/cube-sink-config.json"
 #: reject cases that are about the two fields the server reads
@@ -60,3 +60,15 @@ def test_settings_splits_cors_origins():
         "CUBE_CORS_ORIGINS": "http://localhost:4321, https://x.example",
     })
     assert settings.cors_origins == ("http://localhost:4321", "https://x.example")
+
+
+def test_rejected_config_becomes_a_bad_sink_not_an_absence():
+    rows = [
+        ("s1", "good", {"append_dim": "t", "variables": ["CMI"]}, ["s3://b/"]),
+        ("s2", "bad", {"append_dim": "t", "variables": []}, ["s3://b/"]),
+        ("s3", "none", {"append_dim": "t", "variables": ["CMI"]}, None),
+    ]
+    good, bad, none = rows_to_sinks(rows)
+    assert good == SinkRow("s1", "good", "t", ("CMI",), ("s3://b/",))
+    assert bad == BadSink(id="s2", cube_collection_id="bad", error="InvalidSinkConfig")
+    assert none.source_prefixes == ()

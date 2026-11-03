@@ -3,7 +3,7 @@ import pytest
 
 from stac_higher_cube_server.registry import CubeRegistry, S3RepoOpener, UnsupportedSourceError
 from stac_higher_cube_server.settings import Settings
-from stac_higher_cube_server.sinks import SinkRow
+from stac_higher_cube_server.sinks import BadSink, SinkRow
 from tests.cubes import FakeSource, LocalOpener, make_local_cube
 
 SETTINGS = Settings(
@@ -174,3 +174,51 @@ def test_served_geostationary_cube_is_in_metres(c1):
     ds = registry.get("c1")
     assert ds.x.attrs["units"] == "m"
     assert "goes_imager_projection" in ds.variables
+
+
+def test_empty_source_prefixes_is_pending_not_served(c1):
+    registry = CubeRegistry(FakeSource(row("c1", prefixes=())), LocalOpener({"c1": c1}))
+    assert registry.refresh() == []
+    assert registry.get("c1") is None
+    health = registry.health()
+    assert health["pending"] == ["c1"]
+    assert health["errors"] == {}
+
+
+def test_prefixes_recorded_later_open_the_cube(c1):
+    source = FakeSource(row("c1", prefixes=()))
+    registry = CubeRegistry(source, LocalOpener({"c1": c1}))
+    registry.refresh()
+    source.rows = [row("c1")]
+    assert registry.refresh() == ["c1"]
+    assert registry.health()["pending"] == []
+
+
+def test_prefixes_lost_after_open_unserves_the_cube(c1):
+    source = FakeSource(row("c1"))
+    registry = CubeRegistry(source, LocalOpener({"c1": c1}))
+    registry.refresh()
+    source.rows = [row("c1", prefixes=())]
+    registry.refresh()
+    assert registry.get("c1") is None
+    assert registry.health()["pending"] == ["c1"]
+
+
+def test_s3_opener_returns_none_for_empty_prefixes():
+    # no repository lookup at all: the store is unreachable in this test
+    sink = row("c1", prefixes=())
+    assert S3RepoOpener(SETTINGS).open(sink) is None
+
+
+def test_rejected_config_keeps_the_open_dataset_and_reports_the_error(c1):
+    source = FakeSource(row("c1"))
+    registry = CubeRegistry(source, LocalOpener({"c1": c1}))
+    registry.refresh()
+    first = registry.get("c1")
+    source.rows = [BadSink(id="sink-c1", cube_collection_id="c1", error="InvalidSinkConfig")]
+    assert registry.refresh() == []
+    assert registry.get("c1") is first
+    assert registry.health()["errors"] == {"c1": "InvalidSinkConfig"}
+    source.rows = [row("c1")]
+    registry.refresh()
+    assert registry.health()["errors"] == {}

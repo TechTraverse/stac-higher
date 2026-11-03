@@ -9,7 +9,7 @@ LENIENT reader like the pipeline's: it needs only ``append_dim`` and
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +22,10 @@ ENABLED_SINKS_SQL = (
     "SELECT id::text, cube_collection_id, config, source_prefixes "
     "FROM stac_higher.cube_sinks WHERE enabled ORDER BY cube_collection_id"
 )
+
+
+#: the /health error type of a sink whose config is rejected
+INVALID_CONFIG = "InvalidSinkConfig"
 
 
 @dataclass(frozen=True)
@@ -52,33 +56,50 @@ def parse_sink_config(config: Mapping[str, Any]) -> tuple[str, tuple[str, ...]]:
     return append_dim.strip(), tuple(names)
 
 
+@dataclass(frozen=True)
+class BadSink:
+    """An enabled sink whose config the lenient reader rejects. The registry
+    reports it under its cube collection id and keeps any open dataset."""
+
+    id: str
+    cube_collection_id: str
+    #: an error type name only: /health is anonymous
+    error: str
+
+
+def rows_to_sinks(rows: Iterable[tuple]) -> list[SinkRow | BadSink]:
+    sinks: list[SinkRow | BadSink] = []
+    for sink_id, collection_id, config, prefixes in rows:
+        try:
+            append_dim, variables = parse_sink_config(config)
+        except ValueError as err:
+            log.warning(
+                "cube sink config unusable; reported as an error",
+                extra={"cube_sink_id": sink_id, "cube_collection_id": collection_id,
+                       "error": str(err)},
+            )
+            sinks.append(BadSink(id=sink_id, cube_collection_id=collection_id,
+                                 error=INVALID_CONFIG))
+            continue
+        sinks.append(
+            SinkRow(
+                id=sink_id,
+                cube_collection_id=collection_id,
+                append_dim=append_dim,
+                variables=variables,
+                source_prefixes=tuple(prefixes or ()),
+            )
+        )
+    return sinks
+
+
 class PgSinkSource:
     """One short-lived autocommit connection per poll: 15 s apart, no pool needed."""
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
 
-    def enabled_sinks(self) -> list[SinkRow]:
+    def enabled_sinks(self) -> list[SinkRow | BadSink]:
         with psycopg.connect(self._dsn, autocommit=True, connect_timeout=5) as conn:
             rows = conn.execute(ENABLED_SINKS_SQL).fetchall()
-        sinks: list[SinkRow] = []
-        for sink_id, collection_id, config, prefixes in rows:
-            try:
-                append_dim, variables = parse_sink_config(config)
-            except ValueError as err:
-                log.warning(
-                    "cube sink config unusable; skipped",
-                    extra={"cube_sink_id": sink_id, "cube_collection_id": collection_id,
-                           "error": str(err)},
-                )
-                continue
-            sinks.append(
-                SinkRow(
-                    id=sink_id,
-                    cube_collection_id=collection_id,
-                    append_dim=append_dim,
-                    variables=variables,
-                    source_prefixes=tuple(prefixes or ()),
-                )
-            )
-        return sinks
+        return rows_to_sinks(rows)
