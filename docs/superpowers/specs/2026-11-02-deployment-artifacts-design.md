@@ -205,7 +205,7 @@ Keycloak is **not** packaged. The platform speaks any OIDC IdP (`docs/auth.md`);
 a deployment either uses the optional Cognito module (§7.1) or brings its own
 IdP.
 
-**eoapi-k8s fit is verified first** (R-6). It must render with: our titiler
+**eoapi-k8s fit is verified first** (R-7). It must render with: our titiler
 and auth-proxy images, the digest-pinned stac-fastapi, an external database
 from a Secret, its own pgstac bootstrap **disabled** (ADR 0001 — our hook
 Job owns pgstac migrations), and its bundled Crunchy PGO off. If it fights

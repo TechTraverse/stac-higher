@@ -148,8 +148,8 @@ output as remote keys:
 
 | Terraform key (`secrets.arns.*`) | Becomes |
 |---|---|
-| `db_stac_higher_owner` | `<fullname>-db-owner` (`username`, `password`) |
-| `db_stac_api`, `db_stac_reader`, `db_stac_proxy_policy`, `db_cube_server` | hook-scoped copies `<fullname>-hook-db-stac-api`, `-hook-db-stac-reader`, `-hook-db-proxy-policy`, `-hook-db-cube-server` |
+| `db_stac_higher_owner` | `<fullname>-db-owner` (`username`, `password`) and a hook-scoped copy `<fullname>-hook-db-owner` |
+| `db_stac_api`, `db_stac_reader`, `db_stac_proxy_policy`, `db_cube_server` | hook-scoped copies `<fullname>-hook-db-stac-api`, `-hook-db-stac-reader`, `-hook-db-proxy-policy`, `-hook-db-cube-server` (with `-hook-db-owner` and `-hook-db-master`, the six hook Secrets) |
 | `session_secret`, `catalog_bff_shared_secret`, `internal_api_token`, `credentials_master_key` | `<fullname>-platform` (`SESSION_SECRET`, `CATALOG_BFF_SHARED_SECRET`, `INTERNAL_API_TOKEN`, `CREDENTIALS_MASTER_KEY`) |
 | `proxy_auth_token` | accepted and ignored (I-159) |
 | `database.masterSecretArn` (the RDS master) | hook-scoped `<fullname>-hook-db-master` |
@@ -223,7 +223,9 @@ helm upgrade --install stac-higher oci://ghcr.io/<owner>/charts/stac-higher \
   -f values.yaml -f digests.values.yaml --timeout 15m
 ```
 
-Argo CD. The chart's `helm.sh/hook` annotations are mapped to Argo hooks
+Argo CD (multi-source, so the value files come from your deployment repo
+rather than from inside the chart archive; `repoURL` for the chart must be
+registered as an OCI Helm repository). The chart's `helm.sh/hook` annotations are mapped to Argo hooks
 (`pre-install`/`pre-upgrade` become `PreSync`), and the chart also carries
 Argo's own annotations with the same weights as sync waves:
 
@@ -238,12 +240,17 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: stac-higher
-  source:
-    repoURL: ghcr.io/<owner>/charts
-    chart: stac-higher
-    targetRevision: <v>
-    helm:
-      valueFiles: [values.yaml, digests.values.yaml]
+  sources:
+    - repoURL: ghcr.io/<owner>/charts   # an OCI-enabled Helm repository entry in Argo CD
+      chart: stac-higher
+      targetRevision: <v>
+      helm:
+        valueFiles:
+          - $values/deploy/values.yaml
+          - $values/deploy/digests.values.yaml
+    - repoURL: https://github.com/<org>/<deployment-repo>.git
+      targetRevision: main
+      ref: values
   syncPolicy:
     syncOptions: [CreateNamespace=true]
 ```

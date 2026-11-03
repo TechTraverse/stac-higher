@@ -401,6 +401,10 @@ def test_bootstrap_refuses_the_connecting_role(sandbox, capsys):
         me = admin.execute("SELECT current_user").fetchone()[0]
     env = _env(sandbox["prefix"], _passwords())
     env["STAC_HIGHER_SQL_OWNER_ROLE"] = me
+    # The connecting role's own password, so a regressed guard cannot lock out later DB tests.
+    env["STAC_HIGHER_SQL_OWNER_PASSWORD"] = (
+        conninfo_to_dict(DATABASE_URL).get("password") or os.environ.get("PGPASSWORD") or "unused"
+    )
     assert _run("bootstrap.sql", sandbox, env) == 1
     assert "names the connecting role" in capsys.readouterr().out
     with _admin_conn() as admin:

@@ -1844,7 +1844,8 @@ the RDS master Secret is deleted once the hook phase succeeds. On Helm that
 happens only after every hook in the phase, so db-bootstrap (weight -20) still
 reads it. On Argo CD the `HookSucceeded` timing for a non-Job hook is
 unverified until a live check; if Argo deleted it before db-bootstrap, the
-bootstrap would fail loudly rather than leak.
+bootstrap would sit in `CreateContainerConfigError` until
+`activeDeadlineSeconds` expires, rather than fail at once (and would not leak).
 
 The five role hook ExternalSecrets keep `before-hook-creation` only. With
 `creationPolicy: Owner`, each upgrade or sync deletes the ExternalSecret and

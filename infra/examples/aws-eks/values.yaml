@@ -68,6 +68,17 @@ secrets:
     internal_api_token: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/platform/internal_api_token-AbCdEf
     credentials_master_key: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/platform/credentials_master_key-AbCdEf
     proxy_auth_token: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/platform/proxy_auth_token-AbCdEf
+# Ingress via the AWS Load Balancer Controller (placeholders; uncomment and adjust)
+# ingress:
+#   className: alb
+#   annotations:
+#     alb.ingress.kubernetes.io/scheme: internet-facing
+#     alb.ingress.kubernetes.io/target-type: ip
+# networkPolicy:
+#   # target-type ip sends ALB traffic from VPC addresses (I-161): allow the VPC CIDR
+#   appIngressFrom:
+#     - ipBlock:
+#         cidr: 10.0.0.0/16
 auth:
   mode: oidc
   issuer: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example

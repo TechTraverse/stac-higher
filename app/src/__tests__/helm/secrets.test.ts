@@ -104,8 +104,8 @@ describe.skipIf(!helmReady())("chart secrets layer", () => {
     ]);
   });
 
-  // No chart template consumes the hook helpers yet (Task 4), so render them through a scratch copy of the
-  // chart with a test-only template; the real chart is untouched.
+  // Render the hook helpers through a scratch copy of the chart with a test-only probe template; the real
+  // chart is untouched.
   describe("hook copies (scratch chart with a probe template)", () => {
     const LOGICAL = ["dbMaster", "dbOwner", "dbStacApi", "dbStacReader", "dbProxyPolicy", "dbCubeServer"];
     const SUFFIX = ["hook-db-master", "hook-db-owner", "hook-db-stac-api", "hook-db-stac-reader", "hook-db-proxy-policy", "hook-db-cube-server"];
