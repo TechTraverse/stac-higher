@@ -7,10 +7,17 @@ from collections.abc import Sequence
 import xarray as xr
 
 
+def _grid_mapping_of(var: xr.DataArray) -> str | None:
+    """A variable's ``grid_mapping``. ``decode_coords="all"`` (how the registry
+    opens a cube, spec §8.2) moves it from ``.attrs`` into ``.encoding``."""
+    mapping = var.attrs.get("grid_mapping") or var.encoding.get("grid_mapping")
+    return mapping if isinstance(mapping, str) else None
+
+
 def _grid_mapping_name(ds: xr.Dataset) -> str | None:
     for name in ds.data_vars:
-        mapping = ds[name].attrs.get("grid_mapping")
-        if isinstance(mapping, str) and mapping in ds.variables:
+        mapping = _grid_mapping_of(ds[name])
+        if mapping is not None and mapping in ds.variables:
             return mapping
     return None
 
@@ -49,8 +56,8 @@ def prepare_dataset(
     keep = [v for v in variables if v in raw.data_vars]
     mapping = None
     for name in keep:
-        candidate = raw[name].attrs.get("grid_mapping")
-        if isinstance(candidate, str) and candidate in raw.variables:
+        candidate = _grid_mapping_of(raw[name])
+        if candidate is not None and candidate in raw.variables:
             mapping = candidate
             break
     if mapping is not None and mapping not in keep:

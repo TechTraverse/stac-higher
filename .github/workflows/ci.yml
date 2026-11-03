@@ -212,7 +212,7 @@ jobs:
           wait_for minio "http://localhost:9000/minio/health/live" 30
           wait_for pipeline "http://localhost:8083/health" 60
           # Z-7: the compose bring-up check for the cube-server (it needs the
-          # cube-db-role and minio-init one-shots to have succeeded).
+          # cube-db-role and cube-silo-user one-shots to have succeeded).
           wait_for cube-server "http://localhost:8086/health" 30
       - name: Run e2e suite
         working-directory: app

@@ -164,3 +164,13 @@ def test_health_never_echoes_error_text(c1):
     assert "internal-host" not in text
     assert "10.0.0.5" not in text
     assert registry.health()["last_reload_error"] == "OperationalError"
+
+
+def test_served_geostationary_cube_is_in_metres(c1):
+    """decode_coords="all" moves grid_mapping into .encoding: the rescale must
+    still find it on the real open path (review finding, Critical #1)."""
+    registry = CubeRegistry(FakeSource(row("c1")), LocalOpener({"c1": c1}))
+    registry.refresh()
+    ds = registry.get("c1")
+    assert ds.x.attrs["units"] == "m"
+    assert "goes_imager_projection" in ds.variables

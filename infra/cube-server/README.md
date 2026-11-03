@@ -22,7 +22,7 @@ id. Design, routes and caching rules: [`docs/serving.md`](../../docs/serving.md)
 |---|---|---|
 | `CUBE_DB_DSN` | `postgresql://cube_server:cube_server@database:5432/postgis` | **Required.** A login in `stac_higher_cube_reader` (`compose-db-role.sql` locally). |
 | `CUBE_S3_ENDPOINT` | `http://minio:9000` | **Required.** Platform object store, path-style. |
-| `CUBE_S3_ACCESS_KEY_ID` / `CUBE_S3_SECRET_ACCESS_KEY` | `cube-reader` / `cube-reader-secret` | **Required.** Read-only on `assets/*/_cube/*` (`silo-cube-read-policy.json`, attached by `minio-init`). The policy names the `stac-higher` bucket: edit it for another `STAGING_BUCKET`. |
+| `CUBE_S3_ACCESS_KEY_ID` / `CUBE_S3_SECRET_ACCESS_KEY` | `cube-reader` / `cube-reader-secret` | **Required.** Read-only on `assets/*/_cube/*` (`silo-cube-read-policy.json`, attached by the `cube-silo-user` one-shot). The policy names the `stac-higher` bucket: edit it for another `STAGING_BUCKET`. |
 | `PLATFORM_ASSET_BUCKET` | `${STAGING_BUCKET:-stac-higher}` | **Required.** The pipeline's `STAGING_BUCKET`. |
 | `CUBE_S3_REGION` | `us-east-1` | |
 | `CUBE_POLL_SECONDS` | `15` | Registry poll interval. |

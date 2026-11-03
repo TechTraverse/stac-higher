@@ -50,3 +50,12 @@ def test_collapsed_dim_is_one_step(tmp_path):
     loaded, missing = load_steps_tolerant(_pixel(cube).isel(t=0), "t")
     assert missing == 1
     assert np.isnan(loaded.CMI.values)
+
+
+def test_zero_selected_steps_is_empty_not_an_error(tmp_path):
+    """A query selecting no step returns an empty series (review, Important #2)."""
+    cube = make_local_cube(tmp_path, steps=2)
+    empty = _pixel(cube).isel(t=slice(0, 0))
+    loaded, missing = load_steps_tolerant(empty, "t")
+    assert missing == 0
+    assert loaded.sizes["t"] == 0

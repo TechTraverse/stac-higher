@@ -28,3 +28,10 @@ def test_non_tile_routes_are_left_alone():
     assert cache_control("/datasets/c1/tiles/WebMercatorQuad", {}, 200) is None
     assert cache_control("/datasets/c1/tiles/WebMercatorQuad/tilejson.json", {}, 200) is None
     assert cache_control("/health", {}, 200) is None
+
+
+def test_rendered_error_tile_is_never_stored():
+    """render_errors=true draws an error as a 200 PNG: never cache it (review, Important #1)."""
+    assert cache_control(TILE, {"t": T, "render_errors": "true"}, 200) == "no-store"
+    assert cache_control(TILE, {"t": T, "render_errors": "True"}, 200) == "no-store"
+    assert cache_control(TILE, {"t": T, "render_errors": "false"}, 200) == IMMUTABLE

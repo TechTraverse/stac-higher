@@ -69,6 +69,8 @@ def load_steps_tolerant(
     runs sync routes in its threadpool), never from a running loop.
     """
     collapsed = dim not in ds.dims
+    if not collapsed and ds.sizes[dim] == 0:
+        return ds.load(), 0  # nothing selected: an empty series, as upstream
     steps = [ds] if collapsed else [ds.isel({dim: [i]}) for i in range(ds.sizes[dim])]
 
     async def gather() -> list[xr.Dataset | BaseException]:

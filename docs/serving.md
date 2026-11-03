@@ -239,8 +239,9 @@ GET /health
   chunks): a 200 tile with an exact `t` is
   `Cache-Control: public, max-age=31536000, immutable`; any other 200 tile
   (no `t`, or a `nearest::` selector) is `public, max-age=60`; a non-200 tile
-  is `no-store`, so a not-yet-loaded `t` is retried. Other routes are left
-  alone. After every (re)open the server renders one z0 tile of the newest step
+  is `no-store`, so a not-yet-loaded `t` is retried, and so is every tile
+  requested with xpublish-tiles' `render_errors=true` (it draws an error as a
+  200 image). Other routes are left alone. After every (re)open the server renders one z0 tile of the newest step
   to absorb the Numba JIT (2.4–2.6 s cold vs 0.44 s warm in the spike).
 - **`edr/position` is per-step tolerant and GET-only.** Each step loads
   separately; a step whose source file is gone (Icechunk `StorageError`) is an

@@ -10,7 +10,15 @@ from stac_higher_cube_server.app import create_app, warm_up
 from stac_higher_cube_server.registry import CubeRegistry
 from stac_higher_cube_server.settings import Settings
 from stac_higher_cube_server.sinks import SinkRow
-from tests.cubes import KANSAS, FakeSource, LocalOpener, iso_ns, make_local_cube, t_ns
+from tests.cubes import (
+    KANSAS,
+    FakeSource,
+    LocalOpener,
+    iso_ns,
+    make_local_cube,
+    step_values,
+    t_ns,
+)
 
 SETTINGS = Settings(
     db_dsn="postgresql://unused",
@@ -82,7 +90,8 @@ def test_position_returns_null_for_missing_step(cube, client):
     assert r.headers["x-cube-missing-steps"] == "1"
     rows = _rows(r.text)
     assert len(rows) == 3
-    assert rows[0]["CMI"] != ""
+    # Kansas is the fixture grid's centre: row 3, column 4 of each step
+    assert float(rows[0]["CMI"]) == pytest.approx(float(step_values(0)[3, 4]))
     assert rows[1]["CMI"] == ""
     assert rows[2]["CMI"] != ""
 
@@ -91,7 +100,10 @@ def test_position_without_missing_steps_says_zero(client):
     r = client.get(POSITION, params=POINT)
     assert r.status_code == 200, r.text
     assert r.headers["x-cube-missing-steps"] == "0"
-    assert all(row["CMI"] != "" for row in _rows(r.text))
+    rows = _rows(r.text)
+    assert [float(row["CMI"]) for row in rows] == pytest.approx(
+        [float(step_values(i)[3, 4]) for i in range(3)]
+    )
 
 
 def test_position_is_get_only(client):

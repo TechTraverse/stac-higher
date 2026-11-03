@@ -6,7 +6,8 @@ immutable and every rendering parameter is in the URL. A ``nearest::`` (or any
 ``method::``) selector is not pinned — once its step is trimmed it resolves to
 another one — and neither is an unpinned tile, which renders the latest step.
 A failed response is never stored, so a ``t`` the server has not loaded yet
-is retried after the next reload.
+is retried after the next reload — and neither is any ``render_errors`` tile,
+since that option turns an error into a 200 image.
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ def cache_control(path: str, query: Mapping[str, str], status: int) -> str | Non
     if not is_tile_path(path):
         return None
     if status != 200:
+        return NO_STORE
+    # xpublish-tiles' render_errors draws an error as a 200 PNG, which can't be
+    # told from a real tile here: never store any of them.
+    if query.get("render_errors", "").lower() in ("true", "1", "yes"):
         return NO_STORE
     t = query.get("t")
     return IMMUTABLE if t and "::" not in t else SHORT
