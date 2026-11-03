@@ -224,11 +224,23 @@ sink with `pending` rows older than 2 minutes. This recovers a job lost to a
 crash between ledger insert and enqueue. With `queueing_lock`, a kick against
 an already-waiting job coalesces.
 
+*As built (Z-3, Z-6):* before re-enqueueing, the kick first requeues a
+`cube_append` or `cube_maintain_sink` a dead worker left `doing`
+(`QueueBackend.retry_stalled`, heartbeat older than 300 s; at most 3 requeues
+per job, then closed `failed`). A killed job therefore holds its sink's lock
+for 5–10 minutes before the next kick recovers it (I-146 for maintenance).
+
 ## 6. Pipeline: `pipeline.cube_append`
 
 Module `pipeline/cubes/` (`config.py`, `repo.py`, `source.py`, `append.py`,
 `collection.py`, `maintain.py`). Registered on the **default** queue: it reads
 headers, not bytes. Retry: 3 attempts, exponential.
+
+*As built (Z-4):* the queue retry is 3 attempts at a fixed 30 s, and it
+applies only to exceptions that are not source reads. A source read that
+fails in transit ends the job without raising (`last_error` set), and the
+5-minute kick paces the retries; the crash-loop guard is the ledger's
+`attempts` (I-145). A file-specific source error settles only its row.
 
 ### 6.1 Sources: connection, endpoint, egress
 
@@ -270,8 +282,9 @@ endpoints need `EGRESS_ALLOW_HOSTS`, as the S3 adapter already does.
    - Layout mismatch (variable missing, chunk shape along `append_dim` ≠ 1, a
      different non-time shape) → `skipped: unsupported_layout`.
    - Otherwise `to_icechunk(session.store, append_dim=…,
-     last_updated_at=<source LastModified>)`. LastModified comes from the
-     ingest listing when `ingest_files` records it, otherwise from one HEAD.
+     last_updated_at=<source LastModified>)`. LastModified comes from one
+     HEAD taken just before the parse (as built, Z-4: always a HEAD, never
+     the ingest listing, so the value is the file the parse read).
      **Always pass it**: the default (write time + 1 s) leaves a rewrite between
      parse and commit undetected (spike Q5).
 6. **Window**, in the same session: `k = max(len − max_steps, steps older than
@@ -421,6 +434,16 @@ as such. The UI uses only `position`.
   `pipeline.cube_maintain_sink {cube_sink_id}` per enabled sink **that has a
   `window`**. It uses the same `lock = cube:{id}` (no `queueing_lock`), so
   maintenance never runs alongside that sink's appends.
+
+  *As built (Z-6, #115; the reference is `docs/monitoring.md` "Cube
+  repositories"):* the cron fans out to **every** enabled sink. The ledger
+  prune, the republish of the recorded tip and the size readout run for all
+  of them; only the age trim, expiry and GC need a `window`. The job carries
+  its own `queueing_lock` (`cube-maintain:{id}`). The size readout is not in
+  the run: a separate lock-free `pipeline.cube_measure_sink` lists the
+  prefix afterwards and merges the sizes into the current
+  `last_maintenance`. The age trim is a commit, so maintenance is the sink's
+  second writer (ADR 0023).
 - `cube_maintain_sink`:
   1. **Age trim without new data.** If the oldest step is older than
      `window.max_age` and no append is pending, apply §6.2 step 6 and commit.
