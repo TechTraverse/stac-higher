@@ -10,16 +10,23 @@
  * unparseable value is never echoed: a malformed URL may still hold a secret.
  */
 export function redactDatabaseUrl(url: string): string {
+  // Log only protocol, host and path. The query string is dropped on purpose:
+  // libpq-style parameters such as `password=`, `sslpassword=` or `sslkey=`
+  // may carry secrets, and nothing in the log needs them.
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return "(unparseable DATABASE_URL)";
   }
-  if (!parsed.username && !parsed.password) return parsed.toString();
-  parsed.username = "";
-  parsed.password = "";
-  return `${parsed.protocol}//***@${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`;
+  const hadUserinfo = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(url);
+  if (hadUserinfo && !parsed.username && !parsed.password) {
+    // The authority contained an `@` the parser did not treat as userinfo:
+    // never echo it.
+    return "(unparseable DATABASE_URL)";
+  }
+  const userinfo = parsed.username || parsed.password ? "***@" : "";
+  return `${parsed.protocol}//${userinfo}${parsed.host}${parsed.pathname}`;
 }
 
 export async function runMigrateCli(deps: {

@@ -19,6 +19,10 @@ describe("redactDatabaseUrl", () => {
     expect(out).not.toContain("p/ss");
     expect(out).not.toContain("u:p");
   });
+  it("drops the query string and fragment, where libpq secrets can hide", () => {
+    expect(redactDatabaseUrl("postgresql://u:p@h/db?password=qs3cret&sslmode=require#x")).toBe("postgresql://***@h/db");
+    expect(redactDatabaseUrl("postgresql://h/db?sslpassword=qs3cret")).toBe("postgresql://h/db");
+  });
   it("returns a placeholder, not the input, for an unparseable URL", () => {
     expect(redactDatabaseUrl("not a url with secret")).toBe("(unparseable DATABASE_URL)");
   });
