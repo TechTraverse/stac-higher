@@ -355,6 +355,93 @@ async def test_prune_ledger_deletes_old_terminal_rows_of_that_sink_only(db):
     )
 
 
+async def test_record_measurement_merges_into_the_current_summary(db):
+    from pipeline.cubes.repo import PgCubeRepo
+
+    conn, make_sink = db
+    sink = await make_sink(_source())
+    repo = PgCubeRepo(DATABASE_URL)
+    before = (await repo.load_sink(sink)).version
+    owned = ("repo_size", "measure_failed")
+    started = T0.isoformat()
+
+    async def summary():
+        cur = await conn.execute(
+            "SELECT last_maintenance, last_maintained_at FROM stac_higher.cube_sinks"
+            " WHERE id = %s",
+            (sink,),
+        )
+        return await cur.fetchone()
+
+    async def measure(at, *, patch=None, remove=(), attention=()):
+        return await repo.record_measurement(
+            sink,
+            measured_at=at,
+            patch=patch or {},
+            remove=list(remove),
+            durations_ms={"list": 7},
+            attention=list(attention),
+            owned_reasons=owned,
+        )
+
+    # No summary yet: nothing to merge into.
+    assert not await measure(T0)
+    assert (await summary())[0] is None
+
+    run = {
+        "status": "attention",
+        "started_at": started,
+        "attention": ["unrecorded_tip"],
+        "durations_ms": {"trim": 3},
+    }
+    await repo.record_maintenance(sink, summary=run, maintained_at=T0)
+    # A readout that started listing before the run did: pre-GC sizes, dropped.
+    assert not await measure(T0 - dt.timedelta(seconds=1), patch={"total_bytes": 1})
+
+    failed_listing = T0 + dt.timedelta(seconds=10)
+    assert await measure(
+        failed_listing, patch={"measure_error": "boom"}, attention=["measure_failed"]
+    )
+    good = T0 + dt.timedelta(seconds=20)
+    assert await measure(
+        good, patch={"total_bytes": 9}, remove=["measure_error"], attention=["repo_size"]
+    )
+    # Older than the readout already merged: dropped.
+    assert not await measure(good - dt.timedelta(seconds=5), patch={"total_bytes": 1})
+    merged, maintained_at = await summary()
+    assert merged["total_bytes"] == 9
+    assert "measure_error" not in merged
+    assert merged["attention"] == ["unrecorded_tip", "repo_size"]  # measure_failed replaced
+    assert merged["durations_ms"] == {"trim": 3, "list": 7}
+    assert merged["status"] == "attention"
+    assert dt.datetime.fromisoformat(merged["measured_at"]) == good
+    assert maintained_at == T0
+    assert (await repo.load_sink(sink)).version == before  # never touches updated_at
+
+    # Under the threshold now: the readout's own reason clears, the run's stays.
+    assert await measure(good + dt.timedelta(seconds=1), patch={"total_bytes": 2})
+    assert (await summary())[0]["attention"] == ["unrecorded_tip"]
+
+    ok = {"status": "ok", "started_at": started, "attention": []}
+    await repo.record_maintenance(sink, summary=ok, maintained_at=T0)
+    assert await measure(good, attention=["repo_size"])
+    assert (await summary())[0]["status"] == "attention"
+    assert await measure(good + dt.timedelta(seconds=1))
+    assert (await summary())[0]["status"] == "ok"
+
+    failed = {"status": "failed", "started_at": started}
+    await repo.record_maintenance(sink, summary=failed, maintained_at=None)
+    assert await measure(good, patch={"total_bytes": 2})
+    assert (await summary())[0]["status"] == "failed"
+
+    # A summary with no started_at/status/attention/durations never becomes NULL.
+    await repo.record_maintenance(sink, summary={"x": 1}, maintained_at=None)
+    assert await measure(good, patch={"total_bytes": 2})
+    merged = (await summary())[0]
+    assert merged["x"] == 1 and merged["total_bytes"] == 2
+    assert (merged["attention"], merged["status"]) == ([], "ok")
+
+
 async def test_record_maintenance_keeps_the_last_success_on_failure(db):
     from pipeline.cubes.repo import PgCubeRepo
 

@@ -38,7 +38,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,6 +62,8 @@ CUBE_TITLE = "Virtual cube"
 DATACUBE_EXTENSION = "https://stac-extensions.github.io/datacube/v2.2.0/schema.json"
 _DATACUBE_PREFIX = "https://stac-extensions.github.io/datacube/"
 
+#: marks the asset a cube sink writes; the app's collection form never edits it (#102)
+CUBE_SINK_ID_KEY = "stac_higher:cube_sink_id"
 PUBLISHED = "published"
 UNCHANGED = "unchanged"
 SUPERSEDED = "superseded"
@@ -180,7 +182,7 @@ def build_asset(
         "title": CUBE_TITLE,
         "version": snapshot_id,
         "stac_higher:virtual_chunk_prefixes": sorted(prefixes),
-        "stac_higher:cube_sink_id": sink_id,
+        CUBE_SINK_ID_KEY: sink_id,
     }
     if times is not None:
         asset["stac_higher:time_values"] = times
@@ -212,7 +214,7 @@ def merge_collection(
     assets = {
         key: asset
         for key, asset in assets.items()
-        if not (isinstance(asset, dict) and "stac_higher:cube_sink_id" in asset)
+        if not (isinstance(asset, dict) and CUBE_SINK_ID_KEY in asset)
     }
     assets[config.asset_key] = build_asset(
         href=href,
@@ -353,10 +355,40 @@ class PgCollectionPublisher:
         )
         return outcome
 
+    async def published_snapshot(self, sink: CubeSink) -> str | None:  # pragma: no cover
+        """The ``version`` the cube collection's asset names right now."""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT content->'assets' FROM pgstac.collections WHERE id = %s",
+                (sink.cube_collection_id,),
+            )
+            row = await cur.fetchone()
+        return published_snapshot_of(row[0] if row is not None else None, sink.id)
+
     async def after_batch(
         self, sink: CubeSink, config: CubeSinkConfig, result: BatchResult
     ) -> str:
         return await self.publish(sink, config, result)
+
+
+def published_snapshot_of(assets: Any, sink_id: str) -> str | None:
+    """The ``version`` of this sink's cube asset in a collection's ``assets``,
+    or ``None`` (no assets, no such asset, no version)."""
+    if not isinstance(assets, Mapping):
+        return None
+    for asset in assets.values():
+        if isinstance(asset, Mapping) and asset.get(CUBE_SINK_ID_KEY) == sink_id:
+            version = asset.get("version")
+            return version if isinstance(version, str) else None
+    return None
+
+
+def production_published_snapshot(
+    settings: Settings,
+) -> Callable[[CubeSink], Awaitable[str | None]]:
+    """Maintenance's ``published_snapshot`` seam: the snapshot the cube
+    collection's asset names right now (expiry spares it)."""
+    return PgCollectionPublisher(settings.database_url, settings.staging_bucket).published_snapshot
 
 
 def production_after_batch(settings: Settings) -> AfterBatch:

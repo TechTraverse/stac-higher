@@ -168,6 +168,29 @@ class CubeRepo(abc.ABC):
         """Set ``last_maintenance`` to ``summary``, and ``last_maintained_at``
         when given (a failed run passes ``None`` and keeps the last success)."""
 
+    @abc.abstractmethod
+    async def record_measurement(
+        self,
+        cube_sink_id: str,
+        *,
+        measured_at: dt.datetime,
+        patch: Mapping[str, Any],
+        remove: Sequence[str],
+        durations_ms: Mapping[str, int],
+        attention: Sequence[str],
+        owned_reasons: Sequence[str],
+    ) -> bool:
+        """Merge a size readout into the sink's current ``last_maintenance``,
+        only when its listing started (``measured_at``) at or after that
+        run's ``started_at`` and after any readout already merged: a slow,
+        stale readout never overwrites a newer one. Deletes the ``remove``
+        keys, sets the ``patch`` keys, merges ``durations_ms``, replaces the
+        readout's own reasons (``owned_reasons``) in ``attention`` with
+        ``attention``, and recomputes ``status``: ``failed`` stays, otherwise
+        ``attention`` if any reason remains, else ``ok``. A sink with no
+        summary is left alone. Leaves ``updated_at`` and
+        ``last_maintained_at`` alone. Returns whether the row changed."""
+
 
 @dataclass
 class PgCubeRepo(CubeRepo):
@@ -421,3 +444,54 @@ class PgCubeRepo(CubeRepo):
                 (json.dumps(summary), maintained_at, cube_sink_id),
             )
             await conn.commit()
+
+    async def record_measurement(  # pragma: no cover
+        self,
+        cube_sink_id: str,
+        *,
+        measured_at: dt.datetime,
+        patch: Mapping[str, Any],
+        remove: Sequence[str],
+        durations_ms: Mapping[str, int],
+        attention: Sequence[str],
+        owned_reasons: Sequence[str],
+    ) -> bool:
+        # jsonb_set returns NULL for a NULL value, so every value it is given
+        # is COALESCEd: a summary missing a key must never become NULL.
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "WITH cur AS ("
+                "  SELECT id, last_maintenance - %(remove)s::text[] AS lm,"
+                "         (COALESCE(last_maintenance->'attention', '[]'::jsonb)"
+                "           - %(owned)s::text[]) || %(attention)s::jsonb AS att"
+                "    FROM stac_higher.cube_sinks"
+                "   WHERE id = %(id)s AND last_maintenance IS NOT NULL"
+                "     AND %(measured_at)s >= COALESCE("
+                "           (last_maintenance->>'started_at')::timestamptz, '-infinity')"
+                "     AND %(measured_at)s > COALESCE("
+                "           (last_maintenance->>'measured_at')::timestamptz, '-infinity')"
+                "     FOR NO KEY UPDATE)"
+                " UPDATE stac_higher.cube_sinks s SET last_maintenance ="
+                " jsonb_set(jsonb_set(jsonb_set("
+                "   cur.lm || %(patch)s::jsonb,"
+                "   '{durations_ms}',"
+                "   COALESCE(cur.lm->'durations_ms', '{}'::jsonb) || %(durations)s::jsonb),"
+                "   '{attention}', cur.att),"
+                "   '{status}',"
+                "   to_jsonb(CASE WHEN cur.lm->>'status' = 'failed' THEN 'failed'"
+                "                 WHEN jsonb_array_length(cur.att) > 0 THEN 'attention'"
+                "                 ELSE 'ok' END))"
+                " FROM cur WHERE s.id = cur.id",
+                {
+                    "remove": list(remove),
+                    "owned": list(owned_reasons),
+                    "attention": json.dumps(list(attention)),
+                    "patch": json.dumps({**patch, "measured_at": measured_at.isoformat()}),
+                    "durations": json.dumps(dict(durations_ms)),
+                    "measured_at": measured_at,
+                    "id": cube_sink_id,
+                },
+            )
+            changed = cur.rowcount
+            await conn.commit()
+        return changed > 0
