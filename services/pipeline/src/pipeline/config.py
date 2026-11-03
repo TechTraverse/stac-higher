@@ -82,8 +82,9 @@ DEFAULT_DATABASE_URL = "postgresql://username:password@localhost:5433/postgis"
 DEFAULT_HEALTH_PORT = 8083
 DEFAULT_QUEUE_SCHEMA = "procrastinate"
 
-# Platform storage defaults target the compose MinIO (minioadmin, bucket
-# `stac-higher`); a cloud deployment overrides all of these via env.
+# The endpoint, region and bucket defaults target the compose MinIO; unset
+# access keys mean the AWS default credential chain. A cloud deployment
+# overrides the endpoint, region and bucket via env.
 DEFAULT_STAGING_S3_ENDPOINT = "http://minio:9000"
 DEFAULT_STAGING_S3_REGION = "us-east-1"
 # STS rejects sessions shorter than this; process/credentials.py reuses it.

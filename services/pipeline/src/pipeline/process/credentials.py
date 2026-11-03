@@ -164,7 +164,7 @@ def session_policy(bucket: str, prefix: str, read_prefixes: Sequence[str] = ()) 
     return {"Version": "2012-10-17", "Statement": statements}
 
 
-def build_sts_client(settings: Settings):  # pragma: no cover - thin boto3 wrapper
+def build_sts_client(settings: Settings):
     endpoint = pinned_endpoint_url(
         settings.staging_s3_endpoint,
         settings.staging_s3_region,

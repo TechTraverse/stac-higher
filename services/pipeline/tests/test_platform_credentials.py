@@ -66,6 +66,8 @@ def test_sts_client_without_keys_uses_the_default_chain(monkeypatch):
 
 def test_raster_location_without_keys_signs_with_the_default_chain(monkeypatch, tmp_path):
     monkeypatch.delenv("AWS_PROFILE", raising=False)  # a developer's ambient profile
+    monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_NO_SIGN_REQUEST", raising=False)
     for name, value in {
         "AWS_ACCESS_KEY_ID": "CHAIN-AK",
         "AWS_SECRET_ACCESS_KEY": "CHAIN-SK",
