@@ -232,8 +232,9 @@ def merge_collection(
         # change within a cube (the layout check), so keep what is there.
         dims = {k: v for k, v in old_dims.items() if k != config.append_dim}
         if not dims:
-            # The UI's collection form drops cube:dimensions on every save;
-            # only a caller that passes the grid can put x/y back.
+            # Something removed cube:dimensions (a hand edit through the API;
+            # the UI form keeps it since #102); only a caller that passes the
+            # grid can put x/y back.
             logger.warning(
                 "cube collection asset: no spatial dimensions to keep or build",
                 extra={"cube_sink_id": sink_id, "snapshot_id": result.snapshot_id},

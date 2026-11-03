@@ -31,6 +31,8 @@ import type { Graph, GraphEdgeKind, GraphNode } from "@shared/lib/graph/types";
 import {
   healthDotClass,
   KIND_COLOR_VAR,
+  KIND_ICON,
+  KIND_LABEL,
   type LineageHealth,
   type LineageKind,
 } from "./LineageStrip";
@@ -67,10 +69,14 @@ export interface PipelineDagProps {
 
 // `compact` is wide enough that a badged node still shows a usable prefix of
 // its label: an extractor chip spends ~50px on the badge, and at 148px
-// `goes-abi-metadata` rendered as "goes-…".
+// `goes-abi-metadata` rendered as "goes-…". The type icon costs 20px of label.
+// `compact` only grew 6px to pay for it: at 190 the five-column GOES row
+// (5 × 190 + 4 × 34 = 1086px) still fits the Pipelines card at a 1440px
+// viewport; any wider and the destination scrolls off. `full` is the
+// whole-platform canvas, which scrolls anyway, so it takes the full +20px.
 const SIZE_PRESETS: Record<PipelineDagSize, LayoutOptions> = {
-  compact: { nodeWidth: 184, nodeHeight: 34, gapX: 34, gapY: 8, elbow: 12 },
-  full: { nodeWidth: 190, nodeHeight: 50, gapX: 60, gapY: 16, elbow: 16 },
+  compact: { nodeWidth: 190, nodeHeight: 34, gapX: 34, gapY: 8, elbow: 12 },
+  full: { nodeWidth: 210, nodeHeight: 50, gapX: 60, gapY: 16, elbow: 16 },
 };
 
 const EDGE_LABEL: Record<GraphEdgeKind, string> = {
@@ -129,6 +135,10 @@ function Chip({
     height: placed.height,
     borderLeftColor: KIND_COLOR_VAR[kind],
   };
+  // The type is drawn (icon) and spoken (the sr-only prefix): a process and
+  // the product it writes can share a label, and the bar alone — orange next
+  // to a red health dot — did not tell them apart.
+  const KindIcon = KIND_ICON[kind];
   const inner = (
     <>
       <span
@@ -138,7 +148,18 @@ function Chip({
           healthDotClass(decoration.health),
         )}
       />
+      <KindIcon
+        aria-hidden="true"
+        className="h-3.5 w-3.5 shrink-0"
+        style={{ color: KIND_COLOR_VAR[kind] }}
+      />
       <span className="min-w-0 flex-1">
+        {/* The separating spaces are text nodes, not inside the spans: the
+            accessible name trims each element's own text, so "Process: "
+            would read "Process:goes-geocolor". Whitespace-only nodes here
+            never render — they sit beside an out-of-flow or block box, or
+            in the flex row. */}
+        <span className="sr-only">{`${KIND_LABEL[kind]}:`}</span>{" "}
         <span
           className={cn(
             "block truncate font-medium",
@@ -153,6 +174,7 @@ function Chip({
           </span>
         )}
       </span>
+      {badge && " "}
       {badge && (
         <span
           data-node-badge={badge}
@@ -167,13 +189,13 @@ function Chip({
   // A node with a click handler is a button (the Graph view's highlight); one
   // with only an href is a link. Never both — a link that also swallows the
   // click cannot be opened in a new tab.
-  const title = decoration.detail
-    ? `${placed.node.label} — ${decoration.detail}`
-    : placed.node.label;
+  const named = `${placed.node.label} (${KIND_LABEL[kind].toLowerCase()})`;
+  const title = decoration.detail ? `${named} — ${decoration.detail}` : named;
   if (onClick) {
     return (
       <button
         type="button"
+        data-node-kind={kind}
         title={title}
         style={style}
         className={classes}
@@ -187,11 +209,17 @@ function Chip({
     );
   }
   return decoration.href ? (
-    <a href={decoration.href} title={title} style={style} className={classes}>
+    <a
+      href={decoration.href}
+      data-node-kind={kind}
+      title={title}
+      style={style}
+      className={classes}
+    >
       {inner}
     </a>
   ) : (
-    <div title={title} style={style} className={classes}>
+    <div data-node-kind={kind} title={title} style={style} className={classes}>
       {inner}
     </div>
   );

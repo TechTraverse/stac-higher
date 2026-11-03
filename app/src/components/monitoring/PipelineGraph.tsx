@@ -9,6 +9,8 @@ import {
   ErrorState,
   Input,
   KIND_COLOR_VAR,
+  KIND_ICON,
+  KIND_LABEL,
   lineage,
   LoadingState,
   PipelineDag,
@@ -54,11 +56,7 @@ import type { GraphEdge } from "@/lib/graph/edges";
  * `lib/monitoring/graph-decorate`), so one alert read serves the whole page.
  */
 
-const LEGEND: Array<{ kind: LineageKind; label: string }> = [
-  { kind: "connection", label: "Connection" },
-  { kind: "collection", label: "Product" },
-  { kind: "process", label: "Process" },
-];
+const LEGEND: LineageKind[] = ["connection", "collection", "process"];
 
 type View = "pipelines" | "graph";
 
@@ -393,18 +391,21 @@ function GraphContent() {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-        {LEGEND.map(({ kind, label }) => (
-          <span key={kind} className="inline-flex items-center gap-1.5">
-            <span
-              aria-hidden="true"
-              className="h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: KIND_COLOR_VAR[kind] }}
-            />
-            <span className="text-[12.5px] font-medium">{label}</span>
-          </span>
-        ))}
+        {LEGEND.map((kind) => {
+          const Icon = KIND_ICON[kind];
+          return (
+            <span key={kind} className="inline-flex items-center gap-1.5">
+              <Icon
+                aria-hidden="true"
+                className="h-3.5 w-3.5"
+                style={{ color: KIND_COLOR_VAR[kind] }}
+              />
+              <span className="text-[12.5px] font-medium">{KIND_LABEL[kind]}</span>
+            </span>
+          );
+        })}
         <span className="text-[11.5px] text-muted-foreground">
-          the dot on each node is health; the bar is type
+          the icon on each node is its type; the dot is health
         </span>
       </div>
 

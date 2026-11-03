@@ -69,6 +69,8 @@ export {
   LineageStrip,
   healthDotClass,
   KIND_COLOR_VAR,
+  KIND_ICON,
+  KIND_LABEL,
 } from "@shared/components/shared/LineageStrip";
 export type {
   LineageGroup,
