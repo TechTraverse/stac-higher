@@ -77,13 +77,61 @@ describe.skipIf(!helmReady())("chart db hook Jobs", () => {
   it("Deployments reference no hook object", () => {
     for (const [scen, values] of SCENARIOS) {
       const docs = render(values, scen);
-      const hookConfigMaps = docs.filter((d) => d.kind === "ConfigMap" && d.metadata.annotations?.["helm.sh/hook"]).map((d) => d.metadata.name);
-      expect(hookConfigMaps).toContain("stac-higher-db-sql");
-      for (const p of podSpecs(docs).filter((x) => x.kind === "Deployment")) {
-        for (const v of p.spec.volumes ?? []) expect(hookConfigMaps).not.toContain(v.configMap?.name);
-        for (const c of containersOf(p.spec)) for (const f of c.envFrom ?? []) expect(hookConfigMaps).not.toContain(f.configMapRef?.name);
+      const hookCms = docs.filter((d) => d.kind === "ConfigMap" && d.metadata.annotations?.["helm.sh/hook"]).map((d) => d.metadata.name);
+      const hookSecrets = docs.filter((d) => d.kind === "ExternalSecret" && d.metadata.annotations?.["helm.sh/hook"]).map((d) => d.spec.target.name);
+      expect(hookCms).toContain("stac-higher-db-sql");
+      if (scen === "base") expect(hookSecrets).toContain("stac-higher-hook-db-master");
+      const deps = podSpecs(docs).filter((x) => x.kind === "Deployment");
+      expect(deps.length).toBeGreaterThanOrEqual(2);
+      for (const p of deps) {
+        for (const v of p.spec.volumes ?? []) {
+          expect(hookCms).not.toContain(v.configMap?.name);
+          expect(hookSecrets).not.toContain(v.secret?.secretName);
+        }
+        for (const c of containersOf(p.spec)) {
+          for (const f of c.envFrom ?? []) {
+            expect(hookCms).not.toContain(f.configMapRef?.name);
+            expect(hookSecrets).not.toContain(f.secretRef?.name);
+          }
+          for (const e of c.env ?? []) {
+            expect(hookCms).not.toContain(e.valueFrom?.configMapKeyRef?.name);
+            expect(hookSecrets).not.toContain(e.valueFrom?.secretKeyRef?.name);
+          }
+        }
+        expect(JSON.stringify(p.spec)).not.toMatch(/hook-db-master/);
       }
     }
+  });
+
+  it("only the master hook ExternalSecret is deleted on success, and db-bootstrap runs after its creation", () => {
+    const docs = render();
+    const hooks = docs.filter((d) => d.kind === "ExternalSecret" && d.metadata.labels["app.kubernetes.io/component"] === "db-hook");
+    expect(hooks).toHaveLength(6);
+    for (const d of hooks) {
+      const a = d.metadata.annotations;
+      if (d.metadata.name === "stac-higher-hook-db-master") {
+        expect(a["helm.sh/hook-delete-policy"]).toBe("before-hook-creation,hook-succeeded");
+        expect(a["argocd.argoproj.io/hook-delete-policy"]).toBe("BeforeHookCreation,HookSucceeded");
+        expect(d.spec.refreshInterval).toBe("0");
+        expect(d.spec.target.creationPolicy).toBe("Owner");
+        expect(weightOf(d)).toBeLessThan(weightOf(job(docs, "db-bootstrap")));
+      } else {
+        expect(a["helm.sh/hook-delete-policy"]).toBe("before-hook-creation");
+        expect(a["argocd.argoproj.io/hook-delete-policy"]).toBe("BeforeHookCreation");
+        expect(d.spec.refreshInterval).toBe("1h");
+      }
+    }
+  });
+
+  it("refuses a fullname over 42 characters and accepts 42", () => {
+    const long = renderChart({ valuesFiles: scenario("base"), values: { fullnameOverride: "x".repeat(43) } });
+    expect(long.ok).toBe(false);
+    expect(long.stderr).toMatch(/fullname .* is 43 characters; the maximum is 42/);
+    const ok = renderChart({ valuesFiles: scenario("base"), values: { fullnameOverride: "x".repeat(42) } });
+    expect(ok.ok, ok.stderr).toBe(true);
+    const names = ok.docs.filter((d: any) => d.kind === "ExternalSecret").map((d: any) => d.metadata.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(ok.docs.find((d: any) => d.kind === "Job" && d.metadata.name.endsWith("-pgstac-migrate")).metadata.name.length).toBeLessThanOrEqual(63);
   });
 
   it("only db-bootstrap reads the master credential", () => {

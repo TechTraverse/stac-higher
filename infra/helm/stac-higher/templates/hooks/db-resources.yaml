@@ -33,6 +33,7 @@ data:
 {{- $a := .Values.secrets.arns }}
 {{- range $p := list (list "dbMaster" $.Values.database.masterSecretArn) (list "dbOwner" $a.db_stac_higher_owner) (list "dbStacApi" $a.db_stac_api) (list "dbStacReader" $a.db_stac_reader) (list "dbProxyPolicy" $a.db_stac_proxy_policy) (list "dbCubeServer" $a.db_cube_server) }}
 ---
-{{ include "stac-higher.externalSecret" (dict "root" $ "name" (include "stac-higher.hookSecretName" (dict "root" $ "name" (index $p 0))) "remoteKey" (index $p 1) "json" true "hook" true "keys" (list "username" "password")) }}
+{{- /* The RDS master credential is deleted once the phase succeeds (the Secret goes with it, creationPolicy Owner). Helm deletes hook-succeeded resources only after every hook in the phase succeeds, so db-bootstrap at -20 still has it. refreshInterval "0" = no periodic re-read. */}}
+{{ include "stac-higher.externalSecret" (dict "root" $ "name" (include "stac-higher.hookSecretName" (dict "root" $ "name" (index $p 0))) "remoteKey" (index $p 1) "json" true "hook" true "deleteOnSuccess" (eq (index $p 0) "dbMaster") "refreshInterval" (ternary "0" "" (eq (index $p 0) "dbMaster")) "keys" (list "username" "password")) }}
 {{- end }}
 {{- end }}

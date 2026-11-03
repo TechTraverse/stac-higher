@@ -72,14 +72,14 @@ app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- get .root.Values.identity.serviceAccounts .component -}}
 {{- end -}}
 
-{{/* Hook annotations for Helm, Argo CD and Flux. (dict "weight" -30) */}}
+{{/* Hook annotations for Helm, Argo CD and Flux. (dict "weight" -30 "deleteOnSuccess" bool) */}}
 {{- define "stac-higher.hookAnnotations" -}}
 helm.sh/hook: pre-install,pre-upgrade
 helm.sh/hook-weight: {{ .weight | quote }}
-helm.sh/hook-delete-policy: before-hook-creation
+helm.sh/hook-delete-policy: {{ ternary "before-hook-creation,hook-succeeded" "before-hook-creation" (default false .deleteOnSuccess) }}
 argocd.argoproj.io/hook: PreSync
 argocd.argoproj.io/sync-wave: {{ .weight | quote }}
-argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+argocd.argoproj.io/hook-delete-policy: {{ ternary "BeforeHookCreation,HookSucceeded" "BeforeHookCreation" (default false .deleteOnSuccess) }}
 {{- end -}}
 
 {{/* Pod security. (dict "uid" 1000) */}}
@@ -140,7 +140,7 @@ Note: in external-secrets mode the five non-owner db roles resolve to the hook c
 {{- end -}}
 
 {{/*
-One ExternalSecret. (dict "root" $ "name" <k8s Secret name> "remoteKey" <key> "json" bool "keys" <list> "hook" bool)
+One ExternalSecret. (dict "root" $ "name" <k8s Secret name> "remoteKey" <key> "json" bool "keys" <list> "hook" bool "deleteOnSuccess" bool "refreshInterval" <string>)
 keys items are strings or {key, remoteKey}. With json, each string key is both the Secret key and the
 remoteRef.property of remoteKey. Without json, an item is {key, remoteKey} and maps the whole remote value.
 */}}
@@ -156,10 +156,10 @@ metadata:
     {{- include "stac-higher.labels" (dict "root" $r "component" (ternary "db-hook" "secrets" (default false .hook))) | nindent 4 }}
   {{- if .hook }}
   annotations:
-    {{- include "stac-higher.hookAnnotations" (dict "weight" -30) | nindent 4 }}
+    {{- include "stac-higher.hookAnnotations" (dict "weight" -30 "deleteOnSuccess" (default false .deleteOnSuccess)) | nindent 4 }}
   {{- end }}
 spec:
-  refreshInterval: {{ $es.refreshInterval | quote }}
+  refreshInterval: {{ default $es.refreshInterval .refreshInterval | quote }}
   secretStoreRef:
     name: {{ $es.storeRef.name | quote }}
     kind: {{ $es.storeRef.kind }}
@@ -192,6 +192,10 @@ spec:
 {{/* Cross-field rules. Every message starts with the offending key path. */}}
 {{- define "stac-higher.validate" -}}
 {{- $v := .Values -}}
+{{- $full := include "stac-higher.fullname" . -}}
+{{- if gt (len $full) 42 -}}
+{{- fail (printf "fullname %q is %d characters; the maximum is 42 (the longest appended suffix, -hook-db-proxy-policy, is 21 and object names stop at 63; shorten the release name or set fullnameOverride)" $full (len $full)) -}}
+{{- end -}}
 {{- if ne .Release.Namespace $v.identity.namespace -}}
 {{- fail (printf "identity.namespace is %q but the release namespace is %q; they must match (the Pod Identity associations name it)" $v.identity.namespace .Release.Namespace) -}}
 {{- end -}}
