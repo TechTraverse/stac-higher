@@ -246,8 +246,11 @@ services:
         mc alias set local http://minio:9000 minioadmin minioadmin &&
         mc admin policy create local cube-read /policy/cube-read.json &&
         mc admin user add local cube-reader cube-reader-secret &&
-        { mc admin policy entities local --user cube-reader | grep -qw 'cube-read' ||
-          mc admin policy attach local cube-read --user cube-reader; }
+        entities="$$(mc admin policy entities local --user cube-reader)" &&
+        case "$$entities" in
+          *cube-read*) echo "cube-read already attached to cube-reader" ;;
+          *) mc admin policy attach local cube-read --user cube-reader ;;
+        esac
     restart: "no"
 
   # Data plane (ROADMAP §3). Source lives in services/pipeline (separate
