@@ -297,6 +297,65 @@ def test_head_on_a_tile_is_served(client):
     assert r.headers["content-type"] == "image/png"
     assert "immutable" in r.headers["cache-control"]
     assert r.content == b""
+    assert int(r.headers["content-length"]) > 0  # the GET's, not the empty body's
+    assert r.headers["content-length"] == client.get(TILE, params={**Q, "t": t}).headers[
+        "content-length"
+    ]
+
+
+def test_head_does_not_mutate_the_request_scope_and_keeps_repeated_headers():
+    from stac_higher_cube_server.app import HeadAsGet
+
+    seen: list[dict] = []
+
+    async def inner(scope, receive, send):
+        seen.append(scope)
+        await send({"type": "http.response.start", "status": 200, "headers": [
+            (b"vary", b"origin"), (b"vary", b"accept-encoding"), (b"content-length", b"3"),
+        ]})
+        await send({"type": "http.response.body", "body": b"abc", "more_body": True})
+        await send({"type": "http.response.body", "body": b"def", "more_body": False})
+
+    scope = {"type": "http", "method": "HEAD", "path": "/datasets/c1/tiles/WebMercatorQuad/0/0/0"}
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def receive():
+        return {"type": "http.request"}
+
+    asyncio.run(HeadAsGet(inner)(scope, receive, send))
+    assert scope["method"] == "HEAD"  # the caller's scope is untouched
+    assert seen[0]["method"] == "GET"
+    assert sent[0]["headers"] == [
+        (b"vary", b"origin"), (b"vary", b"accept-encoding"), (b"content-length", b"3"),
+    ]
+    assert sent[1:] == [{"type": "http.response.body", "body": b"", "more_body": False}]
+
+
+def test_shutdown_awaits_the_cancelled_warm_ups(cube, monkeypatch):
+    import stac_higher_cube_server.app as app_mod
+
+    state = {"started": False, "cleaned": False}
+
+    async def slow(app, cid, ds):
+        state["started"] = True
+        try:
+            await asyncio.sleep(30)
+        finally:
+            await asyncio.sleep(0.2)  # cleanup that only completes if awaited
+            state["cleaned"] = True
+        return 200
+
+    monkeypatch.setattr(app_mod, "warm_up", slow)
+    registry = CubeRegistry(FakeSource(SINK), LocalOpener({"c1": cube}))
+    with TestClient(create_app(registry, SETTINGS)):
+        deadline = time.monotonic() + 10
+        while not state["started"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert state["started"]
+    assert state["cleaned"]
 
 
 def test_warm_ups_do_not_block_the_poll_loop(cube, monkeypatch):

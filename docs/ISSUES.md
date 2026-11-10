@@ -1758,7 +1758,7 @@ kill-the-worker check or a live sink ever shows a poison row: a marker column
 set on the take, or a bisecting isolation, would pinpoint it in `log k`
 deaths.
 
-### I-148 · A full store outage on `edr/position` is a 200 with every step null 🟡
+### I-162 · A full store outage on `edr/position` is a 200 with every step null 🟡
 
 `position` turns every `icechunk.StorageError` into a null step. A missing
 source file and an unreachable store raise the same error, so when every step
@@ -1771,9 +1771,9 @@ spec §8.4).
 
 Accepted for v1: the header carries the signal and the cube-server logs each
 failed step. Revisit with a store probe in the fallback path if a client
-mistakes an outage for empty data. Tracked in: GitHub #123
+mistakes an outage for empty data.
 
-### I-149 · A tile whose source file is gone is a 500 🟡
+### I-163 · A tile whose source file is gone is a 500 🟡
 
 xpublish-tiles loads the chunks inside an `asyncio.TaskGroup`, so a missing
 virtual-chunk source (`icechunk.StorageError`) surfaces as an
@@ -1785,7 +1785,7 @@ that unwraps the group in xpublish-tiles' route (a patch of the dependency) or
 a pre-check of the step's source from the tile path, which is a design change.
 
 Accepted for v1: the pipeline trims a source only with its step, and the
-server reloads within one poll. Tracked in: GitHub #123
+server reloads within one poll.
 
 ## Resolved — archived
 

@@ -305,3 +305,32 @@ def test_refresh_swaps_the_entries_in_one_step(c1, tmp_path):
     assert seen[0][0] is old and seen[0][1] == ["c1"]
     assert registry.get("c1") is not old
     assert registry.ids() == ["c1", "c2"]
+
+
+def test_warm_up_result_racing_a_refresh_rebuild_is_neither_lost_nor_a_crash(c1):
+    """record_warm_up runs on the event loop while refresh() rebuilds the
+    warm-up errors in its worker thread. The hooked dict lets a warm-up result
+    land in the middle of that rebuild; unguarded the rebuilt dict overwrites it
+    (a stale or lost WarmUpFailed), and a size change would raise 'dictionary
+    changed size during iteration' and lose the opened list."""
+    import threading
+
+    registry = CubeRegistry(FakeSource(row("c1")), LocalOpener({"c1": c1}))
+    registry.refresh()
+    writers: list[threading.Thread] = []
+
+    class Hooked(dict):
+        def items(self):
+            snapshot = list(super().items())
+            yield snapshot[0]
+            writer = threading.Thread(target=registry.record_warm_up, args=("c1", 500))
+            writers.append(writer)
+            writer.start()
+            writer.join(timeout=0.3)  # unguarded it finishes here; guarded it is blocked
+            yield from snapshot[1:]
+
+    registry._warm_up_errors = Hooked({"c1": "WarmUpFailed(None)", "gone": "WarmUpFailed(500)"})
+    registry.refresh()  # must not raise
+    writers[0].join(timeout=5)
+    assert not writers[0].is_alive()
+    assert registry.health()["errors"] == {"c1": "WarmUpFailed(500)"}

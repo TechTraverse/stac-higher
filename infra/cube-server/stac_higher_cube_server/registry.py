@@ -143,6 +143,10 @@ class CubeRegistry:
         self._last_reload_error: str | None = None
         # refresh() runs in a worker thread; readers only do dict lookups
         self._lock = threading.Lock()
+        # _warm_up_errors is written by the event loop (record_warm_up) and
+        # rebuilt by the refresh worker thread; every access holds this lock.
+        # Separate from _lock so a slow refresh never blocks a warm-up result.
+        self._warm_up_lock = threading.Lock()
 
     def get(self, collection_id: str) -> xr.Dataset | None:
         entry = self._entries.get(collection_id)
@@ -153,6 +157,8 @@ class CubeRegistry:
 
     def health(self) -> dict:
         entries = dict(self._entries)
+        with self._warm_up_lock:
+            warm_up_errors = dict(self._warm_up_errors)
         return {
             "datasets": {
                 cid: {"snapshot_id": e.snapshot_id, "steps": e.steps, "opened_at": e.opened_at}
@@ -160,7 +166,7 @@ class CubeRegistry:
             },
             "pending": list(self._pending),
             "empty": list(self._empty),
-            "errors": {**self._warm_up_errors, **self._errors},
+            "errors": {**warm_up_errors, **self._errors},
             "last_reload_at": self._last_reload_at,
             "last_reload_error": self._last_reload_error,
         }
@@ -168,10 +174,11 @@ class CubeRegistry:
     def record_warm_up(self, collection_id: str, status: int | None) -> None:
         """A warm-up tile that is not a 200 (``None``: the request failed) is an
         error under the cube's id until its next successful warm-up."""
-        if status == 200:
-            self._warm_up_errors.pop(collection_id, None)
-        else:
-            self._warm_up_errors[collection_id] = f"WarmUpFailed({status})"
+        with self._warm_up_lock:
+            if status == 200:
+                self._warm_up_errors.pop(collection_id, None)
+            else:
+                self._warm_up_errors[collection_id] = f"WarmUpFailed({status})"
 
     def refresh(self) -> list[str]:
         """One poll; returns the collection ids (re)opened, for the warm-up."""
@@ -223,9 +230,10 @@ class CubeRegistry:
             log.info("cube unregistered", extra={"cube_collection_id": cid})
         self._entries = entries
         self._pending, self._empty, self._errors = pending, empty, errors
-        self._warm_up_errors = {
-            c: e for c, e in self._warm_up_errors.items() if c in entries
-        }
+        with self._warm_up_lock:
+            self._warm_up_errors = {
+                c: e for c, e in self._warm_up_errors.items() if c in entries
+            }
         return opened
 
     def _refresh_sink(self, sink: SinkRow, entries: dict[str, _Entry]) -> str:

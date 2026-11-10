@@ -26,7 +26,7 @@ import numpy as np
 import uvicorn
 import xarray as xr
 import xpublish
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ConfigDict
 from xpublish import Plugin, hookimpl
@@ -103,7 +103,7 @@ async def warm_up(app: FastAPI, collection_id: str, ds: xr.Dataset) -> int | Non
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://cube-server") as c:
-            response = await c.get(url, timeout=60)
+            response = await c.get(url)
     except Exception as err:
         log.warning("cube warm-up failed",
                     extra={"cube_collection_id": collection_id, "error": repr(err)})
@@ -114,7 +114,9 @@ async def warm_up(app: FastAPI, collection_id: str, ds: xr.Dataset) -> int | Non
     return response.status_code
 
 
-#: warm-ups rendering at once, and the longest one may take (a request is 60 s)
+#: warm-ups rendering at once, and the longest one may take. This ``wait_for``
+#: is the only bound: httpx's own timeout does nothing over ``ASGITransport``
+#: (no socket), so ``warm_up`` sets none.
 WARM_UP_CONCURRENCY = 2
 WARM_UP_BUDGET_SECONDS = 90
 
@@ -156,8 +158,38 @@ async def _poll(app: FastAPI, registry: CubeRegistry, settings: Settings) -> Non
             warming = {c: t for c, t in warming.items() if not t.done()}
             await asyncio.sleep(settings.poll_seconds)
     finally:
-        for task in warming.values():
+        tasks = list(warming.values())
+        for task in tasks:
             task.cancel()
+        # awaited, so none outlives the lifespan and renders against a closed app
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+class HeadAsGet:
+    """Serve HEAD on tile routes (xpublish-tiles registers GET only).
+
+    Pure ASGI: the inner app sees a copied scope with ``method`` GET; the
+    response start goes through unchanged (raw header list, repeated headers
+    intact, the GET's content-length kept) and the body is dropped."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope["method"] != "HEAD" or not is_tile_path(scope["path"]):
+            await self.app(scope, receive, send)
+            return
+        body_sent = False
+
+        async def head_send(message) -> None:
+            nonlocal body_sent
+            if message["type"] != "http.response.body":
+                await send(message)
+            elif not body_sent:
+                body_sent = True
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+        await self.app({**scope, "method": "GET"}, receive, head_send)
 
 
 def create_app(registry: CubeRegistry, settings: Settings, *, poll: bool = True) -> FastAPI:
@@ -188,16 +220,7 @@ def create_app(registry: CubeRegistry, settings: Settings, *, poll: bool = True)
     @app.middleware("http")
     async def tile_cache_headers(request: Request, call_next):
         path = request.url.path
-        head = request.method == "HEAD" and is_tile_path(path)
-        if head:  # xpublish-tiles routes are GET only: serve HEAD as GET, minus the body
-            request.scope["method"] = "GET"
         response = await call_next(request)
-        if head:
-            headers = dict(response.headers)  # content-length stays: it is the GET's
-            async for _ in response.body_iterator:  # drain
-                pass
-            response = Response(status_code=response.status_code, headers=headers,
-                                media_type=response.media_type)
         cid = collection_id(path)
         ds = registry.get(cid) if cid is not None else None
         append_dim = str(ds.attrs.get(APPEND_DIM_ATTR, "t")) if ds is not None else "t"
@@ -206,6 +229,8 @@ def create_app(registry: CubeRegistry, settings: Settings, *, poll: bool = True)
             response.headers["cache-control"] = value
         return response
 
+    # Outside tile_cache_headers, which then sees an ordinary GET.
+    app.add_middleware(HeadAsGet)
     # Added last, so it is outermost: preflights never reach xpublish.
     app.add_middleware(
         CORSMiddleware,
