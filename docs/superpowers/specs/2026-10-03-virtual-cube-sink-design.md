@@ -128,6 +128,11 @@ nanosecond `t` values, because the tile server needs exact or `nearest::` time
 selectors (spike Q1). The UI builds frames from that list, not from a parsed
 label.
 
+As built (#170): the writer also emits `cube:variables` (Datacube): one
+`{"type": "data", "dimensions": [append_dim, ...spatial dims]}` entry per
+configured variable, so a reader need not guess the variable. A trim publish
+that did not read the grid keeps the document's existing entry.
+
 ## 4. Data model — migration 032
 
 The number is **proposed**: 029 is K-3's (#11), 030 is C-1's, and 031 is
