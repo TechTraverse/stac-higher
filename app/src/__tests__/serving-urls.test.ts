@@ -8,6 +8,10 @@ import {
   tipgLandingUrl,
   tipgCollectionsUrl,
   tipgTileJsonUrl,
+  CUBE_DEFAULT_STYLE,
+  cubeServerBaseUrl,
+  cubeTileUrlTemplate,
+  cubeEdrPositionUrl,
 } from "@/lib/serving/urls";
 import { pickPreviewAsset } from "@/lib/serving/preview";
 import type { StacItem } from "@/lib/stac-api/types";
@@ -50,6 +54,42 @@ describe("serving urls", () => {
       "http://f/collections/public.roads/tiles/WebMercatorQuad/tilejson.json",
     );
     expect(tipgTileJsonUrl("a b", "http://f")).toContain("/collections/a%20b/");
+  });
+});
+
+describe("cube-server urls", () => {
+  it("defaults the base and strips trailing slashes", () => {
+    expect(cubeServerBaseUrl({})).toBe("http://localhost:8086");
+    expect(cubeServerBaseUrl({ PUBLIC_CUBE_SERVER_URL: "https://cube.example/" })).toBe(
+      "https://cube.example",
+    );
+  });
+
+  it("defaults the style to inverted grey over 190-310 K", () => {
+    expect(CUBE_DEFAULT_STYLE).toEqual({ colormap: "gray_r", range: [190, 310] });
+  });
+
+  it("builds the tile template row-first with the exact t and a colorscalerange", () => {
+    expect(
+      cubeTileUrlTemplate("goes19-c13-cube", "CMI", "2026-10-03T17:02:36.714359936Z", undefined, "http://c"),
+    ).toBe(
+      "http://c/datasets/goes19-c13-cube/tiles/WebMercatorQuad/{z}/{y}/{x}" +
+        "?variables=CMI&t=2026-10-03T17%3A02%3A36.714359936Z&style=raster%2Fgray_r" +
+        "&colorscalerange=190%2C310&width=256&height=256&f=png",
+    );
+  });
+
+  it("encodes the collection id in the path", () => {
+    expect(cubeTileUrlTemplate("a b/c", "CMI", "t", undefined, "http://c")).toContain(
+      "/datasets/a%20b%2Fc/tiles/",
+    );
+    expect(cubeEdrPositionUrl("a b/c", 1, 2, "CMI", "http://c")).toContain("/datasets/a%20b%2Fc/edr/");
+  });
+
+  it("builds the EDR position url with the point rounded to 4 decimals", () => {
+    expect(cubeEdrPositionUrl("goes19-c13-cube", -97.123456, 38.5, "CMI", "http://c")).toBe(
+      "http://c/datasets/goes19-c13-cube/edr/position?coords=POINT(-97.1235%2038.5)&parameter-name=CMI&f=csv",
+    );
   });
 });
 

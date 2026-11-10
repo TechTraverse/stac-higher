@@ -125,3 +125,73 @@ export function tipgCollectionsUrl(base: string = tipgBaseUrl()): string {
 export function tipgTileJsonUrl(collectionId: string, base: string = tipgBaseUrl()): string {
   return `${base}/collections/${enc(collectionId)}/tiles/WebMercatorQuad/tilejson.json`;
 }
+
+// ---------------------------------------------------------------------------
+// cube-server (xpublish-tiles + xpublish-edr over virtual Icechunk cubes, Z-7)
+// — same rules again: one browser-facing base, link-level only (docs/serving.md).
+
+const DEFAULT_CUBE_SERVER_URL = "http://localhost:8086";
+
+/** The browser-facing cube-server base, without a trailing slash. */
+export function cubeServerBaseUrl(
+  env: Record<string, string | undefined> = import.meta.env as Record<
+    string,
+    string | undefined
+  >,
+): string {
+  return (env.PUBLIC_CUBE_SERVER_URL ?? DEFAULT_CUBE_SERVER_URL).replace(/\/+$/, "");
+}
+
+export interface CubeStyle {
+  /** A matplotlib colormap name; xpublish-tiles resolves it through `mpl.colormaps`. */
+  colormap: string;
+  /** [min, max] mapped onto the colormap. */
+  range: readonly [number, number];
+}
+
+/**
+ * GOES ABI C13 brightness temperature in K: the spike's 190-310 K range,
+ * inverted so cold cloud tops are white, the usual IR rendering. A range is
+ * ALWAYS sent: real CMI carries no `valid_min`/`valid_max`, so without one the
+ * renderer auto-ranges per tile and shading differs across tiles and frames.
+ */
+export const CUBE_DEFAULT_STYLE: CubeStyle = { colormap: "gray_r", range: [190, 310] };
+
+/**
+ * The tile template for ONE frame of a cube. Row before column (`{z}/{y}/{x}`),
+ * which stay literal for maplibre to substitute. `t` is the asset's
+ * `stac_higher:time_values` entry VERBATIM (nanoseconds, trailing `Z`): the
+ * server matches it exactly, so it is never re-formatted.
+ */
+export function cubeTileUrlTemplate(
+  collectionId: string,
+  variable: string,
+  t: string,
+  style: CubeStyle = CUBE_DEFAULT_STYLE,
+  base: string = cubeServerBaseUrl(),
+): string {
+  return (
+    `${base}/datasets/${enc(collectionId)}/tiles/WebMercatorQuad/{z}/{y}/{x}` +
+    `?variables=${enc(variable)}&t=${enc(t)}&style=${enc(`raster/${style.colormap}`)}` +
+    `&colorscalerange=${enc(`${style.range[0]},${style.range[1]}`)}&width=256&height=256&f=png`
+  );
+}
+
+/**
+ * The EDR position query (GET, CSV) for one point. lon/lat are rounded to 4
+ * decimals (~11 m) so a re-click on the same spot reuses the query cache.
+ */
+export function cubeEdrPositionUrl(
+  collectionId: string,
+  lon: number,
+  lat: number,
+  variable: string,
+  base: string = cubeServerBaseUrl(),
+): string {
+  const x = Number(lon.toFixed(4));
+  const y = Number(lat.toFixed(4));
+  return (
+    `${base}/datasets/${enc(collectionId)}/edr/position` +
+    `?coords=POINT(${x}%20${y})&parameter-name=${enc(variable)}&f=csv`
+  );
+}

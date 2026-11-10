@@ -97,6 +97,7 @@ source-layer name every tipg tile carries (verified against tipg 1.0.1 on
 |---|---|---|
 | `PUBLIC_TITILER_URL` | `http://localhost:8084` | Browser-facing titiler base the UI links to |
 | `PUBLIC_TIPG_URL` | `http://localhost:8085` | Browser-facing tipg base the UI links to |
+| `PUBLIC_CUBE_SERVER_URL` | `http://localhost:8086` | Browser-facing cube-server base the cube Preview reads tiles and EDR from |
 | `PLATFORM_ASSET_BUCKET` | `${STAGING_BUCKET:-stac-higher}` | (titiler) The platform bucket canonical hrefs map into — mirrors the pipeline's `STAGING_BUCKET`. Required; the derived image refuses to start without it |
 | `ASSET_HREF_BASE` | `/api/assets` | (titiler) The href base the pipeline writes — mirrors the pipeline's `ASSET_HREF_BASE` |
 
