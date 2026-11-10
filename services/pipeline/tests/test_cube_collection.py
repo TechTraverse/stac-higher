@@ -282,3 +282,43 @@ def test_a_result_without_the_grid_on_a_document_without_it_warns(caplog):
         doc = merged(no_dims, res)
     assert set(doc["cube:dimensions"]) == {"t"}
     assert "no spatial dimensions" in caplog.text
+
+
+VARIABLES = {"type": "data", "dimensions": ["t", "y", "x"]}
+
+
+def test_a_first_publish_writes_cube_variables_in_config_order():
+    config = parse_cube_sink_config(
+        {**GOES_CONFIG, "variables": ["CMI", "DQF"], "window": {"max_steps": 288}}
+    )
+    doc = merge_collection(
+        collection(),
+        config=config,
+        result=result(),
+        sink_id="sink-1",
+        href=HREF,
+        prefixes=PREFIXES,
+    )
+    assert doc["cube:variables"] == {"CMI": VARIABLES, "DQF": VARIABLES}
+    assert list(doc["cube:variables"]) == ["CMI", "DQF"]
+    assert doc["title"] == "GOES-19 C13 cube"  # the user's keys survive
+
+
+def test_a_trim_without_the_grid_keeps_the_documents_cube_variables():
+    published = merged()
+    published["cube:variables"] = {"CMI": VARIABLES, "DQF": VARIABLES}
+    trim = result(np.array([as_ns(scan(1))]), snapshot="SNAP3", grid=False)
+    assert merged(published, trim)["cube:variables"] == published["cube:variables"]
+
+
+def test_a_trim_on_a_document_without_cube_variables_leaves_them_out():
+    trim = result(np.array([as_ns(scan(1))]), snapshot="SNAP3", grid=False)
+    assert "cube:variables" not in merged(collection(), trim)
+
+
+def test_an_older_document_without_cube_variables_gains_them():
+    older = merged()
+    del older["cube:variables"]
+    outcome, doc = plan(older, Recorded("SNAP2", PREFIXES))
+    assert outcome == PUBLISHED
+    assert doc["cube:variables"] == {"CMI": VARIABLES, "DQF": VARIABLES}
