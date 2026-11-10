@@ -1648,6 +1648,11 @@ Related:
 - A sink deleted while its repository is provisional (no recorded snapshot)
   leaves the repository in storage until the cube collection is deleted
   (`asset_gc`).
+- The app's `first_append_pending` refusal (PUT/PATCH `/api/collections/[id]/cube-sink`,
+  #168) is check-then-write: a pending row the dispatcher inserts between the
+  check and the guarded write lets one app write through, which bumps
+  `updated_at` and costs a redo of the first batch (no data loss). Accepted by
+  the lead on PR #173.
 
 Accepted for v1; revisit if the ledger's `snapshot_id` ever drives a reader, or
 if a requeued `cube_append` is ever seen during a sink's first commit.
