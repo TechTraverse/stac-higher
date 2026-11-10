@@ -234,9 +234,13 @@ GET /health
   Repository handles are cached per collection, checked with
   `Repository.exists` on every poll and dropped when the sink goes. The server
   reads NODD directly: network-level egress control rides #68.
-- **Geostationary rescale:** `x`/`y` in `rad` are served in metres
-  (× `perspective_point_height`), matching `cube:dimensions` on the asset. EDR
-  returns empty results on radians (spike Q2).
+- **Geostationary rescale, EDR only:** the EDR routes see `x`/`y` in metres
+  (× `perspective_point_height`), matching `cube:dimensions` on the asset;
+  xpublish-edr returns empty results on radians (spike Q2). Tiles keep the
+  scan angles in `rad`: xpublish-tiles picks its `Geostationary` grid only for
+  radians, and only that grid masks quads touching the Earth's limb. Served in
+  metres, the CONUS sector's off-disk north-west corner smeared west to the
+  antimeridian (#183).
 - **Not served:** a sink whose repository does not exist yet or has no
   recorded `source_prefixes` (`pending` in `/health`; the prefixes are empty
   during a sink's first append and on a provisional redo, and without them no

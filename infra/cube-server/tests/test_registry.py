@@ -166,14 +166,19 @@ def test_health_never_echoes_error_text(c1):
     assert registry.health()["last_reload_error"] == "OperationalError"
 
 
-def test_served_geostationary_cube_is_in_metres(c1):
-    """decode_coords="all" moves grid_mapping into .encoding: the rescale must
+def test_served_geostationary_cube_keeps_scan_angles_and_edr_sees_metres(c1):
+    """The served dataset stays in radians (xpublish-tiles' Geostationary grid
+    needs them: #183), and the EDR view of that same dataset is in metres.
+    decode_coords="all" moves grid_mapping into .encoding: the rescale must
     still find it on the real open path (review finding, Critical #1)."""
+    from stac_higher_cube_server.datasets import rescale_geostationary
+
     registry = CubeRegistry(FakeSource(row("c1")), LocalOpener({"c1": c1}))
     registry.refresh()
     ds = registry.get("c1")
-    assert ds.x.attrs["units"] == "m"
+    assert ds.x.attrs["units"] == "rad"
     assert "goes_imager_projection" in ds.variables
+    assert rescale_geostationary(ds).x.attrs["units"] == "m"
 
 
 def test_empty_source_prefixes_is_pending_not_served(c1):

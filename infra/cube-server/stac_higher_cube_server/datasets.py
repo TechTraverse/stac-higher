@@ -23,11 +23,17 @@ def _grid_mapping_name(ds: xr.Dataset) -> str | None:
 
 
 def rescale_geostationary(ds: xr.Dataset) -> xr.Dataset:
-    """Scan angles (rad) → projected metres (spike Q2).
+    """Scan angles (rad) → projected metres (spike Q2), for EDR only.
 
-    xpublish-edr returns empty 200s on GOES radians; tiles render the same
-    either way. Applied only to a ``geostationary`` grid mapping whose ``x``
-    is in ``rad``; anything else is returned unchanged.
+    xpublish-edr returns empty 200s on GOES radians, so the EDR plugin sees
+    this view (``edr.metres_view``). Tiles must NOT: xpublish-tiles picks its
+    ``Geostationary`` grid only for ``x`` in radians (``grids.py``,
+    ``units in {"rad", ...}``), and only that grid masks quads touching the
+    Earth's limb and bounds the visible disk. In metres it falls back to a
+    plain ``Rectilinear`` grid and limb quads smear far west over the Pacific
+    (the CONUS sector's north-west corner is off the disk; #183). Applied only
+    to a ``geostationary`` grid mapping whose ``x`` is in ``rad``; anything
+    else is returned unchanged.
     """
     mapping = _grid_mapping_name(ds)
     if mapping is None or "x" not in ds.coords or "y" not in ds.coords:
@@ -50,9 +56,11 @@ def prepare_dataset(
     collection_id: str,
     snapshot_id: str,
 ) -> xr.Dataset:
-    """Keep the sink's ``variables`` and their grid mapping, rescale, and tag
-    the dataset with its snapshot (``_xpublish_id`` invalidates xpublish-tiles'
-    grid cache on every reopen) and its append dimension (the position route)."""
+    """Keep the sink's ``variables`` and their grid mapping, and tag the
+    dataset with its snapshot (``_xpublish_id`` invalidates xpublish-tiles'
+    grid cache on every reopen) and its append dimension (the position route).
+    Coordinates stay in the source's units: tiles need the scan angles, and
+    the EDR plugin rescales its own view (``rescale_geostationary``)."""
     keep = [v for v in variables if v in raw.data_vars]
     if not keep:
         raise ValueError(f"none of the sink's variables {list(variables)} is in the repository")
@@ -64,7 +72,7 @@ def prepare_dataset(
             break
     if mapping is not None and mapping not in keep:
         keep.append(mapping)
-    ds = rescale_geostationary(raw[keep])
+    ds = raw[keep]
     ds.attrs["_xpublish_id"] = f"{collection_id}:{snapshot_id}"
     ds.attrs["_cube_append_dim"] = append_dim
     return ds
