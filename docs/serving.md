@@ -162,9 +162,9 @@ Z-6's hourly maintenance republishes through the same writer for sinks with a
 ```
 
 - **Ownership:** the pipeline owns `assets.{asset_key}` (default `cube`),
-  `extent.temporal`, `cube:dimensions` and the Datacube entry of
+  `extent.temporal`, `cube:dimensions`, `cube:variables` and the Datacube entry of
   `stac_extensions`, and rewrites them on every publish; every other key is
-  the user's. A hand edit to those four lasts until the next commit, and a
+  the user's. A hand edit to those five lasts until the next commit, and a
   deleted asset comes back. Any other asset carrying a
   `stac_higher:cube_sink_id` is stale (a renamed `asset_key`, or a deleted
   sink's asset; a collection has at most one sink) and is removed.

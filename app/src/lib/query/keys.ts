@@ -125,3 +125,11 @@ export const stacKeys = {
   search: (endpointUrl: string, params: StacSearchBody) =>
     [...stacKeys.all(endpointUrl), "search", params] as const,
 };
+
+/** Virtual cube sink (Z-8b): the Settings tab card's server state. */
+export const cubeSinkKeys = {
+  all: () => ["cube-sink"] as const,
+  detail: (collectionId: string) =>
+    [...cubeSinkKeys.all(), "detail", collectionId] as const,
+  referenceSources: () => [...cubeSinkKeys.all(), "reference-sources"] as const,
+};
