@@ -18,6 +18,34 @@ export function nextRetry(
   return { ...attempts, [t]: used + 1 };
 }
 
+/**
+ * Whether a tile 422's body is the "not yet" kind: xpublish-tiles answers a
+ * `t` its open snapshot lacks with `{"detail": "Invalid indexer: …"}` (a
+ * string). Any other 422 (an unsupported style variant, a bad range or
+ * variable: a pydantic `detail` list, or "Invalid colormap: …") is a request
+ * error that no retry fixes. A body that is not JSON is treated as "not yet"
+ * (the retry is capped anyway).
+ */
+export function isNotYetTileError(body: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return true;
+  }
+  const detail = (parsed as { detail?: unknown } | null)?.detail;
+  return typeof detail === "string" && detail.startsWith("Invalid indexer");
+}
+
+/** {@link isNotYetTileError} on maplibre's AJAXError body (a Blob); unreadable → "not yet". */
+export async function isNotYetTileBody(body: Blob): Promise<boolean> {
+  try {
+    return isNotYetTileError(await body.text());
+  } catch {
+    return true;
+  }
+}
+
 /** The frame index of a RasterFrameStack source id `${stackId}-frame-${n}`, else null. */
 export function frameIndexFromSourceId(stackId: string, sourceId: string | undefined): number | null {
   const prefix = `${stackId}-frame-`;

@@ -150,12 +150,14 @@ export interface CubeStyle {
 }
 
 /**
- * GOES ABI C13 brightness temperature in K: the spike's 190-310 K range,
- * inverted so cold cloud tops are white, the usual IR rendering. A range is
- * ALWAYS sent: real CMI carries no `valid_min`/`valid_max`, so without one the
- * renderer auto-ranges per tile and shading differs across tiles and frames.
+ * GOES ABI C13 brightness temperature in K: the spike's 190-310 K range on
+ * `Greys` (low = white), so cold cloud tops are white, the usual IR rendering.
+ * xpublish-tiles 0.9.2 validates the variant against its own list, which has
+ * no matplotlib `_r` reversals (`gray_r` is a 422). A range is ALWAYS sent:
+ * real CMI carries no `valid_min`/`valid_max`, so without one the renderer
+ * auto-ranges per tile and shading differs across tiles and frames.
  */
-export const CUBE_DEFAULT_STYLE: CubeStyle = { colormap: "gray_r", range: [190, 310] };
+export const CUBE_DEFAULT_STYLE: CubeStyle = { colormap: "Greys", range: [190, 310] };
 
 /**
  * The tile template for ONE frame of a cube. Row before column (`{z}/{y}/{x}`),

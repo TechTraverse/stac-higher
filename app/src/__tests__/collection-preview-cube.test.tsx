@@ -264,6 +264,35 @@ describe("CollectionPreviewTab, cube branch", () => {
     );
   });
 
+  it("retries a t-selector 422 but never a style 422", async () => {
+    vi.useFakeTimers();
+    renderTab(cubeCollection(times(2)));
+    const mounts = () => sourceMounts.filter((id) => id === "cube-frame-1").length;
+    const start = mounts();
+    const fail = (detail: unknown) =>
+      fakeMap.emit("error", {
+        sourceId: "cube-frame-1",
+        error: { status: 422, body: new Blob([JSON.stringify({ detail })]) },
+      });
+    // The body is read asynchronously: let the Blob read settle, then fire the timer.
+    const settle = async () => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    };
+
+    act(() => fail([{ type: "value_error", loc: ["query", "style"], msg: "variant 'gray_r' is not supported" }]));
+    await settle();
+    expect(mounts()).toBe(start);
+
+    act(() => fail("Invalid indexer: {'t': '2026-10-03T17:07:36.714359936Z'}."));
+    await settle();
+    expect(mounts()).toBe(start + 1);
+  });
+
   it("counts one attempt per timer and stops at the retry cap", () => {
     vi.useFakeTimers();
     renderTab(cubeCollection(times(2)));

@@ -65,8 +65,8 @@ describe("cube-server urls", () => {
     );
   });
 
-  it("defaults the style to inverted grey over 190-310 K", () => {
-    expect(CUBE_DEFAULT_STYLE).toEqual({ colormap: "gray_r", range: [190, 310] });
+  it("defaults the style to Greys (cold = white) over 190-310 K", () => {
+    expect(CUBE_DEFAULT_STYLE).toEqual({ colormap: "Greys", range: [190, 310] });
   });
 
   it("builds the tile template row-first with the exact t and a colorscalerange", () => {
@@ -74,7 +74,7 @@ describe("cube-server urls", () => {
       cubeTileUrlTemplate("goes19-c13-cube", "CMI", "2026-10-03T17:02:36.714359936Z", undefined, "http://c"),
     ).toBe(
       "http://c/datasets/goes19-c13-cube/tiles/WebMercatorQuad/{z}/{y}/{x}" +
-        "?variables=CMI&t=2026-10-03T17%3A02%3A36.714359936Z&style=raster%2Fgray_r" +
+        "?variables=CMI&t=2026-10-03T17%3A02%3A36.714359936Z&style=raster%2FGreys" +
         "&colorscalerange=190%2C310&width=256&height=256&f=png",
     );
   });

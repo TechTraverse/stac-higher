@@ -278,12 +278,15 @@ GET /health
 ### The Preview's use of it (Z-8)
 
 The collection Preview renders a cube with a fixed style, `CUBE_DEFAULT_STYLE`
-= `gray_r` over 190-310 K (GOES C13 brightness temperature, inverted so cold
-cloud tops are white), always sent as `colorscalerange` because real CMI has no
-`valid_min`/`valid_max` and the renderer would otherwise auto-range per tile.
-A tile 422 (the asset is up to one poll, 15 s, ahead of the server) is retried
-by remounting the frame after 5 s, up to 3 times, never by changing the URL
-(an unknown query parameter is a dimension selector); it never marks the frame
-failed. The variable is the first `cube:variables` entry of type `data`, else
+= `raster/Greys` over 190-310 K (GOES C13 brightness temperature; `Greys` maps
+low to white, so cold cloud tops are white), always sent as `colorscalerange`
+because real CMI has no `valid_min`/`valid_max` and the renderer would
+otherwise auto-range per tile. xpublish-tiles 0.9.2 validates the style variant
+against its own list, which has no matplotlib `_r` reversals: `gray_r` is a 422.
+A tile 422 whose body is `{"detail": "Invalid indexer: …"}` (a `t` the server's
+snapshot lacks: the asset is up to one poll, 15 s, ahead) is retried by
+remounting the frame after 5 s, up to 3 times, never by changing the URL (an
+unknown query parameter is a dimension selector); it never marks the frame
+failed. Any other 422 (a bad style, range or variable) is not retried. The variable is the first `cube:variables` entry of type `data`, else
 `CMI` (the Z-5 writer does not emit `cube:variables` yet: #170). A click calls
 `edr/position` and charts the CSV; `x-cube-missing-steps` is shown as a count.

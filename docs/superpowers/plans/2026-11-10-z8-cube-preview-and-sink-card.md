@@ -17,7 +17,7 @@
 - **No new dependency** in either package. `TimeSeriesChart` is plain SVG.
 - **Tile template** (row before column): `{base}/datasets/{collectionId}/tiles/WebMercatorQuad/{z}/{y}/{x}?variables={variable}&t={t}&style=raster/{colormap}&colorscalerange={min},{max}&width=256&height=256&f=png`. `{z}/{y}/{x}` stay literal. Every value is `encodeURIComponent`ed.
 - **`t` is the `stac_higher:time_values` entry verbatim** (nanoseconds and trailing `Z`). Never re-format it. Parse a copy only for labels and sorting.
-- **Always pass `colorscalerange`.** Default style constant: `CUBE_DEFAULT_STYLE = { colormap: "gray_r", range: [190, 310] }`. That is C13 brightness temperature in K: the spike's 190–310 K range, inverted so cold cloud tops are white, the usual IR rendering. `gray_r` is a matplotlib colormap name, which xpublish-tiles resolves through `mpl.colormaps`.
+- **Always pass `colorscalerange`.** Default style constant: `CUBE_DEFAULT_STYLE = { colormap: "Greys", range: [190, 310] }`. That is C13 brightness temperature in K: the spike's 190–310 K range, on `Greys` (low = white), so cold cloud tops are white, the usual IR rendering. *As built:* the plan first named `gray_r`; xpublish-tiles 0.9.2 validates variants against its own list, which has no `_r` reversals, so `gray_r` is a 422 (found in the live check).
 - **EDR:** `{base}/datasets/{collectionId}/edr/position?coords=POINT({lon} {lat})&parameter-name={variable}&f=csv`, GET only. The CSV header is `t,<variable>,longitude,latitude`. `t` is naive UTC `YYYY-MM-DD HH:MM:SS.nnnnnnnnn`. An empty value is null. The `x-cube-missing-steps` response header is a **count** (CORS-exposed).
 - **Tile 422** (`no-store`): the asset can be one server poll (≤ 15 s) ahead of the server. Retry the frame later. Never mark it failed.
 - **The cube branch comes first**, before the serving gate, `useItems` and `useItemTileJson`. Bounds come from `collection.extent.spatial.bbox[0]`. `cube:dimensions.*.reference_system` may be absent; nothing reads it.
@@ -58,7 +58,7 @@
 **Interfaces — Produces:**
 ```ts
 export interface CubeStyle { colormap: string; range: readonly [number, number] }
-export const CUBE_DEFAULT_STYLE: CubeStyle; // { colormap: "gray_r", range: [190, 310] }
+export const CUBE_DEFAULT_STYLE: CubeStyle; // { colormap: "Greys", range: [190, 310] }
 export function cubeServerBaseUrl(env?: Record<string, string | undefined>): string; // default "http://localhost:8086", trailing slashes stripped
 export function cubeTileUrlTemplate(collectionId: string, variable: string, t: string, style?: CubeStyle, base?: string): string;
 export function cubeEdrPositionUrl(collectionId: string, lon: number, lat: number, variable: string, base?: string): string;
@@ -70,7 +70,7 @@ expect(cubeServerBaseUrl({})).toBe("http://localhost:8086");
 expect(cubeServerBaseUrl({ PUBLIC_CUBE_SERVER_URL: "https://cube.example/" })).toBe("https://cube.example");
 expect(cubeTileUrlTemplate("goes19-c13-cube", "CMI", "2026-10-03T17:02:36.714359936Z", undefined, "http://c")).toBe(
   "http://c/datasets/goes19-c13-cube/tiles/WebMercatorQuad/{z}/{y}/{x}" +
-  "?variables=CMI&t=2026-10-03T17%3A02%3A36.714359936Z&style=raster%2Fgray_r" +
+  "?variables=CMI&t=2026-10-03T17%3A02%3A36.714359936Z&style=raster%2FGreys" +
   "&colorscalerange=190%2C310&width=256&height=256&f=png");
 expect(cubeEdrPositionUrl("goes19-c13-cube", -97.123456, 38.5, "CMI", "http://c")).toBe(
   "http://c/datasets/goes19-c13-cube/edr/position?coords=POINT(-97.1235%2038.5)&parameter-name=CMI&f=csv");

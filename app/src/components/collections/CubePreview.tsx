@@ -23,6 +23,7 @@ import { FRAME_MAX_WAIT_TICKS } from "@/lib/serving/frames";
 import {
   CUBE_TILE_RETRY_MS,
   frameIndexFromSourceId,
+  isNotYetTileBody,
   nextRetry,
 } from "@/lib/serving/cube-retry";
 import { useCubePosition } from "@/lib/serving/queries";
@@ -101,17 +102,33 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
 
   const mapRef = useRef<MapRef | null>(null);
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  // A body read can settle after unmount; it must not schedule a timer then.
+  const alive = useRef(true);
   const detach = useRef<(() => void) | null>(null);
   const onMapRef = useCallback(
     (ref: MapRef) => {
       mapRef.current = ref;
       detach.current?.();
       const onIdle = () => markCurrentLoaded();
-      const onError = (e: { sourceId?: string; error?: { status?: number } }) => {
+      const onError = (e: { sourceId?: string; error?: { status?: number; body?: unknown } }) => {
         const n = frameIndexFromSourceId(STACK_ID, e.sourceId);
         if (n === null || e.error?.status !== 422) return;
         const t = framesRef.current[n]?.t;
-        if (t === undefined || retrying.current.has(t)) return;
+        if (t === undefined) return;
+        // Only a 422 about the `t` selector means "server behind"; a bad style
+        // or range would 422 on every retry. maplibre's AJAXError carries the
+        // body as a Blob; without one, retry (capped).
+        const body = e.error.body;
+        if (body instanceof Blob) {
+          void isNotYetTileBody(body).then((notYet) => {
+            if (notYet && alive.current) scheduleRetry(t);
+          });
+          return;
+        }
+        scheduleRetry(t);
+      };
+      const scheduleRetry = (t: string) => {
+        if (retrying.current.has(t)) return;
         if (nextRetry(attemptsRef.current, t) === null) return;
         retrying.current.add(t);
         setLoaded((prev) => {
@@ -148,7 +165,9 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
   );
   useEffect(() => {
     const pending = timers.current;
+    alive.current = true;
     return () => {
+      alive.current = false;
       pending.forEach(clearTimeout);
       pending.clear();
       detach.current?.();
