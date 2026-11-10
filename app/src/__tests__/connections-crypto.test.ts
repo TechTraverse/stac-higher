@@ -79,10 +79,19 @@ describe("credential envelope", () => {
 });
 
 describe("loadMasterKey", () => {
-  it("fails loudly when CREDENTIALS_MASTER_KEY is unset, with the generation command", () => {
+  it("fails loudly when CREDENTIALS_MASTER_KEY is unset, pointing at the root .env and the docs", () => {
     expect(() => loadMasterKey({})).toThrow(CredentialKeyError);
-    expect(() => loadMasterKey({})).toThrow(/CREDENTIALS_MASTER_KEY/);
-    expect(() => loadMasterKey({})).toThrow(/randomBytes\(32\)/);
+    let message = "";
+    try {
+      loadMasterKey({});
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/^CREDENTIALS_MASTER_KEY is not set/);
+    expect(message).toMatch(/openssl rand -base64 32/);
+    expect(message).toMatch(/root \.env/);
+    expect(message).toMatch(/docs\/connections\.md/);
+    expect(message).not.toMatch(/\.env\.local/);
   });
 
   it("rejects keys that are not 32 bytes after base64 decoding", () => {
