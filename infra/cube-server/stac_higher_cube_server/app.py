@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 import time
+import warnings
 from collections.abc import AsyncIterator
 
 import httpx
@@ -25,13 +26,13 @@ import numpy as np
 import uvicorn
 import xarray as xr
 import xpublish
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ConfigDict
 from xpublish import Plugin, hookimpl
 from xpublish_tiles.xpublish.tiles import TilesPlugin
 
-from stac_higher_cube_server.caching import cache_control
+from stac_higher_cube_server.caching import cache_control, collection_id, is_tile_path
 from stac_higher_cube_server.edr import APPEND_DIM_ATTR, MISSING_STEPS_HEADER, TolerantEdrPlugin
 from stac_higher_cube_server.registry import CubeRegistry, S3RepoOpener
 from stac_higher_cube_server.settings import Settings
@@ -96,7 +97,7 @@ async def warm_up(app: FastAPI, collection_id: str, ds: xr.Dataset) -> int | Non
         return None
     url = (
         f"/datasets/{collection_id}/tiles/WebMercatorQuad/0/0/0"
-        f"?variables={variables[0]}&{WARM_UP_QUERY}&t={_exact_t(ds[dim].values[-1])}"
+        f"?variables={variables[0]}&{WARM_UP_QUERY}&{dim}={_exact_t(ds[dim].values[-1])}"
     )
     started = time.monotonic()
     try:
@@ -113,18 +114,50 @@ async def warm_up(app: FastAPI, collection_id: str, ds: xr.Dataset) -> int | Non
     return response.status_code
 
 
-async def _poll(app: FastAPI, registry: CubeRegistry, settings: Settings) -> None:
-    while True:
+#: warm-ups rendering at once, and the longest one may take (a request is 60 s)
+WARM_UP_CONCURRENCY = 2
+WARM_UP_BUDGET_SECONDS = 90
+
+
+async def _warm_one(
+    app: FastAPI, registry: CubeRegistry, collection_id: str, gate: asyncio.Semaphore
+) -> None:
+    async with gate:
+        ds = registry.get(collection_id)
+        if ds is None:
+            return
         try:
-            opened = await asyncio.to_thread(registry.refresh)
-        except Exception:  # refresh() already contains its own failures
-            log.exception("cube registry refresh crashed")
-            opened = []
-        for collection_id in opened:
-            ds = registry.get(collection_id)
-            if ds is not None:
-                registry.record_warm_up(collection_id, await warm_up(app, collection_id, ds))
-        await asyncio.sleep(settings.poll_seconds)
+            status = await asyncio.wait_for(warm_up(app, collection_id, ds),
+                                            WARM_UP_BUDGET_SECONDS)
+        except TimeoutError:
+            status = None
+        registry.record_warm_up(collection_id, status)
+
+
+async def _poll(app: FastAPI, registry: CubeRegistry, settings: Settings) -> None:
+    """Warm-ups run detached, so a slow one never delays the next ``refresh()``
+    (Z-6 trims snapshots after an hour)."""
+    gate = asyncio.Semaphore(WARM_UP_CONCURRENCY)
+    warming: dict[str, asyncio.Task] = {}
+    try:
+        while True:
+            try:
+                opened = await asyncio.to_thread(registry.refresh)
+            except Exception:  # refresh() already contains its own failures
+                log.exception("cube registry refresh crashed")
+                opened = []
+            for collection_id in opened:
+                previous = warming.pop(collection_id, None)
+                if previous is not None:
+                    previous.cancel()  # a newer snapshot supersedes it
+                warming[collection_id] = asyncio.create_task(
+                    _warm_one(app, registry, collection_id, gate)
+                )
+            warming = {c: t for c, t in warming.items() if not t.done()}
+            await asyncio.sleep(settings.poll_seconds)
+    finally:
+        for task in warming.values():
+            task.cancel()
 
 
 def create_app(registry: CubeRegistry, settings: Settings, *, poll: bool = True) -> FastAPI:
@@ -154,8 +187,21 @@ def create_app(registry: CubeRegistry, settings: Settings, *, poll: bool = True)
 
     @app.middleware("http")
     async def tile_cache_headers(request: Request, call_next):
+        path = request.url.path
+        head = request.method == "HEAD" and is_tile_path(path)
+        if head:  # xpublish-tiles routes are GET only: serve HEAD as GET, minus the body
+            request.scope["method"] = "GET"
         response = await call_next(request)
-        value = cache_control(request.url.path, request.query_params, response.status_code)
+        if head:
+            headers = dict(response.headers)  # content-length stays: it is the GET's
+            async for _ in response.body_iterator:  # drain
+                pass
+            response = Response(status_code=response.status_code, headers=headers,
+                                media_type=response.media_type)
+        cid = collection_id(path)
+        ds = registry.get(cid) if cid is not None else None
+        append_dim = str(ds.attrs.get(APPEND_DIM_ATTR, "t")) if ds is not None else "t"
+        value = cache_control(path, request.query_params, response.status_code, append_dim)
         if value is not None:
             response.headers["cache-control"] = value
         return response
@@ -175,6 +221,9 @@ def main() -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(ExtraFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
+    # xpublish-tiles warns on every tile about our trimmed variables and naive UTC times
+    for text in ("Variables .* not found", "no explicit representation of timezones"):
+        warnings.filterwarnings("ignore", message=text, category=UserWarning)
     settings = Settings.from_env()
     registry = CubeRegistry(PgSinkSource(settings.db_dsn), S3RepoOpener(settings))
     uvicorn.run(

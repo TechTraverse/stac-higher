@@ -245,3 +245,79 @@ def test_log_lines_carry_their_extra_fields():
     assert line.startswith("WARNING cube not reloaded")
     assert '"cube_collection_id": "c1"' in line
     assert '"error": "RuntimeError: store down"' in line
+
+
+def _renamed_to_time(registry):
+    """The registry's cube as a sink with ``append_dim: "time"`` would serve it."""
+    import dataclasses
+
+    entry = registry._entries["c1"]
+    ds = entry.dataset.rename({"t": "time"})
+    ds.attrs["_cube_append_dim"] = "time"
+    registry._entries["c1"] = dataclasses.replace(entry, dataset=ds)
+    return ds
+
+
+def test_tile_caching_follows_the_datasets_append_dim(registry):
+    ds = _renamed_to_time(registry)
+    client = TestClient(create_app(registry, SETTINGS, poll=False))
+    exact = iso_ns(ds["time"].values[1])
+    pinned = client.get(TILE, params={**Q, "time": exact})
+    assert pinned.status_code == 200, pinned.text
+    assert "immutable" in pinned.headers["cache-control"]
+    # ``t`` is no selector on this cube: it renders the latest step, so it is not pinned
+    ignored = client.get(TILE, params={**Q, "t": exact})
+    assert ignored.status_code == 200, ignored.text
+    assert ignored.headers["cache-control"] == "public, max-age=60"
+
+
+def test_warm_up_pins_the_datasets_append_dim(registry):
+    ds = _renamed_to_time(registry)
+    app = create_app(registry, SETTINGS, poll=False)
+    seen: list[dict] = []
+
+    @app.middleware("http")
+    async def spy(request, call_next):
+        seen.append(dict(request.query_params))
+        return await call_next(request)
+
+    assert asyncio.run(warm_up(app, "c1", ds)) == 200
+    assert "time" in seen[0] and "t" not in seen[0]
+
+
+def test_render_errors_on_is_never_cached_immutably(client):
+    r = client.get(TILE, params={**Q, "t": iso_ns(t_ns(0)), "render_errors": "on"})
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_head_on_a_tile_is_served(client):
+    t = iso_ns(t_ns(0))
+    r = client.head(TILE, params={**Q, "t": t})
+    assert r.status_code == 200, r.status_code
+    assert r.headers["content-type"] == "image/png"
+    assert "immutable" in r.headers["cache-control"]
+    assert r.content == b""
+
+
+def test_warm_ups_do_not_block_the_poll_loop(cube, monkeypatch):
+    """A slow warm-up must not delay the next refresh() (#123, item 9)."""
+    import stac_higher_cube_server.app as app_mod
+
+    started: list[str] = []
+
+    async def slow(app, cid, ds):
+        started.append(cid)
+        await asyncio.sleep(30)
+        return 200
+
+    monkeypatch.setattr(app_mod, "warm_up", slow)
+    registry = CubeRegistry(FakeSource(SINK), LocalOpener({"c1": cube}))
+    refreshes = []
+    real = registry.refresh
+    monkeypatch.setattr(registry, "refresh", lambda: (refreshes.append(1), real())[1])
+    with TestClient(create_app(registry, SETTINGS)):
+        deadline = time.monotonic() + 10
+        while len(refreshes) < 3 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert started == ["c1"]
+        assert len(refreshes) >= 3
