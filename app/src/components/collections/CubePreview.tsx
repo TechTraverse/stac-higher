@@ -26,7 +26,7 @@ import {
   nextRetry,
 } from "@/lib/serving/cube-retry";
 import { useCubePosition } from "@/lib/serving/queries";
-import { cubeTileUrlTemplate } from "@/lib/serving/urls";
+import { cubeTileUrlTemplate, roundCoord } from "@/lib/serving/urls";
 
 /** ABI C13 is 2 km; maplibre over-zooms the last level past it. */
 const CUBE_PREVIEW_MAXZOOM = 7;
@@ -48,7 +48,15 @@ interface CubePreviewProps {
  */
 export function CubePreview({ collection, collectionId, cube }: CubePreviewProps) {
   const variable = cubeVariable(collection);
-  const bbox = collection.extent?.spatial?.bbox?.[0];
+  const rawBbox = collection.extent?.spatial?.bbox?.[0];
+  // Only a plain 2-D, non-antimeridian box can fit the map and clip the tiles.
+  const bbox =
+    rawBbox &&
+    rawBbox.length === 4 &&
+    rawBbox.every((n) => Number.isFinite(n)) &&
+    rawBbox[0] <= rawBbox[2]
+      ? (rawBbox as [number, number, number, number])
+      : undefined;
 
   const [showAll, setShowAll] = useState(false);
   const frames = useMemo(
@@ -115,7 +123,12 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
         const timer = setTimeout(() => {
           timers.current.delete(timer);
           retrying.current.delete(t);
-          setAttempts((prev) => nextRetry(prev, t) ?? prev);
+          // The ref moves first: a second 422 before React re-renders must
+          // not schedule from a stale count.
+          const next = nextRetry(attemptsRef.current, t);
+          if (next === null) return;
+          attemptsRef.current = next;
+          setAttempts(next);
         }, CUBE_TILE_RETRY_MS);
         timers.current.add(timer);
       };
@@ -154,7 +167,12 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
   const [point, setPoint] = useState<{ lon: number; lat: number } | null>(null);
   const position = useCubePosition(collectionId, variable, point);
   const onClick = useCallback(
-    (e: MapMouseEvent) => setPoint({ lon: e.lngLat.lng, lat: e.lngLat.lat }),
+    (e: MapMouseEvent) => {
+      // wrap(): a click on a world copy reports lng beyond +-180; round once so
+      // the query key and the URL agree.
+      const { lng, lat } = e.lngLat.wrap();
+      setPoint({ lon: roundCoord(lng), lat: roundCoord(lat) });
+    },
     [],
   );
 
@@ -184,7 +202,7 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
             id={STACK_ID}
             frames={rasterFrames}
             index={index}
-            bounds={bbox ? ([bbox[0], bbox[1], bbox[2], bbox[3]] as [number, number, number, number]) : undefined}
+            bounds={bbox}
             minzoom={0}
             maxzoom={CUBE_PREVIEW_MAXZOOM}
           />

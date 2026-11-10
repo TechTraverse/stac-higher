@@ -141,3 +141,11 @@ describe("pickPreviewAsset", () => {
     expect(pickPreviewAsset(item({}))).toBeNull();
   });
 });
+
+describe("roundCoord", () => {
+  it("rounds to 4 decimals and is idempotent", async () => {
+    const { roundCoord } = await import("@/lib/serving/urls");
+    expect(roundCoord(-97.1234561)).toBe(-97.1235);
+    expect(roundCoord(roundCoord(38.5000004))).toBe(38.5);
+  });
+});

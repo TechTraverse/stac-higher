@@ -4,6 +4,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { forwardRef, useEffect, useImperativeHandle } from "react";
 import type { StacCollection } from "@/lib/stac-api/types";
 
+// A LngLat stand-in: wrap() folds lng into [-180, 180].
+function mockLngLat(lng: number, lat: number) {
+  return { lng, lat, wrap: () => ({ lng: ((((lng + 180) % 360) + 360) % 360) - 180, lat }) };
+}
+
 const { sourceMounts, useItemsMock, useCollectionSettingsMock, useItemTileJsonMock, fakeMap } = vi.hoisted(() => {
   const handlers = new Map<string, Set<(e: unknown) => void>>();
   return {
@@ -45,7 +50,15 @@ vi.mock("react-map-gl/maplibre", () => ({
       <div data-testid="map">
         <button
           data-testid="map-click"
-          onClick={() => onClick?.({ lngLat: { lng: -97.123456, lat: 38.5 } })}
+          onClick={() => onClick?.({ lngLat: mockLngLat(-97.123456, 38.5) })}
+        />
+        <button
+          data-testid="map-click-wrapped"
+          onClick={() => onClick?.({ lngLat: mockLngLat(-200, 38.5) })}
+        />
+        <button
+          data-testid="map-click-close"
+          onClick={() => onClick?.({ lngLat: mockLngLat(-97.1234561, 38.5000004) })}
         />
         {children}
       </div>
@@ -69,6 +82,7 @@ vi.mock("react-map-gl/maplibre", () => ({
   useMap: () => ({ current: undefined }),
 }));
 
+import { CUBE_TILE_MAX_RETRIES } from "@/lib/serving/cube-retry";
 import { CollectionPreviewTab } from "@/components/collections/CollectionPreviewTab";
 
 const NEWEST = "2026-10-03T19:25:00.714359936Z";
@@ -81,14 +95,14 @@ function times(n: number): string[] {
   });
 }
 
-function cubeCollection(timeValues?: string[]): StacCollection {
+function cubeCollection(timeValues?: string[], bbox: number[] = [-137, 14, -52, 54]): StacCollection {
   return {
     type: "Collection",
     stac_version: "1.0.0",
     id: "goes19-c13-cube",
     description: "",
     license: "proprietary",
-    extent: { spatial: { bbox: [[-137, 14, -52, 54]] }, temporal: { interval: [[null, null]] } },
+    extent: { spatial: { bbox: [bbox] }, temporal: { interval: [[null, null]] } },
     links: [],
     assets: {
       cube: {
@@ -192,6 +206,26 @@ describe("CollectionPreviewTab, cube branch", () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain("POINT(-97.1235%2038.5)");
   });
 
+  it("wraps a click on a world copy before it reaches the EDR url", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("t,CMI\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderTab(cubeCollection(times(5)));
+    fireEvent.click(screen.getByTestId("map-click-wrapped"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(String(fetchMock.mock.calls[0][0])).toContain("POINT(160%2038.5)");
+  });
+
+  it("fetches once for two clicks that differ past the 4th decimal", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response("t,CMI\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderTab(cubeCollection(times(5)));
+    fireEvent.click(screen.getByTestId("map-click"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId("map-click-close"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("says so when the series cannot be fetched", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("no", { status: 404 })));
     renderTab(cubeCollection(times(5)));
@@ -228,6 +262,47 @@ describe("CollectionPreviewTab, cube branch", () => {
     expect(sourceMounts.filter((id) => id === "cube-frame-1").length).toBe(
       mountsBefore.filter((id) => id === "cube-frame-1").length + 1,
     );
+  });
+
+  it("counts one attempt per timer and stops at the retry cap", () => {
+    vi.useFakeTimers();
+    renderTab(cubeCollection(times(2)));
+    const mounts = () => sourceMounts.filter((id) => id === "cube-frame-1").length;
+    const start = mounts();
+    const fail = () => fakeMap.emit("error", { sourceId: "cube-frame-1", error: { status: 422 } });
+
+    // Two retries inside one act, so no render separates them: the second
+    // must count from the first (attempts 0 -> 2, one remount), not from a
+    // stale 0 (which would leave the count at 1).
+    act(() => {
+      fail();
+      vi.advanceTimersByTime(5000);
+      fail();
+      vi.advanceTimersByTime(5000);
+    });
+    expect(mounts()).toBe(start + 1);
+
+    // One more attempt reaches the cap (3); later 422s schedule nothing.
+    for (let i = 0; i < 5; i++) {
+      act(() => {
+        fail();
+        vi.advanceTimersByTime(5000);
+      });
+    }
+    expect(mounts()).toBe(start + 2);
+    expect(CUBE_TILE_MAX_RETRIES).toBe(3);
+  });
+
+  it("omits bounds for an antimeridian-crossing or 3-D bbox", () => {
+    const boundsOf = () => sources().map((s) => (s as unknown as { bounds?: unknown }).bounds);
+    const { unmount } = renderTab(cubeCollection(times(2)));
+    expect(boundsOf().every((b) => Array.isArray(b))).toBe(true);
+    unmount();
+    const a = renderTab(cubeCollection(times(2), [170, -10, -170, 10]));
+    expect(boundsOf().every((b) => b === undefined)).toBe(true);
+    a.unmount();
+    renderTab(cubeCollection(times(2), [-137, 14, 0, -52, 54, 100]));
+    expect(boundsOf().every((b) => b === undefined)).toBe(true);
   });
 
   it("leaves an item collection on the item path", () => {

@@ -177,6 +177,11 @@ export function cubeTileUrlTemplate(
   );
 }
 
+/** A click coordinate at the precision the EDR URL carries (4 decimals, ~11 m). */
+export function roundCoord(n: number): number {
+  return Number(n.toFixed(4));
+}
+
 /**
  * The EDR position query (GET, CSV) for one point. lon/lat are rounded to 4
  * decimals (~11 m) so a re-click on the same spot reuses the query cache.
@@ -188,8 +193,8 @@ export function cubeEdrPositionUrl(
   variable: string,
   base: string = cubeServerBaseUrl(),
 ): string {
-  const x = Number(lon.toFixed(4));
-  const y = Number(lat.toFixed(4));
+  const x = roundCoord(lon);
+  const y = roundCoord(lat);
   return (
     `${base}/datasets/${enc(collectionId)}/edr/position` +
     `?coords=POINT(${x}%20${y})&parameter-name=${enc(variable)}&f=csv`
