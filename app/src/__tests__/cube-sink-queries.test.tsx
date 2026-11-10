@@ -94,9 +94,8 @@ describe("mutations", () => {
       json(422, { error: "not s3", code: "unsupported_source_protocol" }),
     );
     const { result } = renderHook(() => usePutCubeSink("c"), { wrapper: wrapper() });
-    await act(async () => {
-      await result.current.mutateAsync(body).catch(() => {});
-    });
+    act(() => result.current.mutate(body));
+    await waitFor(() => expect(result.current.isError).toBe(true));
     const err = result.current.error as CubeSinkApiError;
     expect(err).toBeInstanceOf(CubeSinkApiError);
     expect(err.status).toBe(422);
@@ -108,9 +107,8 @@ describe("mutations", () => {
     const details = [{ path: ["config", "window", "max_steps"], message: "too small" }];
     fetchMock.mockReturnValue(json(400, { error: "Validation failed", details }));
     const { result } = renderHook(() => usePutCubeSink("c"), { wrapper: wrapper() });
-    await act(async () => {
-      await result.current.mutateAsync(body).catch(() => {});
-    });
+    act(() => result.current.mutate(body));
+    await waitFor(() => expect(result.current.isError).toBe(true));
     expect((result.current.error as CubeSinkApiError).details).toEqual(details);
     expect(fetchMock.mock.calls[0][1].method).toBe("PUT");
   });
