@@ -6,6 +6,7 @@ import {
   EmptyState,
   Label,
   RasterFrameStack,
+  RasterTileLayer,
   Skeleton,
   StacMap,
   Switch,
@@ -26,6 +27,13 @@ import {
   isNotYetTileBody,
   nextRetry,
 } from "@/lib/serving/cube-retry";
+import {
+  CUBE_WARM_CONCURRENCY,
+  CUBE_WARM_TIMEOUT_MS,
+  frameIndexFromWarmId,
+  nextWarmFrames,
+  warmSourceId,
+} from "@/lib/serving/cube-warm";
 import { useCubePosition } from "@/lib/serving/queries";
 import { cubeTileUrlTemplate, roundCoord } from "@/lib/serving/urls";
 
@@ -114,6 +122,64 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
   // tiles take maplibre's shared image-request slots.
   const [mapReady, setMapReady] = useState(false);
 
+  // Background warm-up: once the current frame has loaded, hidden sources
+  // (opacity 0, so maplibre loads them) fetch the other frames' tiles a couple
+  // at a time; they land in the browser HTTP cache (cube tiles are immutable),
+  // so the stack's own sources read them from there. `warming` holds the `t`s
+  // mounted now; `dropped` those that timed out (not retried this window).
+  const [warming, setWarming] = useState<string[]>([]);
+  const [dropped, setDropped] = useState<ReadonlySet<string>>(new Set());
+  const warmTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    // A new window: nothing carries over.
+    setWarming([]);
+    setDropped(new Set());
+  }, [showAll]);
+  const currentLoaded = loaded.has(frames[index]?.t ?? "");
+  useEffect(() => {
+    if (!mapReady || !currentLoaded) return;
+    // The stack mounts the previous, current and lookahead frames itself.
+    const n = frames.length;
+    const mounted = new Set(
+      [index - 1, index, index + 1].map((i) => frames[((i % n) + n) % n]?.t).filter((t) => t !== undefined),
+    );
+    const skip = new Set([...loaded, ...dropped]);
+    const ts = frames.map((f) => f.t);
+    // Functional, so it composes with the window-change reset queued above.
+    setWarming((prev) => {
+      const start = nextWarmFrames(ts, skip, mounted, prev, CUBE_WARM_CONCURRENCY, index);
+      return start.length > 0 ? [...prev, ...start] : prev;
+    });
+  }, [mapReady, currentLoaded, frames, index, loaded, dropped, warming]);
+  useEffect(() => {
+    // One timeout per warm source; leaving `warming` clears it.
+    const timersMap = warmTimers.current;
+    for (const t of warming) {
+      if (timersMap.has(t)) continue;
+      timersMap.set(
+        t,
+        setTimeout(() => {
+          timersMap.delete(t);
+          setWarming((prev) => prev.filter((x) => x !== t));
+          setDropped((prev) => new Set(prev).add(t));
+        }, CUBE_WARM_TIMEOUT_MS),
+      );
+    }
+    for (const [t, timer] of timersMap) {
+      if (!warming.includes(t)) {
+        clearTimeout(timer);
+        timersMap.delete(t);
+      }
+    }
+  }, [warming]);
+  useEffect(() => {
+    const timersMap = warmTimers.current;
+    return () => {
+      timersMap.forEach(clearTimeout);
+      timersMap.clear();
+    };
+  }, []);
+
   const mapRef = useRef<MapRef | null>(null);
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
   // A body read can settle after unmount; it must not schedule a timer then.
@@ -128,6 +194,12 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
         if (e.isSourceLoaded !== true) return;
         const n = frameIndexFromSourceId(STACK_ID, e.sourceId);
         if (n !== null) markLoaded(framesRef.current[n]?.t);
+        const w = frameIndexFromWarmId(e.sourceId);
+        if (w !== null) {
+          const t = framesRef.current[w]?.t;
+          markLoaded(t);
+          if (t !== undefined) setWarming((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : prev));
+        }
       };
       const onError = (e: { sourceId?: string; error?: { status?: number; body?: unknown } }) => {
         const n = frameIndexFromSourceId(STACK_ID, e.sourceId);
@@ -249,6 +321,23 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
               maxzoom={CUBE_PREVIEW_MAXZOOM}
             />
           )}
+          {mapReady &&
+            warming.map((t) => {
+              const n = frames.findIndex((f) => f.t === t);
+              if (n < 0) return null;
+              return (
+                <RasterTileLayer
+                  key={`warm-${t}`}
+                  id={warmSourceId(n)}
+                  tiles={[cubeTileUrlTemplate(collectionId, variable, t)]}
+                  bounds={bbox}
+                  minzoom={0}
+                  maxzoom={CUBE_PREVIEW_MAXZOOM}
+                  opacity={0}
+                  opacityTransitionMs={0}
+                />
+              );
+            })}
         </StacMap>
       </div>
 

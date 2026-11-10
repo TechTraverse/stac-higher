@@ -304,7 +304,12 @@ frames mount only after the map's `load`: maplibre fires `load` once every
 source's in-view tiles are in, so slow virtual cube tiles mounted up front held
 it off (no fit to the bounds, no basemap, no progress) during playback. The
 "Loaded n of N frames" line counts a frame when maplibre reports its source
-loaded (`sourcedata` with `isSourceLoaded`). Scroll over the map zooms it, as
+loaded (`sourcedata` with `isSourceLoaded`). Once the shown frame has loaded, the rest of the window warms in the
+background: up to two hidden raster sources (`cube-warm-N`, opacity 0, same
+tile template, bounds and zooms as the frame) load the other frames' tiles in
+playback order, each counted and unmounted on its own `sourcedata` (dropped
+after 30 s if stuck). cube-server marks t-pinned tiles `immutable`, so the
+frame stack later reads them from the browser cache. Scroll over the map zooms it, as
 on every other map page. The variable is the first `cube:variables` entry of type `data`, else
 `CMI` (the Z-5 writer does not emit `cube:variables` yet: #170). A click calls
 `edr/position` and charts the CSV; `x-cube-missing-steps` is shown as a count.

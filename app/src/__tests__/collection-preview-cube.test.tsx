@@ -88,6 +88,7 @@ vi.mock("react-map-gl/maplibre", () => ({
 }));
 
 import { CUBE_TILE_MAX_RETRIES } from "@/lib/serving/cube-retry";
+import { CUBE_WARM_TIMEOUT_MS } from "@/lib/serving/cube-warm";
 import { CollectionPreviewTab } from "@/components/collections/CollectionPreviewTab";
 
 const NEWEST = "2026-10-03T19:25:00.714359936Z";
@@ -354,6 +355,64 @@ describe("CollectionPreviewTab, cube branch", () => {
     }
     expect(mounts()).toBe(start + 2);
     expect(CUBE_TILE_MAX_RETRIES).toBe(3);
+  });
+
+  describe("background warm-up", () => {
+    const warmIds = () => sources().map((s) => s.id).filter((id) => id.startsWith("cube-warm-"));
+
+    it("warms nothing before the current frame has loaded", () => {
+      renderTab(cubeCollection(times(8)));
+      expect(warmIds()).toEqual([]);
+    });
+
+    it("mounts two hidden sources, in playback order (past the stack's lookahead), once the current frame loaded", () => {
+      renderTab(cubeCollection(times(8)));
+      act(() => fakeMap.emit("sourcedata", { sourceId: "cube-frame-7", isSourceLoaded: true }));
+      expect(warmIds()).toEqual(["cube-warm-1", "cube-warm-2"]);
+      const warm = screen.getAllByTestId("layer").map((el) => JSON.parse(el.dataset.props as string));
+      const hidden = warm.filter((l) => String(l.id).startsWith("cube-warm-"));
+      expect(hidden.every((l) => l.paint["raster-opacity"] === 0)).toBe(true);
+      const urls = sources().filter((s) => s.id.startsWith("cube-warm-")).map((s) => s.tiles[0]);
+      expect(urls[0]).toContain(`t=${encodeURIComponent(times(8)[1])}`);
+    });
+
+    it("counts a warmed frame, unmounts it and starts the next", () => {
+      renderTab(cubeCollection(times(8)));
+      act(() => fakeMap.emit("sourcedata", { sourceId: "cube-frame-7", isSourceLoaded: true }));
+      expect(screen.getByText("Loaded 1 of 8 frames")).toBeTruthy();
+
+      act(() => fakeMap.emit("sourcedata", { sourceId: "cube-warm-1", isSourceLoaded: true }));
+      expect(screen.getByText("Loaded 2 of 8 frames")).toBeTruthy();
+      expect(warmIds()).toEqual(["cube-warm-2", "cube-warm-3"]);
+    });
+
+    it("drops a stuck warm source after the timeout without counting it", () => {
+      vi.useFakeTimers();
+      renderTab(cubeCollection(times(8)));
+      act(() => fakeMap.emit("sourcedata", { sourceId: "cube-frame-7", isSourceLoaded: true }));
+      expect(warmIds()).toEqual(["cube-warm-1", "cube-warm-2"]);
+
+      act(() => {
+        vi.advanceTimersByTime(CUBE_WARM_TIMEOUT_MS);
+      });
+      expect(screen.getByText("Loaded 1 of 8 frames")).toBeTruthy();
+      expect(warmIds()).toEqual(["cube-warm-3", "cube-warm-4"]);
+    });
+
+    it("restarts for the new window when the span toggles", () => {
+      renderTab(cubeCollection(times(30)));
+      act(() => fakeMap.emit("sourcedata", { sourceId: "cube-frame-23", isSourceLoaded: true }));
+      expect(warmIds()).toEqual(["cube-warm-1", "cube-warm-2"]);
+
+      const warmT = () => sources().filter((x) => x.id === "cube-warm-1").map((x) => x.tiles[0]);
+      expect(warmT()[0]).toContain(`t=${encodeURIComponent(times(30)[7])}`);
+
+      // The newest frame is already loaded, so the new window warms at once,
+      // from ITS frame 1 (the 24-frame window's frame 1 was times[7]).
+      fireEvent.click(screen.getByRole("switch", { name: "Show full window (30 steps)" }));
+      expect(warmIds()).toEqual(["cube-warm-1", "cube-warm-2"]);
+      expect(warmT()[0]).toContain(`t=${encodeURIComponent(times(30)[1])}`);
+    });
   });
 
   it("omits bounds for an antimeridian-crossing or 3-D bbox", () => {
