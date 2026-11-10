@@ -25,6 +25,8 @@ const { sourceMounts, useItemsMock, useCollectionSettingsMock, useItemTileJsonMo
       off: (type: string, fn: (e: unknown) => void) => handlers.get(type)?.delete(fn),
       emit: (type: string, e: unknown = {}) => handlers.get(type)?.forEach((fn) => fn(e)),
       areTilesLoaded: () => true,
+      // deferLoad: the map's `load` waits until the test calls fireLoad().
+      load: { defer: false, fire: null as null | (() => void) },
       fitBounds: () => {},
       getMap: () => undefined,
     },
@@ -45,7 +47,10 @@ vi.mock("react-map-gl/maplibre", () => ({
     ref,
   ) {
     useImperativeHandle(ref, () => fakeMap as never);
-    useEffect(() => onLoad?.(), [onLoad]);
+    useEffect(() => {
+      if (fakeMap.load.defer) fakeMap.load.fire = () => onLoad?.();
+      else onLoad?.();
+    }, [onLoad]);
     return (
       <div data-testid="map">
         <button
@@ -129,6 +134,8 @@ function sources(): { id: string; tiles: string[] }[] {
 
 beforeEach(() => {
   fakeMap.handlers.clear();
+  fakeMap.load.defer = false;
+  fakeMap.load.fire = null;
   sourceMounts.length = 0;
   useItemsMock.mockReset();
   useCollectionSettingsMock.mockReset();
@@ -242,6 +249,33 @@ describe("CollectionPreviewTab, cube branch", () => {
 
     fireEvent.click(screen.getByLabelText("Previous frame"));
     act(() => fakeMap.emit("idle"));
+    expect(screen.queryByText(/Loaded \d+ of/)).toBeNull();
+  });
+
+  it("mounts no frame until the map has loaded", () => {
+    // maplibre's `load` waits for every source's in-view tiles: frames mounted
+    // before it held it off, so the view never fitted (live check of #172).
+    fakeMap.load.defer = true;
+    renderTab(cubeCollection(times(3)));
+    expect(sources()).toHaveLength(0);
+
+    act(() => fakeMap.load.fire?.());
+    expect(sources().length).toBeGreaterThan(0);
+  });
+
+  it("counts a frame when maplibre reports its source loaded", () => {
+    renderTab(cubeCollection(times(3)));
+    expect(screen.getByText("Loaded 0 of 3 frames")).toBeTruthy();
+
+    act(() => fakeMap.emit("sourcedata", { sourceId: "cube-frame-0", isSourceLoaded: false }));
+    act(() => fakeMap.emit("sourcedata", { sourceId: "basemap", isSourceLoaded: true }));
+    expect(screen.getByText("Loaded 0 of 3 frames")).toBeTruthy();
+
+    // Any mounted frame counts, not only the one on screen (the lookahead too).
+    act(() => fakeMap.emit("sourcedata", { sourceId: "cube-frame-0", isSourceLoaded: true }));
+    act(() => fakeMap.emit("sourcedata", { sourceId: "cube-frame-1", isSourceLoaded: true }));
+    expect(screen.getByText("Loaded 2 of 3 frames")).toBeTruthy();
+    act(() => fakeMap.emit("sourcedata", { sourceId: "cube-frame-2", isSourceLoaded: true }));
     expect(screen.queryByText(/Loaded \d+ of/)).toBeNull();
   });
 
