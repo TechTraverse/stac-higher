@@ -26,6 +26,14 @@ vi.mock("@/lib/collections/settings-client", () => ({
   useUpdateCollectionSettings: () => ({ mutate: updateMutate, isPending: false }),
 }));
 
+// The Virtual cube card (Z-8b) has its own tests; here it only needs to mount.
+vi.mock("@/lib/cubes/queries", () => ({
+  useCubeSink: () => ({ data: null, isLoading: false }),
+  useReferenceSources: () => ({ data: [], isSuccess: true }),
+  usePutCubeSink: () => ({ mutate: vi.fn(), isPending: false }),
+  usePatchCubeSink: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
 import { SettingsTab } from "@/components/collections/SettingsTab";
 
 beforeAll(() => {

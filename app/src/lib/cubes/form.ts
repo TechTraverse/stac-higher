@@ -100,7 +100,10 @@ export function apiIssuesToFormErrors(
 }
 
 /** Field-level messages from the PUT schema itself (enabled is irrelevant). */
-export const cubeSinkFormSchema: z.ZodType<CubeSinkFormValues> = z
+export const cubeSinkFormSchema: z.ZodType<
+  CubeSinkFormValues,
+  CubeSinkFormValues
+> = z
   .object({
     source_collection_id: z.string(),
     append_dim: z.string(),
