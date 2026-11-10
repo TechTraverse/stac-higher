@@ -504,7 +504,17 @@ On the full stack, alongside the standing GOES demo and without disturbing it:
 
 1. Create a source collection `goes19-cmipc-c13` with a reference-mode ingest
    association on the existing anonymous NODD S3 connection: prefix
-   `ABI-L2-CMIPC/{Y}/{j}/{H}/`, include `M6C13`, window `-6h`.
+   `ABI-L2-CMIPC/{Y}/{j}/{H}/`, include `**/*M6C13*`, window `-6h`,
+   `metadata.strategy: extractor` with the band-agnostic demo extractor
+   `goes-abi-metadata-cmipc`, `max_files_per_poll: 1`, a 60 s poll.
+   `uv run python -m pipeline.demo cube-seed` (from `services/pipeline`)
+   creates exactly this, plus the empty cube collection of step 2; it never
+   creates the sink. *As built (#122):* the include glob matches the
+   source-relative path (`2026/276/17/OR_…M6C13….nc`) and `*` does not cross
+   `/`, so a bare `M6C13` matches nothing. A single-band CMIPC file has no
+   `CMI_C02`, so the GOES demo extractor reads `CMI` there. One file per poll
+   keeps extractor runs from racing, so items reach the catalogue in order and
+   the cube skips none as `late`.
 2. Create the cube collection `goes19-c13-cube` and a sink with
    `window.max_steps = 72` through the UI. The first append creates the
    repository.
@@ -521,6 +531,113 @@ On the full stack, alongside the standing GOES demo and without disturbing it:
    shows deletions and a flat repository size.
 6. Record append latency (dispatch → commit), tile latency in-region-equivalent
    (Docker on the laptop), and image sizes in this spec's addendum.
+
+### Live gate, 2026-11-10 (addendum)
+
+The Z-9 live gate, on the local Docker stack (compose profile `cube`), `main` at the
+#182 and #184 merges, all times UTC. The standing GOES demo was not running
+on this stack (no demo data), so "alongside the demo" was not exercised.
+
+**Run.**
+- 16:14: `pipeline.demo cube-seed`. The source ingested one file a minute,
+  oldest first, across the `-6h` window: 98 items by 18:26, no extractor
+  failures.
+- ~16:36: sink created through the Settings tab's Virtual cube card:
+  `max_steps` 72, `max_age` 24h, variables `CMI`, `DQF`.
+- Only items that reached the source after the sink existed were appended.
+  The ~20 items catalogued before 16:36 were not backfilled, because the
+  dispatcher feeds the ledger from insert events only (§5.2). The first step
+  is t = 11:52:36Z.
+- The ledger at 18:26: 79 `appended`, 0 `skipped` (0 `late`), 0 `failed`,
+  every row `attempts` = 1. Arrival was strictly in order.
+
+**Defects found and fixed during the gate.**
+- The `gray_r` style was unsupported; the Preview now uses `raster/Greys`
+  (#94, PR #172).
+- Preview viewport and frame counter (#175, PR #176).
+- maplibre-gl's worker was missing from both the dev server and the
+  production build (#178, PR #180).
+- Tiles smeared past the Earth's limb west of the CONUS sector (#183,
+  PR #184).
+- First-pass playback was slow (#181, PR #182).
+
+**The checks** (numbering as in #95; steps 1–6 are this section's list):
+
+1. **Source.** As in step 1 above. Verified.
+2. **Sink through the UI.** Verified, including the source picker. The first
+   append created the repository.
+3. **After 1 h.**
+   - Steps: the backfill delivered one item a minute, not one per 5 minutes,
+     so the cube had far more than 12 steps after an hour. It reached
+     `max_steps` (72) at 17:51, ~75 min after the sink was created.
+   - Asset `version` advanced with every commit and equals the sink's
+     `last_snapshot_id` (`T9J6X2G33XFJ18KG0CV0` at 18:26). Verified.
+   - Preview (Chrome): basemap, view fitted to the cube, `Greys` 190–310 K,
+     23 of 24 frames warmed in ~30 s without pressing play, playback and the
+     full-window toggle work. Verified.
+   - EDR at `POINT(-98 38.5)`: every step returned, with
+     `x-cube-missing-steps: 0` (e.g. 275.45 K at 11:52:36Z). The Preview
+     chart plotted 39 steps at another point (238–246 K).
+   - The direct-read comparison against the NODD file (spike `q2_check.py`)
+     was **not rerun**. It passed in the Z-7 live check (PR #121).
+   - No source bytes copied: the repository holds 2,257,589 bytes in 469
+     objects for 72 steps (after the 18:23 maintenance run). Its `chunks/`
+     are 272,000 bytes in 68 objects, the natively loaded coordinate arrays
+     only. A single CMIPC C13 NODD file is several MB, so 72 copied files
+     would dwarf this. The NODD file size was not measured.
+4. **Kill mid-append.** Two `docker kill`s of the pipeline at the start of a
+   `cube_append`. Appends take ~2 s, and neither kill provably landed inside
+   the take: no row was left with `attempts` > 1. After each restart, appends
+   resumed within 1–2 minutes with no lost or duplicated step. Convergence is
+   verified; the crash path itself is not (see 11).
+5. **Window and maintenance.**
+   - The window holds at 72 (asset `time_values` 12:27:36Z … 18:22:36Z,
+     sorted, no duplicates) while appends continue every 5 minutes.
+     Verified.
+   - The 7-hour soak was **not run**. The `-6h` window made the cube reach
+     `max_steps` in ~75 min, which exercised the same trim and GC path.
+   - Maintenance 17:23: `ok`, nothing to delete.
+   - Maintenance 18:23: `ok`, 44 snapshots expired. GC deleted 1,186,307
+     bytes (88 chunks, 264 manifests, 44 snapshots) with no delete errors.
+     `trimmed` 0, because appends trim the window themselves.
+     `publish_outcome` `unchanged`. Durations: gc 124 ms, list 130 ms,
+     trim 33 ms, expire 8 ms.
+   - Repository by kind after that run: manifests 1,355,923 B (204),
+     overwritten 367,066 B (82), chunks 272,000 B (68), transactions
+     142,717 B (79), snapshots 113,331 B (35).
+   - Growth against I-143's projection (~8 MB a day per cube) is **not
+     verified**. At measurement time the window had been trimming for only
+     ~35 minutes, and a transaction log reaches its trimmed size (~17 KB)
+     only once every commit trims.
+6. **Measurements.**
+   - Append latency (Procrastinate job duration, 30 jobs in the last hour,
+     one step per job): mean 2.07 s, max 3.07 s. This is the job's run time,
+     not dispatch → commit.
+   - Tile: a pinned z4 tile renders in 0.83 s cold (64,694 bytes,
+     `Cache-Control: public, max-age=31536000, immutable`). HEAD on a tile
+     is 200 with the same header.
+   - Image sizes: not recorded here (see the CI Containers job).
+   - The NODD-outage timing asked for on #95 (a `cube_append` run against an
+     unreachable source) was **not run**.
+7. **Cross-version open.** Writer and reader both run icechunk 2.3.0 (#126
+   aligned the pins). The server opened and rendered the writer's
+   repository. Verified.
+8. **First-append window.** From sink creation to served in about 2 minutes.
+   No `pending` state appeared in the `/health` samples, which were not timed
+   finely enough to measure it. The sink was not written during the first
+   append.
+9. **Maintenance republish.** The 18:23 run's `publish_outcome` is
+   `unchanged`, and the asset `version` equals the recorded tip. Verified.
+10. **Reopen cost.** `/health` stayed ok, and each commit was picked up within
+    the 15 s poll. The warm-up tile per reopen took 1.21–1.28 s (5 samples)
+    on a real CONUS frame.
+11. **Crash recovery timing.** **Not exercised live.** Neither kill landed
+    inside a take (see 4), so neither the 5–10 min stalled-lock path nor the
+    isolated take of a crashed row (#127) ran. Both are covered by the
+    DB-gated pipeline tests.
+
+The publish-failure path (#128: `last_error` `publish failed: …`, cleared by
+the next maintenance republish) did not occur, so it was **not exercised**.
 
 ## 13. What this spec explicitly does NOT do
 
