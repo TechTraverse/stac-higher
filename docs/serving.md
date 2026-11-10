@@ -274,3 +274,16 @@ GET /health
   `cube_sinks` columns and nothing else, and the Silo user
   (`infra/cube-server/silo-cube-read-policy.json`) can only read and list
   `assets/*/_cube/*`.
+
+### The Preview's use of it (Z-8)
+
+The collection Preview renders a cube with a fixed style, `CUBE_DEFAULT_STYLE`
+= `gray_r` over 190-310 K (GOES C13 brightness temperature, inverted so cold
+cloud tops are white), always sent as `colorscalerange` because real CMI has no
+`valid_min`/`valid_max` and the renderer would otherwise auto-range per tile.
+A tile 422 (the asset is up to one poll, 15 s, ahead of the server) is retried
+by remounting the frame after 5 s, up to 3 times, never by changing the URL
+(an unknown query parameter is a dimension selector); it never marks the frame
+failed. The variable is the first `cube:variables` entry of type `data`, else
+`CMI` (the Z-5 writer does not emit `cube:variables` yet: #170). A click calls
+`edr/position` and charts the CSV; `x-cube-missing-steps` is shown as a count.
