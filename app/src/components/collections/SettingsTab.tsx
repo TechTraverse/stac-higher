@@ -48,6 +48,7 @@ import {
   useUpdateCollectionSettings,
 } from "@/lib/collections/settings-client";
 import { collectionInfoUrl, tipgLandingUrl } from "@/lib/serving/urls";
+import { CubeSinkCard } from "./CubeSinkCard";
 
 const UNOWNED = "__unowned__";
 
@@ -206,6 +207,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
   ].join(" or ");
 
   return (
+    <div className="space-y-6">
     <Card data-testid="settings-tab">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-lg">
@@ -468,5 +470,7 @@ export function SettingsTab({ collectionId }: { collectionId: string }) {
         </Dialog>
       </CardContent>
     </Card>
+    <CubeSinkCard collectionId={collectionId} canAct={canAct} />
+    </div>
   );
 }
