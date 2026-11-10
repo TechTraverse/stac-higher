@@ -34,6 +34,7 @@ import { Pencil, Trash2, Plus, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { useCollectionSettings } from "@/lib/collections/settings-client";
 import { previewAssetCandidates } from "@/lib/serving/preview";
+import { findCubeAsset } from "@/lib/serving/cube-frames";
 
 interface CollectionDetailInnerProps {
   collectionId: string;
@@ -106,9 +107,12 @@ function CollectionDetailInner({ collectionId }: CollectionDetailInnerProps) {
   // The Preview tab is advertised on the same terms as every other serving
   // link (I-69): only when the product opts in AND its recent items carry
   // something a raster tiler can open. Anything less and the tab would open
-  // onto an empty map.
+  // onto an empty map. A virtual cube is advertised regardless of
+  // `serving_enabled`: cube-server serves exactly the ENABLED sinks, so the
+  // sink's own switch is the cube's serving switch (Z-8, spec §8).
   const previewAvailable =
-    settings?.servingEnabled === true && previewAssetCandidates(items).length > 0;
+    (settings?.servingEnabled === true && previewAssetCandidates(items).length > 0) ||
+    findCubeAsset(collection) !== null;
 
   return (
     <>

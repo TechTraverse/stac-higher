@@ -97,6 +97,7 @@ source-layer name every tipg tile carries (verified against tipg 1.0.1 on
 |---|---|---|
 | `PUBLIC_TITILER_URL` | `http://localhost:8084` | Browser-facing titiler base the UI links to |
 | `PUBLIC_TIPG_URL` | `http://localhost:8085` | Browser-facing tipg base the UI links to |
+| `PUBLIC_CUBE_SERVER_URL` | `http://localhost:8086` | Browser-facing cube-server base the cube Preview reads tiles and EDR from |
 | `PLATFORM_ASSET_BUCKET` | `${STAGING_BUCKET:-stac-higher}` | (titiler) The platform bucket canonical hrefs map into — mirrors the pipeline's `STAGING_BUCKET`. Required; the derived image refuses to start without it |
 | `ASSET_HREF_BASE` | `/api/assets` | (titiler) The href base the pipeline writes — mirrors the pipeline's `ASSET_HREF_BASE` |
 
@@ -285,3 +286,19 @@ GET /health
   `cube_sinks` columns and nothing else, and the Silo user
   (`infra/cube-server/silo-cube-read-policy.json`) can only read and list
   `assets/*/_cube/*`.
+
+### The Preview's use of it (Z-8)
+
+The collection Preview renders a cube with a fixed style, `CUBE_DEFAULT_STYLE`
+= `raster/Greys` over 190-310 K (GOES C13 brightness temperature; `Greys` maps
+low to white, so cold cloud tops are white), always sent as `colorscalerange`
+because real CMI has no `valid_min`/`valid_max` and the renderer would
+otherwise auto-range per tile. xpublish-tiles 0.9.2 validates the style variant
+against its own list, which has no matplotlib `_r` reversals: `gray_r` is a 422.
+A tile 422 whose body is `{"detail": "Invalid indexer: …"}` (a `t` the server's
+snapshot lacks: the asset is up to one poll, 15 s, ahead) is retried by
+remounting the frame after 5 s, up to 3 times, never by changing the URL (an
+unknown query parameter is a dimension selector); it never marks the frame
+failed. Any other 422 (a bad style, range or variable) is not retried. The variable is the first `cube:variables` entry of type `data`, else
+`CMI` (the Z-5 writer does not emit `cube:variables` yet: #170). A click calls
+`edr/position` and charts the CSV; `x-cube-missing-steps` is shown as a count.
