@@ -347,6 +347,88 @@ done
 | Runs + alerts + item count | `uv run python -m pipeline.demo images-status` |
 | Only digest-pinned pulls reach the daemon | `docker image ls --digests` |
 
+## Cube source (`cube-seed`)
+
+The Z-9 live gate (#95, spec §12 step 1) needs a single-band CMIPC source and an
+empty cube collection. `cube-seed` builds both, idempotently, and stops there:
+
+```sh
+uv run python -m pipeline.demo cube-seed      # needs CREDENTIALS_MASTER_KEY only when it must create goes-nodd
+uv run python -m pipeline.demo cube-status    # ingest ledger, sink ledger, item counts
+uv run python -m pipeline.demo cube-teardown  # add --force if another association targets the source
+```
+
+```
+goes19-cmipc-c13     goes-nodd (anonymous NODD; reused when goes-seed made it),
+  │                  reference mode, ABI-L2-CMIPC/{Y}/{j}/{H}/, include
+  │                  **/*M6C13*, window -6h, max_files_per_poll 1, poll 60 s,
+  │                  metadata.strategy: extractor -> goes-abi-metadata-cmipc
+  ▼  (the cube sink, created in the UI)
+goes19-c13-cube      EMPTY collection; the sink and its _cube/ repository are
+                     made in the live gate
+```
+
+**Next step:** open `/collections/goes19-c13-cube` -> Settings -> Virtual cube,
+pick `goes19-cmipc-c13` as the source and set `window.max_steps = 72`. Do not
+create the sink from here.
+
+### Why `metadata.strategy: extractor`
+
+Reference mode reads no bytes, so the built-in `raster_auto` path has nothing to
+date the item from and every item fails ITEMIZE (`no datetime could be
+resolved`). The demo extractor dates it from the filename's `_sYYYYDDDHHMMSSt`
+token and footprints it from the netCDF grid. It is **band-agnostic**: it opens
+`CMI_C02` when the file has it (multi-band MCMIPC, the standing GOES demo) and
+`CMI` otherwise (single-band CMIPC).
+
+`cube-seed` installs the extractor under its OWN process id
+(`goes-abi-metadata-cmipc`) rather than re-deploying `goes-abi-metadata`:
+`install_process` replaces the revision and deletes the process's run history,
+which must not happen to the standing GOES demo. Re-running `cube-seed` reuses
+the process when it is already deployed with the current code.
+
+### The include glob
+
+Globs match the source-relative path (`2026/276/17/OR_ABI-...nc`) and a lone `*`
+does not cross `/`. The spec's bare `M6C13` and `*M6C13*` match **nothing**; the
+working pattern is `**/*M6C13*`.
+
+### Why `max_files_per_poll: 1`
+
+The cube appends in time order and skips a step at or before its tip as `late`
+(`cubes/write.py`). Steps reach the sink in the order their items land in the
+catalogue, which for an extractor source is the order the extractor runs finish.
+DISCOVER admits new files oldest-first, at most `max_files_per_poll` per tick
+(`ingest/discover.py`), and ticks are whole minutes. With 6 per poll, six
+extractor runs start together and finish in any order (~30% `late` in the Z-7
+check). With 1 per poll and a 60 s poll, the next file is admitted a minute
+after the previous one, which is normally longer than one extractor run (not measured in
+this change; check the run times in `/processes` during the gate), so arrival is
+in order in the normal case. It is **not a hard guarantee**: a run that is
+retried (`max_attempts: 2`) or queued behind the run ceiling can still finish
+after its successor, and that one step is skipped `late`. Expect at most the odd
+gap, not 30%. The cost is a slower backfill: a `-6h` window is 72 files, about
+72 minutes to drain, after which the cube follows the live 5-minute cadence.
+
+### Before running it on the stack
+
+- the **process runtime image** (`docker buildx bake`; `cube-seed` does not build
+  it, unlike `goes-seed`) — the extractor runs in it;
+- the **pipeline** and **dispatcher** images running the current `main` (cube sinks, #127/#128); the extractor's code travels in the revision row, so
+  no image carries it;
+- the app has run its migrations (through `027_extractors`, and 032/033 for the
+  sink table).
+
+### `cube-teardown`
+
+Removes the sink (if one was made in the UI; its ledger cascades), the source's
+ingest ledger and association, the cube's own extractor process, the two
+collections and their `collection_settings`, and `goes-nodd` only when `cube-seed`
+created it and nothing else uses it. The standing GOES demo is untouched. No bytes
+are deleted here: like the app's catalog delete, it marks each collection's whole
+prefix `collection_delete` in `asset_gc`, and the GC job removes
+`assets/goes19-c13-cube/_cube/` after the collection's grace period (ADR 0022).
+
 ## Relationship to the other harnesses
 
 - **`pipeline.loadgen`** measures throughput with synthetic volume through an
