@@ -299,6 +299,12 @@ A tile 422 whose body is `{"detail": "Invalid indexer: …"}` (a `t` the server'
 snapshot lacks: the asset is up to one poll, 15 s, ahead) is retried by
 remounting the frame after 5 s, up to 3 times, never by changing the URL (an
 unknown query parameter is a dimension selector); it never marks the frame
-failed. Any other 422 (a bad style, range or variable) is not retried. The variable is the first `cube:variables` entry of type `data`, else
+failed. Any other 422 (a bad style, range or variable) is not retried. The
+frames mount only after the map's `load`: maplibre fires `load` once every
+source's in-view tiles are in, so slow virtual cube tiles mounted up front held
+it off (no fit to the bounds, no basemap, no progress) during playback. The
+"Loaded n of N frames" line counts a frame when maplibre reports its source
+loaded (`sourcedata` with `isSourceLoaded`). Scroll over the map zooms it, as
+on every other map page. The variable is the first `cube:variables` entry of type `data`, else
 `CMI` (the Z-5 writer does not emit `cube:variables` yet: #170). A click calls
 `edr/position` and charts the CSV; `x-cube-missing-steps` is shown as a count.

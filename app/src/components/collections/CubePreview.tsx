@@ -86,19 +86,33 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
   const lastFrame = Math.max(frames.length - 1, 0);
   const index = chosenIndex === null ? lastFrame : Math.min(chosenIndex, lastFrame);
 
-  // Preload progress: a frame counts once the map reports its tiles loaded
-  // while it is the current one.
+  // Preload progress: a frame counts once maplibre reports its source loaded
+  // (every in-view tile in), from `sourcedata` for any mounted frame (the
+  // shown one and the lookahead), plus `idle` / `canAdvance` for the current one.
   const [loaded, setLoaded] = useState<ReadonlySet<string>>(new Set());
   const framesRef = useRef(frames);
   framesRef.current = frames;
   const indexRef = useRef(index);
   indexRef.current = index;
   const retrying = useRef(new Set<string>());
-  const markCurrentLoaded = useCallback(() => {
-    const t = framesRef.current[indexRef.current]?.t;
+  const markLoaded = useCallback((t: string | undefined) => {
     if (t === undefined || retrying.current.has(t)) return;
     setLoaded((prev) => (prev.has(t) ? prev : new Set(prev).add(t)));
   }, []);
+  const markCurrentLoaded = useCallback(
+    () => markLoaded(framesRef.current[indexRef.current]?.t),
+    [markLoaded],
+  );
+
+  // The frames mount only once the map has loaded. maplibre fires `load` only
+  // when EVERY source's in-view tiles are in; cube tiles are slow virtual
+  // reads, and playback keeps mounting new frame sources, so frames mounted
+  // up front held `load` off indefinitely. StacMap fits the bounds and hands
+  // over the map ref on `load`, so the view stayed at the world default, no
+  // listener was attached, and playback never waited for tiles (live check
+  // of #172). Mounting after `load` also lets the basemap finish before cube
+  // tiles take maplibre's shared image-request slots.
+  const [mapReady, setMapReady] = useState(false);
 
   const mapRef = useRef<MapRef | null>(null);
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
@@ -110,6 +124,11 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
       mapRef.current = ref;
       detach.current?.();
       const onIdle = () => markCurrentLoaded();
+      const onSourceData = (e: { sourceId?: string; isSourceLoaded?: boolean }) => {
+        if (e.isSourceLoaded !== true) return;
+        const n = frameIndexFromSourceId(STACK_ID, e.sourceId);
+        if (n !== null) markLoaded(framesRef.current[n]?.t);
+      };
       const onError = (e: { sourceId?: string; error?: { status?: number; body?: unknown } }) => {
         const n = frameIndexFromSourceId(STACK_ID, e.sourceId);
         if (n === null || e.error?.status !== 422) return;
@@ -155,13 +174,16 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
         off: (type: string, fn: (e: never) => void) => void;
       };
       map.on("idle", onIdle);
+      map.on("sourcedata", onSourceData as (e: never) => void);
       map.on("error", onError as (e: never) => void);
       detach.current = () => {
         map.off("idle", onIdle);
+        map.off("sourcedata", onSourceData as (e: never) => void);
         map.off("error", onError as (e: never) => void);
       };
+      setMapReady(true);
     },
-    [markCurrentLoaded],
+    [markCurrentLoaded, markLoaded],
   );
   useEffect(() => {
     const pending = timers.current;
@@ -217,14 +239,16 @@ export function CubePreview({ collection, collectionId, cube }: CubePreviewProps
           cursor="crosshair"
           initialBounds={bbox ? bboxToLngLatBounds(bbox) : undefined}
         >
-          <RasterFrameStack
-            id={STACK_ID}
-            frames={rasterFrames}
-            index={index}
-            bounds={bbox}
-            minzoom={0}
-            maxzoom={CUBE_PREVIEW_MAXZOOM}
-          />
+          {mapReady && (
+            <RasterFrameStack
+              id={STACK_ID}
+              frames={rasterFrames}
+              index={index}
+              bounds={bbox}
+              minzoom={0}
+              maxzoom={CUBE_PREVIEW_MAXZOOM}
+            />
+          )}
         </StacMap>
       </div>
 
