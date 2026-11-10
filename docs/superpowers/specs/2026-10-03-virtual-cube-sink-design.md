@@ -389,6 +389,10 @@ snapshot. On a change it reopens the dataset:
   and `x.units` is `rad`, replace `x`/`y` with `x·h`, `y·h`
   (`h = perspective_point_height`, units `m`). Tiles were identical either way
   in the spike, and EDR is exact only this way.
+  *As built (#183):* the rescale applies to the EDR routes' view only. Tiles
+  must keep radians: xpublish-tiles' `Geostationary` grid (chosen for `rad`)
+  masks limb quads, and the full CONUS sector, unlike the spike's crop, has an
+  off-disk corner that otherwise smears west to the antimeridian.
 - `attrs["_xpublish_id"] = snapshot_id`, so xpublish-tiles' grid cache
   invalidates.
 
