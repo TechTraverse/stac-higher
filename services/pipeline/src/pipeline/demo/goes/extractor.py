@@ -8,8 +8,9 @@ the platform could not infer from a GOES ABI netCDF —
   (the ledger's modified time is minutes later, I-100);
 - `platform`, `instruments` and `goes:*` properties from the netCDF's global
   attributes;
-- the footprint from the `CMI_C02` subdataset's bounds, reprojected from the
-  geostationary CRS to WGS84 — the container dataset carries no
+- the footprint from the CMI subdataset's bounds — `CMI_C02` in a multi-band
+  MCMIPC file, plain `CMI` in a single-band CMIPC file — reprojected from the
+  geostationary CRS to WGS84. The container dataset carries no
   georeferencing, which is why the built-in path found none (I-101).
 
 It reads the file from LOCAL DISK: GDAL's netCDF driver cannot open /vsi
@@ -40,6 +41,19 @@ def scan_time(filename):
     digits = match.group(1)
     base = dt.datetime.strptime(digits[:13], "%Y%j%H%M%S").replace(tzinfo=dt.UTC)
     return base + dt.timedelta(milliseconds=100 * int(digits[13]))
+
+
+def cmi_subdataset(path, container):
+    """The GDAL name of the band grid to footprint from.
+
+    A multi-band MCMIPC file carries `CMI_C01`..`CMI_C16`; `CMI_C02` is the
+    one the standing demo has always used. A single-band CMIPC file carries a
+    plain `CMI`. A file with exactly one data variable has no subdatasets at
+    all, so the first fallback is still `CMI` — GDAL resolves it directly.
+    """
+    names = {sub.rsplit(":", 1)[-1] for sub in container.subdatasets}
+    band = "CMI_C02" if "CMI_C02" in names else "CMI"
+    return f'NETCDF:"{path}":{band}'
 
 
 def footprint(dataset, samples=25):
@@ -118,7 +132,8 @@ def main():
             s3.download_file(asset["bucket"], asset["key"], path)
             with rasterio.open(path) as container:
                 tags = container.tags()
-            with rasterio.open(f'NETCDF:"{path}":CMI_C02') as band:
+                grid = cmi_subdataset(path, container)
+            with rasterio.open(grid) as band:
                 geometry, bbox = footprint(band)
 
         # The NAME, though, comes from the href — its tail is the original
