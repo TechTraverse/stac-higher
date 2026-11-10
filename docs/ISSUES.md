@@ -1758,6 +1758,35 @@ kill-the-worker check or a live sink ever shows a poison row: a marker column
 set on the take, or a bisecting isolation, would pinpoint it in `log k`
 deaths.
 
+### I-148 · A full store outage on `edr/position` is a 200 with every step null 🟡
+
+`position` turns every `icechunk.StorageError` into a null step. A missing
+source file and an unreachable store raise the same error, so when every step
+of a series fails the response is a 200 whose values are all null and whose
+`x-cube-missing-steps` equals the step count. A client that does not read the
+header cannot tell an outage from a series of deleted files. Returning a 5xx
+when all steps fail would be wrong for a series whose every source is really
+gone, and telling the two apart needs a probe of the store (a design change to
+spec §8.4).
+
+Accepted for v1: the header carries the signal and the cube-server logs each
+failed step. Revisit with a store probe in the fallback path if a client
+mistakes an outage for empty data. Tracked in: GitHub #123
+
+### I-149 · A tile whose source file is gone is a 500 🟡
+
+xpublish-tiles loads the chunks inside an `asyncio.TaskGroup`, so a missing
+virtual-chunk source (`icechunk.StorageError`) surfaces as an
+`ExceptionGroup` that its own handler turns into a generic
+`500 {"detail":"Internal server error."}` before the app sees it. The
+response is `no-store`, so it is retried, but a client cannot tell a trimmed
+or deleted source from a server fault. A 404/410 would need either a handler
+that unwraps the group in xpublish-tiles' route (a patch of the dependency) or
+a pre-check of the step's source from the tile path, which is a design change.
+
+Accepted for v1: the pipeline trims a source only with its step, and the
+server reloads within one poll. Tracked in: GitHub #123
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.
