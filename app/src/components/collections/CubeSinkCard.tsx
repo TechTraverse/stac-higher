@@ -9,7 +9,7 @@
  *    app write bumps the row version and makes the pipeline discard and redo
  *    the first append.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
@@ -18,6 +18,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  ErrorState,
   Input,
   Label,
   Select,
@@ -32,6 +33,7 @@ import { Box, Save } from "lucide-react";
 import { toast } from "sonner";
 import {
   useCubeSink,
+  useFreshCubeSink,
   usePatchCubeSink,
   usePutCubeSink,
   useReferenceSources,
@@ -44,6 +46,7 @@ import {
   sinkToForm,
   type CubeSinkFormValues,
 } from "@/lib/cubes/form";
+import type { CubeSinkView } from "@/lib/cubes/queries";
 import { CUBE_SOURCE_REFUSAL_CODES } from "@/lib/cubes/status";
 import { CubeSinkStatus } from "./CubeSinkStatus";
 
@@ -63,7 +66,14 @@ export function CubeSinkCard({
   collectionId: string;
   canAct: boolean;
 }) {
-  const { data: view, isLoading } = useCubeSink(collectionId);
+  const {
+    data: view,
+    isLoading,
+    isError,
+    error: loadError,
+    refetch,
+  } = useCubeSink(collectionId);
+  const fetchFresh = useFreshCubeSink(collectionId);
   const sources = useReferenceSources(canAct);
   const put = usePutCubeSink(collectionId);
   const patch = usePatchCubeSink(collectionId);
@@ -74,10 +84,14 @@ export function CubeSinkCard({
 
   const sink = view?.sink ?? null;
   const locked = Boolean(sink?.last_snapshot_id);
+  // The view a fresh read or a 409 found pending while the cached one said
+  // otherwise; it lapses as soon as the cache holds a newer view.
+  const [pendingFor, setPendingFor] = useState<CubeSinkView | null>(null);
   const firstAppendPending =
     sink !== null &&
     !sink.last_snapshot_id &&
-    (view?.ledger.counts.pending ?? 0) > 0;
+    ((view?.ledger.counts.pending ?? 0) > 0 ||
+      (pendingFor !== null && pendingFor === view));
 
   const form = useForm<CubeSinkFormValues>({
     resolver: zodResolver(cubeSinkFormSchema),
@@ -86,13 +100,23 @@ export function CubeSinkCard({
   const { register, handleSubmit, setError, reset, watch, setValue, formState } =
     form;
 
-  // Re-seed whenever the stored row's version changes (a save, or the reload
-  // after a 409), so the form never keeps showing a stale layout.
+  // Re-seed when the stored row's version or repository existence changes.
+  // The pipeline never writes `version` (updated_at); its first commit sets
+  // only `last_snapshot_id`, which locks the layout. Unsaved edits survive a
+  // re-seed (e.g. the Enabled toggle bumps the version) except after a 409,
+  // which says the form's basis is stale.
   const version = sink?.version;
+  const snapshotId = sink?.last_snapshot_id ?? null;
+  const forceReseed = useRef(false);
   useEffect(() => {
-    if (sink) reset(sinkToForm(sink));
+    if (!sink) return;
+    reset(
+      sinkToForm(sink),
+      forceReseed.current ? undefined : { keepDirtyValues: true },
+    );
+    forceReseed.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [version, snapshotId]);
 
   if (isLoading) {
     return (
@@ -103,10 +127,26 @@ export function CubeSinkCard({
       </Card>
     );
   }
+  if (isError && view === undefined) {
+    // Never fall through to "Set up": its Save would replace a sink that
+    // exists but failed to load.
+    return (
+      <div data-testid="cube-sink-error">
+        <ErrorState
+          title="Could not load the virtual cube"
+          message={
+            loadError instanceof Error ? loadError.message : "Request failed"
+          }
+          onRetry={() => void refetch()}
+        />
+      </div>
+    );
+  }
   if (!sink && !canAct) return null;
 
   const showForm = canAct && (sink !== null || open);
-  const writeBlocked = firstAppendPending || put.isPending;
+  const writeBlocked =
+    firstAppendPending || put.isPending || patch.isPending;
   const errors = formState.errors;
 
   const sourceOptions = (sources.data ?? []).filter(
@@ -118,10 +158,31 @@ export function CubeSinkCard({
     (s) => s.collection_id === currentSource,
   );
 
-  const onSubmit = (values: CubeSinkFormValues) => {
+  /** Reads the sink fresh and reports whether the first append is running
+   * now. A failed read does not block: the server refuses the write itself. */
+  const firstAppendRunningNow = async (): Promise<boolean> => {
+    try {
+      const fresh = await fetchFresh();
+      const running =
+        fresh !== null &&
+        !fresh.sink.last_snapshot_id &&
+        fresh.ledger.counts.pending > 0;
+      if (running) setPendingFor(fresh);
+      return running;
+    } catch {
+      return false;
+    }
+  };
+
+  const onSubmit = async (values: CubeSinkFormValues) => {
+    if (writeBlocked) return;
     setAlert(null);
+    if (sink && (await firstAppendRunningNow())) return;
     put.mutate(formToPutBody(values, sink?.enabled ?? true, sink?.config), {
-      onSuccess: () => toast.success("Virtual cube saved"),
+      onSuccess: (data) => {
+        toast.success("Virtual cube saved");
+        if (data?.sink) reset(sinkToForm(data.sink));
+      },
       onError: (err) => {
         if (err.status === 400) {
           const mapped = apiIssuesToFormErrors(err.details);
@@ -137,11 +198,14 @@ export function CubeSinkCard({
           (CUBE_SOURCE_REFUSAL_CODES as readonly string[]).includes(err.code)
         ) {
           setError("source_collection_id", { message: err.message });
+        } else if (err.status === 409 && err.code === "first_append_pending") {
+          setPendingFor(view ?? null);
         } else if (
           err.status === 409 &&
           (err.code === "cube_layout_locked" ||
             err.code === "cube_sink_conflict")
         ) {
+          forceReseed.current = true;
           setAlert(RELOAD_MESSAGE);
         } else {
           setAlert(err.message);
@@ -150,11 +214,21 @@ export function CubeSinkCard({
     });
   };
 
-  const onToggle = (enabled: boolean) => {
+  const onToggle = async (enabled: boolean) => {
+    if (writeBlocked) return;
     setToggleAlert(null);
+    if (await firstAppendRunningNow()) return;
     patch.mutate(
       { enabled },
-      { onError: (err) => setToggleAlert(err.message) },
+      {
+        onError: (err) => {
+          if (err.status === 409 && err.code === "first_append_pending") {
+            setPendingFor(view ?? null);
+          } else {
+            setToggleAlert(err.message);
+          }
+        },
+      },
     );
   };
 
@@ -206,8 +280,8 @@ export function CubeSinkCard({
               id="cube-sink-enabled"
               data-testid="cube-sink-enabled"
               checked={sink.enabled}
-              onCheckedChange={onToggle}
-              disabled={firstAppendPending || patch.isPending}
+              onCheckedChange={(v) => void onToggle(v)}
+              disabled={writeBlocked}
             />
           </div>
         )}

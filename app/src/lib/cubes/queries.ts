@@ -76,14 +76,13 @@ async function cubeFetch<T>(url: string, options: RequestInit = {}): Promise<T> 
 const sinkUrl = (collectionId: string) =>
   `/api/collections/${encodeURIComponent(collectionId)}/cube-sink`;
 
-/** A 404 is "no sink yet": the card is mounted only for a caller who manages
+/** Key + fetcher shared by the live query and the card's fresh pre-write read.
+ * A 404 is "no sink yet": the card is mounted only for a caller who manages
  * the collection, so there is nothing else a 404 can mean. */
-export function useCubeSink(
-  collectionId: string,
-): UseQueryResult<CubeSinkView | null> {
-  return useQuery({
+function cubeSinkQueryOptions(collectionId: string) {
+  return {
     queryKey: cubeSinkKeys.detail(collectionId),
-    queryFn: async () => {
+    queryFn: async (): Promise<CubeSinkView | null> => {
       try {
         return await cubeFetch<CubeSinkView>(sinkUrl(collectionId));
       } catch (err) {
@@ -91,6 +90,17 @@ export function useCubeSink(
         throw err;
       }
     },
+  };
+}
+
+export function useCubeSink(
+  collectionId: string,
+): UseQueryResult<CubeSinkView | null> {
+  return useQuery({
+    ...cubeSinkQueryOptions(collectionId),
+    // The first-append write guard reads this view; the global default is no
+    // refetch on focus, so opt in here.
+    refetchOnWindowFocus: true,
     // Faster while waiting for the first append (the card's lock and the
     // write refusal depend on it).
     refetchInterval: (query) =>
@@ -98,6 +108,17 @@ export function useCubeSink(
         ? 15_000
         : 60_000,
   });
+}
+
+/** Returns a function that reads the sink view from the server right now
+ * (staleTime 0) and updates the cache: the card calls it before every write,
+ * because the cached view can be a poll interval old. */
+export function useFreshCubeSink(
+  collectionId: string,
+): () => Promise<CubeSinkView | null> {
+  const qc = useQueryClient();
+  return () =>
+    qc.fetchQuery({ ...cubeSinkQueryOptions(collectionId), staleTime: 0 });
 }
 
 export function useReferenceSources(

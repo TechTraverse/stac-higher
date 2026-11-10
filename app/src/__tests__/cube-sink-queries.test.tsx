@@ -5,10 +5,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cubeSinkKeys } from "@/lib/query/keys";
 import type { ReactNode } from "react";
 import {
   CubeSinkApiError,
   useCubeSink,
+  useFreshCubeSink,
   usePatchCubeSink,
   usePutCubeSink,
   useReferenceSources,
@@ -62,6 +64,33 @@ describe("useCubeSink", () => {
     const { result } = renderHook(() => useCubeSink("c"), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toBeInstanceOf(CubeSinkApiError);
+  });
+});
+
+describe("cubeSinkKeys", () => {
+  it("never collides with the reference-sources key, even for that collection id", () => {
+    expect(cubeSinkKeys.detail("reference-sources")).not.toEqual(cubeSinkKeys.referenceSources());
+    expect(cubeSinkKeys.detail("c")).toEqual(["cube-sink", "detail", "c"]);
+  });
+});
+
+describe("useFreshCubeSink", () => {
+  it("fetches now even when the cache is fresh, and updates the cache", async () => {
+    const view = (n: number) => ({ sink: { id: "s", last_snapshot_id: null }, ledger: { counts: { pending: n }, recent: [] } });
+    fetchMock.mockReturnValueOnce(json(200, view(0))).mockReturnValueOnce(json(200, view(2)));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+    const w = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const live = renderHook(() => useCubeSink("c"), { wrapper: w });
+    await waitFor(() => expect(live.result.current.isSuccess).toBe(true));
+    const fresh = renderHook(() => useFreshCubeSink("c"), { wrapper: w });
+    const got = await fresh.result.current();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(got?.ledger.counts.pending).toBe(2);
+    expect(
+      (client.getQueryData(cubeSinkKeys.detail("c")) as { ledger: { counts: { pending: number } } }).ledger.counts.pending,
+    ).toBe(2);
   });
 });
 

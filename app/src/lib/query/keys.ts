@@ -128,6 +128,6 @@ export const stacKeys = {
 export const cubeSinkKeys = {
   all: () => ["cube-sink"] as const,
   detail: (collectionId: string) =>
-    [...cubeSinkKeys.all(), collectionId] as const,
+    [...cubeSinkKeys.all(), "detail", collectionId] as const,
   referenceSources: () => [...cubeSinkKeys.all(), "reference-sources"] as const,
 };

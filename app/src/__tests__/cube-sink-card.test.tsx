@@ -4,14 +4,23 @@
  * state, and the viewer / operator split.
  */
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, act, fireEvent, waitFor, within } from "@testing-library/react";
 import type { CubeSinkView } from "@/lib/cubes/queries";
 import type { ApiCubeSink } from "@/lib/cubes/storage";
 import { CUBE_SINK_HEALTH_LABEL, CUBE_SINK_HEALTH_STATES } from "@/lib/cubes/status";
 import { CUBE_FORM_DEFAULTS, formToPutBody } from "@/lib/cubes/form";
 
 const m = vi.hoisted(() => ({
-  sinkState: { data: undefined as unknown, isLoading: false },
+  sinkState: {
+    data: undefined as unknown,
+    isLoading: false,
+    isError: false,
+    error: null as unknown,
+    refetch: vi.fn(),
+  } as { data: unknown; isLoading: boolean; isError?: boolean; error?: unknown; refetch?: () => void },
+  fresh: vi.fn(),
+  putPending: false,
+  patchPending: false,
   sources: { data: [] as unknown[], isSuccess: true },
   putMutate: vi.fn(),
   patchMutate: vi.fn(),
@@ -20,9 +29,10 @@ const m = vi.hoisted(() => ({
 vi.mock("@/lib/cubes/queries", async (orig) => ({
   ...(await orig<typeof import("@/lib/cubes/queries")>()),
   useCubeSink: () => m.sinkState,
+  useFreshCubeSink: () => m.fresh,
   useReferenceSources: () => m.sources,
-  usePutCubeSink: () => ({ mutate: m.putMutate, isPending: false }),
-  usePatchCubeSink: () => ({ mutate: m.patchMutate, isPending: false }),
+  usePutCubeSink: () => ({ mutate: m.putMutate, isPending: m.putPending }),
+  usePatchCubeSink: () => ({ mutate: m.patchMutate, isPending: m.patchPending }),
 }));
 
 import { CubeSinkApiError } from "@/lib/cubes/queries";
@@ -93,7 +103,11 @@ function renderCard(canAct = true) {
 beforeEach(() => {
   m.putMutate.mockReset();
   m.patchMutate.mockReset();
-  m.sinkState = { data: null, isLoading: false };
+  m.sinkState = { data: null, isLoading: false, isError: false, error: null, refetch: vi.fn() };
+  m.fresh.mockReset();
+  m.fresh.mockImplementation(async () => m.sinkState.data);
+  m.putPending = false;
+  m.patchPending = false;
   m.sources = { data: SOURCES, isSuccess: true };
 });
 
@@ -233,15 +247,132 @@ describe("CubeSinkCard existing sink", () => {
     );
   });
 
-  it("toggles with PATCH and shows a refusal inline", () => {
+  it("toggles with PATCH and shows a refusal inline", async () => {
     m.sinkState = { data: makeView(), isLoading: false };
     m.patchMutate.mockImplementation((_b, opts) =>
       opts.onError(new CubeSinkApiError("changed, reload", 409, "cube_sink_conflict")),
     );
     renderCard();
     fireEvent.click(screen.getByTestId("cube-sink-enabled"));
-    expect(m.patchMutate).toHaveBeenCalledWith({ enabled: false }, expect.anything());
-    expect(screen.getByTestId("cube-sink-toggle-alert")).toHaveTextContent("changed, reload");
+    await waitFor(() =>
+      expect(m.patchMutate).toHaveBeenCalledWith({ enabled: false }, expect.anything()),
+    );
+    expect(await screen.findByTestId("cube-sink-toggle-alert")).toHaveTextContent("changed, reload");
+  });
+});
+
+describe("CubeSinkCard review fixes", () => {
+  const setSink = (data: unknown) => {
+    m.sinkState = { ...m.sinkState, data, isLoading: false };
+  };
+
+  it("submit: a fresh read that finds the first append running blocks the PUT", async () => {
+    setSink(makeView({ last_snapshot_id: null }, { pending: 0 })); // cached: quiet
+    m.fresh.mockImplementation(async () => {
+      const fresh = makeView({ last_snapshot_id: null }, { pending: 2 });
+      setSink(fresh); // the real fetch also updates the cache the card reads
+      return fresh;
+    });
+    renderCard();
+    fireEvent.click(screen.getByTestId("cube-sink-save"));
+    await waitFor(() => expect(m.fresh).toHaveBeenCalled());
+    expect(await screen.findByTestId("cube-sink-pending-note")).toBeInTheDocument();
+    expect(m.putMutate).not.toHaveBeenCalled();
+  });
+
+  it("toggle: a fresh read that finds the first append running blocks the PATCH", async () => {
+    setSink(makeView({ last_snapshot_id: null }, { pending: 0 }));
+    m.fresh.mockImplementation(async () => {
+      const fresh = makeView({ last_snapshot_id: null }, { pending: 1 });
+      setSink(fresh);
+      return fresh;
+    });
+    renderCard();
+    fireEvent.click(screen.getByTestId("cube-sink-enabled"));
+    await waitFor(() => expect(m.fresh).toHaveBeenCalled());
+    expect(await screen.findByTestId("cube-sink-pending-note")).toBeInTheDocument();
+    expect(m.patchMutate).not.toHaveBeenCalled();
+  });
+
+  it("writes go ahead when the fresh read is quiet", async () => {
+    setSink(makeView());
+    renderCard();
+    fireEvent.click(screen.getByTestId("cube-sink-save"));
+    await waitFor(() => expect(m.putMutate).toHaveBeenCalled());
+    expect(m.fresh).toHaveBeenCalled();
+  });
+
+  it("renders a 409 first_append_pending as the first-append note", async () => {
+    setSink(makeView());
+    m.putMutate.mockImplementation((_b, opts) =>
+      opts.onError(new CubeSinkApiError("first append", 409, "first_append_pending")),
+    );
+    renderCard();
+    fireEvent.click(screen.getByTestId("cube-sink-save"));
+    expect(await screen.findByTestId("cube-sink-pending-note")).toBeInTheDocument();
+    expect(screen.queryByTestId("cube-sink-alert")).toBeNull();
+  });
+
+  it("re-seeds after a 409 cube_layout_locked when only last_snapshot_id changed", async () => {
+    setSink(makeView());
+    m.putMutate.mockImplementation((_b, opts) => {
+      opts.onError(new CubeSinkApiError("locked", 409, "cube_layout_locked"));
+    });
+    const { rerender } = renderCard();
+    fireEvent.change(screen.getByTestId("cube-sink-max-steps"), { target: { value: "5" } });
+    fireEvent.click(screen.getByTestId("cube-sink-save"));
+    await screen.findByTestId("cube-sink-alert");
+    expect(screen.getByTestId("cube-sink-append-dim")).not.toBeDisabled();
+    // The refetch lands: same version, first commit set the snapshot.
+    const refetched = makeView({ last_snapshot_id: "SNAP1" });
+    refetched.sink.config.window = { max_steps: 100, max_age: "24h" };
+    setSink(refetched);
+    rerender(<CubeSinkCard collectionId="goes19-c13-cube" canAct />);
+    await waitFor(() => expect(screen.getByTestId("cube-sink-append-dim")).toBeDisabled());
+    expect(screen.getByTestId("cube-sink-max-steps")).toHaveValue("100");
+  });
+
+  it("toggling Enabled keeps unsaved edits", async () => {
+    setSink(makeView());
+    const { rerender } = renderCard();
+    fireEvent.change(screen.getByTestId("cube-sink-max-steps"), { target: { value: "5" } });
+    fireEvent.click(screen.getByTestId("cube-sink-enabled"));
+    await waitFor(() => expect(m.patchMutate).toHaveBeenCalled());
+    // PATCH bumped the version.
+    setSink(makeView({ enabled: false, version: "v2" }));
+    rerender(<CubeSinkCard collectionId="goes19-c13-cube" canAct />);
+    await act(async () => {});
+    expect(screen.getByTestId("cube-sink-max-steps")).toHaveValue("5");
+  });
+
+  it("a failed GET shows an error state with retry, never the setup button", () => {
+    m.sinkState = {
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new CubeSinkApiError("boom", 500),
+      refetch: vi.fn(),
+    };
+    renderCard();
+    expect(screen.getByTestId("cube-sink-error")).toHaveTextContent("boom");
+    expect(screen.queryByTestId("cube-sink-setup")).toBeNull();
+    expect(screen.queryByTestId("cube-sink-save")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+    expect(m.sinkState.refetch).toHaveBeenCalled();
+  });
+
+  it("disables Save and the switch while a PUT or a PATCH is pending", () => {
+    setSink(makeView());
+    m.putPending = true;
+    const { unmount } = renderCard();
+    expect(screen.getByTestId("cube-sink-save")).toBeDisabled();
+    expect(screen.getByTestId("cube-sink-enabled")).toBeDisabled();
+    unmount();
+    m.putPending = false;
+    m.patchPending = true;
+    renderCard();
+    expect(screen.getByTestId("cube-sink-save")).toBeDisabled();
+    expect(screen.getByTestId("cube-sink-enabled")).toBeDisabled();
   });
 });
 
