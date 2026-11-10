@@ -13,6 +13,8 @@ const config: StorybookConfig = {
 
     return mergeConfig(config, {
       plugins: [tailwindcss()],
+      // maplibre's worker is an ES module entry (src/lib/map/maplibre-worker.ts).
+      worker: { format: "es" },
       resolve: {
         alias: {
           "@shared": path.resolve(__dirname, "../src"),

@@ -10,6 +10,9 @@ import { Label } from "@stac-higher/shared";
 import { Trash2 } from "lucide-react";
 import { $theme } from "@/stores/uiStore";
 import "maplibre-gl/dist/maplibre-gl.css";
+// This editor builds its own <Map>, so it needs maplibre's worker URL set too.
+import { MAPLIBRE_WORKER_URL } from "@stac-higher/shared";
+void MAPLIBRE_WORKER_URL;
 
 const BASEMAP_DARK =
   "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";

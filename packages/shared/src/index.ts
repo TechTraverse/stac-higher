@@ -19,6 +19,7 @@ export { StacApiError } from "@shared/lib/stac-api/types";
 // Utilities
 export { cn } from "@shared/lib/utils";
 export { bboxToPolygon, bboxToLngLatBounds, geometryToBbox } from "@shared/lib/map/bbox";
+export { MAPLIBRE_WORKER_URL } from "@shared/lib/map/maplibre-worker";
 
 // Pipeline graph — pure lineage + layout (P-2)
 export type {
