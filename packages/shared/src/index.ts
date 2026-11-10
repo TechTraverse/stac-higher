@@ -62,6 +62,11 @@ export { $mapViewState, $selectedFeatureIds, $drawMode, $drawnGeometry } from "@
 // Shared components
 export { BboxInput } from "@shared/components/shared/BboxInput";
 export { EmptyState } from "@shared/components/shared/EmptyState";
+export { TimeSeriesChart } from "@shared/components/shared/TimeSeriesChart";
+export type {
+  TimeSeriesChartProps,
+  TimeSeriesPoint,
+} from "@shared/components/shared/TimeSeriesChart";
 export { ErrorBoundary } from "@shared/components/shared/ErrorBoundary";
 export { ErrorState } from "@shared/components/shared/ErrorState";
 export { JsonViewer } from "@shared/components/shared/JsonViewer";

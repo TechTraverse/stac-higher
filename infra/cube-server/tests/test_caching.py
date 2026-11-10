@@ -35,3 +35,26 @@ def test_rendered_error_tile_is_never_stored():
     assert cache_control(TILE, {"t": T, "render_errors": "true"}, 200) == "no-store"
     assert cache_control(TILE, {"t": T, "render_errors": "True"}, 200) == "no-store"
     assert cache_control(TILE, {"t": T, "render_errors": "false"}, 200) == IMMUTABLE
+
+
+def test_pinned_tile_uses_the_datasets_append_dim():
+    """A sink with append_dim "time": xpublish-tiles ignores ``t`` (it renders the
+    latest step), so ``t`` must not make a tile immutable; ``time`` does (#123)."""
+    assert cache_control(TILE, {"time": T}, 200, "time") == IMMUTABLE
+    assert cache_control(TILE, {"t": T}, 200, "time") == SHORT
+    assert cache_control(TILE, {"time": f"nearest::{T}"}, 200, "time") == SHORT
+
+
+def test_collection_id_of_a_tile_path():
+    from stac_higher_cube_server.caching import collection_id
+
+    assert collection_id(TILE) == "c1"
+    assert collection_id("/health") is None
+
+
+def test_any_render_errors_value_but_an_explicit_falsy_one_is_never_stored():
+    # pydantic's truthy bool spellings, and anything unparsable
+    for value in ("on", "On", "t", "y", "yes", "true", "1", "", "maybe"):
+        assert cache_control(TILE, {"t": T, "render_errors": value}, 200) == "no-store", value
+    for value in ("false", "False", "0", "off", "f", "n", "no"):
+        assert cache_control(TILE, {"t": T, "render_errors": value}, 200) == IMMUTABLE, value

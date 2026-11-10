@@ -222,3 +222,115 @@ def test_rejected_config_keeps_the_open_dataset_and_reports_the_error(c1):
     source.rows = [row("c1")]
     registry.refresh()
     assert registry.health()["errors"] == {}
+
+
+def test_bare_s3_prefix_is_refused():
+    from stac_higher_cube_server.registry import check_source_prefixes
+
+    for bad in ("s3://", "s3:///", "s3://noaa-goes19", "gs://b/", "https://x/"):
+        with pytest.raises(UnsupportedSourceError):
+            check_source_prefixes((bad,))
+    check_source_prefixes(("s3://noaa-goes19/", "s3://noaa-goes19/ABI-L2-CMIPC/"))
+
+
+def test_a_cube_with_none_of_its_variables_is_an_error_not_healthy(c1):
+    source = FakeSource(row("c1", variables=("NOPE",)))
+    registry = CubeRegistry(source, LocalOpener({"c1": c1}))
+    assert registry.refresh() == []
+    assert registry.get("c1") is None
+    assert registry.health()["errors"] == {"c1": "ValueError"}
+    assert registry.health()["datasets"] == {}
+
+
+def test_a_removed_sink_is_forgotten_by_the_opener(c1):
+    class Opener(LocalOpener):
+        def __init__(self, cubes):
+            super().__init__(cubes)
+            self.forgotten: list[str] = []
+
+        def forget(self, cid):
+            self.forgotten.append(cid)
+
+    source = FakeSource(row("c1"))
+    opener = Opener({"c1": c1})
+    registry = CubeRegistry(source, opener)
+    registry.refresh()
+    source.rows = []
+    registry.refresh()
+    assert opener.forgotten == ["c1"]
+
+
+def test_s3_opener_forget_prunes_its_cache():
+    opener = S3RepoOpener(SETTINGS)
+    opener._cache["c1"] = (("s3://b/",), object())
+    opener.forget("c1")
+    opener.forget("c1")
+    assert opener._cache == {}
+
+
+def test_s3_opener_checks_exists_on_a_cache_hit(monkeypatch):
+    """A re-created (or deleted) cube must not reuse a stale cached handle."""
+    import icechunk as ic
+
+    opener = S3RepoOpener(SETTINGS)
+    stale = object()
+    opener._cache["c1"] = (("s3://noaa-goes19/",), stale)
+    monkeypatch.setattr(ic.Repository, "exists", staticmethod(lambda storage: False))
+    assert opener.open(row("c1")) is None
+    assert opener._cache == {}
+
+
+def test_refresh_swaps_the_entries_in_one_step(c1, tmp_path):
+    """While a poll is still opening c2, readers see c1's old dataset: the new
+    entries become visible together at the end of the poll (#123, item 12)."""
+    c2 = make_local_cube(tmp_path / "c2", steps=1)
+    source = FakeSource(row("c1"))
+    cubes = {"c1": c1, "c2": c2}
+    registry = CubeRegistry(source, LocalOpener(cubes))
+    registry.refresh()
+    old = registry.get("c1")
+    c1.append(1)
+    seen = []
+
+    class Opener(LocalOpener):
+        def open(self, sink):
+            if sink.cube_collection_id == "c2":
+                seen.append((registry.get("c1"), registry.ids()))
+            return super().open(sink)
+
+    registry._opener = Opener(cubes)
+    source.rows = [row("c1"), row("c2")]
+    registry.refresh()
+    assert len(seen) == 1
+    assert seen[0][0] is old and seen[0][1] == ["c1"]
+    assert registry.get("c1") is not old
+    assert registry.ids() == ["c1", "c2"]
+
+
+def test_warm_up_result_racing_a_refresh_rebuild_is_neither_lost_nor_a_crash(c1):
+    """record_warm_up runs on the event loop while refresh() rebuilds the
+    warm-up errors in its worker thread. The hooked dict lets a warm-up result
+    land in the middle of that rebuild; unguarded the rebuilt dict overwrites it
+    (a stale or lost WarmUpFailed), and a size change would raise 'dictionary
+    changed size during iteration' and lose the opened list."""
+    import threading
+
+    registry = CubeRegistry(FakeSource(row("c1")), LocalOpener({"c1": c1}))
+    registry.refresh()
+    writers: list[threading.Thread] = []
+
+    class Hooked(dict):
+        def items(self):
+            snapshot = list(super().items())
+            yield snapshot[0]
+            writer = threading.Thread(target=registry.record_warm_up, args=("c1", 500))
+            writers.append(writer)
+            writer.start()
+            writer.join(timeout=0.3)  # unguarded it finishes here; guarded it is blocked
+            yield from snapshot[1:]
+
+    registry._warm_up_errors = Hooked({"c1": "WarmUpFailed(None)", "gone": "WarmUpFailed(500)"})
+    registry.refresh()  # must not raise
+    writers[0].join(timeout=5)
+    assert not writers[0].is_alive()
+    assert registry.health()["errors"] == {"c1": "WarmUpFailed(500)"}

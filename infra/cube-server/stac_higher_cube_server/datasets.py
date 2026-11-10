@@ -54,6 +54,8 @@ def prepare_dataset(
     the dataset with its snapshot (``_xpublish_id`` invalidates xpublish-tiles'
     grid cache on every reopen) and its append dimension (the position route)."""
     keep = [v for v in variables if v in raw.data_vars]
+    if not keep:
+        raise ValueError(f"none of the sink's variables {list(variables)} is in the repository")
     mapping = None
     for name in keep:
         candidate = _grid_mapping_of(raw[name])

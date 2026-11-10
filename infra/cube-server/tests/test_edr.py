@@ -35,6 +35,7 @@ def test_no_missing_steps_counts_zero(tmp_path):
 
 def test_other_errors_propagate(tmp_path, monkeypatch):
     cube = make_local_cube(tmp_path, steps=2)
+    cube.delete_source(0)  # the one-shot load fails, so the per-step fallback runs
 
     async def boom(step):
         raise RuntimeError("not a missing source")
@@ -59,3 +60,27 @@ def test_zero_selected_steps_is_empty_not_an_error(tmp_path):
     loaded, missing = load_steps_tolerant(empty, "t")
     assert missing == 0
     assert loaded.sizes["t"] == 0
+
+
+def test_one_load_when_nothing_is_missing(tmp_path, monkeypatch):
+    """No per-step loads (and no event loop) unless a source is gone (#123, item 10)."""
+    cube = make_local_cube(tmp_path, steps=3)
+
+    async def boom(step):
+        raise AssertionError("per-step fallback used")
+
+    monkeypatch.setattr(edr, "_load_one", boom)
+    loaded, missing = load_steps_tolerant(_pixel(cube), "t")
+    assert missing == 0
+    assert loaded.CMI.values[2] == step_values(2)[3, 2]
+
+
+def test_a_non_storage_error_in_the_one_shot_load_propagates(tmp_path, monkeypatch):
+    cube = make_local_cube(tmp_path, steps=2)
+
+    def boom(self, **kwargs):
+        raise RuntimeError("not a missing source")
+
+    monkeypatch.setattr(xr.Dataset, "load", boom)
+    with pytest.raises(RuntimeError, match="not a missing source"):
+        load_steps_tolerant(_pixel(cube), "t")

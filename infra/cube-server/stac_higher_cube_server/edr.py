@@ -87,7 +87,8 @@ def normalise_time_selector(params: dict[str, str], dataset: xr.Dataset, dim: st
 def load_steps_tolerant(
     ds: xr.Dataset, dim: str, *, concurrency: int = 16
 ) -> tuple[xr.Dataset, int]:
-    """Load ``ds`` one ``dim`` step at a time; a missing source is a NaN step.
+    """Load ``ds``; if a source is missing, one ``dim`` step at a time, and a
+    missing source is a NaN step.
 
     Returns the loaded dataset (same steps, same order) and the count of
     steps whose source raised ``icechunk.StorageError``. Any other error
@@ -95,8 +96,12 @@ def load_steps_tolerant(
     runs sync routes in its threadpool), never from a running loop.
     """
     collapsed = dim not in ds.dims
-    if not collapsed and ds.sizes[dim] == 0:
-        return ds.load(), 0  # nothing selected: an empty series, as upstream
+    # One load first: nothing is usually missing, and a per-step load of up to
+    # max_steps (10,000) steps is slow. Only a missing source needs the fallback.
+    try:
+        return ds.load(), 0
+    except ic.StorageError:
+        pass
     steps = [ds] if collapsed else [ds.isel({dim: [i]}) for i in range(ds.sizes[dim])]
 
     async def gather() -> list[xr.Dataset | BaseException]:

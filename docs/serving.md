@@ -97,6 +97,7 @@ source-layer name every tipg tile carries (verified against tipg 1.0.1 on
 |---|---|---|
 | `PUBLIC_TITILER_URL` | `http://localhost:8084` | Browser-facing titiler base the UI links to |
 | `PUBLIC_TIPG_URL` | `http://localhost:8085` | Browser-facing tipg base the UI links to |
+| `PUBLIC_CUBE_SERVER_URL` | `http://localhost:8086` | Browser-facing cube-server base the cube Preview reads tiles and EDR from |
 | `PLATFORM_ASSET_BUCKET` | `${STAGING_BUCKET:-stac-higher}` | (titiler) The platform bucket canonical hrefs map into — mirrors the pipeline's `STAGING_BUCKET`. Required; the derived image refuses to start without it |
 | `ASSET_HREF_BASE` | `/api/assets` | (titiler) The href base the pipeline writes — mirrors the pipeline's `ASSET_HREF_BASE` |
 
@@ -226,8 +227,12 @@ GET /health
   reopened only when its snapshot, variables, prefixes or append dimension
   change; a disabled or deleted sink 404s from the next poll. The server never
   takes a store URL, bucket or prefix from a request.
-- **Sources:** exactly `cube_sinks.source_prefixes`, anonymous `s3://` only
-  (v1). Any other prefix makes that sink an error, not an open. The server
+- **Sources:** exactly `cube_sinks.source_prefixes`, anonymous `s3://<bucket>/`
+  only (v1; a bare `s3://` is refused). Any other prefix makes that sink an
+  error, not an open. A cube none of whose configured `variables` exist in the
+  repository is an error too (`ValueError`), not an empty healthy dataset.
+  Repository handles are cached per collection, checked with
+  `Repository.exists` on every poll and dropped when the sink goes. The server
   reads NODD directly: network-level egress control rides #68.
 - **Geostationary rescale:** `x`/`y` in `rad` are served in metres
   (× `perspective_point_height`), matching `cube:dimensions` on the asset. EDR
@@ -236,19 +241,26 @@ GET /health
   recorded `source_prefixes` (`pending` in `/health`; the prefixes are empty
   during a sink's first append and on a provisional redo, and without them no
   chunk could be read), or whose repository holds zero steps (`empty`).
-- **Time selection:** use the asset's `stac_higher:time_values` strings
+- **Time selection:** the selector is named after the sink's `append_dim`
+  (`t` for GOES; `time=…` for a sink with `append_dim: "time"`). Use the
+  asset's `stac_higher:time_values` strings
   verbatim (or `nearest::<value>`). A `t` the server's snapshot lacks — the
   asset can be one poll ahead, or the step was just trimmed — is a 422.
 - **Caching** (no server-side chunk cache; Icechunk's did not help virtual
-  chunks): a 200 tile with an exact `t` is
+  chunks; "`t`" below is the dataset's own append dimension, looked up by the
+  path's collection id): a 200 tile with an exact `t` is
   `Cache-Control: public, max-age=31536000, immutable`; any other 200 tile
   (no `t`, or a `nearest::` selector) is `public, max-age=60`; a non-200 tile
   is `no-store`, so a not-yet-loaded `t` is retried, and so is every tile
-  requested with xpublish-tiles' `render_errors=true` (it draws an error as a
-  200 image). Other routes are left alone. After every (re)open the server renders one z0 tile of the newest step
-  to absorb the Numba JIT (2.4–2.6 s cold vs 0.44 s warm in the spike).
-- **`edr/position` is per-step tolerant and GET-only.** Each step loads
-  separately; a step whose source file is gone (Icechunk `StorageError`) is an
+  requested with a `render_errors` other than an explicit falsy value
+  (`false`, `0`, `off`, `f`, `n`, `no`; it draws an error as a 200 image).
+  Other routes are left alone. A tile also answers `HEAD` (as the GET, without
+  the body). After every (re)open the server renders one z0 tile of the newest
+  step (pinned with the append dimension) to absorb the Numba JIT (2.4–2.6 s
+  cold vs 0.44 s warm in the spike). Warm-ups run detached (two at a time, 90 s
+  each) so a slow one never delays the next poll.
+- **`edr/position` is per-step tolerant and GET-only.** The selection loads
+  once; only when that raises `StorageError` does each step load separately. A step whose source file is gone (Icechunk `StorageError`) is an
   empty CSV field / JSON `null`, and `x-cube-missing-steps` carries the count
   (`0` when none; exposed through CORS). `POST` is not offered.
   `edr/area` and `edr/cube` are xpublish-edr's own and **fail** on a missing
@@ -260,7 +272,8 @@ GET /health
   exception **type** only, since the endpoint is anonymous; the text is in the
   service log. A DB or per-sink failure keeps serving what is already open.
   `errors` is keyed by cube collection id and also holds a sink whose config is
-  rejected (`InvalidSinkConfig`; its open dataset stays) and a cube whose
+  rejected (`InvalidSinkConfig`; its open dataset stays, so a sink whose config
+  stops parsing keeps serving its last good dataset) and a cube whose
   warm-up tile was not a 200 (`WarmUpFailed(<status>)`, `None` when the request
   failed), cleared by the next successful warm-up or when the cube goes.
 - **Stale snapshot risk:** if reloads keep failing for longer than Z-6's
@@ -268,8 +281,24 @@ GET /health
   its manifests garbage-collected under the server. `last_reload_error` is the
   signal.
 - **Auth posture:** anonymous reads, CORS `*` (the preflight allows GET and
-  HEAD, but a tile answers HEAD with 405; MapLibre only GETs), the same as
+  HEAD, and a tile answers both), the same as
   titiler until #34. Read-only on both sides: the DB login sees five
   `cube_sinks` columns and nothing else, and the Silo user
   (`infra/cube-server/silo-cube-read-policy.json`) can only read and list
   `assets/*/_cube/*`.
+
+### The Preview's use of it (Z-8)
+
+The collection Preview renders a cube with a fixed style, `CUBE_DEFAULT_STYLE`
+= `raster/Greys` over 190-310 K (GOES C13 brightness temperature; `Greys` maps
+low to white, so cold cloud tops are white), always sent as `colorscalerange`
+because real CMI has no `valid_min`/`valid_max` and the renderer would
+otherwise auto-range per tile. xpublish-tiles 0.9.2 validates the style variant
+against its own list, which has no matplotlib `_r` reversals: `gray_r` is a 422.
+A tile 422 whose body is `{"detail": "Invalid indexer: …"}` (a `t` the server's
+snapshot lacks: the asset is up to one poll, 15 s, ahead) is retried by
+remounting the frame after 5 s, up to 3 times, never by changing the URL (an
+unknown query parameter is a dimension selector); it never marks the frame
+failed. Any other 422 (a bad style, range or variable) is not retried. The variable is the first `cube:variables` entry of type `data`, else
+`CMI` (the Z-5 writer does not emit `cube:variables` yet: #170). A click calls
+`edr/position` and charts the CSV; `x-cube-missing-steps` is shown as a count.
