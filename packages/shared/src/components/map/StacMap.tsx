@@ -5,6 +5,8 @@ import Map, { NavigationControl, ScaleControl } from "react-map-gl/maplibre";
 import type { MapRef, MapMouseEvent } from "react-map-gl/maplibre";
 import type { LngLatBoundsLike } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+// Before any map is constructed: maplibre 6 cannot find its worker once bundled.
+import "@shared/lib/map/maplibre-worker";
 
 const BASEMAP_DARK =
   "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
