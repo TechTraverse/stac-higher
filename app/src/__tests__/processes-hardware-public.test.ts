@@ -10,6 +10,8 @@ import {
   findPublicProfile,
   formatMemoryMb,
   formatWait,
+  hardwareBoundsError,
+  hardwareFormIssue,
   hardwareSummary,
   profileDefaults,
   TIER_LABELS,
@@ -114,11 +116,66 @@ describe("hardwareSummary", () => {
       }),
     ).toBe("1 vCPU · 512 MB");
   });
+  it("keeps the GPU count when the profile is unknown or still loading", () => {
+    expect(hardwareSummary(undefined, { profile: "gpu-l4", cpu: 4, gpu_count: 2 }, 16384)).toBe(
+      "gpu-l4 (not in this deployment) · 4 vCPU · 16 GB · 2× GPU",
+    );
+    expect(
+      hardwareSummary(undefined, { profile: "gpu-l4", cpu: 4, gpu_count: 1 }, 16384, {
+        profilesLoaded: false,
+      }),
+    ).toBe("4 vCPU · 16 GB · 1× GPU");
+  });
 });
 
 describe("findPublicProfile", () => {
   it("finds by id", () => {
     expect(findPublicProfile([STANDARD, GPU_L4], "gpu-l4")).toBe(GPU_L4);
     expect(findPublicProfile([STANDARD], "gpu-l4")).toBeUndefined();
+  });
+});
+
+describe("hardwareFormIssue (the deploy form's pre-check, K-2 / I-130)", () => {
+  const PROFILES = [STANDARD, GPU_L4];
+  const ok = { profile: "standard", cpu: 1, gpu_count: 0 };
+
+  it("passes a block inside its profile's bounds", () => {
+    expect(hardwareFormIssue(ok, 512, PROFILES)).toBeNull();
+    expect(hardwareFormIssue({ profile: "gpu-l4", cpu: 4, gpu_count: 1 }, 16384, PROFILES)).toBeNull();
+  });
+
+  it("names the field and repeats the write gate's text for a bound", () => {
+    expect(hardwareFormIssue({ ...ok, cpu: 9 }, 512, PROFILES)).toEqual({
+      field: "cpu",
+      message: "hardware.cpu 9 is outside profile 'standard' bounds 0.25–4",
+    });
+    expect(hardwareFormIssue(ok, 32768, PROFILES)).toEqual({
+      field: "memory_mb",
+      message: "memory_mb 32768 is outside profile 'standard' bounds 128–16384",
+    });
+    expect(hardwareFormIssue({ profile: "gpu-l4", cpu: 4, gpu_count: 2 }, 16384, PROFILES)?.field).toBe(
+      "gpu_count",
+    );
+    expect(hardwareFormIssue({ ...ok, profile: "gone" }, 512, PROFILES)?.field).toBe("profile");
+  });
+
+  it("refuses a cleared input and fractional memory or GPUs before the bounds", () => {
+    expect(hardwareFormIssue({ ...ok, cpu: 0 }, 512, PROFILES)?.field).toBe("cpu");
+    expect(hardwareFormIssue({ ...ok, cpu: Number.NaN }, 512, PROFILES)?.field).toBe("cpu");
+    expect(hardwareFormIssue(ok, 0, PROFILES)?.field).toBe("memory_mb");
+    expect(hardwareFormIssue(ok, 512.5, PROFILES)).toEqual({
+      field: "memory_mb",
+      message: "Memory must be a whole number of MB",
+    });
+    expect(hardwareFormIssue({ profile: "gpu-l4", cpu: 4, gpu_count: 0.5 }, 16384, PROFILES)?.field).toBe(
+      "gpu_count",
+    );
+  });
+
+  it("is the message-only write-gate check underneath", () => {
+    expect(hardwareBoundsError({ ...ok, cpu: 9 }, 512, PROFILES)).toBe(
+      "hardware.cpu 9 is outside profile 'standard' bounds 0.25–4",
+    );
+    expect(hardwareBoundsError(ok, 512, PROFILES)).toBeNull();
   });
 });

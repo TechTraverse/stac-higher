@@ -30,7 +30,11 @@ import {
   type RuntimeFormState,
 } from "@/components/processes/runtime-form";
 import { HardwareFieldset } from "@/components/processes/HardwareFieldset";
-import { findPublicProfile, hardwareSummary } from "@/lib/processes/hardware-public";
+import {
+  findPublicProfile,
+  hardwareFormIssue,
+  hardwareSummary,
+} from "@/lib/processes/hardware-public";
 import { useImages } from "@/lib/images/queries";
 import { parseCommand } from "@/lib/processes/command";
 import { FlowStrip } from "@/components/monitoring/FlowStrip";
@@ -315,7 +319,7 @@ export function CodeCard({
   const [resources, setResources] = useState<ResourceFormState>(() =>
     resourcesFromRevision(currentRuntime, kind),
   );
-  const { data: hardwareProfiles } = useHardwareProfiles();
+  const { data: hardwareProfiles, error: hardwareProfilesError } = useHardwareProfiles();
   const [networkLevel, setNetworkLevel] = useState<NetworkLevel>("isolated");
   const networkMax = readUiNetworkMax();
   const deployMutation = useDeployRevision();
@@ -359,10 +363,21 @@ export function CodeCard({
   });
   const command =
     runtimeForm.kind === "container" ? parseCommand(runtimeForm.commandText) : null;
+  // K-2: the write gate's own hardware check, run before sending (the
+  // fieldset shows the same message inline). Without a loaded profile set
+  // there is nothing to check against; the gate still refuses at deploy.
+  const hardwareIssue = hardwareProfiles
+    ? hardwareFormIssue(resources.hardware, resources.memoryMb, hardwareProfiles.profiles)
+    : null;
+  const blockedBy = !payload.ok ? payload.error : (hardwareIssue?.message ?? null);
 
   const deploy = async () => {
     if (!payload.ok) {
       toast.error(payload.error);
+      return;
+    }
+    if (hardwareIssue) {
+      toast.error(hardwareIssue.message);
       return;
     }
     try {
@@ -500,6 +515,7 @@ export function CodeCard({
         />
         <HardwareFieldset
           profiles={hardwareProfiles?.profiles}
+          profilesError={hardwareProfilesError ? hardwareProfilesError.message : null}
           hardware={resources.hardware}
           memoryMb={resources.memoryMb}
           disabled={!canMutate}
@@ -556,7 +572,7 @@ export function CodeCard({
         </div>
         {canMutate && (
           <div className="flex flex-wrap items-center gap-3">
-            <Button onClick={deploy} disabled={deployMutation.isPending || !payload.ok}>
+            <Button onClick={deploy} disabled={deployMutation.isPending || blockedBy !== null}>
               {deployMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -564,8 +580,10 @@ export function CodeCard({
               )}
               Deploy revision
             </Button>
-            {!payload.ok && (
-              <span className="text-sm text-muted-foreground">{payload.error}</span>
+            {blockedBy && (
+              <span className="text-sm text-muted-foreground" data-testid="deploy-blocked">
+                {blockedBy}
+              </span>
             )}
             {currentRevision && (
               <span className="text-sm text-muted-foreground">

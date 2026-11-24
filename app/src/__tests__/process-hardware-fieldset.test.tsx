@@ -101,7 +101,7 @@ describe("HardwareFieldset", () => {
     );
   });
 
-  it("reports cpu, memory and gpu edits without touching the rest", () => {
+  it("reports cpu and memory edits without touching the rest", () => {
     const { onChange } = setup();
     fireEvent.change(screen.getByLabelText("CPU (cores)"), { target: { value: "2" } });
     expect(onChange).toHaveBeenLastCalledWith({
@@ -113,6 +113,69 @@ describe("HardwareFieldset", () => {
       hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
       memoryMb: 1024,
     });
+  });
+
+  it("reports a GPU count edit without touching the rest", () => {
+    const { onChange } = setup({
+      profiles: [STANDARD, { ...GPU_L4, gpu_count: { min: 1, max: 4, default: 1 } }],
+      hardware: { profile: "gpu-l4", cpu: 4, gpu_count: 1 },
+      memoryMb: 16384,
+    });
+    fireEvent.change(screen.getByLabelText("GPU count"), { target: { value: "2" } });
+    expect(onChange).toHaveBeenLastCalledWith({
+      hardware: { profile: "gpu-l4", cpu: 4, gpu_count: 2 },
+      memoryMb: 16384,
+    });
+  });
+
+  it("shows an out-of-bounds value inline in the write gate's words and marks that input", () => {
+    setup({ memoryMb: 32768 });
+    expect(screen.getByTestId("hardware-issue")).toHaveTextContent(
+      "memory_mb 32768 is outside profile 'standard' bounds 128–16384",
+    );
+    const mem = screen.getByLabelText("Memory (MB)");
+    expect(mem).toHaveAttribute("aria-invalid", "true");
+    expect(mem).toHaveAccessibleDescription(/memory_mb 32768 is outside/);
+    expect(screen.getByLabelText("CPU (cores)")).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("flags a cleared input and fractional memory", () => {
+    const { unmount } = render(
+      <HardwareFieldset
+        profiles={PROFILES}
+        hardware={{ profile: "standard", cpu: 0, gpu_count: 0 }}
+        memoryMb={512}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("CPU (cores)")).toHaveAttribute("aria-invalid", "true");
+    unmount();
+    setup({ memoryMb: 512.5 });
+    expect(screen.getByTestId("hardware-issue")).toHaveTextContent("Memory must be a whole number of MB");
+    expect(screen.getByLabelText("Memory (MB)")).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("shows no issue inside the bounds", () => {
+    setup();
+    expect(screen.queryByTestId("hardware-issue")).toBeNull();
+  });
+
+  it("describes the select with the profile description and announces the summary politely", () => {
+    setup({ hardware: { profile: "gpu-l4", cpu: 4, gpu_count: 1 }, memoryMb: 16384 });
+    expect(screen.getByLabelText("Hardware profile")).toHaveAccessibleDescription(
+      /Single L4\.\s*NVIDIA L4 · 24 GB/,
+    );
+    expect(screen.getByTestId("hardware-summary")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("says so when the profiles failed to load, rather than loading forever", () => {
+    setup({ profiles: undefined, profilesError: "Request failed: 500" });
+    expect(screen.queryByText(/Loading hardware profiles/)).toBeNull();
+    expect(screen.getByText(/Could not load the hardware profiles \(Request failed: 500\)/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Hardware profile")).toBeDisabled();
+    // Nothing to check against: no inline issue, and the summary claims nothing.
+    expect(screen.queryByTestId("hardware-issue")).toBeNull();
+    expect(screen.getByTestId("hardware-summary")).toHaveTextContent(/^1 vCPU · 512 MB$/);
   });
 
   it("keeps a profile this deployment no longer has as a disabled option and says so", () => {

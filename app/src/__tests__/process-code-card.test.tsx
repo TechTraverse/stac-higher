@@ -307,6 +307,28 @@ describe("CodeCard hardware (K-2, process-compute spec §9)", () => {
     expect(screen.getByLabelText("Memory (MB)")).toHaveValue(8192);
   });
 
+  it("will not deploy a stored value its profile no longer admits, and says why (I-130)", () => {
+    render(card("rev-1", { ...DEPLOYED, hardware: { profile: "standard", cpu: 1, gpu_count: 0 }, memory_mb: 32768 }));
+    expect(screen.getByTestId("hardware-issue")).toHaveTextContent(
+      "memory_mb 32768 is outside profile 'standard' bounds 128–16384",
+    );
+    expect(screen.getByRole("button", { name: /Deploy revision/ })).toBeDisabled();
+    expect(screen.getByTestId("deploy-blocked")).toHaveTextContent(
+      "memory_mb 32768 is outside profile 'standard' bounds 128–16384",
+    );
+    // Back inside the bounds, the deploy is open again.
+    fireEvent.change(screen.getByLabelText("Memory (MB)"), { target: { value: "16384" } });
+    expect(screen.getByRole("button", { name: /Deploy revision/ })).toBeEnabled();
+    expect(screen.queryByTestId("deploy-blocked")).toBeNull();
+  });
+
+  it("will not deploy a cleared memory input", () => {
+    setup();
+    fireEvent.change(screen.getByLabelText("Memory (MB)"), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: /Deploy revision/ })).toBeDisabled();
+    expect(screen.getByTestId("deploy-blocked")).toHaveTextContent(/memory_mb 0 is outside/);
+  });
+
   it("deploys the picked profile at its defaults after a profile change", async () => {
     setup();
     fireEvent.change(screen.getByLabelText("Hardware profile"), { target: { value: "cpu-large" } });

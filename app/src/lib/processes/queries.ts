@@ -6,7 +6,7 @@
  * revision list and the parent's `current_revision`.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { processKeys } from "@/lib/query/keys";
+import { hardwareKeys, processKeys } from "@/lib/query/keys";
 import {
   createBuiltinProcess,
   createOutput,
@@ -93,7 +93,7 @@ export function useRuns(id: string, { poll = true }: { poll?: boolean } = {}) {
  * operator data: fetched once per page and never considered stale. */
 export function useHardwareProfiles() {
   return useQuery({
-    queryKey: processKeys.hardwareProfiles(),
+    queryKey: hardwareKeys.profiles(),
     queryFn: listHardwareProfiles,
     staleTime: Infinity,
   });
