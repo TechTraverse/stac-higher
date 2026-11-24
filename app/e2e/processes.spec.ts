@@ -120,6 +120,39 @@ test.describe("Deploy form runtime chooser (C-3)", () => {
   });
 });
 
+test.describe("Deploy form hardware (K-2)", () => {
+  test("groups the profiles by tier and resets the numbers on a profile change", async ({ page }) => {
+    await page.goto("/processes");
+    await expect(
+      page.getByText(/No processes yet|Ceiling \d+ runs\/hour/).first(),
+    ).toBeVisible();
+    const first = page.locator('a[href^="/processes/"]').first();
+    // A bare database has no process to open: a legal state for this suite.
+    if ((await first.count()) === 0) return;
+    await first.click();
+    const hardware = page.getByRole("group", { name: "Hardware" });
+    // A built-in process shows the read-only built-in card, not the code form.
+    if ((await hardware.count()) === 0) return;
+    const profile = hardware.getByLabel("Hardware profile");
+    // The local profile set (infra/hardware-profiles/local.json).
+    await expect(profile.locator('optgroup[label="CPU"] option[value="standard"]')).toHaveCount(1);
+    await expect(profile.locator('optgroup[label="Large CPU"] option[value="cpu-large"]')).toHaveCount(1);
+    await expect(hardware.getByLabel("CPU (cores)")).toBeVisible();
+    await expect(hardware.getByLabel("Memory (MB)")).toBeVisible();
+    await expect(hardware.getByLabel("GPU count")).toHaveCount(0);
+    if (await profile.isDisabled()) return; // a member sees the form read-only
+    // Via standard, so the second change fires whatever the revision pinned.
+    await profile.selectOption("standard");
+    await profile.selectOption("cpu-large");
+    await expect(hardware.getByLabel("CPU (cores)")).toHaveValue("4");
+    await expect(hardware.getByLabel("Memory (MB)")).toHaveValue("8192");
+    await expect(hardware.getByTestId("hardware-summary")).toHaveText(
+      "4 vCPU · 8 GB · waits up to 1 h",
+    );
+    // Deliberately NOT deployed: the suite runs against a shared DB.
+  });
+});
+
 test.describe("Pipeline graph", () => {
   test("is reachable from the sidebar nav", async ({ page }) => {
     await page.goto("/catalogs");

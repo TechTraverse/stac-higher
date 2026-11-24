@@ -382,3 +382,14 @@ it) and then throws it away.
 - Resolved by: G-6 (migration 027 adds `ingest_files.source_mtime`; DISCOVER
   persists the listed `mtime` there and `file_mtime` prefers it over the
   settle time).
+
+### I-131 · The deploy form's memory input is free-form against a per-profile bound 🟢 resolved (K-2 hardware picker)
+
+`ProcessDetailPage.tsx`'s `CodeCard` pinned `standard` / cpu 1 and let an
+operator type any memory; an out-of-bounds value was refused by the write gate
+with a 400 the form showed as a toast.
+- Found in: K-1 Task 3 review (2026-09-14).
+- Resolved by: K-2 (GitHub #10). The deploy form's Hardware fieldset
+  (`app/src/components/processes/HardwareFieldset.tsx`) picks a profile and
+  takes the CPU / memory / GPU count bounds from it as input `min`/`max`; the
+  write gate and the launch-time re-check stay the enforcement.

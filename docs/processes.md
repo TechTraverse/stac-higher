@@ -111,6 +111,42 @@ the deploy form and, should it ever reach the ledger, dies as an unusable
 revision. (K-1's hardware profiles will carry an image BASE; the alias
 selects the variant, so a GPU profile and `stactools` compose.)
 
+## Hardware
+
+A revision names the hardware its runs ask for as a **profile** plus numbers
+inside that profile's bounds:
+
+```json
+"hardware": { "profile": "standard", "cpu": 1, "gpu_count": 0 }
+```
+
+with `memory_mb` and `timeout_seconds` beside it at the top level of
+`runtime`. Profiles are defined per deployment (`PROCESS_HARDWARE_PROFILES_FILE`;
+an operator picks, nobody edits them in the UI) and listed by
+`GET /api/processes/hardware-profiles`: each has a tier (CPU, Large CPU,
+GPU), an optional accelerator, inclusive `cpu` / `memory_mb` / `gpu_count`
+bounds with defaults, and the longest a run will wait for capacity.
+
+The deploy form's **Hardware** fieldset groups the profiles by tier, shows
+the chosen one's description and accelerator, bounds the CPU and memory
+inputs (and a GPU count, only for a profile with an accelerator) from it,
+and summarises the choice in one line — `4 vCPU · 16 GB · 1× L4 · waits up
+to 2 h`. Changing the profile resets the numbers to its defaults; the
+timeout is not a profile bound and is left alone. The form starts from what
+the current revision deployed — its hardware, memory and timeout — so a
+deploy edits the live settings rather than resetting them. A revision stored
+before profiles existed reads as `standard` at 1 CPU, no GPU; one pinned to
+a profile this deployment no longer defines shows it as *not in this
+deployment*.
+
+Out-of-bounds values are refused twice: at deploy (400 naming the bound,
+shown as the form's toast) and again by the pipeline at launch (the run dies
+with the same message), so a profile set that shrinks after a deploy cannot
+silently launch an oversized run. Every run row shows the hardware its
+pinned revision asked for. The Docker backend applies `cpu` and the
+profile's device requests from K-3 on; until then the numbers are recorded
+and enforced against the bounds only.
+
 ## Bring your own image
 
 A process can also run on an image you supply (ADR 0021). The runtime `kind`

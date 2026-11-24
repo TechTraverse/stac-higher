@@ -30,6 +30,7 @@ import {
   type RuntimeFormState,
 } from "@/components/processes/runtime-form";
 import { HardwareFieldset } from "@/components/processes/HardwareFieldset";
+import { findPublicProfile, hardwareSummary } from "@/lib/processes/hardware-public";
 import { useImages } from "@/lib/images/queries";
 import { parseCommand } from "@/lib/processes/command";
 import { FlowStrip } from "@/components/monitoring/FlowStrip";
@@ -924,6 +925,7 @@ function RunRow({
   canMutate,
   isExtractor,
   imageDigest,
+  hardware,
 }: {
   run: ProcessRun;
   processId: string;
@@ -931,6 +933,9 @@ function RunRow({
   isExtractor: boolean;
   /** The user-image digest the run's revision pins (C-3), or null. */
   imageDigest: string | null;
+  /** The hardware summary of the run's revision (K-2), or null when the
+   * revision is not on the page. */
+  hardware: string | null;
 }) {
   const rerunMutation = useRerunRun();
 
@@ -968,6 +973,12 @@ function RunRow({
           {run.input_items.length === 1 ? "" : "s"} · attempt {run.attempts}
           {run.output_items.length > 0 &&
             ` · ${run.output_items.length} published`}
+          {hardware && (
+            <>
+              {" · "}
+              <span data-testid="run-hardware">{hardware}</span>
+            </>
+          )}
         </div>
         {run.error && (
           <p className="text-sm text-destructive break-words">{run.error}</p>
@@ -1011,7 +1022,7 @@ function RunRow({
   );
 }
 
-function RunsCard({
+export function RunsCard({
   id,
   canMutate,
   isExtractor,
@@ -1020,12 +1031,28 @@ function RunsCard({
   id: string;
   canMutate: boolean;
   isExtractor: boolean;
-  /** The process's revisions: each run pins one, and its image digest shows on the row. */
+  /** The process's revisions: each run pins one, and its image digest and
+   * hardware show on the row. */
   revisions: ProcessRevision[] | undefined;
 }) {
   const { data: runs, isLoading } = useRuns(id);
+  const { data: hardwareProfiles } = useHardwareProfiles();
   const digestByRevision = new Map(
     (revisions ?? []).map((revision) => [revision.id, revisionImageDigest(revision.runtime)]),
+  );
+  // K-2: the hardware the pinned revision asked for (spec §9).
+  const hardwareByRevision = new Map(
+    (revisions ?? []).map((revision) => {
+      const { hardware, memoryMb } = resourcesFromRevision(
+        revision.runtime,
+        isExtractor ? "extractor" : "transform",
+      );
+      const profile = findPublicProfile(hardwareProfiles?.profiles ?? [], hardware.profile);
+      return [
+        revision.id,
+        hardwareSummary(profile, hardware, memoryMb, { profilesLoaded: hardwareProfiles !== undefined }),
+      ];
+    }),
   );
 
   return (
@@ -1054,6 +1081,7 @@ function RunsCard({
             canMutate={canMutate}
             isExtractor={isExtractor}
             imageDigest={digestByRevision.get(run.revision_id) ?? null}
+            hardware={hardwareByRevision.get(run.revision_id) ?? null}
           />
         ))}
       </CardContent>

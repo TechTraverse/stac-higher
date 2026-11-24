@@ -1380,14 +1380,6 @@ advisory listing over-bound current revisions, or a one-off audit query in
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `app/src/lib/processes/hardware.ts`. GitHub #10 (K-2 surfaces the bound at deploy time).
 - Found in: K-1 final review (2026-09-15).
 
-### I-131 · The deploy form's memory input is free-form against a per-profile bound 🟡
-`ProcessDetailPage.tsx`'s `CodeCard` pins `standard` / cpu 1 and lets an
-operator type any memory; an out-of-bounds value is refused by the write gate
-with a 400 the form shows as a toast. Closed by K-2 (the hardware picker
-bounds the inputs from the profile).
-- Tracked in: `app/src/components/processes/ProcessDetailPage.tsx`. GitHub #10 (K-2 closes this).
-- Found in: K-1 Task 3 review (2026-09-14).
-
 ### I-132 · A permanently unreadable hardware-profile file requeues every run forever with a WARNING only 🟡
 By ruling, an unreadable `PROCESS_HARDWARE_PROFILES_FILE` is an
 infrastructure fault (requeue, no attempt spent) rather than a dead run;
@@ -1815,3 +1807,4 @@ Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs her
 - **I-55** · No queue-level ingest retry / `stored` stall — 🟢 resolved (2026-07-30)
 - **I-56** · Delivery pre-record + stall sweep — 🟢 resolved (M2-0)
 - **I-100** · `file_mtime` was the ledger settle time, not the object's modified time — 🟢 resolved (G-6: DISCOVER persists `source_mtime`; `file_mtime` prefers it)
+- **I-131** · The deploy form's memory input was free-form against a per-profile bound — 🟢 resolved (K-2 hardware picker, GitHub #10)
