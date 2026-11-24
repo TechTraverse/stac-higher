@@ -193,7 +193,9 @@ jobs:
 
   e2e:
     name: E2E · Playwright vs compose stack
-    runs-on: ubuntu-latest
+    # Pinned: Playwright 1.59 has no browser dependencies for ubuntu-26.04,
+    # which ubuntu-latest now resolves to. Unpin with the Playwright bump.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
