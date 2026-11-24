@@ -1,0 +1,109 @@
+{{- $full := include "stac-higher.fullname" . -}}
+{{- $p := .Values.pipeline -}}
+{{- $platform := include "stac-higher.secretName" (dict "root" . "name" "platform") -}}
+{{- $hub := include "stac-higher.secretName" (dict "root" . "name" "dockerHub") -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-pipeline
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "pipeline") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "stac-higher.selectorLabels" (dict "root" . "component" "pipeline") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "stac-higher.labels" (dict "root" . "component" "pipeline") | nindent 8 }}
+      annotations:
+        {{- $ann := merge (deepCopy ($p.podAnnotations | default dict)) (dict "checksum/config" (include "stac-higher.configChecksum" .)) }}
+        {{- toYaml $ann | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "stac-higher.serviceAccountName" (dict "root" . "component" "pipeline") }}
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "stac-higher.podSecurityContext" (dict "uid" 999) | nindent 8 }}
+      containers:
+        - name: pipeline
+          image: {{ include "stac-higher.image" (dict "root" . "key" "pipeline") | quote }}
+          ports:
+            - name: http
+              containerPort: 8083
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ $full }}-env-shared
+            - configMapRef:
+                name: {{ $full }}-env-pipeline
+          env:
+            {{- include "stac-higher.dbCredentialEnv" (dict "secret" (include "stac-higher.secretName" (dict "root" . "name" "dbOwner"))) | nindent 12 }}
+            - name: CREDENTIALS_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $platform }}
+                  key: CREDENTIALS_MASTER_KEY
+            {{- if $hub }}
+            - name: REGISTRY_DOCKERHUB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $hub }}
+                  key: username
+            - name: REGISTRY_DOCKERHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $hub }}
+                  key: token
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+          securityContext:
+            {{- include "stac-higher.containerSecurityContext" (dict "readOnly" $p.readOnlyRootFilesystem) | nindent 12 }}
+          volumeMounts:
+            - name: config-files
+              mountPath: /etc/stac-higher/config
+              readOnly: true
+            {{- with include "stac-higher.caVolumeMount" (dict "root" .) }}
+            - {{- . | nindent 14 }}
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config-files
+          configMap:
+            name: {{ $full }}-config-files
+        {{- with include "stac-higher.caVolume" (dict "root" . "hook" false) }}
+        - {{- . | nindent 10 }}
+        {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+      {{- with $p.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

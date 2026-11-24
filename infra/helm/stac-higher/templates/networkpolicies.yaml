@@ -1,0 +1,58 @@
+{{- if .Values.networkPolicy.enabled }}
+# Ingress only: egress stays open (spec 6.5, #68). Default-deny covers every pod in the release namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "stac-higher.fullname" . }}-default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "network") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "stac-higher.fullname" . }}-app
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "app") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "stac-higher.selectorLabels" (dict "root" . "component" "app") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - {{- with .Values.networkPolicy.appIngressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      ports:
+        - protocol: TCP
+          port: 4321
+{{- if .Values.networkPolicy.metricsFrom }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "stac-higher.fullname" . }}-pipeline-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "pipeline") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "stac-higher.selectorLabels" (dict "root" . "component" "pipeline") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- toYaml .Values.networkPolicy.metricsFrom | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8083
+{{- end }}
+{{- end }}

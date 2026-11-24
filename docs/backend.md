@@ -223,4 +223,4 @@ Attaching an extension adds its schema URL to `stac_extensions`;
 | Push ingest (staged uploads, brokered BFF, finalize, rejection reasons) | [`push-ingest.md`](push-ingest.md), ADRs 0014/0015 |
 | Processes, inputs, network profiles, extractors, process alerts | [`processes.md`](processes.md), ADRs 0013/0018 |
 | OGC serving | [`serving.md`](serving.md) |
-| Deploying to AWS (Terraform/OpenTofu modules; the Helm chart follows in R-6) | [`../infra/terraform/README.md`](../infra/terraform/README.md), ADR 0024 |
+| Deploying to AWS (Terraform/OpenTofu modules, Helm chart) | [`../infra/terraform/README.md`](../infra/terraform/README.md), [`../infra/helm/stac-higher/README.md`](../infra/helm/stac-higher/README.md), ADR 0024 |

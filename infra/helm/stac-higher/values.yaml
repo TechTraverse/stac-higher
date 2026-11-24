@@ -1,0 +1,180 @@
+# STAC Higher chart values. `null` = required (schema or templates/validate.yaml enforces it).
+# Keys marked "R-5" are emitted by the R-5 Terraform `helm_values` output.
+
+nameOverride: "" # standard chart name override
+fullnameOverride: "" # standard fully-qualified name override
+
+global:
+  imageRepository: ghcr.io/techtraverse/stac-higher # upstream image = <imageRepository>-<key>
+  imageTag: "" # "" -> .Chart.AppVersion
+  imageDigests: {} # release manifest images.*.digest, keys verbatim (docs/releases.md); when set, pins by digest
+  imageRegistry: "" # R-5: GHCR mirror prefix (<acct>.dkr.ecr.<region>.<suffix>/ghcr); replaces leading ghcr.io of pulled images
+
+registry:
+  host: "" # R-5: ECR registry host (informational in R-6)
+  mirrorPrefixes: {} # R-5: {ghcr.io, docker.io, quay.io} -> prefix; pull rewrite falls back to it when global.imageRegistry is blank
+
+aws:
+  partition: aws # R-5: informational in R-6
+  region: us-east-1 # R-5: AWS_REGION, AWS_DEFAULT_REGION, S3_REGION, STAGING_S3_REGION
+  bucket: null # R-5: platform bucket -> S3_BUCKET, STAGING_BUCKET (required)
+  kmsKeyArn: "" # R-5: informational; the bucket default SSE-KMS applies without a client header
+  processRunRoleArn: null # R-5: -> PROCESS_STS_ROLE_ARN (required)
+  processMaxCredentialSeconds: 3600 # R-5: integer >= 900 -> PROCESS_MAX_CREDENTIAL_SECONDS; null deletes it (no cap)
+  s3PrefixListCidrs: [] # R-5: consumed by R-8 (runs NetworkPolicy)
+
+publicUrls:
+  app: null # R-5: public app URL, http(s) with no path (required)
+  objectStore: null # R-5: https://s3.<region>.<suffix>; the app's S3_ENDPOINT only (required)
+  catalog: null # deployment-supplied public STAC catalog URL (required)
+  titiler: null # deployment-supplied public titiler URL (required)
+  tipg: null # deployment-supplied public tipg URL (required)
+  cubeServer: null # deployment-supplied public cube-server URL (required)
+
+objectStore:
+  forcePathStyle: false # path-style S3 addressing (MinIO)
+  internalEndpoint: "" # STAGING_S3_ENDPOINT and PROCESS_RUN_S3_ENDPOINT; blank on AWS, set for MinIO only
+
+database:
+  host: null # R-5: database host (required)
+  port: 5432 # R-5: database port
+  name: null # R-5: database name (required)
+  masterSecretArn: "" # R-5: RDS-managed master secret (JSON username/password); required in external-secrets mode
+  caCertIdentifier: "" # R-5: informational, names the CA bundle a deployment must supply (e.g. rds-ca-rsa2048-g1)
+  sslMode: verify-full # verify-full | disable (dev only)
+  caBundle:
+    existingConfigMap: "" # deployment-supplied ConfigMap holding the CA bundle
+    key: ca-bundle.pem # key inside existingConfigMap
+    pem: "" # PEM text; the chart renders the ConfigMap (exactly one of existingConfigMap/pem with verify-full)
+
+auth:
+  mode: oidc # R-5: oidc | bypass
+  allowDevBypass: false # bypass without this fails to render
+  issuer: null # R-5: OIDC issuer URL -> OIDC_ISSUER (required when oidc)
+  clientId: null # R-5: OIDC client id -> OIDC_CLIENT_ID (required when oidc)
+  issuerInternal: "" # -> OIDC_ISSUER_INTERNAL
+  audiences: [stac-higher] # R-5: comma-joined -> AUTH_BEARER_AUDIENCES
+  audienceClaim: aud # R-5: aud | client_id -> AUTH_BEARER_AUDIENCE_CLAIM
+  claimsMapping: null # R-5: object -> AUTH_CLAIMS_MAPPING (compact JSON)
+  hostedDomain: "" # R-5: informational (no app env reads it)
+  devIdentity: null # object -> DEV_AUTH_IDENTITY (bypass only)
+
+identity:
+  mode: pod-identity # R-5: pod-identity | irsa
+  namespace: stac-higher # R-5: the release namespace must equal it (Pod Identity associations name it)
+  serviceAccounts:
+    app: stac-higher-app # R-5: app ServiceAccount name
+    pipeline: stac-higher-pipeline # R-5: pipeline ServiceAccount name
+    titiler: stac-higher-titiler # R-5: consumed by R-7
+    cubeServer: stac-higher-cube-server # R-5: consumed by R-7
+  roleArns:
+    app: "" # R-5: required when irsa -> eks.amazonaws.com/role-arn
+    pipeline: "" # R-5: required when irsa -> eks.amazonaws.com/role-arn
+    titiler: "" # R-5: consumed by R-7
+    cubeServer: "" # R-5: consumed by R-7
+
+secrets:
+  mode: external-secrets # R-5: external-secrets | existing
+  arns: # R-5: the secrets module's ten keys verbatim; ESO remoteRef.key
+    db_stac_higher_owner: "" # required in external-secrets mode
+    db_stac_api: "" # required in external-secrets mode
+    db_stac_reader: "" # required in external-secrets mode
+    db_stac_proxy_policy: "" # required in external-secrets mode
+    db_cube_server: "" # required in external-secrets mode
+    session_secret: "" # required in external-secrets mode
+    catalog_bff_shared_secret: "" # required in external-secrets mode
+    internal_api_token: "" # required in external-secrets mode
+    credentials_master_key: "" # required in external-secrets mode
+    proxy_auth_token: "" # accepted and ignored (I-159: PROXY_AUTH_TOKEN stays unwired)
+  dockerHubArn: "" # optional Secrets Manager secret, JSON username/token
+  externalSecrets:
+    storeRef:
+      name: "" # the cluster's (Cluster)SecretStore; required in external-secrets mode
+      kind: ClusterSecretStore # ClusterSecretStore | SecretStore
+    refreshInterval: 1h # ESO refresh interval
+  existing:
+    platform: "" # Secret name (SESSION_SECRET, CATALOG_BFF_SHARED_SECRET, INTERNAL_API_TOKEN, CREDENTIALS_MASTER_KEY); required in existing mode
+    dbMaster: "" # Secret name (username/password); required in existing mode
+    dbOwner: "" # Secret name (username/password); required in existing mode
+    dbStacApi: "" # Secret name (username/password); required in existing mode
+    dbStacReader: "" # Secret name (username/password); required in existing mode
+    dbProxyPolicy: "" # Secret name (username/password); required in existing mode
+    dbCubeServer: "" # Secret name (username/password); required in existing mode
+    dockerHub: "" # optional Secret name (username/token)
+
+demoDestination:
+  bucket: "" # R-5 (when on): consumed by R-10
+  region: "" # R-5 (when on): consumed by R-10
+  credentialsSecretArn: "" # R-5 (when on): consumed by R-10
+
+processRuns:
+  namespace: stac-higher-runs # R-8 creates it
+  networkMax: isolated # -> PROCESS_NETWORK_MAX (shared ConfigMap: app + pipeline)
+  credentialGraceSeconds: 300 # -> PROCESS_CREDENTIAL_GRACE_SECONDS (shared ConfigMap: app + pipeline)
+  clusterObjects: true # consumed by R-8
+
+config:
+  hardwareProfiles: null # null -> the chart's files/hardware-profiles/eks-cpu.json
+  imagePolicy: null # null -> the chart's files/image-policy/default.json
+
+ingress:
+  enabled: true # render the app Ingress
+  className: "" # ingressClassName
+  annotations: {} # on every chart Ingress
+  tlsSecretName: "" # set -> spec.tls (cert-manager); the ALB uses annotations instead
+  app:
+    annotations: {} # merged over ingress.annotations
+
+networkPolicy:
+  enabled: true # render NetworkPolicies
+  appIngressFrom: null # null -> app port open to any source; otherwise a list of NetworkPolicy peers
+  metricsFrom: [] # peers allowed to reach pipeline :8083
+
+app:
+  replicas: 2 # omitted when the HPA is on
+  autoscaling:
+    enabled: false # render the HPA
+    minReplicas: 2 # HPA minimum
+    maxReplicas: 6 # HPA maximum
+    targetCPUUtilizationPercentage: 70 # HPA CPU target
+  resources: # app container resources
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  readOnlyRootFilesystem: true # escape hatch (I-161)
+  builtinCatalogInternalUrl: "" # -> BUILTIN_CATALOG_URL; its host joins SAFE_FETCH_ALLOW_HOSTS (R-7 sets it)
+  safeFetchAllowHosts: [] # extra SAFE_FETCH_ALLOW_HOSTS entries
+  env: {} # extra non-secret env
+  podAnnotations: {} # extra pod annotations
+  nodeSelector: {} # pod nodeSelector
+  tolerations: [] # pod tolerations
+  affinity: {} # pod affinity
+
+pipeline:
+  resources: # pipeline container resources (README memory envelope ~735 MiB)
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { memory: 2Gi }
+  readOnlyRootFilesystem: true # escape hatch
+  egressAllowHosts: [] # -> EGRESS_ALLOW_HOSTS
+  env: {} # extra non-secret env
+  podAnnotations: {} # extra pod annotations
+  nodeSelector: {} # pod nodeSelector
+  tolerations: [] # pod tolerations
+  affinity: {} # pod affinity
+  metrics:
+    serviceMonitor:
+      enabled: false # render a ServiceMonitor
+      interval: 30s # scrape interval
+      labels: {} # extra ServiceMonitor labels
+
+dbJobs:
+  backoffLimit: 2 # hook Job retries
+  activeDeadlineSeconds: 900 # hook Job deadline
+  resources: # hook Job container resources
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+  nodeSelector: {} # hook Job nodeSelector
+  tolerations: [] # hook Job tolerations
+  affinity: {} # hook Job affinity
+
+demoSeed:
+  enabled: false # consumed by R-10

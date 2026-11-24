@@ -1,0 +1,27 @@
+# All eight digests, and the GHCR mirror (trailing slash is deliberate).
+global:
+  imageRegistry: "000000000000.dkr.ecr.us-east-1.amazonaws.com/ghcr/"
+  imageDigests:
+    app: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    pipeline: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    titiler: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    cube-server: "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    image-scanner: "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    process-runtime: "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    process-runtime-stactools: "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    auth-proxy: "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+registry:
+  host: 000000000000.dkr.ecr.us-east-1.amazonaws.com
+  mirrorPrefixes:
+    ghcr.io: "000000000000.dkr.ecr.us-east-1.amazonaws.com/ghcr/"
+    docker.io: "000000000000.dkr.ecr.us-east-1.amazonaws.com/docker-hub"
+    quay.io: "000000000000.dkr.ecr.us-east-1.amazonaws.com/quay"
+pipeline:
+  metrics:
+    serviceMonitor:
+      enabled: true
+networkPolicy:
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
