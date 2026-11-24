@@ -33,8 +33,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+        # containers.yml's release-manifest job attaches release-manifest.json
+        # to this same release; whichever workflow runs second uploads to it.
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --generate-notes \
-            "stac-higher-app-${GITHUB_REF_NAME}.tar.gz" \
-            services/pipeline/dist/*
+          assets=("stac-higher-app-${GITHUB_REF_NAME}.tar.gz" services/pipeline/dist/*)
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes "${assets[@]}" \
+            || gh release upload "$GITHUB_REF_NAME" --clobber "${assets[@]}"

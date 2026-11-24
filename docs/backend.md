@@ -59,6 +59,10 @@ export CATALOG_BFF_SHARED_SECRET=$(openssl rand -hex 32)   # or .env; mandatory 
 docker compose -f docker-compose.yml -f infra/compose.auth-enforced.yml up -d --build --wait
 ```
 
+The derived proxy image is also published as `stac-higher-auth-proxy` (see
+[`releases.md`](releases.md)) and honours `AUTH_BEARER_AUDIENCE_CLAIM`
+([`auth.md`](auth.md)).
+
 See [`decisions/0002-auth-proxy-enforcement.md`](decisions/0002-auth-proxy-enforcement.md)
 and [`decisions/0015-proxy-write-policy.md`](decisions/0015-proxy-write-policy.md).
 

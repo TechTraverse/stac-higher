@@ -1792,6 +1792,22 @@ a pre-check of the step's source from the tile path, which is a design change.
 Accepted for v1: the pipeline trims a source only with its step, and the
 server reloads within one poll.
 
+## Deployment artifacts (R queue, epic #136)
+
+### I-148 · The proxy's client_id audience mode rides on upstream internals 🟡
+
+Upstream stac-auth-proxy (through v1.3.1) matches the `aud` claim only. To
+support `AUTH_BEARER_AUDIENCE_CLAIM=client_id` (Cognito access tokens), the
+derived image swaps `EnforceAuthMiddleware` in `app.user_middleware`. The swap
+is guarded by a startup `RuntimeError` when upstream no longer registers
+exactly one such entry, and by the lockstep pin test
+(`test_dev_pin_matches_the_dockerfile_base`). It goes away if upstream gains a
+claim setting, which is worth proposing upstream. Tokens carrying `aud` are
+refused in `client_id` mode.
+
+Tracked in: `services/proxy-policy/src/stac_higher_proxy_policy/app.py`; ADR
+0015 bump procedure.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

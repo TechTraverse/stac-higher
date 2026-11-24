@@ -60,9 +60,18 @@ jobs:
             # build. Tagged by date too so the baked DB's age is visible.
             dockerfile: services/image-scanner/Dockerfile
             context: services/image-scanner
+          - name: auth-proxy
+            # The derived stac-auth-proxy (ADR 0015 write policy + the
+            # AUTH_BEARER_AUDIENCE_CLAIM check, spec §8). Repo-root context:
+            # .dockerignore re-includes services/proxy-policy. The upstream
+            # base is multi-arch, so the default platforms apply.
+            dockerfile: infra/proxy-policy/Dockerfile
+            context: .
     env:
       # Publish only from main and version tags; every other ref build-verifies.
       PUSH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+      # Attestations (provenance + SBOM) are attached to version-tag builds only.
+      RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
@@ -88,6 +97,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value={{date 'YYYYMMDD'}},enable=${{ matrix.image.name == 'image-scanner' }}
       - name: Build${{ env.PUSH == 'true' && ' + push' || '' }}
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.image.context }}
@@ -100,6 +110,26 @@ jobs:
           build-contexts: ${{ matrix.image.build-contexts || '' }}
           cache-from: type=gha,scope=${{ matrix.image.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
+          provenance: ${{ env.RELEASE == 'true' && 'mode=max' || '' }}
+          sbom: ${{ env.RELEASE == 'true' && 'true' || '' }}
+      - name: Record digest
+        env:
+          NAME: ${{ matrix.image.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGEID: ${{ steps.build.outputs.imageid }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DIGEST" ]; then
+            if [ "$PUSH" = "true" ]; then echo "::error::pushed $NAME but build-push-action returned no digest"; exit 1; fi
+            DIGEST="$IMAGEID"   # unpushed build: the dry-run manifest gets the local image id
+          fi
+          mkdir -p digests && printf '%s\n' "$DIGEST" > "digests/$NAME"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.image.name }}
+          path: digests/${{ matrix.image.name }}
+          if-no-files-found: error
+          retention-days: 7
       - name: Trivy image scan (informational)
         continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
@@ -125,6 +155,8 @@ jobs:
       packages: write
     env:
       PUSH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+      # Attestations (provenance + SBOM) are attached to version-tag builds only.
+      RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
@@ -163,6 +195,7 @@ jobs:
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
       - name: Build${{ env.PUSH == 'true' && ' + push' || '' }}
+        id: bake
         uses: docker/bake-action@v6
         with:
           source: .
@@ -178,6 +211,32 @@ jobs:
             *.platform=${{ env.PUSH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
             *.cache-from=type=gha,scope=process-runtime
             *.cache-to=type=gha,mode=max,scope=process-runtime
+          provenance: ${{ env.RELEASE == 'true' && 'mode=max' || '' }}
+          sbom: ${{ env.RELEASE == 'true' && 'true' || '' }}
+      - name: Record digests
+        env:
+          METADATA: ${{ steps.bake.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          # target -> manifest key
+          for pair in runtime:process-runtime stactools:process-runtime-stactools; do
+            target="${pair%%:*}"; key="${pair##*:}"
+            digest=$(jq -r --arg t "$target" '.[$t]["containerimage.digest"] // empty' <<<"$METADATA")
+            if [ -z "$digest" ]; then
+              if [ "$PUSH" = "true" ]; then echo "::error::pushed $key but bake returned no digest"; exit 1; fi
+              # unpushed build: the dry-run manifest gets the local image id
+              digest=$(jq -r --arg t "$target" '.[$t]["containerimage.config.digest"] // empty' <<<"$METADATA")
+            fi
+            if [ -z "$digest" ]; then echo "::error::no digest or image id for $key"; exit 1; fi
+            printf '%s\n' "$digest" > "digests/$key"
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-process-runtime
+          path: digests/
+          if-no-files-found: error
+          retention-days: 7
       - name: Trivy image scan (informational)
         continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
@@ -186,3 +245,64 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+
+  release-manifest:
+    # Collects every image digest into release-manifest.json (docs/releases.md).
+    # Every run produces a dry-run artifact (version v0.0.0-dryrun.<run>), so
+    # the wiring is proven on each PR. On a v* tag release-attach adds the file
+    # to the GitHub release.
+    name: Release manifest
+    needs: [build, runtime]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+      - name: Generate
+        env:
+          VERSION: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v0.0.0-dryrun.{0}', github.run_number) }}
+        run: >
+          node .github/scripts/release-manifest.mjs --version "$VERSION" --git-sha "$GITHUB_SHA"
+          --repository "$GITHUB_REPOSITORY" --digests-dir digests --out release-manifest.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-manifest
+          path: release-manifest.json
+          retention-days: 7
+
+  release-attach:
+    # Split from release-manifest so only this job holds contents: write.
+    name: Attach release manifest
+    needs: [release-manifest]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-manifest
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        # release.yml creates the release and usually finishes first; either
+        # side may create it, and the loser uploads to it.
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-manifest.json -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --generate-notes release-manifest.json \
+              || gh release upload "$TAG" release-manifest.json -R "$GITHUB_REPOSITORY" --clobber
+          fi
