@@ -14,7 +14,7 @@ export const RUNTIME_CONFIG_ENV: { readonly [K in keyof RuntimeConfig]: readonly
   builtInCatalogUrl: ["BUILTIN_CATALOG_PUBLIC_URL", "PUBLIC_BUILTIN_CATALOG_URL"],
   titilerUrl: ["TITILER_URL", "PUBLIC_TITILER_URL"],
   tipgUrl: ["TIPG_URL", "PUBLIC_TIPG_URL"],
-  cubeServerUrl: ["CUBE_SERVER_URL"],
+  cubeServerUrl: ["CUBE_SERVER_URL", "PUBLIC_CUBE_SERVER_URL"],
   processNetworkMax: ["PROCESS_NETWORK_MAX", "PUBLIC_PROCESS_NETWORK_MAX"],
 };
 

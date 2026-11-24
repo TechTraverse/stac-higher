@@ -14,6 +14,11 @@
  *          (#98): each attempt re-reads the row, re-checks it (when
  *          enabling) and writes only at that version; one retry, then 409
  *          cube_sink_conflict.
+ *          Both PUT and PATCH refuse with 409 first_append_pending while the
+ *          sink has no snapshot yet and a ledger row is pending: any write
+ *          bumps the row version, and the pipeline then discards and redoes
+ *          the first append. Checked on each attempt's fresh read; a PUT that
+ *          creates the sink is unaffected.
  * DELETE — operator+: only while no repository exists (else 409
  *          cube_repository_exists). Afterwards the row carries the layout
  *          lock and the ledger, so it goes with the cube collection; disable
@@ -31,6 +36,7 @@
  * Role + audit (`cube_sink`) live in the guard; re-checked here.
  */
 import type { APIRoute } from "astro";
+import type { ApiCubeSink } from "@/lib/cubes/storage";
 import type { AuthContext, CanonicalIdentity } from "@/lib/auth/types";
 import { authzError } from "@/lib/authz/guard";
 import { canMutate } from "@/lib/authz/permissions";
@@ -45,6 +51,7 @@ import {
   deleteCubeSink,
   existingCollections,
   getCubeSink,
+  hasPendingAppends,
   referenceIngestSources,
   setCubeSinkEnabled,
   upsertCubeSink,
@@ -55,6 +62,16 @@ const refuse = (status: number, code: string, error: string) => jsonResponse(sta
 const conflict = () =>
   refuse(409, "cube_sink_conflict",
     "The cube sink changed while this request was being applied; reload it and retry");
+
+/** While the first append is in progress (no snapshot, pending ledger rows) any
+ * write to the row would make the pipeline discard and redo it. Checked on
+ * each optimistic attempt's fresh read. */
+async function firstAppendPending(current: ApiCubeSink | null): Promise<Response | null> {
+  if (!current || current.last_snapshot_id) return null;
+  if (!(await hasPendingAppends(current.id))) return null;
+  return refuse(409, "first_append_pending",
+    "The first append is still running; an edit now would make it restart. Retry once it commits");
+}
 
 /** 401 / 403 / 404 preamble shared by every verb. Returns the caller. */
 async function preamble(
@@ -155,6 +172,8 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     let current = firstRead;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) current = await getCubeSink(cube);
+      const pending = await firstAppendPending(current);
+      if (pending) return pending;
       const hasRepository = Boolean(current?.last_snapshot_id);
       const sourceChanged = current !== null && current.source_collection_id !== source;
       if (current && hasRepository && (sourceChanged || layoutChanged(current.config, config))) {
@@ -189,6 +208,8 @@ export const PATCH: APIRoute = async ({ params, request, locals }) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const current = await getCubeSink(pre.collectionId);
       if (!current) return notFound();
+      const pending = await firstAppendPending(current);
+      if (pending) return pending;
       if (parsed.data.enabled) {
         const refused = await refuseSource(pre.identity, pre.collectionId, current.source_collection_id);
         if (refused) return refused;

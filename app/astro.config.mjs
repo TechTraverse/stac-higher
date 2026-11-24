@@ -33,6 +33,10 @@ export default defineConfig({
         '@shared': path.resolve(__dirname, '../packages/shared/src'),
       },
     },
+    // maplibre-gl 6's worker is bundled as an ES module entry
+    // (packages/shared/src/lib/map/maplibre-worker.ts) and started with
+    // { type: "module" }; the default "iife" would not match.
+    worker: { format: 'es' },
     optimizeDeps: {
       // Every page mounts its React island with `client:only="react"`, so Vite's
       // dep scanner never traverses into island code and starts the dev server

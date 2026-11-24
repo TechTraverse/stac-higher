@@ -7,6 +7,11 @@ reuses xpublish-edr 0.11.1's selection pipeline (``_run_position_query`` in
 source raises ``icechunk.StorageError`` comes back as NaN (an empty CSV
 field, a JSON ``null``) and is counted in ``x-cube-missing-steps``.
 
+Every EDR route (this one and xpublish-edr's ``area`` / ``cube``) sees the
+dataset through ``metres_view``: xpublish-edr needs projected metres, while
+the registered dataset keeps the GOES scan angles that xpublish-tiles' own
+geostationary grid needs (``datasets.rescale_geostationary``).
+
 GET only (plan Decision 3): xpublish-edr registers GET+POST as one route, and
 this replaces it. ``area`` and ``cube`` stay xpublish-edr's own and fail on a
 missing step. Re-check this module whenever the xpublish-edr pin moves.
@@ -33,6 +38,8 @@ from xpublish_edr.geometry.common import prepare_spatial_grid, project_dataset, 
 from xpublish_edr.geometry.position import select_by_position
 from xpublish_edr.plugin import CfEdrPlugin
 from xpublish_edr.query import EDRPositionQuery
+
+from stac_higher_cube_server.datasets import rescale_geostationary
 
 MISSING_STEPS_HEADER = "x-cube-missing-steps"
 APPEND_DIM_ATTR = "_cube_append_dim"
@@ -87,7 +94,8 @@ def normalise_time_selector(params: dict[str, str], dataset: xr.Dataset, dim: st
 def load_steps_tolerant(
     ds: xr.Dataset, dim: str, *, concurrency: int = 16
 ) -> tuple[xr.Dataset, int]:
-    """Load ``ds`` one ``dim`` step at a time; a missing source is a NaN step.
+    """Load ``ds``; if a source is missing, one ``dim`` step at a time, and a
+    missing source is a NaN step.
 
     Returns the loaded dataset (same steps, same order) and the count of
     steps whose source raised ``icechunk.StorageError``. Any other error
@@ -95,8 +103,12 @@ def load_steps_tolerant(
     runs sync routes in its threadpool), never from a running loop.
     """
     collapsed = dim not in ds.dims
-    if not collapsed and ds.sizes[dim] == 0:
-        return ds.load(), 0  # nothing selected: an empty series, as upstream
+    # One load first: nothing is usually missing, and a per-step load of up to
+    # max_steps (10,000) steps is slow. Only a missing source needs the fallback.
+    try:
+        return ds.load(), 0
+    except ic.StorageError:
+        pass
     steps = [ds] if collapsed else [ds.isel({dim: [i]}) for i in range(ds.sizes[dim])]
 
     async def gather() -> list[xr.Dataset | BaseException]:
@@ -123,6 +135,16 @@ def load_steps_tolerant(
     return xr.concat(loaded, dim=dim), missing
 
 
+def metres_view(dataset_dependency):
+    """A FastAPI dependency: the resolved dataset with geostationary scan
+    angles rescaled to metres (lazy: only the 1-D x/y coordinates change)."""
+
+    def dataset(ds: xr.Dataset = Depends(dataset_dependency)) -> xr.Dataset:  # noqa: B008
+        return rescale_geostationary(ds)
+
+    return dataset
+
+
 class TolerantEdrPlugin(CfEdrPlugin):
     """xpublish-edr with ``position`` replaced by the per-step tolerant route."""
 
@@ -130,6 +152,7 @@ class TolerantEdrPlugin(CfEdrPlugin):
 
     @hookimpl
     def dataset_router(self, deps: Dependencies):
+        deps = deps.model_copy(update={"dataset": metres_view(deps.dataset)})
         router = super().dataset_router(deps)
         router.routes = [
             r for r in router.routes

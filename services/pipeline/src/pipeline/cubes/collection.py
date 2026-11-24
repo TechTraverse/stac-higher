@@ -2,7 +2,8 @@
 
 After every batch that reached the repository, ``cube_append`` publishes the
 cube on its collection: ``assets.{asset_key}``, ``extent.temporal``,
-``cube:dimensions`` and the Datacube extension in ``stac_extensions``. Z-6's
+``cube:dimensions``, ``cube:variables`` and the Datacube extension in
+``stac_extensions``. Z-6's
 maintenance trim publishes through the same hook. This is the pipeline's
 first production collection write:
 - One transaction on a plain pool connection, not the item writer pool:
@@ -13,7 +14,7 @@ first production collection write:
   not with the KEY SHARE locks item inserts take through ``items_collections_fk``.
   A ``lock_timeout`` bounds the wait: the job holds the sink's ``cube:{id}``
   lock meanwhile, and a timeout is a DB error the job retries.
-- Only those four keys change, plus any stale cube asset (one carrying a
+- Only those five keys change, plus any stale cube asset (one carrying a
   ``stac_higher:cube_sink_id`` under another key: an earlier ``asset_key``
   or a deleted sink's), which is removed. A user's other edits survive, and
   a removed asset comes back.
@@ -171,6 +172,15 @@ def spatial_dimensions(
     return out
 
 
+def cube_variables(
+    variables: Sequence[str], append_dim: str, spatial_dims: Sequence[str]
+) -> dict[str, dict[str, Any]]:
+    """Datacube ``cube:variables``: one ``data`` variable per configured name,
+    in config order, over ``[append_dim, *spatial_dims]``."""
+    dims = [append_dim, *spatial_dims]
+    return {name: {"type": "data", "dimensions": list(dims)} for name in variables}
+
+
 def build_asset(
     *, href: str, sink_id: str, snapshot_id: str, prefixes: Sequence[str], times: list[str] | None
 ) -> dict[str, Any]:
@@ -200,8 +210,11 @@ def merge_collection(
 ) -> dict[str, Any]:
     """The collection document with the cube published on it. Touches only
     ``assets.{asset_key}`` (and any stale cube asset under another key),
-    ``extent.temporal``, ``cube:dimensions`` and the Datacube entry of
-    ``stac_extensions``."""
+    ``extent.temporal``, ``cube:dimensions``, ``cube:variables`` and the
+    Datacube entry of ``stac_extensions``. ``cube:variables`` is rebuilt from
+    the config and the grid's spatial dimensions; a result without the grid
+    (Z-6's trim) keeps the document's own, and the key is left out when there
+    is none."""
     merged = copy.deepcopy(dict(content))
     times = time_strings(result.values)
 
@@ -249,6 +262,11 @@ def merge_collection(
         extent["temporal"] = {"interval": [interval]}
         merged["extent"] = extent
     merged["cube:dimensions"] = dims
+
+    if result.statics and result.spatial_dims:
+        merged["cube:variables"] = cube_variables(
+            config.variables, config.append_dim, result.spatial_dims
+        )
 
     extensions = merged.get("stac_extensions")
     kept = [

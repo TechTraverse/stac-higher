@@ -25,6 +25,16 @@ describe("buildRuntimeConfig", () => {
       processNetworkMax: "isolated",
     });
   });
+  it("falls back to the legacy PUBLIC_CUBE_SERVER_URL name", () => {
+    expect(buildRuntimeConfig({ PUBLIC_CUBE_SERVER_URL: "https://cubes.example.org/" }).cubeServerUrl).toBe(
+      "https://cubes.example.org",
+    );
+    expect(
+      buildRuntimeConfig({ CUBE_SERVER_URL: "https://new.example.org", PUBLIC_CUBE_SERVER_URL: "https://old.example.org" })
+        .cubeServerUrl,
+    ).toBe("https://new.example.org");
+  });
+
   it("reads the new names and strips trailing slashes", () => {
     const c = buildRuntimeConfig({
       BUILTIN_CATALOG_PUBLIC_URL: "https://catalog.example.org/", TITILER_URL: "https://tiles.example.org//",
