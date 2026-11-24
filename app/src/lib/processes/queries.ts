@@ -18,6 +18,7 @@ import {
   deployBuiltinRevision,
   deployRevision,
   getProcess,
+  listHardwareProfiles,
   listOutputs,
   listProcesses,
   listRevisions,
@@ -85,6 +86,16 @@ export function useRuns(id: string, { poll = true }: { poll?: boolean } = {}) {
     queryFn: () => listRuns(id),
     enabled: !!id,
     refetchInterval: poll ? 10_000 : false,
+  });
+}
+
+/** The deployment's hardware profiles (K-2). Deployment config, not
+ * operator data: fetched once per page and never considered stale. */
+export function useHardwareProfiles() {
+  return useQuery({
+    queryKey: processKeys.hardwareProfiles(),
+    queryFn: listHardwareProfiles,
+    staleTime: Infinity,
   });
 }
 

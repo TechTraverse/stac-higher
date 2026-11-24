@@ -84,6 +84,8 @@ export const processKeys = {
   sources: (id: string) => [...processKeys.detail(id), "sources"] as const,
   outputs: (id: string) => [...processKeys.detail(id), "outputs"] as const,
   runs: (id: string) => [...processKeys.detail(id), "runs"] as const,
+  /** Deployment config, not per-process (K-2). */
+  hardwareProfiles: () => [...processKeys.all(), "hardware-profiles"] as const,
 } as const;
 
 /** The platform-wide image registry (C-3). Catalog-agnostic like every

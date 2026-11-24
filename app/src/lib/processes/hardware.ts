@@ -18,6 +18,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
+import type { PublicHardwareProfile as ClientHardwareProfile } from "./hardware-public";
+
 export const HARDWARE_TIERS = ["cpu", "cpu-large", "gpu"] as const;
 export const DEFAULT_HARDWARE_PROFILE = "standard";
 /** What an absent `hardware` block means on BOTH sides — equals the shipped
@@ -158,3 +160,11 @@ export function hardwareBoundsError(
 export function publicProfiles(set: HardwareProfileSet): PublicHardwareProfile[] {
   return set.profiles.map(({ backend: _backend, ...rest }) => rest);
 }
+
+// K-2: the browser reads profiles through `hardware-public.ts` (this module
+// imports node:fs). These assignments fail to compile if the two shapes drift
+// in either direction.
+type ServerMatchesClient = PublicHardwareProfile extends ClientHardwareProfile ? true : never;
+type ClientMatchesServer = ClientHardwareProfile extends PublicHardwareProfile ? true : never;
+const _shapesAgree: [ServerMatchesClient, ClientMatchesServer] = [true, true];
+void _shapesAgree;
