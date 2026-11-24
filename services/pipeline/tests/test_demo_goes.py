@@ -524,3 +524,31 @@ def test_goes_seed_requires_the_master_key_before_any_write(goes_seed_module, mo
         module.seed(_goes_args())
 
     assert written == []
+
+
+def _write_netcdf(path, variables):
+    import h5py
+
+    with h5py.File(path, "w") as f:
+        for name in variables:
+            f.create_dataset(name, data=np.zeros((4, 4), dtype="float32"))
+
+
+@pytest.mark.parametrize(
+    ("variables", "expected"),
+    [
+        (("CMI_C01", "CMI_C02", "DQF_C02"), "CMI_C02"),  # multi-band MCMIPC
+        (("CMI", "DQF"), "CMI"),  # single-band CMIPC
+        (("CMI",), "CMI"),  # one variable: no subdatasets at all
+    ],
+)
+def test_cmi_subdataset_is_band_agnostic(extractor, tmp_path, variables, expected):
+    import rasterio
+
+    path = str(tmp_path / "scene.nc")
+    _write_netcdf(path, variables)
+    with rasterio.open(path) as container:
+        name = extractor["cmi_subdataset"](path, container)
+    assert name == f'NETCDF:"{path}":{expected}'
+    with rasterio.open(name) as band:  # the chosen name actually opens
+        assert band.shape == (4, 4)

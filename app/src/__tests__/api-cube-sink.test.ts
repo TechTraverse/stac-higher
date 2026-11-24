@@ -15,6 +15,7 @@ vi.mock("@/lib/cubes/storage", () => ({
   existingCollections: vi.fn(),
   referenceIngestSources: vi.fn(),
   collectionHasItem: vi.fn(),
+  hasPendingAppends: vi.fn(),
 }));
 vi.mock("@/lib/associations/access", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/associations/access")>()),
@@ -31,6 +32,7 @@ import {
   deleteCubeSink,
   existingCollections,
   getCubeSink,
+  hasPendingAppends,
   referenceIngestSources,
   setCubeSinkEnabled,
   upsertCubeSink,
@@ -88,6 +90,7 @@ beforeEach(() => {
   vi.mocked(existingCollections).mockReset().mockResolvedValue(new Set([CUBE, SOURCE]));
   vi.mocked(referenceIngestSources).mockReset().mockResolvedValue([{ association_id: "a1", connection_id: "c1", protocol: "s3", anonymous: true }]);
   vi.mocked(collectionHasItem).mockReset().mockResolvedValue(false);
+  vi.mocked(hasPendingAppends).mockReset().mockResolvedValue(false);
 });
 
 describe("GET", () => {
@@ -416,5 +419,57 @@ describe("DELETE", () => {
     vi.mocked(getCubeSink).mockResolvedValue(sink());
     vi.mocked(deleteCubeSink).mockResolvedValue(false); // guarded DELETE matched nothing
     expect((await (await del()).json()).code).toBe("cube_repository_exists");
+  });
+});
+
+describe("first_append_pending guard", () => {
+  const patch = (enabled: boolean) => call(patchRoute, operator, { method: "PATCH", body: { enabled } });
+
+  it("PUT on a sink with no snapshot and pending rows → 409, nothing written", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink());
+    vi.mocked(hasPendingAppends).mockResolvedValue(true);
+    const res = await put({ source_collection_id: SOURCE, config });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("first_append_pending");
+    expect(hasPendingAppends).toHaveBeenCalledWith(sink().id);
+    expect(upsertCubeSink).not.toHaveBeenCalled();
+  });
+
+  it("PATCH on a sink with no snapshot and pending rows → 409, nothing written", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink());
+    vi.mocked(hasPendingAppends).mockResolvedValue(true);
+    const res = await patch(false);
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("first_append_pending");
+    expect(setCubeSinkEnabled).not.toHaveBeenCalled();
+  });
+
+  it("no 409 once last_snapshot_id is set, even with pending rows", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink({ last_snapshot_id: "SNAP1" }));
+    vi.mocked(hasPendingAppends).mockResolvedValue(true);
+    vi.mocked(upsertCubeSink).mockResolvedValue({ sink: sink(), created: false });
+    expect((await put({ source_collection_id: SOURCE, config })).status).toBe(200);
+    expect((await patch(false)).status).toBe(200);
+  });
+
+  it("no 409 with zero pending rows", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink());
+    vi.mocked(upsertCubeSink).mockResolvedValue({ sink: sink(), created: false });
+    expect((await put({ source_collection_id: SOURCE, config })).status).toBe(200);
+    expect((await patch(false)).status).toBe(200);
+  });
+
+  it("a PUT that creates the sink never checks the ledger", async () => {
+    expect((await put({ source_collection_id: SOURCE, config })).status).toBe(201);
+    expect(hasPendingAppends).not.toHaveBeenCalled();
+  });
+
+  it("checks each attempt's fresh read: pending appears on the retry", async () => {
+    vi.mocked(getCubeSink).mockResolvedValue(sink());
+    vi.mocked(upsertCubeSink).mockResolvedValueOnce(null);
+    vi.mocked(hasPendingAppends).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const res = await put({ source_collection_id: SOURCE, config });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("first_append_pending");
   });
 });

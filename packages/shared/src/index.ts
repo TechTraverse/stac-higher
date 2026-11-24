@@ -19,6 +19,7 @@ export { StacApiError } from "@shared/lib/stac-api/types";
 // Utilities
 export { cn } from "@shared/lib/utils";
 export { bboxToPolygon, bboxToLngLatBounds, geometryToBbox } from "@shared/lib/map/bbox";
+export { MAPLIBRE_WORKER_URL } from "@shared/lib/map/maplibre-worker";
 
 // Pipeline graph — pure lineage + layout (P-2)
 export type {
@@ -62,6 +63,11 @@ export { $mapViewState, $selectedFeatureIds, $drawMode, $drawnGeometry } from "@
 // Shared components
 export { BboxInput } from "@shared/components/shared/BboxInput";
 export { EmptyState } from "@shared/components/shared/EmptyState";
+export { TimeSeriesChart } from "@shared/components/shared/TimeSeriesChart";
+export type {
+  TimeSeriesChartProps,
+  TimeSeriesPoint,
+} from "@shared/components/shared/TimeSeriesChart";
 export { ErrorBoundary } from "@shared/components/shared/ErrorBoundary";
 export { ErrorState } from "@shared/components/shared/ErrorState";
 export { JsonViewer } from "@shared/components/shared/JsonViewer";
