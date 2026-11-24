@@ -2,7 +2,8 @@ apiVersion: v2
 name: stac-higher
 description: STAC Higher platform - app, pipeline worker and the database bootstrap/migrate hooks.
 type: application
-# R-9 sets version/appVersion from the release tag.
+# Placeholders: scripts/package-chart.sh stamps version and appVersion from the
+# release tag (without its v) when release.yml packages the chart.
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.34.0-0"
