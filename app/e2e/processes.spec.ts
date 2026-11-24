@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 /**
  * UI-surface e2e for the Phase 9 process pages and the pipeline graph
@@ -95,24 +95,51 @@ test.describe("Images (C-4)", () => {
   });
 });
 
+/**
+ * Opens the first process whose detail page carries the code form (not a
+ * built-in one) and waits for that form to render — the detail page is
+ * `client:only`, so nothing is in the DOM until the island has loaded. Returns
+ * `null` on a database with no such process (a legal state for this suite),
+ * otherwise whether the viewer may edit it.
+ */
+async function openCodeFormProcess(page: Page): Promise<{ canMutate: boolean } | null> {
+  await page.goto("/processes");
+  await expect(
+    page.getByText(/No processes yet|Ceiling \d+ runs\/hour/).first(),
+  ).toBeVisible();
+  const card = page
+    .locator('[data-testid^="process-card-"]')
+    .filter({ hasNot: page.getByText("built-in", { exact: true }) })
+    .first();
+  if ((await card.count()) === 0) return null;
+  await card.locator('a[href^="/processes/"]').first().click();
+  const runtime = page.getByRole("group", { name: "Runtime" });
+  const builtin = page.getByTestId("builtin-card");
+  await expect(runtime.or(builtin)).toBeVisible();
+  if (await builtin.isVisible()) return null; // the card list lied: built-in after all
+  // Deploy renders only for an operator in the process's group, and only
+  // once the identity has loaded — there is no positive marker for the
+  // read-only state, so give it a bounded wait.
+  const canMutate = await page
+    .getByRole("button", { name: /Deploy revision/ })
+    .waitFor({ timeout: 5_000 })
+    .then(
+      () => true,
+      () => false,
+    );
+  return { canMutate };
+}
+
 test.describe("Deploy form runtime chooser (C-3)", () => {
   test("offers the three runtimes and hides the editor for a container image", async ({ page }) => {
-    await page.goto("/processes");
-    await expect(
-      page.getByText(/No processes yet|Ceiling \d+ runs\/hour/).first(),
-    ).toBeVisible();
-    const first = page.locator('a[href^="/processes/"]').first();
-    // A bare database has no process to open: a legal state for this suite.
-    if ((await first.count()) === 0) return;
-    await first.click();
+    const opened = await openCodeFormProcess(page);
+    if (!opened) return;
     const runtime = page.getByRole("group", { name: "Runtime" });
-    // A built-in process shows the read-only built-in card, not the code form.
-    if ((await runtime.count()) === 0) return;
     await expect(runtime.getByRole("radio", { name: /Platform image/ })).toBeVisible();
     await expect(runtime.getByRole("radio", { name: /Custom image \+ your code/ })).toBeVisible();
     const container = runtime.getByRole("radio", { name: /Container image/ });
     await expect(container).toBeVisible();
-    if (await container.isDisabled()) return; // a member sees the form read-only
+    if (!opened.canMutate) return; // a member sees the form read-only
     await container.check();
     await expect(page.getByLabel("Command (optional)")).toBeVisible();
     await expect(page.getByLabel("Process code")).toHaveCount(0);
@@ -122,33 +149,28 @@ test.describe("Deploy form runtime chooser (C-3)", () => {
 
 test.describe("Deploy form hardware (K-2)", () => {
   test("groups the profiles by tier and resets the numbers on a profile change", async ({ page }) => {
-    await page.goto("/processes");
-    await expect(
-      page.getByText(/No processes yet|Ceiling \d+ runs\/hour/).first(),
-    ).toBeVisible();
-    const first = page.locator('a[href^="/processes/"]').first();
-    // A bare database has no process to open: a legal state for this suite.
-    if ((await first.count()) === 0) return;
-    await first.click();
+    const opened = await openCodeFormProcess(page);
+    if (!opened) return;
     const hardware = page.getByRole("group", { name: "Hardware" });
-    // A built-in process shows the read-only built-in card, not the code form.
-    if ((await hardware.count()) === 0) return;
+    await expect(hardware).toBeVisible();
     const profile = hardware.getByLabel("Hardware profile");
-    // The local profile set (infra/hardware-profiles/local.json).
+    // The local profile set (infra/hardware-profiles/local.json); waits for
+    // the profiles query.
     await expect(profile.locator('optgroup[label="CPU"] option[value="standard"]')).toHaveCount(1);
     await expect(profile.locator('optgroup[label="Large CPU"] option[value="cpu-large"]')).toHaveCount(1);
     await expect(hardware.getByLabel("CPU (cores)")).toBeVisible();
     await expect(hardware.getByLabel("Memory (MB)")).toBeVisible();
-    await expect(hardware.getByLabel("GPU count")).toHaveCount(0);
-    if (await profile.isDisabled()) return; // a member sees the form read-only
+    if (!opened.canMutate) return; // a member sees the form read-only
     // Via standard, so the second change fires whatever the revision pinned.
     await profile.selectOption("standard");
     await profile.selectOption("cpu-large");
+    await expect(hardware.getByLabel("GPU count")).toHaveCount(0);
     await expect(hardware.getByLabel("CPU (cores)")).toHaveValue("4");
     await expect(hardware.getByLabel("Memory (MB)")).toHaveValue("8192");
     await expect(hardware.getByTestId("hardware-summary")).toHaveText(
       "4 vCPU · 8 GB · waits up to 1 h",
     );
+    await expect(hardware.getByTestId("hardware-issue")).toHaveCount(0);
     // Deliberately NOT deployed: the suite runs against a shared DB.
   });
 });

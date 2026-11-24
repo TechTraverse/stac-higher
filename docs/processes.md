@@ -139,10 +139,13 @@ before profiles existed reads as `standard` at 1 CPU, no GPU; one pinned to
 a profile this deployment no longer defines shows it as *not in this
 deployment*.
 
-Out-of-bounds values are refused twice: at deploy (400 naming the bound,
-shown as the form's toast) and again by the pipeline at launch (the run dies
-with the same message), so a profile set that shrinks after a deploy cannot
-silently launch an oversized run. Every run row shows the hardware its
+Out-of-bounds values are refused twice: at deploy (400 naming the bound)
+and again by the pipeline at launch (the run dies with the same message), so
+a profile set that shrinks after a deploy cannot silently launch an
+oversized run. The form runs the deploy check itself first and shows the
+bound under the fieldset, with **Deploy** disabled until the value fits — so
+a revision whose numbers its profile no longer admits shows up when you open
+it, though its runs keep dying at launch until you redeploy it. Every run row shows the hardware its
 pinned revision asked for. The Docker backend applies `cpu` and the
 profile's device requests from K-3 on; until then the numbers are recorded
 and enforced against the bounds only.
