@@ -17,13 +17,19 @@
  * round-trip, and tests prove the envelope against tampering — but no app
  * request path may call it.
  *
- * Key: env CREDENTIALS_MASTER_KEY, base64-encoded 32 bytes. Generate a dev
- * key with:
+ * Key: env CREDENTIALS_MASTER_KEY, 32 random bytes as standard base64.
+ * Generate one with `openssl rand -base64 32`, or with Node:
  *
  *   node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
  *
- * (or `openssl rand -base64 32`) and put it in `.env.local`. The same value
- * must be configured for the pipeline service. Missing/malformed keys fail
+ * Never use base64url: the app accepts it but the pipeline rejects it.
+ *
+ * Put it in the root `.env`. Compose passes it to the pipeline; the dev
+ * server reads process.env, so start it with the file sourced:
+ *
+ *   cd app && set -a && source ../.env && set +a && npm run dev
+ *
+ * See docs/connections.md, "The master key". Missing/malformed keys fail
  * loudly at write time — there is no silent fallback key.
  */
 import {
@@ -59,8 +65,9 @@ export function loadMasterKey(
   if (!raw) {
     throw new CredentialKeyError(
       "CREDENTIALS_MASTER_KEY is not set. Credentials cannot be stored without it. " +
-        'Generate one with: node -e "console.log(require(\'node:crypto\').randomBytes(32).toString(\'base64\'))" ' +
-        "and set it in .env.local (and for the pipeline service).",
+        "Generate one with `openssl rand -base64 32` (standard base64, not base64url), " +
+        "put it in the root .env, and restart the dev server with that file sourced. " +
+        'See docs/connections.md, "The master key".',
     );
   }
   const key = Buffer.from(raw, "base64");

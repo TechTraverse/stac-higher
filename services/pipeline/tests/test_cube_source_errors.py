@@ -210,3 +210,33 @@ async def test_a_healthy_object_heads_and_parses(nodd):
     store = nodd.libs().store
     assert (await _head(store, "ok.nc"))["last_modified"] is not None
     assert await asyncio.to_thread(_parse, store, "ok.nc") is not None
+
+
+def test_the_parse_heads_before_h5py_opens_the_reader(nodd, monkeypatch):
+    """#104: a HEAD that fails inside h5py's C file-driver callback leaves the
+    exception pending while HDF5 unwinds, and CPython then fails the next method
+    lookup that misses the first class in the MRO (``store.head`` lives on
+    ``ObjectStoreMethods``, not ``S3Store``): ``AttributeError: 'S3Store' object has
+    no attribute 'head'`` in place of the real error, about 1 run in 10 by
+    type-cache luck (also seen on CI). So ``parse_header`` must size the reader
+    before h5py sees it, on the production path, and a failing HEAD must surface
+    from there, typed, without h5py involved."""
+    import h5py
+
+    sizes = []
+
+    def spy(reader, *args, **kwargs):
+        sizes.append(reader._size)  # what the C callback would otherwise HEAD for
+        raise RuntimeError("stop before parsing")
+
+    monkeypatch.setattr(h5py, "File", spy)
+    store = nodd.libs().store
+    with pytest.raises(RuntimeError, match="stop before parsing"):
+        _parse(store, "ok.nc")
+    assert sizes and sizes[0] and sizes[0] > 0
+
+    nodd.faults["ok.nc"] = 503  # the failing HEAD never reaches h5py
+    sizes.clear()
+    with pytest.raises(GenericError):
+        _parse(store, "ok.nc")
+    assert sizes == []

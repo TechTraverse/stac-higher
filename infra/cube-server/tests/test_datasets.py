@@ -68,3 +68,11 @@ def test_make_local_cube_round_trips(tmp_path):
     assert ds.sizes["t"] == 2
     np.testing.assert_array_equal(ds.CMI.isel(t=1).values, step_values(1))
     assert ds.t.dtype.kind == "M"
+
+
+def test_no_requested_variable_in_the_repository_raises():
+    import pytest
+
+    with pytest.raises(ValueError, match="none of the sink's variables"):
+        prepare_dataset(_raw(), variables=["NOPE"], append_dim="t", collection_id="c",
+                        snapshot_id="s")
