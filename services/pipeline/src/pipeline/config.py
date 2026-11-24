@@ -191,7 +191,8 @@ DEFAULT_PROCESS_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB (§9)
 #: can still finish a last upload.
 DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS = 300
 #: STS role the run session is derived from. MinIO accepts any ARN here;
-#: AWS deployments set the real one.
+#: AWS deployments set the real one, whose partition the run's session policy
+#: reuses (#158).
 DEFAULT_PROCESS_STS_ROLE_ARN = "arn:aws:iam::000000000000:role/stac-higher-process-run"
 #: A run still `running` after this is presumed crashed and is requeued
 #: (M5-C, the M2-0 sweep pattern). Comfortably above the default run timeout
