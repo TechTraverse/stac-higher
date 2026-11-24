@@ -1,0 +1,13 @@
+{{- /* Hardware profiles and image policy, mounted at /etc/stac-higher/config/. null -> the chart's files/ copies. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "stac-higher.fullname" . }}-config-files
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "config") | nindent 4 }}
+data:
+  hardware-profiles.json: |
+    {{- include "stac-higher.hardwareProfilesJson" . | nindent 4 }}
+  image-policy.json: |
+    {{- include "stac-higher.imagePolicyJson" . | nindent 4 }}

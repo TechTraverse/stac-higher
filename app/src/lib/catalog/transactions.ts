@@ -10,6 +10,7 @@
  * automatically both; the two can never drift apart — drift would reopen the
  * exact audit gap I-50 closed.
  */
+import { runtimeConfigValue } from "@/lib/runtime-config/server";
 
 export interface CatalogTransaction {
   action: "create" | "update" | "delete";
@@ -69,16 +70,13 @@ export function matchCatalogTransaction(
 }
 
 /**
- * Where the BFF forwards to. Server-side override first, then the public
- * build-time var, then the compose default — keep the default literal in sync
- * with `stores/catalogStore.ts`, which derives the CLIENT's built-in entry
- * (and thus the `builtIn` flag that triggers BFF routing) from
- * `PUBLIC_BUILTIN_CATALOG_URL` alone.
+ * Where the BFF forwards to. `BUILTIN_CATALOG_URL` first (in a cluster, the
+ * internal service address), else the browser-facing public URL from the
+ * runtime config. The client derives its built-in entry (and thus the
+ * `builtIn` flag that triggers BFF routing) from that same runtime value.
  */
 export function builtinCatalogUrl(): string {
   return (
-    process.env.BUILTIN_CATALOG_URL?.trim() ||
-    process.env.PUBLIC_BUILTIN_CATALOG_URL?.trim() ||
-    "http://localhost:8081"
+    process.env.BUILTIN_CATALOG_URL?.trim() || runtimeConfigValue("builtInCatalogUrl")
   ).replace(/\/+$/, "");
 }

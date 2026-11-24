@@ -37,8 +37,12 @@ S3 in cloud; distinct from per-connection endpoints):
 
 - ``STAGING_S3_ENDPOINT`` — S3/MinIO endpoint URL; default is the compose MinIO.
   Set empty for real AWS (boto3 resolves the regional endpoint).
-- ``STAGING_S3_REGION`` / ``STAGING_S3_ACCESS_KEY_ID`` /
-  ``STAGING_S3_SECRET_ACCESS_KEY`` — client region + credentials.
+- ``STAGING_S3_REGION`` — client region.
+- ``STAGING_S3_ACCESS_KEY_ID`` / ``STAGING_S3_SECRET_ACCESS_KEY`` — the platform
+  bucket's keys; unset or blank = the default AWS credential chain (Pod
+  Identity / IRSA / instance profile); set both or neither.
+- ``PROCESS_MAX_CREDENTIAL_SECONDS`` — the longest run credential the pipeline
+  will mint: an integer of at least 900 (the STS minimum); blank = no limit.
 - ``STAGING_BUCKET`` — platform bucket name.
 - ``STAGING_S3_FORCE_PATH_STYLE`` — path-style addressing (MinIO needs it).
 - ``STAGING_TTL_SECONDS`` — age after which a ``staging/`` upload is swept.
@@ -78,12 +82,13 @@ DEFAULT_DATABASE_URL = "postgresql://username:password@localhost:5433/postgis"
 DEFAULT_HEALTH_PORT = 8083
 DEFAULT_QUEUE_SCHEMA = "procrastinate"
 
-# Platform storage defaults target the compose MinIO (minioadmin, bucket
-# `stac-higher`); a cloud deployment overrides all of these via env.
+# The endpoint, region and bucket defaults target the compose MinIO; unset
+# access keys mean the AWS default credential chain. A cloud deployment
+# overrides the endpoint, region and bucket via env.
 DEFAULT_STAGING_S3_ENDPOINT = "http://minio:9000"
 DEFAULT_STAGING_S3_REGION = "us-east-1"
-DEFAULT_STAGING_S3_ACCESS_KEY = "minioadmin"
-DEFAULT_STAGING_S3_SECRET_KEY = "minioadmin"
+# STS rejects sessions shorter than this; process/credentials.py reuses it.
+STS_MIN_DURATION_SECONDS = 900
 DEFAULT_STAGING_BUCKET = "stac-higher"
 DEFAULT_STAGING_TTL_SECONDS = 86400  # 24h
 
@@ -343,6 +348,33 @@ def _optional(raw: str | None) -> str | None:
     return value or None
 
 
+def _parse_max_credential_seconds(raw: str | None) -> int | None:
+    value = _optional(raw)
+    if value is None:
+        return None
+    try:
+        seconds = int(value)
+    except ValueError:
+        seconds = -1
+    if seconds < STS_MIN_DURATION_SECONDS:
+        raise ValueError(
+            "PROCESS_MAX_CREDENTIAL_SECONDS must be an integer number of seconds, "
+            f"at least {STS_MIN_DURATION_SECONDS} (the STS minimum), got {raw!r}"
+        )
+    return seconds
+
+
+def _parse_staging_keys(env: dict[str, str]) -> tuple[str | None, str | None]:
+    access = _optional(env.get("STAGING_S3_ACCESS_KEY_ID"))
+    secret = _optional(env.get("STAGING_S3_SECRET_ACCESS_KEY"))
+    if (access is None) != (secret is None):
+        raise ValueError(
+            "STAGING_S3_ACCESS_KEY_ID and STAGING_S3_SECRET_ACCESS_KEY must be set "
+            "together, or both left unset for the default AWS credential chain"
+        )
+    return access, secret
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = DEFAULT_DATABASE_URL
@@ -355,8 +387,8 @@ class Settings:
     #: Platform object storage (Phase 3). Empty endpoint => real-AWS resolution.
     staging_s3_endpoint: str | None = DEFAULT_STAGING_S3_ENDPOINT
     staging_s3_region: str = DEFAULT_STAGING_S3_REGION
-    staging_s3_access_key: str = DEFAULT_STAGING_S3_ACCESS_KEY
-    staging_s3_secret_key: str = DEFAULT_STAGING_S3_SECRET_KEY
+    staging_s3_access_key: str | None = None
+    staging_s3_secret_key: str | None = field(default=None, repr=False)
     staging_bucket: str = DEFAULT_STAGING_BUCKET
     staging_s3_force_path_style: bool = True
     staging_ttl_seconds: int = DEFAULT_STAGING_TTL_SECONDS
@@ -402,6 +434,7 @@ class Settings:
     process_network: str = DEFAULT_PROCESS_NETWORK
     process_log_max_bytes: int = DEFAULT_PROCESS_LOG_MAX_BYTES
     process_credential_grace_seconds: int = DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS
+    process_max_credential_seconds: int | None = None
     process_sts_role_arn: str = DEFAULT_PROCESS_STS_ROLE_ARN
     #: Endpoint the RUN uses to reach object storage. Usually the same as the
     #: pipeline's, but it is separate because the two can differ: the run sits
@@ -447,6 +480,7 @@ class Settings:
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
         env = os.environ if env is None else env
         worker_concurrency, worker_bytes_concurrency = _parse_worker_concurrency(env)
+        staging_access_key, staging_secret_key = _parse_staging_keys(env)
         return cls(
             database_url=env.get("DATABASE_URL", DEFAULT_DATABASE_URL),
             health_port=int(env.get("HEALTH_PORT", str(DEFAULT_HEALTH_PORT))),
@@ -456,12 +490,8 @@ class Settings:
             egress_allow_hosts=_parse_allow_hosts(env.get("EGRESS_ALLOW_HOSTS")),
             staging_s3_endpoint=env.get("STAGING_S3_ENDPOINT", DEFAULT_STAGING_S3_ENDPOINT) or None,
             staging_s3_region=env.get("STAGING_S3_REGION", DEFAULT_STAGING_S3_REGION),
-            staging_s3_access_key=env.get(
-                "STAGING_S3_ACCESS_KEY_ID", DEFAULT_STAGING_S3_ACCESS_KEY
-            ),
-            staging_s3_secret_key=env.get(
-                "STAGING_S3_SECRET_ACCESS_KEY", DEFAULT_STAGING_S3_SECRET_KEY
-            ),
+            staging_s3_access_key=staging_access_key,
+            staging_s3_secret_key=staging_secret_key,
             staging_bucket=env.get("STAGING_BUCKET", DEFAULT_STAGING_BUCKET),
             staging_s3_force_path_style=_parse_bool(env.get("STAGING_S3_FORCE_PATH_STYLE"), True),
             staging_ttl_seconds=int(
@@ -559,6 +589,9 @@ class Settings:
                     "PROCESS_CREDENTIAL_GRACE_SECONDS",
                     str(DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS),
                 )
+            ),
+            process_max_credential_seconds=_parse_max_credential_seconds(
+                env.get("PROCESS_MAX_CREDENTIAL_SECONDS")
             ),
             process_sts_role_arn=env.get("PROCESS_STS_ROLE_ARN", DEFAULT_PROCESS_STS_ROLE_ARN),
             process_run_s3_endpoint=env.get("PROCESS_RUN_S3_ENDPOINT") or None,

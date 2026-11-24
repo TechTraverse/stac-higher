@@ -5,8 +5,8 @@
  * permits. The pipeline reads the same variable and enforces it independently
  * at launch — a revision above the cap dies naming the level and the cap. The
  * app checks it on deploy so an operator hears "no" at the form, not an hour
- * later in a run's ledger row; the client mirror (`PUBLIC_PROCESS_NETWORK_MAX`)
- * lets the deploy card disable options above it up front.
+ * later in a run's ledger row; the client mirror (the runtime config's
+ * `processNetworkMax`) lets the deploy card disable options above it up front.
  */
 import { PROCESS_NETWORK_LEVELS, type NetworkLevel } from "@/lib/processes/schemas";
 

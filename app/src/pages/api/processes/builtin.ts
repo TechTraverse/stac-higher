@@ -20,6 +20,10 @@ import {
   builtinRevisionTemplate,
 } from "@/lib/extractors/template";
 import { jsonResponse } from "@/lib/http/response";
+import {
+  credentialBudgetRefused,
+  revisionCredentialBudgetError,
+} from "@/lib/processes/credential-budget";
 import { hardwareBoundsError, loadHardwareProfiles } from "@/lib/processes/hardware";
 import { processBuiltinCreateSchema } from "@/lib/processes/schemas";
 import {
@@ -73,12 +77,15 @@ export const POST: APIRoute = async ({ request, locals }) => {
     // hand-written revision — a registry entry that outgrows this
     // deployment's profile ceiling is refused here, not left to die at
     // launch (final review Item 1).
+    const profiles = loadHardwareProfiles();
     const hardwareError = hardwareBoundsError(
       template.runtime.hardware,
       template.runtime.memory_mb,
-      loadHardwareProfiles(),
+      profiles,
     );
     if (hardwareError) return jsonResponse(400, { error: hardwareError });
+    const budgetError = revisionCredentialBudgetError(template.runtime, profiles);
+    if (budgetError) return credentialBudgetRefused(budgetError);
 
     const created = await createBuiltinProcess({
       ...builtinProcessDefaults(entry),

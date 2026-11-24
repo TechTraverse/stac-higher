@@ -23,6 +23,9 @@ Per request the factory returns CQL2:
 
 - Image: `infra/proxy-policy/Dockerfile` — `FROM` the pinned upstream proxy
   (v1.2.0, which ships no Postgres driver) + `pip install` this package.
+- Entry point: `python -m stac_higher_proxy_policy` → `app.create_app`, upstream's
+  app with its `EnforceAuthMiddleware` swapped for a claim-aware subclass
+  (`AUTH_BEARER_AUDIENCE_CLAIM`).
 - Config: `infra/compose.auth-enforced.yml` sets `ITEMS_FILTER_CLS`,
   overrides `ITEMS_FILTER_PATH` to also route `bulk_items`, and passes the
   env below.
@@ -36,12 +39,13 @@ Env (kwargs via `ITEMS_FILTER_KWARGS` take precedence):
 | `POLICY_ROLES_CLAIM` | no (`realm_access.roles`) | Dotted path to the roles claim |
 | `POLICY_WRITE_ROLES` | no (`operator,admin`) | Roles allowed to write directly |
 | `POLICY_CACHE_TTL_SECONDS` | no (`15`) | Externally-writable set cache TTL |
+| `AUTH_BEARER_AUDIENCE_CLAIM` | no (`aud`) | `aud` \| `client_id`; anything else fails at startup. In `client_id` mode `ALLOWED_JWT_AUDIENCES` lists app client ids and tokens carrying `aud` are rejected |
 
 ## Development
 
 ```sh
 uv sync --extra dev
-uv run pytest          # unit tests — no DB, no Docker, loader injected
+uv run pytest          # unit tests — no DB, no Docker, loader injected (also run in CI)
 uv run ruff check .
 ```
 

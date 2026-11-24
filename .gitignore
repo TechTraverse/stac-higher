@@ -43,3 +43,14 @@ npm-debug.log*
 
 # Docker
 pgdata/
+
+# Terraform / OpenTofu (infra/terraform, infra/examples) — never committed
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+
+__pycache__/
+*.pyc

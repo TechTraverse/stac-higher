@@ -1,0 +1,55 @@
+{{- $full := include "stac-higher.fullname" . -}}
+{{- $s := dict "root" . -}}
+{{- $owner := include "stac-higher.hookSecretName" (dict "root" . "name" "dbOwner") -}}
+{{- $api := include "stac-higher.hookSecretName" (dict "root" . "name" "dbStacApi") -}}
+{{- $reader := include "stac-higher.hookSecretName" (dict "root" . "name" "dbStacReader") -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $full }}-pgstac-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "db-hook") | nindent 4 }}
+  annotations:
+    {{- include "stac-higher.hookAnnotations" (dict "weight" -15) | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.dbJobs.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.dbJobs.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "stac-higher.labels" (dict "root" . "component" "db-hook") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "stac-higher.podSecurityContext" (dict "uid" 999) | nindent 8 }}
+      initContainers:
+        - name: pypgstac-migrate
+          image: {{ include "stac-higher.image" (dict "root" . "key" "pipeline") | quote }}
+          command: ["pypgstac", "migrate"]
+          env:
+            {{- include "stac-higher.dbJobEnv" (dict "root" . "secret" $owner) | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dbJobs.resources | nindent 12 }}
+          securityContext:
+            {{- include "stac-higher.containerSecurityContext" (dict "readOnly" true) | nindent 12 }}
+          volumeMounts:
+            {{- include "stac-higher.dbJobMounts" $s | nindent 12 }}
+      containers:
+        - name: pgstac-grants
+          image: {{ include "stac-higher.image" (dict "root" . "key" "pipeline") | quote }}
+          command: ["python", "/etc/stac-higher/db/run_sql.py", "/etc/stac-higher/db/pgstac-grants.sql"]
+          env:
+            {{- include "stac-higher.dbJobEnv" (dict "root" . "secret" $owner) | nindent 12 }}
+            {{- include "stac-higher.dbSqlEnv" (dict "name" "API" "secret" $api "keys" (list "username")) | nindent 12 }}
+            {{- include "stac-higher.dbSqlEnv" (dict "name" "READER" "secret" $reader "keys" (list "username")) | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dbJobs.resources | nindent 12 }}
+          securityContext:
+            {{- include "stac-higher.containerSecurityContext" (dict "readOnly" true) | nindent 12 }}
+          volumeMounts:
+            {{- include "stac-higher.dbJobMounts" $s | nindent 12 }}
+      volumes:
+        {{- include "stac-higher.dbJobVolumes" $s | nindent 8 }}
+      {{- include "stac-higher.dbJobScheduling" $s | nindent 6 }}

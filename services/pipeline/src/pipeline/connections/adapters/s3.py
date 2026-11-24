@@ -35,6 +35,16 @@ from pipeline.connections.egress import EgressBlocked, resolve_pinned
 from pipeline.ingest.raster_io import RasterLocation
 from pipeline.storage.platform import gdal_endpoint, gdal_session_options
 
+#: The app's message (``app/src/lib/connections/schemas.ts``).
+S3_KEYS_REQUIRED = (
+    "access_key_id and secret_access_key are required unless config.anonymous is true"
+)
+
+
+def _has_key(credentials: Mapping[str, Any], name: str) -> bool:
+    value = credentials.get(name)
+    return isinstance(value, str) and bool(value.strip())
+
 
 @dataclass(frozen=True)
 class S3Config:
@@ -100,6 +110,12 @@ class S3Adapter(StorageAdapter):
         allow_hosts: frozenset[str] = frozenset(),
     ) -> None:
         cfg = parse_s3_config(config)
+        if not cfg.anonymous and not (
+            _has_key(credentials, "access_key_id") and _has_key(credentials, "secret_access_key")
+        ):
+            # A keyless signed connection would make boto3/GDAL fall back to the
+            # default credential chain: the pipeline's own workload identity.
+            raise ValueError(S3_KEYS_REQUIRED)
         self._bucket = cfg.bucket
         self._region = cfg.region
         self._endpoint = cfg.endpoint

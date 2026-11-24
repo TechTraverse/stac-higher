@@ -20,6 +20,10 @@ dev = [
     # Test-only: validate emitted expressions with the same cql2 engine the
     # proxy's Cql2BuildFilterMiddleware / Cql2ValidateTransactionMiddleware use.
     "cql2>=0.3",
+    # Test-only: the image gets stac-auth-proxy from its FROM. Keep this equal
+    # to the Dockerfile FROM tag and the docker-compose.yml pin (ADR 0015
+    # lockstep).
+    "stac-auth-proxy==1.2.0",
 ]
 
 [build-system]
@@ -48,3 +52,7 @@ select = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+filterwarnings = [
+    # starlette's TestClient nags to move to httpx2; not worth a new dependency.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]

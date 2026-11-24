@@ -1,0 +1,95 @@
+{{- $v := .Values -}}
+{{- $shared := dict -}}
+{{- $_ := set $shared "DATABASE_URL" (printf "postgresql://%s:%v/%s" $v.database.host $v.database.port $v.database.name) -}}
+{{- if eq $v.database.sslMode "verify-full" -}}
+{{- $_ := set $shared "PGSSLMODE" "verify-full" -}}
+{{- $_ := set $shared "PGSSLROOTCERT" "/etc/stac-higher/db-ca/ca-bundle.pem" -}}
+{{- end -}}
+{{- $_ := set $shared "PROCESS_EXECUTOR" "kubernetes" -}}
+{{- if not (kindIs "invalid" $v.aws.processMaxCredentialSeconds) -}}
+{{- $_ := set $shared "PROCESS_MAX_CREDENTIAL_SECONDS" (toString $v.aws.processMaxCredentialSeconds) -}}
+{{- end -}}
+{{- $_ := set $shared "PROCESS_CREDENTIAL_GRACE_SECONDS" (toString $v.processRuns.credentialGraceSeconds) -}}
+{{- $_ := set $shared "PROCESS_NETWORK_MAX" $v.processRuns.networkMax -}}
+{{- $_ := set $shared "PROCESS_HARDWARE_PROFILES_FILE" "/etc/stac-higher/config/hardware-profiles.json" -}}
+{{- $_ := set $shared "PROCESS_IMAGE_POLICY_FILE" "/etc/stac-higher/config/image-policy.json" -}}
+{{- $_ := set $shared "AWS_REGION" $v.aws.region -}}
+{{- $_ := set $shared "AWS_DEFAULT_REGION" $v.aws.region -}}
+
+{{- $app := dict -}}
+{{- $_ := set $app "BUILTIN_CATALOG_PUBLIC_URL" $v.publicUrls.catalog -}}
+{{- $_ := set $app "TITILER_URL" $v.publicUrls.titiler -}}
+{{- $_ := set $app "TIPG_URL" $v.publicUrls.tipg -}}
+{{- $_ := set $app "CUBE_SERVER_URL" $v.publicUrls.cubeServer -}}
+{{- $hosts := list -}}
+{{- if $v.app.builtinCatalogInternalUrl -}}
+{{- $_ := set $app "BUILTIN_CATALOG_URL" $v.app.builtinCatalogInternalUrl -}}
+{{- $hosts = append $hosts (urlParse $v.app.builtinCatalogInternalUrl).hostname -}}
+{{- end -}}
+{{- $hosts = concat $hosts ($v.app.safeFetchAllowHosts | default list) -}}
+{{- if $hosts -}}
+{{- $_ := set $app "SAFE_FETCH_ALLOW_HOSTS" (join "," $hosts) -}}
+{{- end -}}
+{{- $_ := set $app "S3_ENDPOINT" $v.publicUrls.objectStore -}}
+{{- $_ := set $app "S3_BUCKET" $v.aws.bucket -}}
+{{- $_ := set $app "S3_REGION" $v.aws.region -}}
+{{- $_ := set $app "S3_FORCE_PATH_STYLE" (toString $v.objectStore.forcePathStyle) -}}
+{{- $_ := set $app "AUTH_MODE" $v.auth.mode -}}
+{{- if $v.auth.issuer -}}
+{{- $_ := set $app "OIDC_ISSUER" $v.auth.issuer -}}
+{{- end -}}
+{{- if $v.auth.issuerInternal -}}
+{{- $_ := set $app "OIDC_ISSUER_INTERNAL" $v.auth.issuerInternal -}}
+{{- end -}}
+{{- if $v.auth.clientId -}}
+{{- $_ := set $app "OIDC_CLIENT_ID" $v.auth.clientId -}}
+{{- end -}}
+{{- $_ := set $app "OIDC_REDIRECT_URI" (printf "%s/api/auth/callback" (trimSuffix "/" $v.publicUrls.app)) -}}
+{{- $_ := set $app "AUTH_BEARER_AUDIENCES" (join "," $v.auth.audiences) -}}
+{{- $_ := set $app "AUTH_BEARER_AUDIENCE_CLAIM" $v.auth.audienceClaim -}}
+{{- if $v.auth.claimsMapping -}}
+{{- $_ := set $app "AUTH_CLAIMS_MAPPING" (toJson $v.auth.claimsMapping) -}}
+{{- end -}}
+{{- if eq $v.auth.mode "bypass" -}}
+{{- $_ := set $app "AUTH_BYPASS_FORCE" "true" -}}
+{{- if $v.auth.devIdentity -}}
+{{- $_ := set $app "DEV_AUTH_IDENTITY" (toJson $v.auth.devIdentity) -}}
+{{- end -}}
+{{- end -}}
+{{- range $k, $val := ($v.app.env | default dict) -}}
+{{- $_ := set $app $k (toString $val) -}}
+{{- end -}}
+
+{{- $pipe := dict -}}
+{{- $_ := set $pipe "STAGING_S3_ENDPOINT" ($v.objectStore.internalEndpoint | default "") -}}
+{{- $_ := set $pipe "PROCESS_RUN_S3_ENDPOINT" ($v.objectStore.internalEndpoint | default "") -}}
+{{- $_ := set $pipe "STAGING_BUCKET" $v.aws.bucket -}}
+{{- $_ := set $pipe "STAGING_S3_REGION" $v.aws.region -}}
+{{- $_ := set $pipe "STAGING_S3_FORCE_PATH_STYLE" (toString $v.objectStore.forcePathStyle) -}}
+{{- $_ := set $pipe "PROCESS_STS_ROLE_ARN" $v.aws.processRunRoleArn -}}
+{{- $_ := set $pipe "PROCESS_RUNTIME_IMAGE" (include "stac-higher.imageRef" (dict "root" . "key" "process-runtime")) -}}
+{{- $_ := set $pipe "PROCESS_RUNTIME_IMAGE_STACTOOLS" (include "stac-higher.imageRef" (dict "root" . "key" "process-runtime-stactools")) -}}
+{{- $_ := set $pipe "IMAGE_SCANNER_IMAGE" (include "stac-higher.imageRef" (dict "root" . "key" "image-scanner")) -}}
+{{- if $v.pipeline.egressAllowHosts -}}
+{{- $_ := set $pipe "EGRESS_ALLOW_HOSTS" (join "," $v.pipeline.egressAllowHosts) -}}
+{{- end -}}
+{{- $_ := set $pipe "HOME" "/tmp" -}}
+{{- $_ := set $pipe "PYTHONDONTWRITEBYTECODE" "1" -}}
+{{- range $k, $val := ($v.pipeline.env | default dict) -}}
+{{- $_ := set $pipe $k (toString $val) -}}
+{{- end -}}
+
+{{- range $entry := list (list "env-shared" "shared" $shared) (list "env-app" "app" $app) (list "env-pipeline" "pipeline" $pipe) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "stac-higher.fullname" $ }}-{{ index $entry 0 }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" $ "component" (index $entry 1)) | nindent 4 }}
+data:
+  {{- range $k, $val := (index $entry 2) }}
+  {{ $k }}: {{ $val | quote }}
+  {{- end }}
+{{- end }}

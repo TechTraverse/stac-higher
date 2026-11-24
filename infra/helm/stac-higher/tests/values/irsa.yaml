@@ -1,0 +1,5 @@
+identity:
+  mode: irsa
+  roleArns:
+    app: arn:aws:iam::000000000000:role/stac-higher-example-app
+    pipeline: arn:aws:iam::000000000000:role/stac-higher-example-pipeline

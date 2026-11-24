@@ -1791,6 +1791,153 @@ a pre-check of the step's source from the tile path, which is a design change.
 Accepted for v1: the pipeline trims a source only with its step, and the
 server reloads within one poll.
 
+## Deployment artifacts (R queue, epic #136)
+
+### I-148 · The proxy's client_id audience mode rides on upstream internals 🟡
+
+Upstream stac-auth-proxy (through v1.3.1) matches the `aud` claim only. To
+support `AUTH_BEARER_AUDIENCE_CLAIM=client_id` (Cognito access tokens), the
+derived image swaps `EnforceAuthMiddleware` in `app.user_middleware`. The swap
+is guarded by a startup `RuntimeError` when upstream no longer registers
+exactly one such entry, and by the lockstep pin test
+(`test_dev_pin_matches_the_dockerfile_base`). It goes away if upstream gains a
+claim setting, which is worth proposing upstream. Tokens carrying `aud` are
+refused in `client_id` mode.
+
+Tracked in: `services/proxy-policy/src/stac_higher_proxy_policy/app.py`; ADR
+0015 bump procedure.
+
+### I-149 · Credential budget is checked at deploy only 🟡
+
+A revision deployed before `PROCESS_MAX_CREDENTIAL_SECONDS` was set, or
+before its hardware profile's `max_queue_wait_seconds` grew, is not
+re-checked. The pipeline's mint refusal (R-2) is the backstop and fails the
+run naming the cap. Until K-4 (#12) the pipeline mints `timeout + grace`
+without the queue wait, so the deploy gate is deliberately stricter than the
+mint.
+
+### I-150 · Generated platform secrets sit in Terraform state 🟡
+
+The `secrets` module's `random_*` values are stored in state in plaintext.
+Write-only arguments (`secret_string_wo`) would avoid that but need
+OpenTofu/Terraform >= 1.11, above the modules' 1.10 floor.
+
+Mitigation: the deployment's state backend must be encrypted and
+access-controlled. Revisit when the floor moves.
+
+### I-151 · Run credentials carry no KMS permission 🟡
+
+`session_policy()` lists S3 actions only. On the SSE-KMS bucket, a run's PUT
+and GET then depend on the key policy's `Principal "*"` + `kms:ViaService`
+statement applying to the session principal past the session policy. AWS
+documents that only for policies naming the session ARN. R-11 settles it with
+one PUT under run credentials. If it is denied, `session_policy()` gains
+`kms:GenerateDataKey`/`kms:Decrypt` on the platform key (with #158). The run
+role already grants both.
+
+Tracked in: GitHub #158 (the session-policy change) and GitHub #147 (R-11's first-deploy rehearsal settles it).
+
+### I-152 · The pipeline's STS client reuses the S3 endpoint 🟡
+
+`build_sts_client` passes `STAGING_S3_ENDPOINT` as the STS endpoint, so on AWS
+that variable must stay blank (botocore's defaults). Set to the regional S3
+URL, every run fails `RunCredentialsError`. The chart (R-6) leaves it unset on
+AWS. A separate STS endpoint setting is the fix if a deployment ever needs one.
+
+### I-153 · Cognito residuals 🟡
+
+- Cognito's discovery document has no `end_session_endpoint`, so
+  `/api/auth/logout` ends only the app session.
+- `cognito:groups` feeds both `groups` and `roles`, so role groups
+  (`stac-operators`) also appear as data groups.
+- Access tokens carry no `email`, so identities show `username`. In an
+  email-as-username pool Cognito's `username` claim is the sub UUID, so bearer
+  identities display a UUID.
+
+### I-154 · The demo-destination key is a long-lived IAM user key in state 🟡
+
+Accepted for the test environment (spec §7.1, lead decision 2026-11-02). It is
+the user-credential path by design, not the platform's own access. Destroy the
+module with the environment.
+
+### I-155 · The Pod Identity trust is not scoped to the cluster 🟡
+
+The roles trust `pods.eks.<dns_suffix>` without `aws:SourceArn`. Any
+association in the account may bind them, and creating one needs
+`iam:PassRole`. Adding the cluster-ARN condition is a hardening step to verify
+at R-11.
+
+Tracked in: GitHub #147.
+
+### I-156 · Hook-scoped role Secrets are recreated each hook phase; the master's is removed on success 🟡
+
+The `<fullname>-hook-db-master` ExternalSecret carries `hook-succeeded`
+(Argo: `HookSucceeded`), `refreshInterval: "0"` and `creationPolicy: Owner`, so
+the RDS master Secret is deleted once the hook phase succeeds. On Helm that
+happens only after every hook in the phase, so db-bootstrap (weight -20) still
+reads it. On Argo CD the `HookSucceeded` timing for a non-Job hook is
+unverified until a live check; if Argo deleted it before db-bootstrap, the
+bootstrap would sit in `CreateContainerConfigError` until
+`activeDeadlineSeconds` expires, rather than fail at once (and would not leak).
+
+The five role hook ExternalSecrets keep `before-hook-creation` only. With
+`creationPolicy: Owner`, each upgrade or sync deletes the ExternalSecret and
+Kubernetes GC deletes its Secret, so they are recreated on every hook phase
+and do not persist. Helm does not wait for ExternalSecret readiness, so there
+is a short window, and a stale-password risk during rotation. R-6's runtime
+pods reference only runtime Secrets (`<fullname>-db-owner`, `-platform`),
+never hook copies; R-7 must use runtime copies or an explicit allowlist.
+
+The role passwords reach Postgres only as client-side SCRAM-SHA-256 verifiers
+(`files/db/run_sql.py`), never as plaintext, but a verifier can still be
+logged under `log_statement=all`.
+
+Follow-up idea: the bootstrap reads the master from Secrets Manager with its
+own workload identity, so no master copy enters the cluster.
+
+### I-157 · The role chain is proven on a superuser Postgres only 🟡
+
+The pytest bootstrap runs as a superuser. Three things are first exercised on
+RDS (master is not a superuser): pypgstac migrating as the non-superuser owner,
+the owner granting the `pgstac_*` roles it created (PG16 `CREATEROLE` rules),
+and the search_path. The owner's `CREATEROLE` is mandated by spec §7.2
+(pypgstac creates the `pgstac_*` roles); on PG16+ it is bounded to roles the
+owner created or administers. The bootstrap refuses a role name equal to
+`current_user` or shared by two keys.
+
+Tracked in: GitHub #147.
+
+### I-158 · `/api/internal` is blocked at the Ingress by rule order 🟡
+
+The block depends on the controller evaluating `/api/internal` before `/`
+(listed first; longest-prefix on nginx). The `Prefix` match is path-literal:
+encoded or case variants are not normalised by every controller (the ALB is
+case-sensitive), so the block is defence in depth. The route itself requires
+`x-internal-token` (`app/src/pages/api/internal/`) and fails closed without
+`INTERNAL_API_TOKEN`.
+
+### I-159 · `PROXY_AUTH_TOKEN` is generated but not wired 🟡
+
+Terraform generates it and the chart accepts `secrets.arns.proxy_auth_token`,
+but the chart does not set it: it would make `/api/proxy` require
+`X-Proxy-Auth`, and no client sends that header, which would break browsing
+external catalogs.
+
+### I-160 · The pipeline runs the Docker executor until K-5 🟡
+
+`PROCESS_EXECUTOR=kubernetes` is set and unread today. In a cluster, process
+runs fail at launch (no socket proxy). K-5 adds its own settings (runs
+namespace, etc.) to the chart.
+
+Tracked in: GitHub #13.
+
+### I-161 · Read-only root filesystems and the open app port are render-verified defaults 🟡
+
+Both are verified by rendering only, not on a cluster. Escape hatches:
+`app.readOnlyRootFilesystem`, `pipeline.readOnlyRootFilesystem`, and
+`networkPolicy.appIngressFrom`, which should be set to the VPC CIDR for ALB IP
+targets.
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

@@ -1,0 +1,13 @@
+# The non-R-5 keys a deployment supplies on top of R-5's helm_values.
+publicUrls:
+  catalog: https://catalog.example.com
+  titiler: https://titiler.example.com
+  tipg: https://tipg.example.com
+  cubeServer: https://cube.example.com
+database:
+  caBundle:
+    existingConfigMap: rds-ca-bundle
+secrets:
+  externalSecrets:
+    storeRef:
+      name: aws-secrets-manager

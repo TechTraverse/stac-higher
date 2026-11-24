@@ -70,3 +70,10 @@ def test_a_registry_connection_is_not_a_storage_adapter():
             creds={"username": "u", "password": "p"},
         )
         build_adapter(connection, KEY, ALLOW)
+
+
+def test_build_adapter_refuses_a_signed_s3_row_without_keys():
+    # creds={} would fall back to _conn's default keys, so seal the empty object.
+    row = _conn(credentials=seal("{}", KEY))
+    with pytest.raises(AdapterBuildError, match=r"required unless config\.anonymous is true"):
+        build_adapter(row, KEY, ALLOW)

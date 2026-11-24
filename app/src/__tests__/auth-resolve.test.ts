@@ -9,6 +9,7 @@ const ENV = { AUTH_MODE: "oidc", SESSION_SECRET: SECRET };
 const CFG = {
   sessionSecret: SECRET,
   sessionMaxAgeS: 3600,
+  bearerAudienceClaim: "aud",
   redirectUri: "http://localhost:4321/api/auth/callback",
 };
 
