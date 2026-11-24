@@ -26,6 +26,7 @@ from pipeline.process.credentials import (
     CredentialBudgetExceeded,
     RunCredentials,
     RunCredentialsError,
+    arn_partition,
     mint_prefix_credentials,
     mint_run_credentials,
     session_policy,
@@ -461,6 +462,69 @@ def test_session_policy_grants_read_only_on_source_collection_prefixes():
 def test_session_policy_without_read_prefixes_is_unchanged():
     policy = session_policy("b", "staging/runs/x/")
     assert [s["Sid"] for s in policy["Statement"]] == ["RunPrefixObjects", "RunPrefixList"]
+
+
+def _policy_resources(policy: dict) -> list[str]:
+    return [r for st in policy["Statement"] for r in st["Resource"]]
+
+
+def test_session_policy_names_the_given_partition():
+    """#158: an ``arn:aws:s3:::`` resource matches nothing in GovCloud, so a
+    policy built for ``aws-us-gov`` must name that partition on every
+    statement -- or the scoped credentials grant nothing at all."""
+    policy = session_policy(
+        "stac-higher", "staging/runs/x/", ["assets/goes/"], partition="aws-us-gov"
+    )
+    resources = _policy_resources(policy)
+    assert resources and all(r.startswith("arn:aws-us-gov:s3:::stac-higher") for r in resources)
+
+
+@pytest.mark.parametrize(
+    ("arn", "partition"),
+    [
+        ("arn:aws:iam::000000000000:role/stac-higher-process-run", "aws"),
+        ("arn:aws-us-gov:iam::123456789012:role/stac-higher-process-run", "aws-us-gov"),
+        ("arn:aws-cn:iam::123456789012:role/r", "aws-cn"),
+        # Not an ARN at all (MinIO ignores RoleArn; real STS rejects it before
+        # any policy is evaluated) -- the commercial partition, as before #158.
+        ("", "aws"),
+        ("stac-higher-process-run", "aws"),
+        ("arn::iam::0:role/r", "aws"),
+        ("arn:aws*:iam::0:role/r", "aws"),
+    ],
+)
+def test_arn_partition(arn, partition):
+    assert arn_partition(arn) == partition
+
+
+def test_mint_derives_the_policy_partition_from_the_role_arn():
+    """The role the run assumes lives in the same partition as the bucket it
+    scopes -- STS cannot assume across partitions -- so its ARN, already in
+    hand, names the partition with no extra STS call at mint."""
+    sts = FakeSts(
+        {"Credentials": {"AccessKeyId": "A", "SecretAccessKey": "S", "SessionToken": "T"}}
+    )
+    gov = settings(
+        PROCESS_STS_ROLE_ARN="arn:aws-us-gov:iam::123456789012:role/stac-higher-process-run"
+    )
+    mint_run_credentials(gov, RUN, 60, sts_client=sts, read_prefixes=["assets/goes/"])
+    resources = _policy_resources(json.loads(sts.kwargs["Policy"]))
+    assert resources and all(r.startswith("arn:aws-us-gov:s3:::") for r in resources)
+
+
+def test_mint_with_the_default_role_keeps_the_commercial_partition():
+    """MinIO/local: the default role ARN is commercial, so the policy is
+    byte-for-byte what it was before #158."""
+    sts = FakeSts(
+        {"Credentials": {"AccessKeyId": "A", "SecretAccessKey": "S", "SessionToken": "T"}}
+    )
+    mint_run_credentials(settings(), RUN, 60, sts_client=sts)
+    assert json.loads(sts.kwargs["Policy"]) == session_policy(
+        "stac-higher", run_staging_prefix(RUN)
+    )
+    assert all(
+        r.startswith("arn:aws:s3:::") for r in _policy_resources(json.loads(sts.kwargs["Policy"]))
+    )
 
 
 def test_too_many_read_prefixes_refuses_to_mint():
