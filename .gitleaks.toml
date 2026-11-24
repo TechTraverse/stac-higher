@@ -34,4 +34,8 @@ regexes = [
   # there is still flagged.
   '''MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=''',
   '''^0123456789abcdef0123456789abcdef$''',
+  # The R-2 plan's prose "pass no explicit credentials to boto3, rasterio/GDAL
+  # or Icechunk" trips `generic-api-key` (the word "credentials" followed by a
+  # slash-separated token). The matched "secret" is the library name itself.
+  '''rasterio/GDAL''',
 ]

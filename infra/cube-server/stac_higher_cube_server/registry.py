@@ -13,6 +13,7 @@ store location from a request: repositories are found from
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -44,9 +45,14 @@ class RepoOpener(Protocol):
     def open(self, sink: SinkRow) -> ic.Repository | None: ...
 
 
+_S3_CONTAINER = re.compile(r"^s3://[^/\s]+/")
+
+
 def check_source_prefixes(prefixes: tuple[str, ...]) -> None:
     for prefix in prefixes:
-        if not prefix.startswith("s3://"):
+        # s3://<bucket>/ exactly as the pipeline writes it: a bare "s3://" would
+        # authorise anonymous reads from every bucket
+        if not _S3_CONTAINER.match(prefix):
             raise UnsupportedSourceError(f"unsupported source prefix {prefix!r}")
 
 
@@ -76,16 +82,22 @@ class S3RepoOpener:
             secret_access_key=s.s3_secret_access_key,
         )
 
+    def forget(self, cube_collection_id: str) -> None:
+        """Drop a collection's handle (its sink was removed)."""
+        self._cache.pop(cube_collection_id, None)
+
     def open(self, sink: SinkRow) -> ic.Repository | None:
         if not sink.source_prefixes:
             return None  # not recorded yet: every chunk read would be refused
         check_source_prefixes(sink.source_prefixes)
+        storage = self._storage(sink.cube_collection_id)
+        # Checked on a hit too: a deleted and re-created cube must not keep its stale handle
+        if not ic.Repository.exists(storage):
+            self.forget(sink.cube_collection_id)
+            return None
         cached = self._cache.get(sink.cube_collection_id)
         if cached is not None and cached[0] == sink.source_prefixes:
             return cached[1]
-        storage = self._storage(sink.cube_collection_id)
-        if not ic.Repository.exists(storage):
-            return None
         credentials = ic.containers_credentials(
             {p: ic.s3_credentials(anonymous=True) for p in sink.source_prefixes}
         )
@@ -131,6 +143,10 @@ class CubeRegistry:
         self._last_reload_error: str | None = None
         # refresh() runs in a worker thread; readers only do dict lookups
         self._lock = threading.Lock()
+        # _warm_up_errors is written by the event loop (record_warm_up) and
+        # rebuilt by the refresh worker thread; every access holds this lock.
+        # Separate from _lock so a slow refresh never blocks a warm-up result.
+        self._warm_up_lock = threading.Lock()
 
     def get(self, collection_id: str) -> xr.Dataset | None:
         entry = self._entries.get(collection_id)
@@ -141,6 +157,8 @@ class CubeRegistry:
 
     def health(self) -> dict:
         entries = dict(self._entries)
+        with self._warm_up_lock:
+            warm_up_errors = dict(self._warm_up_errors)
         return {
             "datasets": {
                 cid: {"snapshot_id": e.snapshot_id, "steps": e.steps, "opened_at": e.opened_at}
@@ -148,7 +166,7 @@ class CubeRegistry:
             },
             "pending": list(self._pending),
             "empty": list(self._empty),
-            "errors": {**self._warm_up_errors, **self._errors},
+            "errors": {**warm_up_errors, **self._errors},
             "last_reload_at": self._last_reload_at,
             "last_reload_error": self._last_reload_error,
         }
@@ -156,10 +174,11 @@ class CubeRegistry:
     def record_warm_up(self, collection_id: str, status: int | None) -> None:
         """A warm-up tile that is not a 200 (``None``: the request failed) is an
         error under the cube's id until its next successful warm-up."""
-        if status == 200:
-            self._warm_up_errors.pop(collection_id, None)
-        else:
-            self._warm_up_errors[collection_id] = f"WarmUpFailed({status})"
+        with self._warm_up_lock:
+            if status == 200:
+                self._warm_up_errors.pop(collection_id, None)
+            else:
+                self._warm_up_errors[collection_id] = f"WarmUpFailed({status})"
 
     def refresh(self) -> list[str]:
         """One poll; returns the collection ids (re)opened, for the warm-up."""
@@ -177,6 +196,8 @@ class CubeRegistry:
             return []
         self._last_reload_error = None
 
+        # Built aside and swapped in whole: readers see the old dict or the new one
+        entries = dict(self._entries)
         opened: list[str] = []
         pending: list[str] = []
         empty: list[str] = []
@@ -187,7 +208,7 @@ class CubeRegistry:
                 errors[cid] = sink.error  # its open dataset, if any, stays
                 continue
             try:
-                status = self._refresh_sink(sink)
+                status = self._refresh_sink(sink, entries)
             except Exception as err:
                 errors[cid] = _public(err)
                 log.warning("cube not reloaded; keeping its previous dataset",
@@ -201,26 +222,31 @@ class CubeRegistry:
                 empty.append(cid)
 
         wanted = {s.cube_collection_id for s in sinks}
-        for cid in [c for c in self._entries if c not in wanted]:
-            del self._entries[cid]
+        forget = getattr(self._opener, "forget", None)
+        for cid in [c for c in entries if c not in wanted]:
+            del entries[cid]
+            if forget is not None:
+                forget(cid)
             log.info("cube unregistered", extra={"cube_collection_id": cid})
+        self._entries = entries
         self._pending, self._empty, self._errors = pending, empty, errors
-        self._warm_up_errors = {
-            c: e for c, e in self._warm_up_errors.items() if c in self._entries
-        }
+        with self._warm_up_lock:
+            self._warm_up_errors = {
+                c: e for c, e in self._warm_up_errors.items() if c in entries
+            }
         return opened
 
-    def _refresh_sink(self, sink: SinkRow) -> str:
+    def _refresh_sink(self, sink: SinkRow, entries: dict[str, _Entry]) -> str:
         cid = sink.cube_collection_id
         # No recorded prefixes (first append, a provisional redo): the virtual
         # chunks cannot be authorized, so every read would 500. Not servable yet.
         repo = self._opener.open(sink) if sink.source_prefixes else None
         if repo is None:
-            self._entries.pop(cid, None)
+            entries.pop(cid, None)
             return "pending"
         snapshot_id = repo.lookup_branch(BRANCH)
         key = (snapshot_id, sink.variables, sink.source_prefixes, sink.append_dim)
-        current = self._entries.get(cid)
+        current = entries.get(cid)
         if current is not None and current.key == key:
             return "unchanged"
         session = repo.readonly_session(snapshot_id=snapshot_id)
@@ -229,7 +255,7 @@ class CubeRegistry:
         )
         steps = int(raw.sizes.get(sink.append_dim, 0))
         if steps == 0:
-            self._entries.pop(cid, None)
+            entries.pop(cid, None)
             return "empty"
         dataset = prepare_dataset(
             raw,
@@ -238,7 +264,7 @@ class CubeRegistry:
             collection_id=cid,
             snapshot_id=snapshot_id,
         )
-        self._entries[cid] = _Entry(key, snapshot_id, dataset, steps, _now())
+        entries[cid] = _Entry(key, snapshot_id, dataset, steps, _now())
         log.info("cube opened",
                  extra={"cube_collection_id": cid, "snapshot_id": snapshot_id, "steps": steps})
         return "opened"

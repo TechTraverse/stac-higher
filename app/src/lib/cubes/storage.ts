@@ -251,6 +251,19 @@ export async function cubeLedgerSummary(sinkId: string): Promise<CubeLedgerSumma
   };
 }
 
+/** True while the sink's ledger holds a `pending` row. With no snapshot yet,
+ * that is the first append in progress: any app write bumps `updated_at` and
+ * makes the pipeline discard and redo it, so the route refuses writes then. */
+export async function hasPendingAppends(sinkId: string): Promise<boolean> {
+  await runMigrations();
+  const result = await query<{ exists: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM stac_higher.cube_appends
+                     WHERE cube_sink_id = $1 AND status = 'pending') AS exists`,
+    [sinkId],
+  );
+  return result.rows[0]?.exists === true;
+}
+
 export async function collectionHasItem(collectionId: string, itemId: string): Promise<boolean> {
   const result = await query<{ exists: boolean }>(
     `SELECT EXISTS (SELECT 1 FROM pgstac.items WHERE collection = $1 AND id = $2) AS exists`,

@@ -8,6 +8,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { servingKeys } from "@/lib/query/keys";
+import { fetchCubePosition } from "./cube-edr";
 import { itemTileJsonUrl, tipgCollectionsUrl } from "./urls";
 
 /** The subset of TileJSON the preview layer consumes. */
@@ -103,5 +104,25 @@ export function useTipgCollections(enabled: boolean) {
     enabled,
     retry: false,
     staleTime: STALE_MS,
+  });
+}
+
+/**
+ * The cube's time series at one clicked point (EDR position). Idle until a
+ * point is chosen. A 4xx is the server's verdict (unknown cube, point off the
+ * grid) and is not retried.
+ */
+export function useCubePosition(
+  collectionId: string,
+  variable: string,
+  point: { lon: number; lat: number } | null,
+) {
+  return useQuery({
+    queryKey: servingKeys.cubePosition(collectionId, variable, point?.lon ?? 0, point?.lat ?? 0),
+    queryFn: () =>
+      fetchCubePosition(collectionId, (point as { lon: number }).lon, (point as { lat: number }).lat, variable),
+    enabled: point !== null,
+    staleTime: 60_000,
+    retry: (failureCount, error) => !/: 4\d\d$/.test(error.message) && failureCount < 2,
   });
 }

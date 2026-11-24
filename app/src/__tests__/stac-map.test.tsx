@@ -52,3 +52,20 @@ describe("StacMap interaction props", () => {
     expect(screen.getByTestId("map")).toBeTruthy();
   });
 });
+
+describe("StacMap initial view", () => {
+  it("fits initialBounds at construction, not only on load", () => {
+    // `load` waits for every source's tiles; a slow raster source held the map
+    // at the world default until then (live check of #172).
+    render(<StacMap initialBounds={[-152, 14, -52, 57]} />);
+    expect(mapProps.current?.initialViewState).toEqual({
+      bounds: [-152, 14, -52, 57],
+      fitBoundsOptions: { padding: 50 },
+    });
+  });
+
+  it("opens on the world default without bounds", () => {
+    render(<StacMap />);
+    expect(mapProps.current?.initialViewState).toEqual({ longitude: 0, latitude: 20, zoom: 1.5 });
+  });
+});
