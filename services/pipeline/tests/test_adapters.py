@@ -598,3 +598,23 @@ async def test_s3_anonymous_test_probe_succeeds_without_credentials(monkeypatch)
     adapter = S3Adapter({"bucket": "noaa-goes19", "anonymous": True}, {})
     result = await adapter.test()
     assert result["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "creds",
+    [
+        {},
+        {"access_key_id": "AK"},
+        {"secret_access_key": "SK"},
+        {"access_key_id": " ", "secret_access_key": ""},
+    ],
+)
+def test_a_signed_s3_connection_without_both_keys_is_refused(creds):
+    """Without this, boto3 and rasterio fall back to the default chain -- on EKS,
+    the pipeline's own role (R-2 Decision 4)."""
+    with pytest.raises(ValueError, match=r"required unless config\.anonymous is true"):
+        S3Adapter({"bucket": "b"}, creds)
+
+
+def test_an_anonymous_s3_connection_needs_no_keys():
+    S3Adapter({"bucket": "noaa-goes19", "anonymous": True}, {})
