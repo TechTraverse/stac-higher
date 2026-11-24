@@ -48,6 +48,8 @@ export const servingKeys = {
   itemTileJson: (collectionId: string, itemId: string, assetKey: string) =>
     [...servingKeys.all(), "item-tilejson", collectionId, itemId, assetKey] as const,
   tipgCollections: () => [...servingKeys.all(), "tipg-collections"] as const,
+  cubePosition: (collectionId: string, variable: string, lon: number, lat: number) =>
+    [...servingKeys.all(), "cube-position", collectionId, variable, lon, lat] as const,
 };
 
 /** Alerts + monitoring surfaces (M2-B/M2-D). */
@@ -122,4 +124,12 @@ export const stacKeys = {
 
   search: (endpointUrl: string, params: StacSearchBody) =>
     [...stacKeys.all(endpointUrl), "search", params] as const,
+};
+
+/** Virtual cube sink (Z-8b): the Settings tab card's server state. */
+export const cubeSinkKeys = {
+  all: () => ["cube-sink"] as const,
+  detail: (collectionId: string) =>
+    [...cubeSinkKeys.all(), "detail", collectionId] as const,
+  referenceSources: () => [...cubeSinkKeys.all(), "reference-sources"] as const,
 };
