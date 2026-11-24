@@ -24,7 +24,7 @@ function CollectionListInner() {
           <EmptyState
             icon={Layers}
             title="Platform catalog unavailable"
-            description="The built-in catalog entry is missing. Reload the page, or check PUBLIC_BUILTIN_CATALOG_URL."
+            description="The built-in catalog entry is missing. Reload the page, or check BUILTIN_CATALOG_PUBLIC_URL."
             action={{ label: "Manage catalogs", href: "/catalogs" }}
           />
         </main>

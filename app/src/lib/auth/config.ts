@@ -21,6 +21,8 @@
  *   SESSION_MAX_AGE_S   session cookie lifetime, default 28800 (8 h)
  *   DEV_AUTH_IDENTITY   JSON partial CanonicalIdentity for bypass mode
  *   AUTH_BYPASS_FORCE   "true" to allow bypass in production (dangerous)
+ *   AUTH_BEARER_AUDIENCE_CLAIM  aud (default) | client_id — the bearer-token
+ *                       claim AUTH_BEARER_AUDIENCES is matched against
  */
 import {
   isCanonicalRole,
@@ -47,7 +49,31 @@ export interface AuthConfig {
   redirectUri: string;
   sessionSecret: string | null;
   sessionMaxAgeS: number;
+  /** Which bearer-token claim `AUTH_BEARER_AUDIENCES` is matched against. */
+  bearerAudienceClaim: BearerAudienceClaim;
   prod: boolean;
+}
+
+export const BEARER_AUDIENCE_CLAIMS = ["aud", "client_id"] as const;
+export type BearerAudienceClaim = (typeof BEARER_AUDIENCE_CLAIMS)[number];
+
+/**
+ * `AUTH_BEARER_AUDIENCE_CLAIM`: unset or blank -> "aud"; otherwise trimmed and
+ * CASE-SENSITIVE, exactly "aud" or "client_id", else throws. Astro SSR has no
+ * startup hook, so config load is the gate: the middleware calls
+ * `getAuthConfig` on every request, so a bad value 500s every request with
+ * this message rather than being silently read as `aud`.
+ */
+export function parseBearerAudienceClaim(env: Env = process.env): BearerAudienceClaim {
+  const raw = env.AUTH_BEARER_AUDIENCE_CLAIM;
+  const value = raw?.trim() ?? "";
+  if (value === "") return "aud";
+  if ((BEARER_AUDIENCE_CLAIMS as readonly string[]).includes(value)) {
+    return value as BearerAudienceClaim;
+  }
+  throw new Error(
+    `AUTH_BEARER_AUDIENCE_CLAIM must be "aud" or "client_id" (case-sensitive); got ${JSON.stringify(raw)}`,
+  );
 }
 
 /** True when running a production build (or NODE_ENV=production). The e2e
@@ -121,6 +147,7 @@ export function getAuthConfig(env: Env = process.env, prod = isProdRuntime()): A
     redirectUri: env.OIDC_REDIRECT_URI ?? DEFAULT_OIDC_REDIRECT_URI,
     sessionSecret: env.SESSION_SECRET ?? null,
     sessionMaxAgeS: Number(env.SESSION_MAX_AGE_S) || DEFAULT_SESSION_MAX_AGE_S,
+    bearerAudienceClaim: parseBearerAudienceClaim(env),
     prod,
   };
 }

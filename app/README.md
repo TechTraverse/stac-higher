@@ -106,7 +106,7 @@ npm run dev
 
 The frontend starts at [http://localhost:4321](http://localhost:4321). The built-in catalog is served through stac-auth-proxy at [http://localhost:8081](http://localhost:8081) (stac-fastapi directly at [http://localhost:8082](http://localhost:8082)).
 
-On first launch, the Catalogs page already contains the undeletable **Built-in Catalog** entry pointing at `http://localhost:8081` (override with `PUBLIC_BUILTIN_CATALOG_URL`). That is the platform catalog: create collections, add items, search, and manage extensions against it. You can add further external catalogs there too — those get a read-only browser at `/catalogs/[catalogId]/collections`, and appear in the `/search` catalog picker.
+On first launch, the Catalogs page already contains the undeletable **Built-in Catalog** entry pointing at `http://localhost:8081` (override with `BUILTIN_CATALOG_PUBLIC_URL`). That is the platform catalog: create collections, add items, search, and manage extensions against it. You can add further external catalogs there too — those get a read-only browser at `/catalogs/[catalogId]/collections`, and appear in the `/search` catalog picker.
 
 ### Storybook
 

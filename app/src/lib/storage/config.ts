@@ -12,14 +12,26 @@
  * the app runs inside compose, set `S3_ENDPOINT` to a browser-reachable host
  * (never the compose-internal `http://minio:9000`, which the browser can't
  * resolve).
+ *
+ * Credentials: when both `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` are
+ * unset or blank, `credentials` is `null` and the AWS SDK default credential
+ * chain runs (Pod Identity / IRSA on EKS, env, profile). The one exception is
+ * a bare laptop with no `S3_*` set at all: the compose MinIO defaults apply, so
+ * a developer's personal AWS credentials never sign MinIO URLs. Exactly one key
+ * set is a configuration error.
  */
+
+export interface StorageCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+}
 
 export interface StorageConfig {
   endpoint: string;
   region: string;
   bucket: string;
-  accessKeyId: string;
-  secretAccessKey: string;
+  /** null = the AWS SDK default credential chain (Pod Identity / IRSA / env / profile). */
+  credentials: StorageCredentials | null;
   /** MinIO needs path-style addressing (no per-bucket DNS). */
   forcePathStyle: boolean;
 }
@@ -31,6 +43,24 @@ const DEFAULT_REGION = "us-east-1";
 const DEFAULT_BUCKET = "stac-higher";
 const DEFAULT_ACCESS_KEY = "minioadmin";
 const DEFAULT_SECRET_KEY = "minioadmin";
+
+const isEmpty = (v: string | undefined): boolean => v === undefined || v.trim() === "";
+
+function resolveCredentials(env: Record<string, string | undefined>): StorageCredentials | null {
+  const id = env.S3_ACCESS_KEY_ID;
+  const secret = env.S3_SECRET_ACCESS_KEY;
+  if (isEmpty(id) && isEmpty(secret)) {
+    // Dev-only MinIO default: only when nothing S3-related is set at all.
+    const bare = env.S3_ENDPOINT === undefined && id === undefined && secret === undefined;
+    return bare ? { accessKeyId: DEFAULT_ACCESS_KEY, secretAccessKey: DEFAULT_SECRET_KEY } : null;
+  }
+  if (id === undefined || secret === undefined || isEmpty(id) || isEmpty(secret)) {
+    throw new Error(
+      "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together, or both left empty to use the AWS default credential chain",
+    );
+  }
+  return { accessKeyId: id, secretAccessKey: secret };
+}
 
 function parseBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
@@ -44,8 +74,7 @@ export function getStorageConfig(
     endpoint: env.S3_ENDPOINT ?? DEFAULT_ENDPOINT,
     region: env.S3_REGION ?? DEFAULT_REGION,
     bucket: env.S3_BUCKET ?? DEFAULT_BUCKET,
-    accessKeyId: env.S3_ACCESS_KEY_ID ?? DEFAULT_ACCESS_KEY,
-    secretAccessKey: env.S3_SECRET_ACCESS_KEY ?? DEFAULT_SECRET_KEY,
+    credentials: resolveCredentials(env),
     // MinIO is the local default and requires path-style; keep it on unless a
     // real-S3 deployment explicitly turns it off.
     forcePathStyle: parseBool(env.S3_FORCE_PATH_STYLE, true),
