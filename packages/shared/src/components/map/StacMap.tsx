@@ -1,15 +1,20 @@
-import { useRef, useCallback } from "react";
+import { useRef, useCallback, useState } from "react";
 import { useStore } from "@nanostores/react";
 import { $theme } from "@shared/stores/uiStore";
 import Map, { NavigationControl, ScaleControl } from "react-map-gl/maplibre";
 import type { MapRef, MapMouseEvent } from "react-map-gl/maplibre";
 import type { LngLatBoundsLike } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+// Before any map is constructed: maplibre 6 cannot find its worker once bundled.
+import "@shared/lib/map/maplibre-worker";
 
 const BASEMAP_DARK =
   "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 const BASEMAP_LIGHT =
   "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+
+/** Pixels kept clear around `initialBounds` when the map fits them. */
+const FIT_PADDING = 50;
 
 interface StacMapProps {
   children?: React.ReactNode;
@@ -42,9 +47,20 @@ export function StacMap({
   const theme = useStore($theme);
   const mapRef = useRef<MapRef>(null);
 
+  // `load` waits for every source's in-view tiles, which a slow raster source
+  // can hold off for a long time; until then the map sat at the world default.
+  // So the first bounds are applied at construction, and `load` refits to the
+  // bounds current by then (a caller whose bounds arrive later, e.g. the item
+  // preview's TileJSON hint).
+  const [initialViewState] = useState(() =>
+    initialBounds
+      ? { bounds: initialBounds, fitBoundsOptions: { padding: FIT_PADDING } }
+      : { longitude: 0, latitude: 20, zoom: 1.5 },
+  );
+
   const onLoad = useCallback(() => {
     if (mapRef.current && initialBounds) {
-      mapRef.current.fitBounds(initialBounds, { padding: 50, duration: 0 });
+      mapRef.current.fitBounds(initialBounds, { padding: FIT_PADDING, duration: 0 });
     }
     if (mapRef.current && onMapRef) {
       onMapRef(mapRef.current);
@@ -54,11 +70,7 @@ export function StacMap({
   return (
     <Map
       ref={mapRef}
-      initialViewState={{
-        longitude: 0,
-        latitude: 20,
-        zoom: 1.5,
-      }}
+      initialViewState={initialViewState}
       style={{ width: "100%", height: "100%" }}
       mapStyle={theme === "dark" ? BASEMAP_DARK : BASEMAP_LIGHT}
       onLoad={onLoad}

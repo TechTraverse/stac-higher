@@ -21,6 +21,9 @@ the live NODD bucket, needing the internet and the process runtime image:
     uv run python -m pipeline.demo goes-status
     uv run python -m pipeline.demo goes-teardown
 
+The Z-9 cube source has its own trio (`cube-seed`, `cube-status`,
+`cube-teardown`); see README.md, "Cube source".
+
 `seed` is idempotent: re-running it replaces the scene and leaves one process
 deployed, so it is safe after a `docker compose down -v` **or** on a stack that
 already has the demo. It writes to pgstac through the STAC API and to
@@ -46,6 +49,7 @@ import psycopg
 import rasterio
 from rasterio.transform import from_bounds
 
+from pipeline.demo import cube_seed
 from pipeline.demo.fixtures import (
     CREATED_BY,
     GROUP,
@@ -382,6 +386,24 @@ def main(argv: list[str] | None = None) -> int:
         help="delete the collections even when another ingest association targets them",
     )
     goes_teardown_parser.set_defaults(func=goes.teardown)
+
+    sub.add_parser(
+        "cube-seed",
+        help="create the Z-9 cube source (goes19-cmipc-c13) + the empty cube collection"
+        " (idempotent; the sink is made through the UI)",
+    ).set_defaults(func=cube_seed.seed)
+    sub.add_parser(
+        "cube-status", help="cube source: ingest ledger, sink ledger, item counts"
+    ).set_defaults(func=cube_seed.status)
+    cube_teardown_parser = sub.add_parser(
+        "cube-teardown", help="remove everything cube-seed made (and a UI-created sink)"
+    )
+    cube_teardown_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="delete the collections even when another ingest association targets the source",
+    )
+    cube_teardown_parser.set_defaults(func=cube_seed.teardown)
 
     images_seed_parser = sub.add_parser(
         "images-seed",

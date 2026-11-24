@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 import time
+import warnings
 from collections.abc import AsyncIterator
 
 import httpx
@@ -31,7 +32,7 @@ from pydantic import ConfigDict
 from xpublish import Plugin, hookimpl
 from xpublish_tiles.xpublish.tiles import TilesPlugin
 
-from stac_higher_cube_server.caching import cache_control
+from stac_higher_cube_server.caching import cache_control, collection_id, is_tile_path
 from stac_higher_cube_server.edr import APPEND_DIM_ATTR, MISSING_STEPS_HEADER, TolerantEdrPlugin
 from stac_higher_cube_server.registry import CubeRegistry, S3RepoOpener
 from stac_higher_cube_server.settings import Settings
@@ -96,13 +97,13 @@ async def warm_up(app: FastAPI, collection_id: str, ds: xr.Dataset) -> int | Non
         return None
     url = (
         f"/datasets/{collection_id}/tiles/WebMercatorQuad/0/0/0"
-        f"?variables={variables[0]}&{WARM_UP_QUERY}&t={_exact_t(ds[dim].values[-1])}"
+        f"?variables={variables[0]}&{WARM_UP_QUERY}&{dim}={_exact_t(ds[dim].values[-1])}"
     )
     started = time.monotonic()
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://cube-server") as c:
-            response = await c.get(url, timeout=60)
+            response = await c.get(url)
     except Exception as err:
         log.warning("cube warm-up failed",
                     extra={"cube_collection_id": collection_id, "error": repr(err)})
@@ -113,18 +114,82 @@ async def warm_up(app: FastAPI, collection_id: str, ds: xr.Dataset) -> int | Non
     return response.status_code
 
 
-async def _poll(app: FastAPI, registry: CubeRegistry, settings: Settings) -> None:
-    while True:
+#: warm-ups rendering at once, and the longest one may take. This ``wait_for``
+#: is the only bound: httpx's own timeout does nothing over ``ASGITransport``
+#: (no socket), so ``warm_up`` sets none.
+WARM_UP_CONCURRENCY = 2
+WARM_UP_BUDGET_SECONDS = 90
+
+
+async def _warm_one(
+    app: FastAPI, registry: CubeRegistry, collection_id: str, gate: asyncio.Semaphore
+) -> None:
+    async with gate:
+        ds = registry.get(collection_id)
+        if ds is None:
+            return
         try:
-            opened = await asyncio.to_thread(registry.refresh)
-        except Exception:  # refresh() already contains its own failures
-            log.exception("cube registry refresh crashed")
-            opened = []
-        for collection_id in opened:
-            ds = registry.get(collection_id)
-            if ds is not None:
-                registry.record_warm_up(collection_id, await warm_up(app, collection_id, ds))
-        await asyncio.sleep(settings.poll_seconds)
+            status = await asyncio.wait_for(warm_up(app, collection_id, ds),
+                                            WARM_UP_BUDGET_SECONDS)
+        except TimeoutError:
+            status = None
+        registry.record_warm_up(collection_id, status)
+
+
+async def _poll(app: FastAPI, registry: CubeRegistry, settings: Settings) -> None:
+    """Warm-ups run detached, so a slow one never delays the next ``refresh()``
+    (Z-6 trims snapshots after an hour)."""
+    gate = asyncio.Semaphore(WARM_UP_CONCURRENCY)
+    warming: dict[str, asyncio.Task] = {}
+    try:
+        while True:
+            try:
+                opened = await asyncio.to_thread(registry.refresh)
+            except Exception:  # refresh() already contains its own failures
+                log.exception("cube registry refresh crashed")
+                opened = []
+            for collection_id in opened:
+                previous = warming.pop(collection_id, None)
+                if previous is not None:
+                    previous.cancel()  # a newer snapshot supersedes it
+                warming[collection_id] = asyncio.create_task(
+                    _warm_one(app, registry, collection_id, gate)
+                )
+            warming = {c: t for c, t in warming.items() if not t.done()}
+            await asyncio.sleep(settings.poll_seconds)
+    finally:
+        tasks = list(warming.values())
+        for task in tasks:
+            task.cancel()
+        # awaited, so none outlives the lifespan and renders against a closed app
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+class HeadAsGet:
+    """Serve HEAD on tile routes (xpublish-tiles registers GET only).
+
+    Pure ASGI: the inner app sees a copied scope with ``method`` GET; the
+    response start goes through unchanged (raw header list, repeated headers
+    intact, the GET's content-length kept) and the body is dropped."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope["method"] != "HEAD" or not is_tile_path(scope["path"]):
+            await self.app(scope, receive, send)
+            return
+        body_sent = False
+
+        async def head_send(message) -> None:
+            nonlocal body_sent
+            if message["type"] != "http.response.body":
+                await send(message)
+            elif not body_sent:
+                body_sent = True
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+        await self.app({**scope, "method": "GET"}, receive, head_send)
 
 
 def create_app(registry: CubeRegistry, settings: Settings, *, poll: bool = True) -> FastAPI:
@@ -154,12 +219,18 @@ def create_app(registry: CubeRegistry, settings: Settings, *, poll: bool = True)
 
     @app.middleware("http")
     async def tile_cache_headers(request: Request, call_next):
+        path = request.url.path
         response = await call_next(request)
-        value = cache_control(request.url.path, request.query_params, response.status_code)
+        cid = collection_id(path)
+        ds = registry.get(cid) if cid is not None else None
+        append_dim = str(ds.attrs.get(APPEND_DIM_ATTR, "t")) if ds is not None else "t"
+        value = cache_control(path, request.query_params, response.status_code, append_dim)
         if value is not None:
             response.headers["cache-control"] = value
         return response
 
+    # Outside tile_cache_headers, which then sees an ordinary GET.
+    app.add_middleware(HeadAsGet)
     # Added last, so it is outermost: preflights never reach xpublish.
     app.add_middleware(
         CORSMiddleware,
@@ -175,6 +246,9 @@ def main() -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(ExtraFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
+    # xpublish-tiles warns on every tile about our trimmed variables and naive UTC times
+    for text in ("Variables .* not found", "no explicit representation of timezones"):
+        warnings.filterwarnings("ignore", message=text, category=UserWarning)
     settings = Settings.from_env()
     registry = CubeRegistry(PgSinkSource(settings.db_dsn), S3RepoOpener(settings))
     uvicorn.run(

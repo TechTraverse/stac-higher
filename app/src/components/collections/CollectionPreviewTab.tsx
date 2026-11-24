@@ -19,6 +19,8 @@ import { useItems } from "@/lib/query/items";
 import { useCollectionSettings } from "@/lib/collections/settings-client";
 import { useItemTileJson } from "@/lib/serving/queries";
 import { buildPreviewFrames, FRAME_MAX_WAIT_TICKS } from "@/lib/serving/frames";
+import { CubePreview } from "./CubePreview";
+import { findCubeAsset } from "@/lib/serving/cube-frames";
 import { previewAssetCandidates } from "@/lib/serving/preview";
 import { collectionTileUrlTemplate, collectionViewerUrl } from "@/lib/serving/urls";
 
@@ -47,7 +49,20 @@ interface CollectionPreviewTabProps {
  * serving, no tileable asset, or a tiler that cannot open one all mean "no
  * preview", never an error on the product page.
  */
-export function CollectionPreviewTab({
+export function CollectionPreviewTab(props: CollectionPreviewTabProps) {
+  // A virtual cube has no items: the cube branch comes first so the serving
+  // gate, `useItems` and `useItemTileJson` never decide its empty state (and
+  // their hooks never run for it).
+  const cube = findCubeAsset(props.collection);
+  if (cube) {
+    return (
+      <CubePreview collection={props.collection} collectionId={props.collectionId} cube={cube} />
+    );
+  }
+  return <ItemPreview {...props} />;
+}
+
+function ItemPreview({
   collection,
   collectionId,
   endpointUrl,
