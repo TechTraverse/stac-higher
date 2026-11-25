@@ -129,6 +129,16 @@ against:
   `client_id` must equal one of them. A token carrying `aud` is rejected in
   this mode.
 - Any other value stops the proxy at startup with an error naming the setting.
+  In `client_id` mode an empty `ALLOWED_JWT_AUDIENCES` accepts any client of
+  the pool, and the proxy logs a startup warning saying so.
+
+Since upstream v1.4.0 the proxy also checks every token's `iss` against the
+issuer in the discovery document it fetched, or `OIDC_ISSUER` when set.
+Compose fetches discovery in-network (`http://keycloak:8080/...`) while
+tokens are minted at the public URL, so `docker-compose.yml` sets the
+proxy's `OIDC_ISSUER=http://localhost:8180/realms/stac-higher`. Unlike the
+app, the proxy accepts one issuer only: a token fetched from Keycloak's
+in-network URL is refused there.
 
 The app half is R-1's `AUTH_BEARER_AUDIENCE_CLAIM`; it has the same name and
 values, and the two must agree.

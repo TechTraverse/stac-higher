@@ -120,6 +120,11 @@ services:
       # in-network URL the proxy uses to actually fetch metadata/JWKS.
       - OIDC_DISCOVERY_URL=http://localhost:8180/realms/stac-higher/.well-known/openid-configuration
       - OIDC_DISCOVERY_INTERNAL_URL=http://keycloak:8080/realms/stac-higher/.well-known/openid-configuration
+      # Since v1.4.0 the proxy checks every token's `iss` against the issuer
+      # in the discovery document it fetched, i.e. the in-network one
+      # (http://keycloak:8080/...), while tokens minted via the public URL
+      # carry this one. Pin the expected issuer to the public URL.
+      - OIDC_ISSUER=http://localhost:8180/realms/stac-higher
       - DEFAULT_PUBLIC=true
       - PRIVATE_ENDPOINTS={}
     ports:

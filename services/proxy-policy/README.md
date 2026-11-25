@@ -22,7 +22,8 @@ Per request the factory returns CQL2:
 ## Wiring
 
 - Image: `infra/proxy-policy/Dockerfile` — `FROM` the pinned upstream proxy
-  (v1.2.0, which ships no Postgres driver) + `pip install` this package.
+  (v1.4.0, which ships no Postgres driver and no pip) + `ensurepip`,
+  `pip install` this package, remove pip.
 - Entry point: `python -m stac_higher_proxy_policy` → `app.create_app`, upstream's
   app with its `EnforceAuthMiddleware` swapped for a claim-aware subclass
   (`AUTH_BEARER_AUDIENCE_CLAIM`).
