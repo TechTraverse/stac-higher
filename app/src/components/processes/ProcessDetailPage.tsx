@@ -15,7 +15,25 @@ import {
   LoadingState,
   Switch,
 } from "@stac-higher/shared";
-import { FileText, Loader2, Package, Play, RotateCcw, Rocket, Trash2 } from "lucide-react";
+import {
+  CircleStop,
+  FileText,
+  Loader2,
+  Package,
+  Play,
+  RotateCcw,
+  Rocket,
+  Trash2,
+} from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { CANCELLABLE_RUN_STATUSES } from "@/lib/processes/run-status";
 import { toast } from "sonner";
 import { EnvEditor } from "@/components/processes/EnvEditor";
 import { CodeEditor } from "@/components/processes/CodeEditor";
@@ -57,6 +75,7 @@ import {
   useHardwareProfiles,
   useOutputs,
   useProcess,
+  useCancelRun,
   useRerunRun,
   useRevisions,
   useRuns,
@@ -957,6 +976,7 @@ function RunRow({
   hardware: string | null;
 }) {
   const rerunMutation = useRerunRun();
+  const cancelling = run.status === "running" && run.cancel_requested_at !== null;
 
   const rerun = async () => {
     try {
@@ -971,7 +991,15 @@ function RunRow({
     <div className="flex items-start justify-between gap-4 rounded-md border border-border p-3">
       <div className="min-w-0 space-y-1">
         <div className="flex items-center gap-2">
-          <Badge variant={RUN_STATUS_VARIANT[run.status]}>{run.status}</Badge>
+          <Badge
+            variant={RUN_STATUS_VARIANT[run.status]}
+            className={
+              run.status === "cancelled" ? "text-muted-foreground line-through" : undefined
+            }
+            data-testid={`run-status-${run.status}`}
+          >
+            {run.status}
+          </Badge>
           {run.is_test && <Badge variant="outline">test</Badge>}
           {imageDigest && (
             <Badge variant="outline" className="tech" title={imageDigest}>
@@ -983,9 +1011,10 @@ function RunRow({
             // run that silently sits in `queued` looking stuck.
             <Badge variant="outline">rate limited</Badge>
           )}
-          {run.status === "queued" && run.phase === "pending_capacity" && (
-            // K-3: released because its hardware profile is full on this
-            // host; the tooltip names the profile and the limit.
+          {run.phase === "pending_capacity" && !cancelling && (
+            // K-3: a queued run whose hardware profile is full on this host
+            // (the tooltip names the profile and the limit); K-4/K-5: also a
+            // submitted run the backend holds in its queue.
             <Badge
               variant="outline"
               title={run.phase_detail ?? undefined}
@@ -994,11 +1023,16 @@ function RunRow({
               Waiting for capacity
             </Badge>
           )}
-          {run.status === "running" && run.phase === "starting" && (
-            // Claimed and admitted. Until K-4's watcher writes `running`, this
-            // stays for the whole run.
+          {run.status === "running" && run.phase === "starting" && !cancelling && (
+            // Claimed and admitted, not yet reported running by the backend.
             <Badge variant="outline" data-testid="run-phase-starting">
               Starting
+            </Badge>
+          )}
+          {cancelling && (
+            // K-4: an operator asked; the pipeline is stopping the run.
+            <Badge variant="outline" data-testid="run-phase-cancelling">
+              Cancelling…
             </Badge>
           )}
           <span className="text-sm text-muted-foreground">
@@ -1037,9 +1071,15 @@ function RunRow({
             </a>
           </Button>
         )}
+      {canMutate &&
+        CANCELLABLE_RUN_STATUSES.includes(run.status) &&
+        !run.cancel_requested_at && (
+          // K-4: extractor runs are cancellable too (plan R17).
+          <CancelRunButton processId={processId} run={run} />
+        )}
       {/* Extractor runs are not re-runnable: their ingest rows are re-driven
           by the failed-retry sweep, and the route refuses the verb (409). */}
-      {canMutate && !isExtractor && run.status === "dead" && (
+      {canMutate && !isExtractor && (run.status === "dead" || run.status === "cancelled") && (
         <Button
           variant="outline"
           size="sm"
@@ -1056,6 +1096,64 @@ function RunRow({
       )}
       </div>
     </div>
+  );
+}
+
+/** K-4: the run row's Cancel verb, behind a confirmation. */
+function CancelRunButton({ processId, run }: { processId: string; run: ProcessRun }) {
+  const [open, setOpen] = useState(false);
+  const cancelMutation = useCancelRun();
+
+  const confirm = async () => {
+    try {
+      const { outcome } = await cancelMutation.mutateAsync({ id: processId, runId: run.id });
+      toast.success(
+        outcome === "cancelled" ? "Run cancelled" : "Cancel requested — stopping the run",
+      );
+      setOpen(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not cancel the run");
+    }
+  };
+
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+        data-testid="run-cancel"
+      >
+        <CircleStop className="h-4 w-4" />
+        Cancel
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel this run?</DialogTitle>
+            <DialogDescription>
+              A queued or retrying run is cancelled at once. A running run is
+              stopped (it gets 10 seconds to exit) and its log is kept. A
+              cancelled run can be re-run.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Keep running
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirm}
+              disabled={cancelMutation.isPending}
+              data-testid="run-cancel-confirm"
+            >
+              {cancelMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Cancel run
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

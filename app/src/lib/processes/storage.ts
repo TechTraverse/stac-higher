@@ -743,29 +743,14 @@ interface RunRow {
   cancel_requested_at: Date | string | null;
 }
 
-/** K-4 (process-compute spec §5.2): the run status vocabulary, pinned by
- * tests/contract-fixtures/process-run-status.json and migration 031's CHECK.
- * `cancelled` is terminal, like `succeeded` and `dead`. */
-export type ProcessRunStatus =
-  | "queued"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "dead"
-  | "cancelled";
-
-/** What the cancel verb accepts (fixture order): `queued` and `failed`
- * (retry pending, K-4 R4) flip to `cancelled` at once; `running` is flagged
- * and the pipeline stops it. */
-export const CANCELLABLE_RUN_STATUSES: readonly ProcessRunStatus[] = [
-  "queued",
-  "failed",
-  "running",
-];
-
-/** The payload-less `pg_notify` channel the cancel statement fires; the
- * pipeline LISTENs on it (ledger.CANCEL_CHANNEL). */
-export const PROCESS_RUN_CANCEL_CHANNEL = "process_run_cancel";
+// K-4: the run status vocabulary lives in a client-safe module (the run row
+// imports it); re-exported here for the server side.
+import { PROCESS_RUN_CANCEL_CHANNEL, type ProcessRunStatus } from "./run-status";
+export {
+  CANCELLABLE_RUN_STATUSES,
+  PROCESS_RUN_CANCEL_CHANNEL,
+  type ProcessRunStatus,
+} from "./run-status";
 
 /** K-3 (process-compute spec §5.2): the sub-state of a queued/running run,
  * pinned by tests/contract-fixtures/process-run-phase.json. */

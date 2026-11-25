@@ -62,6 +62,8 @@ export function successRateOverRuns(runs: ProcessRun[]): {
   rate: number | null;
   counted: number;
 } {
+  // K-4: `cancelled` is deliberately neutral (spec §9) — an operator's stop
+  // is neither a success nor a failure of the process.
   const terminal = runs.filter(
     (r) => r.status === "succeeded" || r.status === "dead",
   );

@@ -12,6 +12,7 @@ const { state } = vi.hoisted(() => ({ state: { profilesLoaded: true } }));
 vi.mock("@/lib/processes/queries", () => ({
   useRuns: () => ({ data: RUNS, isLoading: false }),
   useRerunRun: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useCancelRun: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useHardwareProfiles: () => ({
     data: state.profilesLoaded ? { backend: "docker", profiles: PROFILES } : undefined,
   }),

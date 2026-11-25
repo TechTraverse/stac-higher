@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { processVerdict } from "@/components/processes/health";
+import { processVerdict, successRateOverRuns } from "@/components/processes/health";
 import { alertKindLabel, openAlertHealth } from "@/components/monitoring/shared";
 import type { Alert } from "@/lib/monitoring/api";
 import type { Process, ProcessRun } from "@/lib/processes/types";
@@ -88,5 +88,16 @@ describe("process_image_flagged is degraded, not failing (C-4, spec §10)", () =
     expect(openAlertHealth({ state: "firing", kind: "process_failed" })).toBe("error");
     expect(openAlertHealth({ state: "firing", kind: "process_image_flagged" })).toBe("warn");
     expect(openAlertHealth({ state: "acknowledged", kind: "process_failed" })).toBe("warn");
+  });
+});
+
+describe("a cancelled run is neutral (K-4, spec §9)", () => {
+  it("does not count toward the success rate or the verdict", () => {
+    const ledger = [run({ id: "a" }), run({ id: "b", status: "cancelled" })];
+    expect(successRateOverRuns(ledger)).toEqual({ rate: 100, counted: 1 });
+    expect(processVerdict(process, ledger, 1).label).toBe(
+      processVerdict(process, [run({ id: "a" })], 1).label,
+    );
+    expect(processVerdict(process, ledger, 1).health).toBe("ok");
   });
 });
