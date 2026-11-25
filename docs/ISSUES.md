@@ -1439,16 +1439,24 @@ is not claimed: it stays `queued` as `pending_capacity` with
 - Tracked in: `services/pipeline/src/pipeline/process/repo.py` (`_admit_and_claim`), `services/pipeline/src/pipeline/jobs/process.py`.
 - Found in: K-3 and its review (2026-11-25).
 
-### I-171 · The socket proxy's `INFO=1` discloses daemon metadata to the pipeline 🟡
+### I-171 · The socket proxy's `INFO=1` discloses daemon metadata to every service on the default network 🟡
 K-3 enables the proxy's read-only `INFO` section so the executor can ask
-`GET /info` whether the daemon has an NVIDIA runtime before sending GPU
-`DeviceRequests`. The same answer carries the daemon's version, kernel, OS,
-CPU and memory totals, container counts and registry configuration. The
-pipeline already lists, creates and removes containers through the proxy, so
-this is a small widening, and a compose test pins the whole enabled set
-(`CONTAINERS`, `POST`, `IMAGES`, `INFO`). Alternative if it matters: drop the
-probe and map the daemon's start-time "could not select device driver"
-error to `HardwareUnavailable` instead (string matching on daemon wording).
+`GET /info` whether the daemon has an NVIDIA runtime before it sends GPU
+`DeviceRequests`, and how many CPUs the daemon has (`NCPU`). The same answer
+carries the daemon's version, kernel, OS, CPU and memory totals, container
+counts and registry configuration. **Who can reach it:** the proxy is not
+published to the host, but it is on the default compose network, so every
+service there can call `tcp://docker-socket-proxy:2375`, not only the
+pipeline: database, api, auth-proxy, keycloak, minio, titiler, tipg,
+cube-server and the one-shot init jobs. The larger pre-existing exposure is
+that those same services can already list, create, start and remove
+containers and pull images through the proxy (`CONTAINERS`, `IMAGES`,
+`POST`). `INFO` adds read-only metadata on top of that. A compose test pins
+the proxy's whole KEY=VALUE map. Fix candidate (lead, needs Docker to
+verify): put the proxy on its own internal network shared only with the
+pipeline. Alternative to `INFO`: drop the probe and rely on the daemon's
+"could not select device driver" and "Range of CPUs" refusals, which the
+executor maps to `HardwareUnavailable` anyway.
 - Tracked in: `docker-compose.yml` (`docker-socket-proxy`), `services/pipeline/tests/test_compose_scanner.py`.
 - Found in: K-3 (2026-11-25).
 

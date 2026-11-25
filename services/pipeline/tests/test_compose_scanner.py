@@ -45,10 +45,31 @@ def test_the_pipeline_names_the_scanner_network_and_the_hub_credential():
     assert "- scanner-egress" not in pipeline
 
 
-def test_the_socket_proxy_enables_exactly_the_known_sections():
-    """K-3 adds INFO (read-only GET /info, the NVIDIA-runtime probe). The
-    whole enabled set is pinned so any further widening is a visible diff."""
+def test_the_socket_proxy_environment_is_pinned_exactly():
+    """K-3 review: the proxy's whole KEY=VALUE map, so deleting an explicit
+    `=0` line (and inheriting an upstream default) fails as loudly as adding
+    an `=1`. K-3 added INFO (read-only GET /info, the NVIDIA-runtime and NCPU
+    probe)."""
     proxy = _service("docker-socket-proxy")
-    enabled = set(re.findall(r"^\s*- ([A-Z_]+)=1\s*$", proxy, re.M))
-    assert enabled == {"CONTAINERS", "POST", "IMAGES", "INFO"}
-    assert "INFO=0" not in proxy
+    env = dict(re.findall(r"^\s*- ([A-Z_]+)=(\S+)\s*$", proxy, re.M))
+    assert env == {
+        "CONTAINERS": "1",
+        "POST": "1",
+        "EXEC": "0",
+        "VOLUMES": "0",
+        "IMAGES": "1",
+        "NETWORKS": "0",
+        "SERVICES": "0",
+        "TASKS": "0",
+        "SECRETS": "0",
+        "CONFIGS": "0",
+        "NODES": "0",
+        "SWARM": "0",
+        "SYSTEM": "0",
+        "INFO": "1",
+        "PLUGINS": "0",
+        "BUILD": "0",
+        "COMMIT": "0",
+        "DISTRIBUTION": "0",
+        "AUTH": "0",
+    }

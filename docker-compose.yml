@@ -316,8 +316,9 @@ services:
       # section) is how the executor learns whether the daemon exposes an
       # NVIDIA runtime before it sends DeviceRequests for a GPU profile.
       # Residual: /info also discloses daemon metadata (version, kernel, OS,
-      # container counts, registry mirrors) to the pipeline, which can
-      # already list and create containers.
+      # CPU/memory totals, container counts, registry config) to every
+      # client of the proxy (see the network note below), all of which can
+      # already list and create containers through it (I-171).
       - INFO=1
       - PLUGINS=0
       - BUILD=0
@@ -328,8 +329,11 @@ services:
       # Read-only: the proxy needs the socket, and nothing needs to write to
       # the mount itself.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    # NOT published to the host, and NOT on process-runs — reachable only from
-    # the default compose network, i.e. from the pipeline.
+    # NOT published to the host, and NOT on process-runs. It IS on the default
+    # compose network, so every service there can reach tcp://docker-socket-
+    # proxy:2375, not only the pipeline: database, api, auth-proxy, keycloak,
+    # minio, titiler, tipg, cube-server and the one-shot init jobs. Only the
+    # pipeline is configured to use it (I-171).
     restart: unless-stopped
 
   pipeline:
