@@ -24,7 +24,7 @@ from pipeline.images.policy import ImagePolicy
 from pipeline.images.repo import ImageRow
 from pipeline.images.scan_result import ScanResultError
 from pipeline.process.credentials import RunCredentials, mint_prefix_credentials
-from pipeline.process.executor import Executor, ExitStatus, RegistryAuth, RunSpec
+from pipeline.process.executor import Executor, ExitStatus, RegistryAuth, RunSpec, run_to_exit
 from pipeline.process.logs import store_log
 from pipeline.storage.keys import SCANS_PREFIX, image_scan_log_key, image_scan_prefix
 from pipeline.storage.platform import get_object_range, head_object
@@ -170,9 +170,12 @@ def execute_scan(
         credentials=credentials,
         registry_auth=registry_auth,
     )
-    handle = executor.launch(spec)
+    # K-4 R11: scans keep blocking their worker thread, now by polling
+    # status() (the run path never waits); moving them to the Reconciler is
+    # a follow-up (I-124).
+    handle = executor.submit(spec)
     try:
-        status = executor.wait(handle, policy.scan_timeout_seconds)
+        status = run_to_exit(executor, handle, policy.scan_timeout_seconds)
         payload = executor.logs(handle, settings.process_log_max_bytes)
     finally:
         executor.reap(handle)

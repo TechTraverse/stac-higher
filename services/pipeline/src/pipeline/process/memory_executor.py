@@ -21,33 +21,63 @@ from pipeline.process.executor import (
     LaunchedRun,
     RunHandle,
     RunSpec,
+    RunState,
 )
+
+
+def exited(exit_code: int = 0, *, timed_out: bool = False, error: str | None = None) -> RunState:
+    """A scripted ``exited`` state."""
+    return RunState("exited", exit=ExitStatus(exit_code, timed_out=timed_out, error=error))
 
 
 @dataclass
 class MemoryExecutor(Executor):
-    """Scripted results, full recording, no containers."""
+    """Scripted states, full recording, no containers."""
 
     name: str = "memory"
-    #: Result per launch, in order; the last one repeats once exhausted.
-    results: list[ExitStatus] = field(default_factory=lambda: [ExitStatus(0)])
+    submitted_phase: str = "starting"
+    #: Per run id, the states ``status()`` returns in order; the last repeats.
+    states: dict[str, list[RunState]] = field(default_factory=dict)
+    #: The script for a run without its own entry in ``states``.
+    default_states: list[RunState] = field(default_factory=lambda: [exited(0)])
     log_output: bytes = b""
-    launched: list[RunSpec] = field(default_factory=list)
+    #: When set, submit / status / cancel raise it — the backend-down paths.
+    submit_error: Exception | None = None
+    status_error: Exception | None = None
+    cancel_error: Exception | None = None
+    submitted: list[RunSpec] = field(default_factory=list)
+    cancelled: list[str] = field(default_factory=list)
     reaped: list[str] = field(default_factory=list)
-    #: When set, launch raises it — for the backend-unavailable path.
-    launch_error: Exception | None = None
-    _waits: int = 0
+    status_calls: list[str] = field(default_factory=list)
+    _reads: dict[str, int] = field(default_factory=dict)
 
-    def launch(self, spec: RunSpec) -> RunHandle:
-        if self.launch_error is not None:
-            raise self.launch_error
-        self.launched.append(spec)
+    @staticmethod
+    def handle_for(run_id: str) -> RunHandle:
+        return RunHandle(id=f"mem-{run_id}", backend="memory")
+
+    def _run_id(self, handle: RunHandle) -> str:
+        return handle.id.removeprefix("mem-")
+
+    def submit(self, spec: RunSpec) -> RunHandle:
+        if self.submit_error is not None:
+            raise self.submit_error
+        self.submitted.append(spec)
         return RunHandle(id=f"mem-{spec.run_id}", backend=self.name)
 
-    def wait(self, handle: RunHandle, timeout_seconds: int) -> ExitStatus:
-        index = min(self._waits, len(self.results) - 1)
-        self._waits += 1
-        return self.results[index]
+    def status(self, handle: RunHandle) -> RunState:
+        self.status_calls.append(handle.id)
+        if self.status_error is not None:
+            raise self.status_error
+        run_id = self._run_id(handle)
+        script = self.states.get(run_id, self.default_states)
+        index = min(self._reads.get(run_id, 0), len(script) - 1)
+        self._reads[run_id] = self._reads.get(run_id, 0) + 1
+        return script[index]
+
+    def cancel(self, handle: RunHandle) -> None:
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        self.cancelled.append(handle.id)
 
     def logs(self, handle: RunHandle, max_bytes: int) -> bytes:
         return self.log_output[:max_bytes]
@@ -56,7 +86,7 @@ class MemoryExecutor(Executor):
         self.reaped.append(handle.id)
 
     def list_launched(self) -> list[LaunchedRun]:
-        # Launched-minus-reaped is the fake's honest analogue of "resources
+        # Submitted-minus-reaped is the fake's honest analogue of "resources
         # the backend still holds", which is what the reaper reconciles.
         return [
             LaunchedRun(
@@ -64,6 +94,6 @@ class MemoryExecutor(Executor):
                 run_id=spec.run_id,
                 kind=spec.kind,
             )
-            for spec in self.launched
+            for spec in self.submitted
             if f"mem-{spec.run_id}" not in self.reaped
         ]

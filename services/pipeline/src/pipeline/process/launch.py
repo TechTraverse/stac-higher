@@ -33,7 +33,7 @@ from pipeline.metrics import PROCESS_RUN_SECONDS
 from pipeline.process.config import NETWORK_LEVELS, USER_IMAGE_KINDS, EnvEntry, ProcessRuntime
 from pipeline.process.credentials import RunCredentials, mint_run_credentials
 from pipeline.process.docker_executor import CODE_ENV_VAR, encode_code
-from pipeline.process.executor import Executor, ExitStatus, RegistryAuth, RunSpec
+from pipeline.process.executor import Executor, ExitStatus, RegistryAuth, RunSpec, run_to_exit
 from pipeline.process.hardware import (
     HardwareProfile,
     HardwareProfileError,
@@ -406,9 +406,10 @@ def execute_run(
     import time
 
     started = time.monotonic()
-    handle = executor.launch(spec)
+    # Interim (K-4 Task 3): Task 5 replaces this with submit-and-return.
+    handle = executor.submit(spec)
     try:
-        status = executor.wait(handle, runtime.timeout_seconds)
+        status = run_to_exit(executor, handle, runtime.timeout_seconds)
         payload = executor.logs(handle, settings.process_log_max_bytes)
     finally:
         executor.reap(handle)

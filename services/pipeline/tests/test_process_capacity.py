@@ -18,10 +18,9 @@ import pytest
 
 from _process_fake import FakeProcessRepo
 from pipeline.config import Settings
-from pipeline.process.executor import ExitStatus
 from pipeline.process.hardware import docker_capacities, parse_hardware_profiles
 from pipeline.process.ledger import CAPACITY_RETRY_SECONDS, PHASE_PENDING_CAPACITY
-from pipeline.process.memory_executor import MemoryExecutor
+from pipeline.process.memory_executor import MemoryExecutor, exited
 from pipeline.process.repo import QueuedRun
 from pipeline.process.runner import run_one
 from test_process_triggers import FakeStore, FakeSts
@@ -168,25 +167,25 @@ async def test_an_unbounded_profile_and_no_capacities_always_admit():
 async def test_run_one_no_longer_counts_or_releases():
     """Admission is the claim's job: run_one launches whatever it is handed."""
     repo = FakeProcessRepo()
-    executor = MemoryExecutor(results=[ExitStatus(0)])
+    executor = MemoryExecutor(default_states=[exited(0)])
     result = await _run(repo, executor, capacity=1)
     assert result.status == "succeeded"
-    assert len(executor.launched) == 1
+    assert len(executor.submitted) == 1
 
 
 @pytest.mark.asyncio
 async def test_only_an_extractor_on_the_default_profile_launches_cpu_exempt():
     repo = FakeProcessRepo()
-    executor = MemoryExecutor(results=[ExitStatus(0)])
+    executor = MemoryExecutor(default_states=[exited(0)])
     run = QueuedRun(
         id="run-x", process_id="proc-1", revision_id="rev-1", source_id=None, attempts=1,
         input_items=[], runtime={"kind": "inline_python"}, code="pass", env=[],
         association_id="assoc-1",
     )
     await _run(repo, executor, capacity=1, run=run)
-    assert executor.launched[0].cpu_exempt is True
+    assert executor.submitted[0].cpu_exempt is True
     await _run(repo, executor, capacity=1)  # a process run on standard
-    assert executor.launched[1].cpu_exempt is False
+    assert executor.submitted[1].cpu_exempt is False
     large = QueuedRun(
         id="run-y", process_id="proc-1", revision_id="rev-1", source_id=None, attempts=1,
         input_items=[], code="pass", env=[], association_id="assoc-1",
@@ -194,8 +193,8 @@ async def test_only_an_extractor_on_the_default_profile_launches_cpu_exempt():
                  "hardware": {"profile": "cpu-large", "cpu": 4, "gpu_count": 0}},
     )
     await _run(repo, executor, capacity=1, run=large)  # an extractor on cpu-large
-    assert executor.launched[2].cpu_exempt is False
-    assert executor.launched[2].cpu == 4
+    assert executor.submitted[2].cpu_exempt is False
+    assert executor.submitted[2].cpu == 4
 
 
 @pytest.mark.asyncio
@@ -219,7 +218,7 @@ async def test_a_malformed_docker_block_requeues_as_infrastructure(tmp_path):
     path = tmp_path / "profiles.json"
     path.write_text(json.dumps(bad))
     repo = FakeProcessRepo()
-    executor = MemoryExecutor(results=[ExitStatus(0)])
+    executor = MemoryExecutor(default_states=[exited(0)])
     result = await run_one(
         queued(), repo=repo, executor=executor,
         settings=Settings.from_env({"PROCESS_HARDWARE_PROFILES_FILE": str(path)}),
@@ -227,7 +226,7 @@ async def test_a_malformed_docker_block_requeues_as_infrastructure(tmp_path):
         sts_client=FakeSts(),
     )
     assert result.status == "queued"
-    assert executor.launched == []
+    assert executor.submitted == []
     assert repo.finished[-1]["status"] == "queued"
     assert "backend.docker.capacity" in repo.finished[-1]["error"]
 
@@ -246,7 +245,7 @@ async def test_hardware_unavailable_is_a_dead_run_not_a_requeue():
         "profile 'gpu-l4' needs an NVIDIA container runtime this Docker host does not expose"
     )
     repo = FakeProcessRepo()
-    executor = MemoryExecutor(launch_error=HardwareUnavailable(message))
+    executor = MemoryExecutor(submit_error=HardwareUnavailable(message))
     result = await _run(repo, executor, capacity=None)
     assert result.status == "dead"
     assert repo.finished[-1]["status"] == "dead"

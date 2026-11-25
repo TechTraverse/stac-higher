@@ -14,22 +14,54 @@ is shaped to make the invariants enforceable rather than merely intended:
   platform's object-store keys" is a property of the type, not a habit.
 - Limits ride on the spec and are applied by the backend at create time, so a
   run cannot opt out of them.
-- ``wait`` takes the timeout and is required to KILL on expiry: a wedged run
-  fails itself, it does not degrade the worker.
+- The backend enforces the run's timeout: server-side (a Kubernetes Job's
+  ``activeDeadlineSeconds``) or on read (Docker: ``status()`` kills a run past
+  ``StartedAt + timeout`` and reports ``timed_out``). A wedged run fails
+  itself; it never degrades the worker.
 - ``reap`` is always called by the caller, and backends must not rely on
   container auto-removal to do it (ADR 0013: "AutoRemove not trusted").
 - ``list_launched`` exists because the caller's ``reap`` is not enough on its
-  own: a worker killed between launch and reap never runs the ``finally``, so
-  the platform needs a way to ENUMERATE what it started and reconcile it
-  against the ledger (M3-W-1). Every backend must be able to answer it —
-  a backend that cannot list what it launched cannot be operated.
+  own: a worker killed between submit and reap never reaches it, so the
+  platform needs a way to ENUMERATE what it started and reconcile it against
+  the ledger (M3-W-1). Every backend must be able to answer it — a backend
+  that cannot list what it launched cannot be operated.
+
+**Submit, then reconcile (K-4, spec §5, ADR 0019).** ``submit`` creates the
+run and returns at once; nothing blocks on a run. The pipeline's Reconciler
+(``process/reconcile.py``) reads ``status()`` and moves the ledger. The
+contract every backend keeps — K-5's pre-flight checklist:
+
+- **``status()`` is the truth; events are wake-ups (R1).** ``watch()`` is
+  optional (``supports_watch``); every (re)connect of its stream yields
+  :data:`RESYNC` first, the watcher reconnects when the stream raises, and an
+  event never carries a state the caller trusts — the Reconciler re-reads
+  ``status()`` before every transition.
+- ``status()`` raises :class:`ExecutorUnavailable` when the backend cannot be
+  asked, and reports ``lost`` ONLY when the backend affirms the run is gone
+  (an outage is not an absence — the reaper's rule).
+- ``RunState.detail`` is the backend's own words for ``pending_capacity``
+  (the UI's tooltip) and for ``lost`` (the run's error), never trusted as
+  content.
+- ``cancel()`` stops the run and KEEPS it, so ``logs()`` and ``reap()`` still
+  work; removal is ``reap``, called only after the verdict commits.
+- ``submitted_phase`` is what a just-submitted run is on this backend
+  (``pending_capacity`` by default, for backends where a submitted run can sit
+  queued). Submissions are recorded per backend (``executor_backend``), and a
+  Reconciler skips runs another backend submitted.
+- Every call here is blocking; async callers go through ``asyncio.to_thread``.
+- A backend refusal at submit that should kill the run (not requeue it) is a
+  :class:`HardwareUnavailable` (or subclass): the claim path maps it to dead.
 """
 
 from __future__ import annotations
 
 import abc
+import contextlib
 import datetime as dt
+import time
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from pipeline.process.hardware import HardwareProfile
 
@@ -186,23 +218,70 @@ class LaunchedRun:
     kind: str = "process"
 
 
+def oom_error(memory_mb: int | None) -> str:
+    """One wording for an out-of-memory kill, whatever the backend (K-4/K-5)."""
+    limit = f" ({memory_mb} MB)" if memory_mb else ""
+    return f"run was killed for exceeding its memory limit{limit}"
+
+
+@dataclass(frozen=True)
+class RunState:
+    """What ``status()`` reports (spec §5.1)."""
+
+    #: One of ``ledger.EXECUTOR_PHASES``: pending_capacity, starting, running,
+    #: exited, lost.
+    phase: str
+    #: The backend's own words: the pending reason, the loss reason. A UI
+    #: tooltip or an error string, never trusted as content.
+    detail: str | None = None
+    #: Set iff ``phase == "exited"``.
+    exit: ExitStatus | None = None
+
+
+@dataclass(frozen=True)
+class RunEvent:
+    """A wake-up from ``watch()``. Carries an identity, never a state."""
+
+    #: None = RESYNC: reconcile everything submitted.
+    run_id: str | None
+    handle_id: str | None = None
+    #: One of RUN_KINDS, from the backend's label.
+    kind: str = "process"
+
+
+#: Yielded first on every (re)connect of a watch stream.
+RESYNC = RunEvent(run_id=None)
+
+
 class Executor(abc.ABC):
-    """Launch, await, read the logs of, and reap one isolated run."""
+    """Submit, inspect, cancel, read the logs of, and reap one isolated run."""
 
-    #: short identifier surfaced in logs and /health ("docker", "memory")
+    #: short identifier surfaced in logs and stored as ``executor_backend``
+    #: ("docker", "memory")
     name: str
+    #: The phase ``record_submission`` writes: what a just-submitted run is on
+    #: this backend.
+    submitted_phase: ClassVar[str] = "pending_capacity"
 
     @abc.abstractmethod
-    def launch(self, spec: RunSpec) -> RunHandle:
-        """Create and start the run. Raises :class:`ExecutorUnavailable` when
-        the backend itself is the problem, and :class:`ImagePullFailed` /
-        :class:`ImageMissing` when the run's image is."""
+    def submit(self, spec: RunSpec) -> RunHandle:
+        """Create and start the run; return at once. Raises
+        :class:`ExecutorUnavailable` when the backend itself is the problem,
+        :class:`ImagePullFailed` / :class:`ImageMissing` when the run's image
+        is, and :class:`HardwareUnavailable` when the backend refuses what the
+        profile asks for."""
 
     @abc.abstractmethod
-    def wait(self, handle: RunHandle, timeout_seconds: int) -> ExitStatus:
-        """Block until the run exits or the budget expires, KILLING it on
-        expiry and returning ``timed_out=True``. Never raises for a run that
-        merely failed — a non-zero exit is a result, not an error."""
+    def status(self, handle: RunHandle) -> RunState:
+        """One read of the run's state; never blocks on the run. May enforce
+        the backend's deadline (Docker). Raises :class:`ExecutorUnavailable`
+        when the backend cannot be asked; ``lost`` only on confirmed absence."""
+
+    @abc.abstractmethod
+    def cancel(self, handle: RunHandle) -> None:
+        """Stop the run, idempotently. Its resources are KEPT for ``logs``
+        and ``reap``. Raises :class:`ExecutorUnavailable` when the backend
+        cannot be asked (the run may still be running)."""
 
     @abc.abstractmethod
     def logs(self, handle: RunHandle, max_bytes: int) -> bytes:
@@ -214,8 +293,8 @@ class Executor(abc.ABC):
 
     @abc.abstractmethod
     def reap(self, handle: RunHandle) -> None:
-        """Remove the run's resources. Called in a finally, must be
-        idempotent, and must not raise for an already-gone run."""
+        """Remove the run's resources. Must be idempotent and must not raise
+        for an already-gone run."""
 
     @abc.abstractmethod
     def list_launched(self) -> list[LaunchedRun]:
@@ -227,3 +306,50 @@ class Executor(abc.ABC):
         an outage must never be reported as an empty list, because the caller
         would read that as "nothing to reap".
         """
+
+    def watch(self) -> AsyncIterator[RunEvent]:
+        """Optional push of state changes: :data:`RESYNC` first, then one
+        event per change of a run this backend submitted. Raises
+        :class:`ExecutorUnavailable` when the stream cannot be opened or
+        drops; the caller reconnects."""
+        raise NotImplementedError(f"{type(self).__name__} has no watch()")
+
+    @property
+    def supports_watch(self) -> bool:
+        return type(self).watch is not Executor.watch
+
+
+#: How a lost run reads when the backend gave no reason.
+LOST_ERROR = "run lost by the executor"
+
+
+def run_to_exit(
+    executor: Executor,
+    handle: RunHandle,
+    timeout_seconds: int,
+    *,
+    poll_seconds: float = 2.0,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> ExitStatus:
+    """Block until a submitted run exits — for BLOCKING callers only (image
+    scans, R11). Polls ``status()``; past ``timeout_seconds`` on its own clock
+    (the backend may enforce none) it cancels and reports ``timed_out``. An
+    unreachable backend is ridden out until the deadline; a lost run is an
+    error exit. Not on the ABC: the run path never waits."""
+    deadline = clock() + timeout_seconds
+    while True:
+        try:
+            state = executor.status(handle)
+        except ExecutorUnavailable:
+            state = None
+        if state is not None and state.phase == "exited":
+            return state.exit or ExitStatus(-1, error="exited without a status")
+        if state is not None and state.phase == "lost":
+            return ExitStatus(-1, error=state.detail or LOST_ERROR)
+        if clock() >= deadline:
+            # An unreachable backend: the caller reaps (which kills) in its finally.
+            with contextlib.suppress(ExecutorUnavailable):
+                executor.cancel(handle)
+            return ExitStatus(137, timed_out=True)
+        sleep(poll_seconds)

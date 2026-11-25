@@ -102,7 +102,7 @@ def spec(**overrides) -> RunSpec:
 
 def test_a_user_image_runs_as_10001_with_a_tmpfs_whatever_the_image_says():
     engine = Engine()
-    executor(engine).launch(spec())
+    executor(engine).submit(spec())
     config = engine.created()
     assert config["User"] == USER_IMAGE_USER == "10001:10001"
     host = config["HostConfig"]
@@ -116,7 +116,7 @@ def test_a_user_image_runs_as_10001_with_a_tmpfs_whatever_the_image_says():
 
 def test_a_platform_image_keeps_its_own_user_and_gets_no_tmpfs():
     engine = Engine()
-    executor(engine).launch(spec(image="stac-higher-process-runtime:local", user_image=False))
+    executor(engine).submit(spec(image="stac-higher-process-runtime:local", user_image=False))
     config = engine.created()
     assert "User" not in config
     assert "Tmpfs" not in config["HostConfig"]
@@ -126,12 +126,12 @@ def test_a_platform_image_keeps_its_own_user_and_gets_no_tmpfs():
 
 def test_the_entrypoint_is_set_only_when_the_platform_sets_one_and_cmd_is_cmd():
     engine = Engine()
-    executor(engine).launch(spec(entrypoint=("python3", "-c", "pass")))
+    executor(engine).submit(spec(entrypoint=("python3", "-c", "pass")))
     assert engine.created()["Entrypoint"] == ["python3", "-c", "pass"]
     assert "Cmd" not in engine.created()
 
     engine = Engine()
-    executor(engine).launch(spec(cmd=("tool", "--run")))
+    executor(engine).submit(spec(cmd=("tool", "--run")))
     assert engine.created()["Cmd"] == ["tool", "--run"]
     # `command` never reaches Entrypoint (spec §14 decision 4).
     assert "Entrypoint" not in engine.created()
@@ -140,20 +140,20 @@ def test_the_entrypoint_is_set_only_when_the_platform_sets_one_and_cmd_is_cmd():
 def test_a_user_image_not_pinned_by_digest_is_refused_before_anything_is_created():
     engine = Engine()
     with pytest.raises(ImagePullFailed, match="not pinned by digest"):
-        executor(engine).launch(spec(image="ghcr.io/example/tool:latest"))
+        executor(engine).submit(spec(image="ghcr.io/example/tool:latest"))
     assert engine.calls == []
 
 
 def test_an_image_the_daemon_already_has_is_not_pulled():
     engine = Engine(has_image=True)
-    executor(engine).launch(spec())
+    executor(engine).submit(spec())
     assert not any(p.startswith("/images/create") for p in engine.paths())
 
 
 def test_an_absent_image_is_pulled_by_digest_with_the_registry_auth():
     engine = Engine(has_image=False)
     ex = executor(engine)
-    ex.launch(spec(registry_auth=RegistryAuth("robot", "s3cret", "ghcr.io")))
+    ex.submit(spec(registry_auth=RegistryAuth("robot", "s3cret", "ghcr.io")))
     pull = next(c for c in engine.calls if c["path"].startswith("/images/create"))
     assert pull["method"] == "POST"
     assert "fromImage=ghcr.io%2Fexample%2Ftool" in pull["path"]
@@ -169,7 +169,7 @@ def test_an_absent_image_is_pulled_by_digest_with_the_registry_auth():
 
 def test_an_anonymous_pull_sends_no_auth_header():
     engine = Engine(has_image=False)
-    executor(engine).launch(spec())
+    executor(engine).submit(spec())
     pull = next(c for c in engine.calls if c["path"].startswith("/images/create"))
     assert pull["headers"] is None
 
@@ -181,7 +181,7 @@ def test_a_pull_whose_stream_reports_an_error_fails_the_pull_and_creates_nothing
         b'"error":"manifest unknown"}\n',
     )
     with pytest.raises(ImagePullFailed, match="manifest unknown"):
-        executor(engine).launch(spec())
+        executor(engine).submit(spec())
     assert not any(p.startswith("/containers/create") for p in engine.paths())
 
 
@@ -191,7 +191,7 @@ def test_a_pull_the_daemon_refuses_is_a_pull_failure_not_an_outage():
         pull_error=EngineHTTPError("docker POST failed: 404", status=404, detail="not found"),
     )
     with pytest.raises(ImagePullFailed):
-        executor(engine).launch(spec())
+        executor(engine).submit(spec())
 
 
 def test_a_pull_failure_message_never_contains_the_password():
@@ -205,21 +205,21 @@ def test_a_pull_failure_message_never_contains_the_password():
         ),
     )
     with pytest.raises(ImagePullFailed) as err:
-        executor(engine).launch(spec(registry_auth=RegistryAuth("robot", "s3cret", "ghcr.io")))
+        executor(engine).submit(spec(registry_auth=RegistryAuth("robot", "s3cret", "ghcr.io")))
     assert "s3cret" not in str(err.value)
 
 
 def test_an_unreachable_daemon_is_an_outage_not_a_pull_failure():
     engine = Engine(inspect_error=ExecutorUnavailable("docker GET unreachable"))
     with pytest.raises(ExecutorUnavailable) as err:
-        executor(engine).launch(spec())
+        executor(engine).submit(spec())
     assert not isinstance(err.value, ImagePullFailed)
 
 
 def test_a_reference_half_that_is_not_a_valid_image_reference_is_refused():
     engine = Engine()
     with pytest.raises(ImagePullFailed, match="not pinned by digest"):
-        executor(engine).launch(spec(image=f"NOTVALID@{DIGEST}"))
+        executor(engine).submit(spec(image=f"NOTVALID@{DIGEST}"))
     assert engine.calls == []
 
 
@@ -231,7 +231,7 @@ def test_an_inspect_400_or_422_is_a_pull_failure_that_spends_an_attempt(status):
         )
     )
     with pytest.raises(ImagePullFailed):
-        executor(engine).launch(spec())
+        executor(engine).submit(spec())
 
 
 @pytest.mark.parametrize("status", [403, 500, 503])
@@ -242,13 +242,13 @@ def test_an_inspect_403_or_5xx_stays_an_outage(status):
         )
     )
     with pytest.raises(ExecutorUnavailable) as err:
-        executor(engine).launch(spec())
+        executor(engine).submit(spec())
     assert not isinstance(err.value, ImagePullFailed)
 
 
 def test_a_process_container_is_labelled_with_its_kind_and_process():
     engine = Engine()
-    executor(engine).launch(spec())
+    executor(engine).submit(spec())
     labels = engine.created()["Labels"]
     assert labels[RUN_KIND_LABEL] == "process"
     assert labels[PROCESS_ID_LABEL] == "22222222-2222-4222-8222-222222222222"
@@ -257,7 +257,7 @@ def test_a_process_container_is_labelled_with_its_kind_and_process():
 
 def test_a_scan_container_is_labelled_and_named_as_a_scan():
     engine = Engine()
-    executor(engine).launch(
+    executor(engine).submit(
         spec(image="stac-higher-image-scanner:local", user_image=False, kind="image_scan")
     )
     labels = engine.created()["Labels"]
