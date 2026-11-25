@@ -9,6 +9,7 @@
  * the executor.
  */
 import type {
+  CancelOutcome,
   Process,
   ProcessCheck,
   ProcessRun,
@@ -197,12 +198,24 @@ export async function listHardwareProfiles(): Promise<HardwareProfilesResponse> 
   return processFetch<HardwareProfilesResponse>("/hardware-profiles");
 }
 
-/** Re-run a DEAD run (the `redeliver` analog). Returns the requeued row; the
+/** Re-run a DEAD or CANCELLED run (the `redeliver` analog). Returns the requeued row; the
  * pipeline's run tick picks it up. */
 export async function rerunRun(id: string, runId: string): Promise<ProcessRun> {
   return processFetch<ProcessRun>(`/${enc(id)}/runs/${enc(runId)}/rerun`, {
     method: "POST",
   });
+}
+
+/** K-4: cancel a queued, retrying or running run. `cancelled` = it flipped at
+ * once; `cancel_requested` = the pipeline is stopping it. */
+export async function cancelRun(
+  id: string,
+  runId: string,
+): Promise<{ run: ProcessRun; outcome: CancelOutcome }> {
+  return processFetch<{ run: ProcessRun; outcome: CancelOutcome }>(
+    `/${enc(id)}/runs/${enc(runId)}/cancel`,
+    { method: "POST" },
+  );
 }
 
 /** Request a test run (ADR 0004). Returns the row to poll — NOT a result. */

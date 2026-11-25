@@ -12,3 +12,4 @@ export type { ApiProcessOutput as ProcessOutput } from "./storage";
 export type { ApiProcessCheck as ProcessCheck } from "./storage";
 export type { ApiProcessRun as ProcessRun } from "./storage";
 export type { ProcessRunPhase } from "./storage";
+export type { CancelOutcome, ProcessRunStatus } from "./storage";

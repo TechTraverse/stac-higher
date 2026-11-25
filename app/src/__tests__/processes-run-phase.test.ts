@@ -39,6 +39,7 @@ const row = {
   finished_at: null,
   phase: null,
   phase_detail: null,
+  cancel_requested_at: null,
 };
 
 describe("run rows carry the K-3 phase", () => {
@@ -64,5 +65,15 @@ describe("run rows carry the K-3 phase", () => {
   it("is null on a row without one", () => {
     expect(toApiRun(row).phase).toBeNull();
     expect(toApiRun(row).phase_detail).toBeNull();
+  });
+});
+
+describe("run rows carry the K-4 cancel request", () => {
+  it("passes cancel_requested_at through as ISO, or null", () => {
+    expect(toApiRun(row).cancel_requested_at).toBeNull();
+    const at = new Date("2026-11-25T12:00:00Z");
+    expect(toApiRun({ ...row, cancel_requested_at: at }).cancel_requested_at).toBe(
+      "2026-11-25T12:00:00.000Z",
+    );
   });
 });

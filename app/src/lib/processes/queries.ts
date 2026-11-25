@@ -25,6 +25,7 @@ import {
   listRuns,
   listSources,
   rerunRun,
+  cancelRun,
   updateProcess,
   updateSource,
 } from "./api";
@@ -180,6 +181,12 @@ export function useCreateOutput() {
 export function useRerunRun() {
   return useProcessMutation(({ id, runId }: { id: string; runId: string }) =>
     rerunRun(id, runId),
+  );
+}
+
+export function useCancelRun() {
+  return useProcessMutation(({ id, runId }: { id: string; runId: string }) =>
+    cancelRun(id, runId),
   );
 }
 

@@ -26,6 +26,7 @@ vi.mock("@/lib/processes/storage", () => ({
   listRuns: vi.fn(),
   getRun: vi.fn(),
   rerunRun: vi.fn(),
+  cancelRun: vi.fn(),
   DuplicateProcessNameError: class extends Error {},
   DuplicateSourceError: class extends Error {},
   DuplicateOutputError: class extends Error {},
@@ -70,6 +71,7 @@ import {
   listRuns,
   getRun,
   rerunRun,
+  cancelRun,
   RunAlreadyQueuedError,
   softDeleteProcess,
   updateProcess,
@@ -93,6 +95,7 @@ import { POST as testRoute } from "@/pages/api/processes/[id]/test";
 import { GET as pollRoute } from "@/pages/api/processes/[id]/checks/[checkId]";
 import { GET as runsRoute } from "@/pages/api/processes/[id]/runs/index";
 import { POST as rerunRoute } from "@/pages/api/processes/[id]/runs/[runId]/rerun";
+import { POST as cancelRoute } from "@/pages/api/processes/[id]/runs/[runId]/cancel";
 import { GET as hardwareProfilesRoute } from "@/pages/api/processes/hardware-profiles";
 
 const PROCESS_ID = "3a9f1c2e-0000-4000-8000-0000000000a1";
@@ -197,6 +200,7 @@ function run(overrides: Partial<ApiProcessRun> = {}): ApiProcessRun {
     finished_at: null,
     phase: null,
     phase_detail: null,
+    cancel_requested_at: null,
     ...overrides,
   };
 }
@@ -857,6 +861,67 @@ describe("the run ledger and the re-run verb (M5-C)", () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toContain("extractor run");
     expect(rerunRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/processes/[id]/runs/[runId]/cancel (K-4)", () => {
+  it("403s a member and never touches the run", async () => {
+    const res = await call(cancelRoute, member, { method: "POST", params: { runId: RUN_ID } });
+    expect(res.status).toBe(403);
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("202s an operator with the outcome", async () => {
+    vi.mocked(cancelRun).mockResolvedValue({
+      run: run({ status: "running" }),
+      outcome: "cancel_requested",
+    });
+    const res = await call(cancelRoute, operator, { method: "POST", params: { runId: RUN_ID } });
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.outcome).toBe("cancel_requested");
+    expect(body.run.status).toBe("running");
+    expect(cancelRun).toHaveBeenCalledWith(PROCESS_ID, RUN_ID);
+  });
+
+  it("409s a run that is not cancellable, naming its status", async () => {
+    vi.mocked(cancelRun).mockResolvedValue(null);
+    vi.mocked(getRun).mockResolvedValue(run({ status: "succeeded" }));
+    const res = await call(cancelRoute, operator, { method: "POST", params: { runId: RUN_ID } });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("run_not_cancellable");
+    expect(body.error).toContain("'succeeded'");
+  });
+
+  it("404s an unknown run and a malformed id", async () => {
+    vi.mocked(cancelRun).mockResolvedValue(null);
+    vi.mocked(getRun).mockResolvedValue(null);
+    let res = await call(cancelRoute, operator, { method: "POST", params: { runId: RUN_ID } });
+    expect(res.status).toBe(404);
+    vi.mocked(cancelRun).mockClear();
+    res = await call(cancelRoute, operator, { method: "POST", params: { runId: "nope" } });
+    expect(res.status).toBe(404);
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("500s a database error without its raw text (#74)", async () => {
+    vi.mocked(cancelRun).mockRejectedValueOnce(new Error("relation does not exist"));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await call(cancelRoute, operator, { method: "POST", params: { runId: RUN_ID } });
+    spy.mockRestore();
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "internal error" });
+  });
+
+  it("cancels an extractor run too (re-run stays refused, plan R17)", async () => {
+    vi.mocked(getProcess).mockResolvedValue(process({ kind: "extractor" }));
+    vi.mocked(cancelRun).mockResolvedValue({
+      run: run({ status: "cancelled" }),
+      outcome: "cancelled",
+    });
+    const res = await call(cancelRoute, operator, { method: "POST", params: { runId: RUN_ID } });
+    expect(res.status).toBe(202);
   });
 });
 

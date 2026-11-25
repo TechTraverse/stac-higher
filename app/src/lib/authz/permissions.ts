@@ -48,6 +48,7 @@ export type GatedAction =
   | "resolve"
   | "deploy"
   | "rerun"
+  | "cancel"
   | "rescan"
   | "exception"
   | "revoke";
@@ -117,6 +118,13 @@ const SUB_ACTION_ROUTES: {
   {
     pattern: /^\/api\/processes\/([^/]+)\/runs\/[^/]+\/rerun$/,
     action: "rerun",
+    resourceType: "process",
+  },
+  // K-4 (spec §5.3, closes I-81): cancel a queued, retrying or running run.
+  // Audited against the PROCESS; the run id stays in the audited path.
+  {
+    pattern: /^\/api\/processes\/([^/]+)\/runs\/[^/]+\/cancel$/,
+    action: "cancel",
     resourceType: "process",
   },
   {

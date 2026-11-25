@@ -1,11 +1,12 @@
 /**
- * /api/processes/[id]/runs/[runId]/rerun — dead-run recovery (M5-C, spec §6).
+ * /api/processes/[id]/runs/[runId]/rerun — dead/cancelled-run recovery (M5-C,
+ * spec §6; K-4 adds `cancelled`).
  *
  * POST — operator+ of the owning group, audited as `rerun` (the `redeliver`
  *        analog). Flips a dead row back to `queued`; the pipeline's run tick
  *        claims it on the next pass. The app executes nothing.
  *
- * Only a DEAD run is re-runnable, and the storage UPDATE enforces that in its
+ * Only a DEAD or CANCELLED run is re-runnable, and the storage UPDATE enforces that in its
  * WHERE clause rather than here — a check-then-write would race the pipeline
  * claiming the same row. A non-dead (or unknown) run is a 409 with the reason,
  * not a silent no-op, because "I clicked re-run and nothing happened" is the
@@ -53,7 +54,7 @@ export const POST: APIRoute = async ({ params, locals }) => {
     const existing = await getRun(loaded.process.id, params.runId);
     if (!existing) return jsonResponse(404, { error: "Run not found" });
     return jsonResponse(409, {
-      error: `Only dead runs can be re-run; this one is '${existing.status}'`,
+      error: `Only dead or cancelled runs can be re-run; this one is '${existing.status}'`,
     });
   } catch (err) {
     if (err instanceof RunAlreadyQueuedError) {

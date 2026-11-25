@@ -86,6 +86,10 @@ describe("matchGatedRoute — /api/processes (M5-A)", () => {
     expect(
       matchGatedRoute("POST", `/api/processes/${P}/runs/${CHILD}/rerun`),
     ).toEqual({ action: "rerun", resourceType: "process", resourceId: P });
+    // K-4: cancel is gated and audited against the process, like rerun.
+    expect(
+      matchGatedRoute("POST", `/api/processes/${P}/runs/${CHILD}/cancel`),
+    ).toEqual({ action: "cancel", resourceType: "process", resourceId: P });
   });
 
   it("leaves every read ungated (auth + group scoping in-route)", () => {

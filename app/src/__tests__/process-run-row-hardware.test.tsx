@@ -56,7 +56,7 @@ const baseRun = {
   process_id: "p1", source_id: null, status: "succeeded" as const, attempts: 1,
   input_items: [], output_items: [], log_ref: null, error: null, rate_deferred_until: null,
   is_test: false, created_at: "2026-09-02T01:00:00Z", started_at: null, finished_at: null,
-  phase: null, phase_detail: null,
+  phase: null, phase_detail: null, cancel_requested_at: null,
 };
 const CAPACITY_DETAIL = "profile 'standard' is at its capacity of 2 on this host";
 const RUNS = [
