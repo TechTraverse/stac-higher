@@ -22,7 +22,8 @@ import abc
 import datetime as dt
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -81,6 +82,83 @@ class QueuedRun:
     code: str | None = None
     env: list[dict[str, Any]] = field(default_factory=list)
     is_test: bool = False
+    #: K-4: the ``started_at`` the claim wrote (I1/I2) — the CLAIM STAMP. Every
+    #: write the claiming worker makes before submission is fenced on it, so a
+    #: stale worker whose row was requeued and re-claimed under it matches
+    #: nothing. None only for a QueuedRun built by hand (unit tests): its
+    #: writes are then fenced on ``status = 'running'`` alone.
+    claimed_at: dt.datetime | None = None
+
+
+@dataclass(frozen=True)
+class SubmittedRun:
+    """K-4: a ``running`` row whose run the executor holds
+    (``executor_handle`` set) — what the Reconciler reconciles."""
+
+    id: str
+    process_id: str
+    revision_id: str
+    source_id: str | None
+    association_id: str | None
+    attempts: int
+    is_test: bool
+    handle: str
+    backend: str
+    phase: str | None
+    submitted_at: dt.datetime | None
+    cancel_requested_at: dt.datetime | None
+    credentials_expire_at: dt.datetime | None
+    runtime: dict[str, Any] = field(default_factory=dict)
+    input_items: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SubmissionRecord:
+    """What :meth:`ProcessRepo.record_submission` learned: whether an operator
+    asked to cancel the run before it was submitted (I5)."""
+
+    cancel_requested: bool
+
+
+#: K-4 (I10): every pipeline move out of ``running`` lands ``cancelled`` once a
+#: cancel was requested, and the error keeps what happened after this prefix.
+CANCELLED_ERROR = "cancelled by an operator"
+
+
+class CollectingRun(abc.ABC):
+    """K-4 (I7/I8): one submitted run whose row this transaction holds
+    ``FOR UPDATE``. Yielded by :meth:`ProcessRepo.collecting` and valid only
+    inside that block; at most one of ``finish``/``requeue`` may be called."""
+
+    run: SubmittedRun
+
+    @abc.abstractmethod
+    async def finish(
+        self,
+        *,
+        status: str,
+        error: str | None,
+        log_ref: str | None,
+        next_attempt_at: dt.datetime | None,
+        at: dt.datetime,
+    ) -> str:
+        """Write the verdict (``succeeded``/``failed``/``dead``/``cancelled``)
+        and, for a source run reaching a terminal verdict, its ``flow_stats``
+        in the same transaction. Returns the status written: ``cancelled``
+        whenever a cancel was requested (I10)."""
+
+    @abc.abstractmethod
+    async def requeue(
+        self,
+        *,
+        error: str | None,
+        phase: str | None,
+        phase_detail: str | None,
+        next_attempt_at: dt.datetime,
+    ) -> str:
+        """Back to ``queued`` without spending an attempt (lost, credential
+        expiry), or FOLD into the queued run holding the slot (#67). Returns
+        ``requeued``, ``merged`` or ``cancelled`` (I10)."""
 
 
 @dataclass(frozen=True)
@@ -286,12 +364,83 @@ class ProcessRepo(abc.ABC):
         log_ref: str | None,
         next_attempt_at: dt.datetime | None,
         output_items: Sequence[dict[str, Any]] | None = None,
-    ) -> None:
+        claimed_at: dt.datetime | None = None,
+    ) -> str | None:
         """Write a run's terminal (or retry-pending) state.
 
-        ``status="queued"`` (the could-not-start requeue) may instead FOLD the
-        run into the queued run already holding its coalescing slot (#67).
+        With ``claimed_at`` (K-4 I3) this is the claiming worker's verdict on
+        a run it never submitted: a compare-and-set on ``status = 'running'``,
+        the claim stamp and ``executor_handle IS NULL``. It returns the status
+        written — ``cancelled`` when a cancel was requested meanwhile (I10) —
+        or None when the CAS matched nothing (the row was re-claimed under a
+        stale worker). ``status="queued"`` is refused with ``claimed_at``:
+        use :meth:`requeue_without_attempt`.
+
+        Without ``claimed_at`` it is the finalize path's unconditional write
+        (I14), unchanged; ``status="queued"`` there is the unfenced
+        :meth:`requeue_without_attempt` (kept for callers that never claimed).
         """
+
+    @abc.abstractmethod
+    async def requeue_without_attempt(
+        self,
+        run_id: str,
+        *,
+        claimed_at: dt.datetime | None,
+        error: str,
+        next_attempt_at: dt.datetime,
+    ) -> str:
+        """K-4 I4/R13: an unsubmitted run our infrastructure could not start
+        goes back to ``queued`` with its attempt restored and its retry time in
+        ``next_attempt_at`` — or FOLDS into the queued run holding its slot
+        (#67), or lands ``cancelled`` (I10). Fenced on the claim stamp.
+        Returns ``requeued`` | ``merged`` | ``cancelled`` | ``skipped``."""
+
+    @abc.abstractmethod
+    async def record_submission(
+        self,
+        run_id: str,
+        *,
+        claimed_at: dt.datetime | None,
+        handle: str,
+        backend: str,
+        phase: str,
+        submitted_at: dt.datetime,
+        credentials_expire_at: dt.datetime | None,
+    ) -> SubmissionRecord | None:
+        """K-4 I5: the run was submitted — write its handle once. None when
+        the CAS failed (the claim was lost, or the handle is already set):
+        the caller must cancel and reap what it just submitted."""
+
+    @abc.abstractmethod
+    async def set_phase(
+        self, run_id: str, *, handle: str, phase: str, detail: str | None
+    ) -> bool:
+        """K-4 I6: a submitted run's phase as the backend reports it. Never
+        terminal; False when the row is no longer this handle's ``running``
+        row or nothing changed."""
+
+    @abc.abstractmethod
+    async def list_submitted_runs(
+        self, *, backend: str, limit: int, cancel_requested_only: bool = False
+    ) -> list[SubmittedRun]:
+        """``running`` rows with a handle on ``backend``, cancel requests
+        first, then oldest submission."""
+
+    @abc.abstractmethod
+    async def get_submitted_run(self, run_id: str, *, backend: str) -> SubmittedRun | None:
+        """One submitted run of ``backend``, or None."""
+
+    @abc.abstractmethod
+    def collecting(
+        self, run_id: str, *, handle: str
+    ) -> AbstractAsyncContextManager[CollectingRun | None]:
+        """K-4 I7/I8: hold the run's row ``FOR UPDATE SKIP LOCKED`` while the
+        caller captures logs and writes the verdict. Yields None when the row
+        is not this handle's ``running`` row or another observer holds it.
+        Commits on a clean exit; rolls back on ANY exception (including
+        cancellation), so a crash mid-collection leaves the row ``running``
+        for the next observer to collect again."""
 
     @abc.abstractmethod
     async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
@@ -331,7 +480,11 @@ class ProcessRepo(abc.ABC):
         already left `running`, so the worst case is a duplicate execution,
         not a lost one. A run whose coalescing slot is taken by now folds
         into that queued run rather than aborting the sweep (#67). Returns
-        how many runs were requeued or folded.
+        how many runs were requeued, folded or cancelled.
+
+        K-4 (I9, R14): only UNSUBMITTED rows (``executor_handle IS NULL``). A
+        submitted run is reconciled through the executor's ``status()``, so
+        a run longer than the stall window is never requeued under itself.
         """
 
     @abc.abstractmethod
@@ -634,7 +787,7 @@ class PgProcessRepo(ProcessRepo):
     _RETURNING = (
         " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
         "           r.association_id, r.attempts, r.input_items,"
-        "           rev.runtime, rev.code, rev.env, r.is_test"
+        "           rev.runtime, rev.code, rev.env, r.is_test, r.started_at"
     )
 
     @staticmethod
@@ -651,7 +804,22 @@ class PgProcessRepo(ProcessRepo):
             code=r[8],
             env=list(r[9] or []),
             is_test=bool(r[10]),
+            claimed_at=r[11],
         )
+
+    @staticmethod
+    async def _begin_read_committed(conn: Any) -> None:
+        """K-4 A2: open a transaction pinned to READ COMMITTED. The admission
+        count and the collector's locked re-read both need each statement to
+        see what committed before it, whatever the database's
+        ``default_transaction_isolation`` says. ``SET TRANSACTION`` must be
+        the first statement of its transaction, so a caller holding one open
+        is a bug, not something to paper over."""
+        import psycopg.pq
+
+        if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+            raise RuntimeError("an admission or collection must start a fresh transaction")
+        await conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
 
     async def _admit_and_claim(  # pragma: no cover
         self,
@@ -668,6 +836,7 @@ class PgProcessRepo(ProcessRepo):
         ``(run, None)`` on a claim, ``(None, profile)`` when its profile is
         full, ``(None, None)`` when it is not claimable (someone else took
         it, or it is no longer due)."""
+        await self._begin_read_committed(conn)
         cur = await conn.execute(
             f"SELECT {_PROFILE_SQL}, r.association_id IS NOT NULL"
             "  FROM stac_higher.process_runs r"
@@ -727,7 +896,10 @@ class PgProcessRepo(ProcessRepo):
             "        attempts = r.attempts + 1,"
             "        rate_deferred_until = NULL,"
             "        phase = 'starting', phase_detail = NULL, next_attempt_at = NULL,"
-            "        executor_backend = %(backend)s"
+            # The admitted marker (K-3); K-4 I1: nothing of an earlier
+            # attempt's submission survives into this one.
+            "        executor_backend = %(backend)s, executor_handle = NULL,"
+            "        submitted_at = NULL, credentials_expire_at = NULL"
             "   FROM stac_higher.process_revisions rev"
             f" WHERE r.id = %(id)s AND rev.id = r.revision_id AND {due_sql}"
             + self._RETURNING,
@@ -823,6 +995,27 @@ class PgProcessRepo(ProcessRepo):
             status=str(row[3]), input_items=list(row[4] or []),
         )
 
+    #: K-4 I3/I7/I10: the verdict UPDATE. A requested cancel wins: the row
+    #: lands `cancelled` and the error keeps what happened after the prefix.
+    #: The fence (claim stamp or handle) is appended by the caller.
+    _FINISH_SQL = (
+        "UPDATE stac_higher.process_runs"
+        "   SET status = CASE WHEN cancel_requested_at IS NOT NULL"
+        "                     THEN 'cancelled' ELSE %(status)s END,"
+        "       error = CASE WHEN cancel_requested_at IS NOT NULL"
+        f"                    THEN '{CANCELLED_ERROR}' || coalesce('; ' || %(error)s, '')"
+        "                    ELSE %(error)s END,"
+        "       log_ref = coalesce(%(log_ref)s, log_ref),"
+        "       output_items = coalesce(%(output)s::jsonb, output_items),"
+        "       phase = NULL, phase_detail = NULL, next_attempt_at = NULL,"
+        # `failed` rows carry their retry due-time in finished_at, which is
+        # what claim_due_runs compares against; terminal rows carry the
+        # actual finish time.
+        "       finished_at = CASE WHEN cancel_requested_at IS NOT NULL THEN now()"
+        "                          ELSE coalesce(%(next_attempt_at)s, now()) END"
+        " WHERE id = %(id)s AND status = 'running'"
+    )
+
     async def finish_run(  # pragma: no cover
         self,
         run_id: str,
@@ -832,44 +1025,189 @@ class PgProcessRepo(ProcessRepo):
         log_ref: str | None,
         next_attempt_at: dt.datetime | None,
         output_items: Sequence[dict[str, Any]] | None = None,
-    ) -> None:
+        claimed_at: dt.datetime | None = None,
+    ) -> str | None:
         if status == "queued":
-            # The could-not-start requeue: back into a coalescing slot that a
-            # newer trigger may hold by now (#67) — see `_requeue`.
-            async with await self._connect() as conn:
-                await self._requeue(
-                    conn,
-                    run_id,
-                    set_sql=(
-                        "error = %(error)s, log_ref = coalesce(%(log_ref)s, log_ref),"
-                        " finished_at = coalesce(%(at)s, now()),"
-                        " phase = NULL, phase_detail = NULL, executor_backend = NULL"
-                    ),
-                    params={"error": error, "log_ref": log_ref, "at": next_attempt_at},
-                )
-            return
+            if claimed_at is not None:
+                raise ValueError("a claimed run is requeued by requeue_without_attempt")
+            outcome = await self.requeue_without_attempt(
+                run_id, claimed_at=None, error=error or "",
+                next_attempt_at=next_attempt_at or dt.datetime.now(dt.UTC),
+            )
+            return None if outcome == "skipped" else "queued"
+        params = {
+            "id": run_id, "status": status, "error": error, "log_ref": log_ref,
+            "output": json.dumps(list(output_items)) if output_items is not None else None,
+            "next_attempt_at": next_attempt_at, "claimed_at": claimed_at,
+        }
         async with await self._connect() as conn:
+            if claimed_at is not None:
+                cur = await conn.execute(
+                    self._FINISH_SQL
+                    + " AND started_at = %(claimed_at)s AND executor_handle IS NULL"
+                    " RETURNING status",
+                    params,
+                )
+                row = await cur.fetchone()
+                await conn.commit()
+                return str(row[0]) if row else None
+            # I14: the finalize path's unconditional write on its own row.
             await conn.execute(
                 "UPDATE stac_higher.process_runs"
-                "   SET status = %s, error = %s,"
-                "       log_ref = coalesce(%s, log_ref),"
-                "       output_items = coalesce(%s::jsonb, output_items),"
+                "   SET status = %(status)s, error = %(error)s,"
+                "       log_ref = coalesce(%(log_ref)s, log_ref),"
+                "       output_items = coalesce(%(output)s::jsonb, output_items),"
                 # K-3: phase is a sub-state of queued/running only.
                 "       phase = NULL, phase_detail = NULL,"
-                # `failed` rows carry their retry due-time in finished_at,
-                # which is what claim_due_runs compares against; terminal rows
-                # carry the actual finish time.
-                "       finished_at = coalesce(%s, now())"
-                " WHERE id = %s",
-                (
-                    status,
-                    error,
-                    log_ref,
-                    json.dumps(list(output_items)) if output_items is not None else None,
-                    next_attempt_at,
-                    run_id,
-                ),
+                "       finished_at = coalesce(%(next_attempt_at)s, now())"
+                " WHERE id = %(id)s",
+                params,
             )
+            await conn.commit()
+        return status
+
+    #: K-4 R13: what every "no attempt spent" requeue writes. The attempt the
+    #: claim added is given back; the retry time lives in next_attempt_at,
+    #: which is what the claim of a `queued` row reads.
+    _RESTORE_ATTEMPT_SQL = (
+        "started_at = NULL, attempts = greatest(attempts - 1, 0), error = %(error)s,"
+        " phase = %(phase)s, phase_detail = %(detail)s, next_attempt_at = %(at)s"
+    )
+
+    async def requeue_without_attempt(  # pragma: no cover
+        self,
+        run_id: str,
+        *,
+        claimed_at: dt.datetime | None,
+        error: str,
+        next_attempt_at: dt.datetime,
+    ) -> str:
+        async with await self._connect() as conn:
+            return await self._requeue(
+                conn,
+                run_id,
+                set_sql=self._RESTORE_ATTEMPT_SQL,
+                params={"phase": None, "detail": None, "at": next_attempt_at},
+                error=error,
+                claimed_at=claimed_at,
+                unsubmitted=True,
+            )
+
+    async def record_submission(  # pragma: no cover
+        self,
+        run_id: str,
+        *,
+        claimed_at: dt.datetime | None,
+        handle: str,
+        backend: str,
+        phase: str,
+        submitted_at: dt.datetime,
+        credentials_expire_at: dt.datetime | None,
+    ) -> SubmissionRecord | None:
+        fence = " AND started_at = %(claimed_at)s" if claimed_at is not None else ""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.process_runs"
+                "   SET executor_handle = %(handle)s, submitted_at = %(submitted_at)s,"
+                "       phase = %(phase)s, phase_detail = NULL,"
+                "       credentials_expire_at = %(expires)s"
+                " WHERE id = %(id)s AND status = 'running' AND executor_handle IS NULL"
+                # The claim stamped the backend (K-3's admitted marker).
+                "   AND executor_backend = %(backend)s"
+                f"{fence}"
+                " RETURNING cancel_requested_at IS NOT NULL",
+                {
+                    "id": run_id, "handle": handle, "backend": backend, "phase": phase,
+                    "submitted_at": submitted_at, "expires": credentials_expire_at,
+                    "claimed_at": claimed_at,
+                },
+            )
+            row = await cur.fetchone()
+            await conn.commit()
+        return SubmissionRecord(cancel_requested=bool(row[0])) if row else None
+
+    async def set_phase(  # pragma: no cover
+        self, run_id: str, *, handle: str, phase: str, detail: str | None
+    ) -> bool:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.process_runs"
+                "   SET phase = %(p)s, phase_detail = %(d)s"
+                " WHERE id = %(id)s AND status = 'running' AND executor_handle = %(h)s"
+                "   AND (phase IS DISTINCT FROM %(p)s OR phase_detail IS DISTINCT FROM %(d)s)",
+                {"id": run_id, "h": handle, "p": phase, "d": detail},
+            )
+            changed = cur.rowcount == 1
+            await conn.commit()
+        return changed
+
+    _SUBMITTED_SELECT = (
+        "SELECT r.id, r.process_id, r.revision_id, r.source_id, r.association_id,"
+        "       r.attempts, r.is_test, r.executor_handle, r.executor_backend, r.phase,"
+        "       r.submitted_at, r.cancel_requested_at, r.credentials_expire_at,"
+        "       rev.runtime, r.input_items"
+        "  FROM stac_higher.process_runs r"
+        "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
+        " WHERE r.status = 'running' AND r.executor_handle IS NOT NULL"
+    )
+
+    @staticmethod
+    def _submitted_run(r: Any) -> SubmittedRun:
+        return SubmittedRun(
+            id=str(r[0]), process_id=str(r[1]), revision_id=str(r[2]),
+            source_id=str(r[3]) if r[3] else None,
+            association_id=str(r[4]) if r[4] else None,
+            attempts=int(r[5]), is_test=bool(r[6]), handle=str(r[7]), backend=str(r[8]),
+            phase=r[9], submitted_at=r[10], cancel_requested_at=r[11],
+            credentials_expire_at=r[12], runtime=dict(r[13] or {}),
+            input_items=list(r[14] or []),
+        )
+
+    async def list_submitted_runs(  # pragma: no cover
+        self, *, backend: str, limit: int, cancel_requested_only: bool = False
+    ) -> list[SubmittedRun]:
+        only = " AND r.cancel_requested_at IS NOT NULL" if cancel_requested_only else ""
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                self._SUBMITTED_SELECT
+                + f" AND r.executor_backend = %(backend)s{only}"
+                " ORDER BY r.cancel_requested_at NULLS LAST, r.submitted_at, r.id"
+                " LIMIT %(limit)s",
+                {"backend": backend, "limit": limit},
+            )
+            rows = await cur.fetchall()
+        return [self._submitted_run(r) for r in rows]
+
+    async def get_submitted_run(  # pragma: no cover
+        self, run_id: str, *, backend: str
+    ) -> SubmittedRun | None:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                self._SUBMITTED_SELECT
+                + " AND r.executor_backend = %(backend)s AND r.id = %(id)s",
+                {"backend": backend, "id": run_id},
+            )
+            row = await cur.fetchone()
+        return self._submitted_run(row) if row else None
+
+    @asynccontextmanager
+    async def collecting(  # pragma: no cover
+        self, run_id: str, *, handle: str
+    ) -> AsyncIterator[CollectingRun | None]:
+        async with await self._connect() as conn:
+            await self._begin_read_committed(conn)
+            try:
+                cur = await conn.execute(
+                    self._SUBMITTED_SELECT
+                    + " AND r.id = %(id)s AND r.executor_handle = %(h)s"
+                    " FOR UPDATE OF r SKIP LOCKED",
+                    {"id": run_id, "h": handle},
+                )
+                row = await cur.fetchone()
+                yield _PgCollectingRun(self, conn, self._submitted_run(row)) if row else None
+            except BaseException:
+                await conn.rollback()
+                raise
             await conn.commit()
 
     async def list_output_collections(  # pragma: no cover
@@ -955,10 +1293,14 @@ class PgProcessRepo(ProcessRepo):
         # collision and recovered NOTHING, for any process (#67). Oldest
         # first means a slot's earliest stalled run takes the slot and the
         # later ones fold into it.
+        #
+        # K-4 I9: only UNSUBMITTED rows. A submitted run is reconciled through
+        # the executor's status(), however long it runs (R14).
         async with await self._connect() as conn:
             cur = await conn.execute(
                 "SELECT id FROM stac_higher.process_runs"
                 " WHERE status = 'running' AND started_at < %s"
+                "   AND executor_handle IS NULL"
                 " ORDER BY started_at LIMIT %s",
                 (older_than, limit),
             )
@@ -969,15 +1311,14 @@ class PgProcessRepo(ProcessRepo):
                 outcome = await self._requeue(
                     conn,
                     run_id,
-                    set_sql=(
-                        "started_at = NULL, phase = NULL, phase_detail = NULL,"
-                        " executor_backend = NULL,"
-                        " error = 'run was stranded by a worker or executor crash'"
-                    ),
+                    set_sql="started_at = NULL, phase = NULL, phase_detail = NULL,"
+                    " error = %(error)s",
                     params={},
-                    # Re-checked under the row lock: a run that finished or
-                    # was re-claimed since the SELECT is not stalled.
+                    error="run was stranded by a worker or executor crash",
+                    # Re-checked under the row lock: a run that finished, was
+                    # submitted or was re-claimed since the SELECT is not stalled.
                     stalled_before=older_than,
+                    unsubmitted=True,
                 )
                 if outcome != "skipped":
                     recovered += 1
@@ -990,38 +1331,23 @@ class PgProcessRepo(ProcessRepo):
         *,
         set_sql: str,
         params: dict[str, Any],
+        error: str | None,
         stalled_before: dt.datetime | None = None,
+        claimed_at: dt.datetime | None = None,
+        handle: str | None = None,
+        unsubmitted: bool = False,
     ) -> str:
-        """Return a `running` run to `queued`, or FOLD it into the queued run
-        that already holds its coalescing slot (#67).
-
-        Migrations 025/027 allow one `queued` run per (process, source) and
-        per (process, association), and a newer trigger may have queued one
-        while this run was running — so flipping it back would violate the
-        index. Instead its items are appended to the queued run (the
-        `enqueue_run` ON CONFLICT rule, applied late), its `extracting`
-        ledger rows move to that run, and its own row is deleted.
-
-        The QUEUED run survives, not this one: an ITEMIZE that just folded
-        files into it is about to point their ledger rows at its id, and a
-        row that never started has no history to lose. Deleting the running
-        row also hands the M3-W-1 reaper its strongest orphan signal if a
-        container of it is somehow still alive.
-
-        Test runs never coalesce (`enqueue_run`), so they are only flipped.
-        A race that queues a run between the slot check and the flip raises
-        the unique violation; the next attempt finds that run and folds.
-
-        Returns ``"requeued"``, ``"merged"`` or ``"skipped"`` (no longer
-        `running`, or no longer stalled).
-        """
+        """Return a `running` run to `queued` in its own transaction, retrying
+        a fold race; see :func:`_requeue_once` for the rule. Returns
+        ``"requeued"``, ``"merged"``, ``"cancelled"`` or ``"skipped"``."""
         import psycopg
 
         for _attempt in range(_REQUEUE_ATTEMPTS):
             try:
-                outcome = await self._requeue_once(
-                    conn, run_id, set_sql=set_sql, params=params,
-                    stalled_before=stalled_before,
+                outcome = await _requeue_once(
+                    conn, run_id, set_sql=set_sql, params=params, error=error,
+                    stalled_before=stalled_before, claimed_at=claimed_at, handle=handle,
+                    unsubmitted=unsubmitted,
                 )
                 await conn.commit()
                 return outcome
@@ -1030,71 +1356,6 @@ class PgProcessRepo(ProcessRepo):
         raise RuntimeError(
             f"run {run_id}: its coalescing slot kept changing under the requeue"
         )
-
-    async def _requeue_once(  # pragma: no cover
-        self,
-        conn: Any,
-        run_id: str,
-        *,
-        set_sql: str,
-        params: dict[str, Any],
-        stalled_before: dt.datetime | None,
-    ) -> str:
-        cur = await conn.execute(
-            "SELECT process_id, source_id, association_id, is_test"
-            "  FROM stac_higher.process_runs"
-            " WHERE id = %(run)s AND status = 'running'"
-            "   AND (%(before)s::timestamptz IS NULL OR started_at < %(before)s)"
-            "   FOR UPDATE",
-            {"run": run_id, "before": stalled_before},
-        )
-        row = await cur.fetchone()
-        if row is None:
-            return "skipped"
-        process_id, source_id, association_id, is_test = row
-
-        holder = None
-        if not is_test:
-            # Either index can be the one occupied; NULL never matches.
-            cur = await conn.execute(
-                "SELECT id FROM stac_higher.process_runs"
-                " WHERE status = 'queued' AND process_id = %(process)s"
-                "   AND (source_id = %(source)s OR association_id = %(assoc)s)"
-                " ORDER BY created_at LIMIT 1 FOR UPDATE",
-                {"process": process_id, "source": source_id, "assoc": association_id},
-            )
-            holder = await cur.fetchone()
-
-        if holder is None:
-            await conn.execute(
-                f"UPDATE stac_higher.process_runs SET status = 'queued', {set_sql}"
-                " WHERE id = %(run)s",
-                {**params, "run": run_id},
-            )
-            return "requeued"
-
-        into = {"run": run_id, "into": holder[0]}
-        await conn.execute(
-            "UPDATE stac_higher.process_runs q"
-            "   SET input_items = q.input_items || r.input_items"
-            "  FROM stac_higher.process_runs r"
-            " WHERE q.id = %(into)s AND r.id = %(run)s",
-            into,
-        )
-        # Finalize only lands rows the run owns (extract_run.py), so moving
-        # the batch without moving ownership would strand them `extracting`.
-        await conn.execute(
-            "UPDATE stac_higher.ingest_files SET extract_run_id = %(into)s"
-            " WHERE extract_run_id = %(run)s AND status = 'extracting'",
-            into,
-        )
-        await conn.execute("DELETE FROM stac_higher.process_runs WHERE id = %(run)s", into)
-        logger.info(
-            "process run folded into the queued run holding its slot",
-            extra={"run_id": run_id, "into_run_id": str(holder[0]),
-                   "process_id": str(process_id)},
-        )
-        return "merged"
 
     async def run_statuses(  # pragma: no cover
         self, run_ids: Sequence[str]
@@ -1116,20 +1377,7 @@ class PgProcessRepo(ProcessRepo):
     ) -> None:
         async with await self._connect() as conn:
             await conn.execute(
-                "UPDATE stac_higher.process_sources"
-                "   SET flow_stats = coalesce(flow_stats, '{}'::jsonb)"
-                "     || jsonb_build_object("
-                "          'runs',"
-                "          coalesce((flow_stats->>'runs')::int, 0) + 1,"
-                "          'last_run_at', %(at)s::text)"
-                "     || CASE WHEN %(ok)s"
-                "             THEN jsonb_build_object('last_success_at', %(at)s::text)"
-                "             ELSE jsonb_build_object("
-                "                    'last_error_at', %(at)s::text,"
-                "                    'failed',"
-                "                    coalesce((flow_stats->>'failed')::int, 0) + 1)"
-                "        END"
-                " WHERE id = %(id)s",
+                _RECORD_SOURCE_RUN_SQL,
                 {"id": source_id, "ok": succeeded, "at": at.isoformat()},
             )
             await conn.commit()
@@ -1178,3 +1426,222 @@ class PgProcessRepo(ProcessRepo):
                 (status, json.dumps(result) if result is not None else None, check_id),
             )
             await conn.commit()
+
+
+#: Every requeue gives the executor columns back: the run is no longer
+#: admitted (K-3's marker) and nothing of this attempt's submission survives.
+_CLEAR_EXECUTOR_SQL = (
+    "executor_backend = NULL, executor_handle = NULL, submitted_at = NULL,"
+    " credentials_expire_at = NULL"
+)
+
+
+async def _requeue_once(  # pragma: no cover
+    conn: Any,
+    run_id: str,
+    *,
+    set_sql: str,
+    params: dict[str, Any],
+    error: str | None,
+    stalled_before: dt.datetime | None = None,
+    claimed_at: dt.datetime | None = None,
+    handle: str | None = None,
+    unsubmitted: bool = False,
+) -> str:
+    """Return a `running` run to `queued`, or FOLD it into the queued run that
+    already holds its coalescing slot (#67). Runs inside the caller's
+    transaction and never commits.
+
+    Migrations 025/027 allow one `queued` run per (process, source) and per
+    (process, association), and a newer trigger may have queued one while
+    this run was running — so flipping it back would violate the index.
+    Instead its items are appended to the queued run (the `enqueue_run` ON
+    CONFLICT rule, applied late), its `extracting` ledger rows move to that
+    run, and its own row is deleted. The QUEUED run survives, not this one:
+    an ITEMIZE that just folded files into it is about to point their ledger
+    rows at its id, and a row that never started has no history to lose.
+    Deleting the running row also hands the M3-W-1 reaper its strongest
+    orphan signal if a container of it is somehow still alive. Test runs
+    never coalesce (`enqueue_run`), so they are only flipped. A race that
+    queues a run between the slot check and the flip raises the unique
+    violation; the caller retries and the next attempt folds.
+
+    K-4: the fences are re-checked under the row lock — ``claimed_at`` (the
+    claim stamp, I4), ``handle`` (a submitted run's handle, I8),
+    ``stalled_before`` (I9) and ``unsubmitted`` (no handle) — and a run whose
+    cancel was requested lands `cancelled` rather than requeueing (I10).
+    ``set_sql`` may use ``%(error)s``.
+    """
+    predicates = ["id = %(run)s", "status = 'running'"]
+    if claimed_at is not None:
+        predicates.append("started_at = %(claimed_at)s")
+    if stalled_before is not None:
+        predicates.append("started_at < %(before)s")
+    if unsubmitted:
+        predicates.append("executor_handle IS NULL")
+    if handle is not None:
+        predicates.append("executor_handle = %(handle)s")
+    fence = {"run": run_id, "claimed_at": claimed_at, "before": stalled_before,
+             "handle": handle}
+    cur = await conn.execute(
+        "SELECT process_id, source_id, association_id, is_test,"
+        "       cancel_requested_at IS NOT NULL"
+        "  FROM stac_higher.process_runs"
+        f" WHERE {' AND '.join(predicates)}"
+        "   FOR UPDATE",
+        fence,
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return "skipped"
+    process_id, source_id, association_id, is_test, cancel_requested = row
+
+    if cancel_requested:
+        # I10: cancel wins over a requeue — the operator asked for it to stop.
+        await conn.execute(
+            "UPDATE stac_higher.process_runs"
+            "   SET status = 'cancelled', finished_at = now(),"
+            "       phase = NULL, phase_detail = NULL, next_attempt_at = NULL,"
+            f"      error = '{CANCELLED_ERROR}' || coalesce('; ' || %(error)s, '')"
+            " WHERE id = %(run)s",
+            {"run": run_id, "error": error},
+        )
+        return "cancelled"
+
+    holder = None
+    if not is_test:
+        # Either index can be the one occupied; NULL never matches.
+        cur = await conn.execute(
+            "SELECT id FROM stac_higher.process_runs"
+            " WHERE status = 'queued' AND process_id = %(process)s"
+            "   AND (source_id = %(source)s OR association_id = %(assoc)s)"
+            " ORDER BY created_at LIMIT 1 FOR UPDATE",
+            {"process": process_id, "source": source_id, "assoc": association_id},
+        )
+        holder = await cur.fetchone()
+
+    if holder is None:
+        await conn.execute(
+            f"UPDATE stac_higher.process_runs SET status = 'queued', {set_sql},"
+            f" {_CLEAR_EXECUTOR_SQL}"
+            " WHERE id = %(run)s",
+            {**params, "error": error, "run": run_id},
+        )
+        return "requeued"
+
+    into = {"run": run_id, "into": holder[0]}
+    await conn.execute(
+        "UPDATE stac_higher.process_runs q"
+        "   SET input_items = q.input_items || r.input_items"
+        "  FROM stac_higher.process_runs r"
+        " WHERE q.id = %(into)s AND r.id = %(run)s",
+        into,
+    )
+    # Finalize only lands rows the run owns (extract_run.py), so moving the
+    # batch without moving ownership would strand them `extracting`.
+    await conn.execute(
+        "UPDATE stac_higher.ingest_files SET extract_run_id = %(into)s"
+        " WHERE extract_run_id = %(run)s AND status = 'extracting'",
+        into,
+    )
+    await conn.execute("DELETE FROM stac_higher.process_runs WHERE id = %(run)s", into)
+    logger.info(
+        "process run folded into the queued run holding its slot",
+        extra={"run_id": run_id, "into_run_id": str(holder[0]),
+               "process_id": str(process_id)},
+    )
+    return "merged"
+
+
+#: The pipeline-written `flow_stats` rollup bump (M2-A shape).
+_RECORD_SOURCE_RUN_SQL = (
+    "UPDATE stac_higher.process_sources"
+    "   SET flow_stats = coalesce(flow_stats, '{}'::jsonb)"
+    "     || jsonb_build_object("
+    "          'runs',"
+    "          coalesce((flow_stats->>'runs')::int, 0) + 1,"
+    "          'last_run_at', %(at)s::text)"
+    "     || CASE WHEN %(ok)s"
+    "             THEN jsonb_build_object('last_success_at', %(at)s::text)"
+    "             ELSE jsonb_build_object("
+    "                    'last_error_at', %(at)s::text,"
+    "                    'failed',"
+    "                    coalesce((flow_stats->>'failed')::int, 0) + 1)"
+    "        END"
+    " WHERE id = %(id)s"
+)
+
+
+class _PgCollectingRun(CollectingRun):  # pragma: no cover - DB-gated tests
+    """The row is locked by the enclosing ``collecting`` transaction; every
+    write here joins it and commits (or rolls back) with it."""
+
+    def __init__(self, repo: PgProcessRepo, conn: Any, run: SubmittedRun) -> None:
+        self._repo = repo
+        self._conn = conn
+        self.run = run
+        self._done = False
+
+    def _once(self) -> None:
+        if self._done:
+            raise RuntimeError(f"run {self.run.id}: its verdict was already written")
+        self._done = True
+
+    async def finish(
+        self,
+        *,
+        status: str,
+        error: str | None,
+        log_ref: str | None,
+        next_attempt_at: dt.datetime | None,
+        at: dt.datetime,
+    ) -> str:
+        self._once()
+        cur = await self._conn.execute(
+            PgProcessRepo._FINISH_SQL + " AND executor_handle = %(handle)s RETURNING status",
+            {
+                "id": self.run.id, "status": status, "error": error, "log_ref": log_ref,
+                "output": None, "next_attempt_at": next_attempt_at, "handle": self.run.handle,
+            },
+        )
+        row = await cur.fetchone()
+        if row is None:  # cannot happen: the row is locked as running/handle
+            raise RuntimeError(f"run {self.run.id}: the locked row was not running")
+        written = str(row[0])
+        # flow_stats in the same transaction, so it is exactly-once with the
+        # verdict. A test run or manual re-run is source-less and counts
+        # nothing; a cancelled run is neutral (spec §9).
+        if self.run.source_id and written in ("succeeded", "dead"):
+            await self._conn.execute(
+                _RECORD_SOURCE_RUN_SQL,
+                {"id": self.run.source_id, "ok": written == "succeeded", "at": at.isoformat()},
+            )
+        return written
+
+    async def requeue(
+        self,
+        *,
+        error: str | None,
+        phase: str | None,
+        phase_detail: str | None,
+        next_attempt_at: dt.datetime,
+    ) -> str:
+        import psycopg
+
+        self._once()
+        for _attempt in range(_REQUEUE_ATTEMPTS):
+            try:
+                # A savepoint: a fold race must not abort the outer
+                # (collecting) transaction.
+                async with self._conn.transaction():
+                    return await _requeue_once(
+                        self._conn, self.run.id,
+                        set_sql=PgProcessRepo._RESTORE_ATTEMPT_SQL,
+                        params={"phase": phase, "detail": phase_detail, "at": next_attempt_at},
+                        error=error, handle=self.run.handle,
+                    )
+            except psycopg.errors.UniqueViolation:
+                continue
+        raise RuntimeError(
+            f"run {self.run.id}: its coalescing slot kept changing under the requeue"
+        )

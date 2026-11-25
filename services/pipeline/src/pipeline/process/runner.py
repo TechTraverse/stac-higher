@@ -344,19 +344,13 @@ async def run_one(
         transition = infrastructure_transition(
             now=at, retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS, error=str(err)
         )
-        PROCESS_RUNS.labels(outcome=transition.status).inc()
-        await repo.finish_run(
-            run.id,
-            status=transition.status,
-            error=transition.error,
-            log_ref=None,
-            next_attempt_at=transition.next_attempt_at,
-        )
+        outcome = await _requeue(repo, run, transition)
         logger.warning(
             "process run could not start; requeued without spending an attempt",
-            extra={"run_id": run.id, "process_id": run.process_id, "error": str(err)},
+            extra={"run_id": run.id, "process_id": run.process_id, "error": str(err),
+                   "outcome": outcome},
         )
-        return RunResult(run.id, transition.status, error=str(err))
+        return RunResult(run.id, _requeue_status(outcome), error=str(err))
     except CredentialBudgetExceeded as err:
         # The run's timeout + grace needs longer credentials than the
         # deployment allows. Configuration, not infrastructure: dead, no retry.
@@ -400,15 +394,27 @@ async def _finish(
     at: dt.datetime,
     *,
     on_dead: Callable[[QueuedRun, str], Awaitable[None]] | None = None,
-) -> None:
-    PROCESS_RUNS.labels(outcome=status).inc()
-    await repo.finish_run(
+) -> str | None:
+    """The claiming worker's verdict on a run it never submitted (K-4 I3):
+    fenced on the claim stamp. Returns the status written (``cancelled`` when
+    an operator asked meanwhile) or None when a stale worker's write matched
+    nothing; neither of those touches flow_stats or the extractor batch."""
+    written = await repo.finish_run(
         run.id,
         status=status,
         error=error,
         log_ref=log_ref,
         next_attempt_at=next_attempt_at,
+        claimed_at=run.claimed_at,
     )
+    if written is None:
+        logger.warning(
+            "process run verdict dropped: its claim was lost",
+            extra={"run_id": run.id, "process_id": run.process_id, "status": status},
+        )
+        return None
+    PROCESS_RUNS.labels(outcome=written).inc()
+    status = written
     # flow_stats is a per-SOURCE rollup, so a test run or a manual re-run
     # (both source-less) contributes nothing — otherwise an operator testing a
     # process would move the telemetry its expectation is judged against.
@@ -419,6 +425,26 @@ async def _finish(
     # may still land the batch).
     if status == "dead" and run.association_id is not None and on_dead is not None:
         await on_dead(run, error or "run died")
+    return status
+
+
+async def _requeue(repo: ProcessRepo, run: QueuedRun, transition) -> str:
+    """K-4 I4/R13: back to `queued`, attempt restored, retry time in
+    next_attempt_at — fenced on the claim stamp."""
+    outcome = await repo.requeue_without_attempt(
+        run.id,
+        claimed_at=run.claimed_at,
+        error=transition.error or "",
+        next_attempt_at=transition.next_attempt_at,
+    )
+    PROCESS_RUNS.labels(outcome=_requeue_status(outcome)).inc()
+    return outcome
+
+
+def _requeue_status(outcome: str) -> str:
+    """The RunResult status for a requeue outcome: `cancelled` and a lost
+    claim (`skipped`) say so; requeued or folded is `queued`."""
+    return outcome if outcome in ("cancelled", "skipped") else "queued"
 
 
 async def _requeue_infrastructure(
@@ -429,14 +455,7 @@ async def _requeue_infrastructure(
     transition = infrastructure_transition(
         now=at, retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS, error=str(err)
     )
-    PROCESS_RUNS.labels(outcome=transition.status).inc()
-    await repo.finish_run(
-        run.id,
-        status=transition.status,
-        error=transition.error,
-        log_ref=None,
-        next_attempt_at=transition.next_attempt_at,
-    )
+    outcome = await _requeue(repo, run, transition)
     logger.warning(
         "process run could not start: deployment configuration unavailable; requeued "
         "without spending an attempt",
@@ -445,6 +464,7 @@ async def _requeue_infrastructure(
             "process_id": run.process_id,
             "error": str(err),
             "cause": type(err).__name__,
+            "outcome": outcome,
         },
     )
-    return RunResult(run.id, transition.status, error=str(err))
+    return RunResult(run.id, _requeue_status(outcome), error=str(err))

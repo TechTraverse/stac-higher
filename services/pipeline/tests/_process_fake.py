@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from pipeline.process.ledger import CAPACITY_RETRY_SECONDS, capacity_detail
 from pipeline.process.matcher import ProcessSource
 from pipeline.process.repo import (
+    CANCELLED_ERROR,
+    CollectingRun,
     CronSource,
     ProcessCheckRequest,
     ProcessRepo,
     QueuedRun,
     RateWindow,
     RunRecord,
+    SubmissionRecord,
+    SubmittedRun,
     capacity_exempt,
 )
 
@@ -59,6 +65,10 @@ class FakeProcessRepo(ProcessRepo):
     #: out of the partial index.
     _queued: dict[tuple[str, tuple[str, str]], str] = field(default_factory=dict)
     _next_id: int = 0
+    #: K-4: what record_submission was asked to write, and folds (run, into).
+    submissions: list[dict[str, Any]] = field(default_factory=list)
+    merged: list[tuple[str, str]] = field(default_factory=list)
+    _locks: dict[str, asyncio.Lock] = field(default_factory=dict)
 
     async def list_item_event_sources(self, collection_id: str) -> list[ProcessSource]:
         return self.sources.get(collection_id, [])
@@ -199,6 +209,12 @@ class FakeProcessRepo(ProcessRepo):
             row["phase_detail"] = None
             row["next_attempt_at"] = None
             row["executor_backend"] = backend
+            # K-4 I1: the claim stamp, and nothing of an earlier submission.
+            row["started_at"] = now
+            row["attempts"] = row.get("attempts", 0) + 1
+            row["executor_handle"] = None
+            row["submitted_at"] = None
+            row["credentials_expire_at"] = None
             # Out of the partial index, so a later trigger starts a new run.
             if row["source_id"] is not None:
                 self._queued.pop((row["process_id"], ("src", row["source_id"])), None)
@@ -210,12 +226,13 @@ class FakeProcessRepo(ProcessRepo):
                 revision_id=row["revision_id"],
                 source_id=row["source_id"],
                 association_id=row["association_id"],
-                attempts=1,
+                attempts=row["attempts"],
                 input_items=list(row["input_items"]),
                 runtime=self.runtime,
                 code=self.code,
                 env=[],
                 is_test=row["is_test"],
+                claimed_at=now,
             )
         return None
 
@@ -231,7 +248,31 @@ class FakeProcessRepo(ProcessRepo):
         # tests/test_integration_process_capacity.py.
         batch = self.due_runs[:limit]
         self.due_runs = self.due_runs[limit:]
-        return batch
+        # K-4: each scripted run becomes a `running` row carrying the claim
+        # stamp, so the ledger's compare-and-set predicates apply to it.
+        claimed = []
+        for run in batch:
+            row = self._row(run.id)
+            if row is None:
+                row = {
+                    "run_id": run.id, "process_id": run.process_id,
+                    "revision_id": run.revision_id, "source_id": run.source_id,
+                    "association_id": run.association_id,
+                    "input_items": list(run.input_items), "deferred_until": None,
+                    "is_test": run.is_test,
+                }
+                self.enqueued.append(row)
+            row.update(
+                status="running", phase="starting", phase_detail=None,
+                next_attempt_at=None, executor_backend=backend, started_at=now,
+                attempts=run.attempts, executor_handle=None, submitted_at=None,
+                credentials_expire_at=None,
+            )
+            claimed.append(replace(run, claimed_at=now))
+        return claimed
+
+    def _row(self, run_id: str) -> dict[str, Any] | None:
+        return next((row for row in self.enqueued if row["run_id"] == run_id), None)
 
     async def get_run(self, run_id: str) -> RunRecord | None:
         for row in self.enqueued:
@@ -254,23 +295,226 @@ class FakeProcessRepo(ProcessRepo):
         log_ref: str | None,
         next_attempt_at: dt.datetime | None,
         output_items: Sequence[dict[str, Any]] | None = None,
-    ) -> None:
+        claimed_at: dt.datetime | None = None,
+    ) -> str | None:
+        if status == "queued":
+            if claimed_at is not None:
+                raise ValueError("a claimed run is requeued by requeue_without_attempt")
+            outcome = await self.requeue_without_attempt(
+                run_id, claimed_at=None, error=error or "",
+                next_attempt_at=next_attempt_at or dt.datetime.now(dt.UTC),
+            )
+            return None if outcome == "skipped" else "queued"
+        row = self._row(run_id)
+        if claimed_at is not None and row is not None and (
+            row["status"] != "running"
+            or row.get("started_at") != claimed_at
+            or row.get("executor_handle") is not None
+        ):
+            return None  # I3: the CAS matched nothing
+        written = status
+        if claimed_at is not None and row is not None and row.get("cancel_requested_at"):
+            written = "cancelled"
+            error = CANCELLED_ERROR + (f"; {error}" if error else "")
         self.finished.append(
             {
                 "run_id": run_id,
-                "status": status,
+                "status": written,
                 "error": error,
                 "log_ref": log_ref,
                 "next_attempt_at": next_attempt_at,
             }
         )
-        for row in self.enqueued:
-            if row["run_id"] == run_id:
-                row["status"] = status
-                row["phase"] = None
-                row["phase_detail"] = None
-                if status == "queued":
-                    row["executor_backend"] = None
+        if row is not None:
+            row.update(status=written, phase=None, phase_detail=None, error=error)
+            if log_ref is not None:
+                row["log_ref"] = log_ref
+        return written
+
+    def _requeue_row(
+        self,
+        row: dict[str, Any],
+        *,
+        error: str | None,
+        phase: str | None,
+        phase_detail: str | None,
+        next_attempt_at: dt.datetime | None,
+        restore_attempt: bool,
+    ) -> str:
+        """`_requeue_once` in memory: cancel wins (I10), else fold into an
+        occupied slot (#67), else back to `queued` with the executor columns
+        cleared."""
+        if row.get("cancel_requested_at"):
+            row.update(
+                status="cancelled", phase=None, phase_detail=None, next_attempt_at=None,
+                error=CANCELLED_ERROR + (f"; {error}" if error else ""),
+            )
+            return "cancelled"
+        key: tuple[str, str] | None = None
+        if not row["is_test"]:
+            if row["source_id"] is not None:
+                key = ("src", row["source_id"])
+            elif row["association_id"] is not None:
+                key = ("assoc", row["association_id"])
+        holder = self._queued.get((row["process_id"], key)) if key else None
+        if holder is not None and holder != row["run_id"]:
+            into = self._row(holder)
+            if into is not None:
+                into["input_items"] = list(into["input_items"]) + list(row["input_items"])
+            self.enqueued.remove(row)
+            self.merged.append((row["run_id"], holder))
+            return "merged"
+        row.update(
+            status="queued", error=error, phase=phase, phase_detail=phase_detail,
+            next_attempt_at=next_attempt_at, started_at=None, executor_backend=None,
+            executor_handle=None, submitted_at=None, credentials_expire_at=None,
+        )
+        if restore_attempt:
+            row["attempts"] = max(row.get("attempts", 0) - 1, 0)
+        if key is not None:
+            self._queued[(row["process_id"], key)] = row["run_id"]
+        return "requeued"
+
+    async def requeue_without_attempt(
+        self,
+        run_id: str,
+        *,
+        claimed_at: dt.datetime | None,
+        error: str,
+        next_attempt_at: dt.datetime,
+    ) -> str:
+        row = self._row(run_id)
+        self.finished.append(
+            {"run_id": run_id, "status": "queued", "error": error, "log_ref": None,
+             "next_attempt_at": next_attempt_at}
+        )
+        if row is None:
+            return "requeued"  # a hand-built QueuedRun the fake never claimed
+        if (
+            row["status"] != "running"
+            or row.get("executor_handle") is not None
+            or (claimed_at is not None and row.get("started_at") != claimed_at)
+        ):
+            return "skipped"
+        outcome = self._requeue_row(
+            row, error=error, phase=None, phase_detail=None,
+            next_attempt_at=next_attempt_at, restore_attempt=True,
+        )
+        self.finished[-1]["status"] = "cancelled" if outcome == "cancelled" else "queued"
+        return outcome
+
+    async def record_submission(
+        self,
+        run_id: str,
+        *,
+        claimed_at: dt.datetime | None,
+        handle: str,
+        backend: str,
+        phase: str,
+        submitted_at: dt.datetime,
+        credentials_expire_at: dt.datetime | None,
+    ) -> SubmissionRecord | None:
+        self.submissions.append(
+            {"run_id": run_id, "claimed_at": claimed_at, "handle": handle,
+             "backend": backend, "phase": phase, "submitted_at": submitted_at,
+             "credentials_expire_at": credentials_expire_at}
+        )
+        row = self._row(run_id)
+        if row is None:
+            # A hand-built QueuedRun: model it as the claim the test implies.
+            row = {
+                "run_id": run_id, "process_id": "p", "revision_id": "rev-1",
+                "source_id": None, "association_id": None, "input_items": [],
+                "deferred_until": None, "is_test": False, "status": "running",
+                "started_at": claimed_at, "attempts": 1, "executor_backend": backend,
+                "executor_handle": None,
+            }
+            self.enqueued.append(row)
+        if (
+            row["status"] != "running"
+            or row.get("executor_handle") is not None
+            or row.get("executor_backend") != backend
+            or (claimed_at is not None and row.get("started_at") != claimed_at)
+        ):
+            return None
+        row.update(
+            executor_handle=handle, submitted_at=submitted_at, phase=phase,
+            phase_detail=None, credentials_expire_at=credentials_expire_at,
+        )
+        return SubmissionRecord(cancel_requested=row.get("cancel_requested_at") is not None)
+
+    async def set_phase(
+        self, run_id: str, *, handle: str, phase: str, detail: str | None
+    ) -> bool:
+        row = self._row(run_id)
+        if row is None or row["status"] != "running" or row.get("executor_handle") != handle:
+            return False
+        if (row.get("phase"), row.get("phase_detail")) == (phase, detail):
+            return False
+        row.update(phase=phase, phase_detail=detail)
+        return True
+
+    def _submitted(self, row: dict[str, Any]) -> SubmittedRun:
+        return SubmittedRun(
+            id=row["run_id"], process_id=row["process_id"], revision_id=row["revision_id"],
+            source_id=row["source_id"], association_id=row["association_id"],
+            attempts=row.get("attempts", 1), is_test=row["is_test"],
+            handle=row["executor_handle"], backend=row["executor_backend"],
+            phase=row.get("phase"), submitted_at=row.get("submitted_at"),
+            cancel_requested_at=row.get("cancel_requested_at"),
+            credentials_expire_at=row.get("credentials_expire_at"),
+            runtime=dict(row.get("runtime") or self.runtime),
+            input_items=list(row["input_items"]),
+        )
+
+    def _is_submitted(self, row: dict[str, Any], backend: str) -> bool:
+        return (
+            row["status"] == "running"
+            and row.get("executor_handle") is not None
+            and row.get("executor_backend") == backend
+        )
+
+    async def list_submitted_runs(
+        self, *, backend: str, limit: int, cancel_requested_only: bool = False
+    ) -> list[SubmittedRun]:
+        rows = [
+            row for row in self.enqueued
+            if self._is_submitted(row, backend)
+            and (not cancel_requested_only or row.get("cancel_requested_at"))
+        ]
+        rows.sort(key=lambda r: (r.get("cancel_requested_at") is None,))
+        return [self._submitted(row) for row in rows[:limit]]
+
+    async def get_submitted_run(self, run_id: str, *, backend: str) -> SubmittedRun | None:
+        row = self._row(run_id)
+        return self._submitted(row) if row and self._is_submitted(row, backend) else None
+
+    @asynccontextmanager
+    async def collecting(
+        self, run_id: str, *, handle: str
+    ) -> AsyncIterator[CollectingRun | None]:
+        row = self._row(run_id)
+        lock = self._locks.setdefault(run_id, asyncio.Lock())
+        if (
+            row is None or row["status"] != "running"
+            or row.get("executor_handle") != handle or lock.locked()
+        ):
+            yield None  # SKIP LOCKED, or no longer this handle's running row
+            return
+        async with lock:
+            snapshot = dict(row)
+            collecting = _FakeCollectingRun(self, row, self._submitted(row))
+            try:
+                yield collecting
+            except BaseException:
+                # Roll back: the row as it was, nothing recorded.
+                row.clear()
+                row.update(snapshot)
+                if row not in self.enqueued:
+                    self.enqueued.append(row)
+                del self.finished[collecting.finished_mark:]
+                del self.source_runs[collecting.source_runs_mark:]
+                raise
 
     async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
         return tuple(self.output_collections)
@@ -285,7 +529,21 @@ class FakeProcessRepo(ProcessRepo):
         return dict(self.source_hrefs.get((collection_id, item_id), {}))
 
     async def reset_stalled_runs(self, older_than: dt.datetime, limit: int) -> int:
-        return self.stalled_reset
+        # I9: only unsubmitted rows (plus the scripted count older tests set).
+        recovered = 0
+        for row in list(self.enqueued):
+            started = row.get("started_at")
+            if (
+                row["status"] == "running" and row.get("executor_handle") is None
+                and started is not None and started < older_than and recovered < limit
+            ):
+                self._requeue_row(
+                    row, error="run was stranded by a worker or executor crash",
+                    phase=None, phase_detail=None, next_attempt_at=None,
+                    restore_attempt=False,
+                )
+                recovered += 1
+        return self.stalled_reset + recovered
 
     async def run_statuses(self, run_ids: Sequence[str]) -> dict[str, str]:
         return {}
@@ -307,3 +565,63 @@ class FakeProcessRepo(ProcessRepo):
         self, check_id: str, *, status: str, result: dict[str, Any] | None
     ) -> None:
         return None
+
+
+class _FakeCollectingRun(CollectingRun):
+    def __init__(self, repo: FakeProcessRepo, row: dict[str, Any], run: SubmittedRun) -> None:
+        self._repo = repo
+        self._row = row
+        self.run = run
+        self._done = False
+        self.finished_mark = len(repo.finished)
+        self.source_runs_mark = len(repo.source_runs)
+
+    def _once(self) -> None:
+        if self._done:
+            raise RuntimeError(f"run {self.run.id}: its verdict was already written")
+        self._done = True
+
+    async def finish(
+        self,
+        *,
+        status: str,
+        error: str | None,
+        log_ref: str | None,
+        next_attempt_at: dt.datetime | None,
+        at: dt.datetime,
+    ) -> str:
+        self._once()
+        written = status
+        if self._row.get("cancel_requested_at"):
+            written = "cancelled"
+            error = CANCELLED_ERROR + (f"; {error}" if error else "")
+        self._row.update(status=written, phase=None, phase_detail=None, error=error,
+                         next_attempt_at=None)
+        if log_ref is not None:
+            self._row["log_ref"] = log_ref
+        self._repo.finished.append(
+            {"run_id": self.run.id, "status": written, "error": error, "log_ref": log_ref,
+             "next_attempt_at": next_attempt_at}
+        )
+        if self.run.source_id and written in ("succeeded", "dead"):
+            self._repo.source_runs.append((self.run.source_id, written == "succeeded"))
+        return written
+
+    async def requeue(
+        self,
+        *,
+        error: str | None,
+        phase: str | None,
+        phase_detail: str | None,
+        next_attempt_at: dt.datetime,
+    ) -> str:
+        self._once()
+        outcome = self._repo._requeue_row(
+            self._row, error=error, phase=phase, phase_detail=phase_detail,
+            next_attempt_at=next_attempt_at, restore_attempt=True,
+        )
+        self._repo.finished.append(
+            {"run_id": self.run.id, "status": "cancelled" if outcome == "cancelled" else "queued",
+             "error": error, "log_ref": None, "next_attempt_at": next_attempt_at}
+        )
+        return outcome
