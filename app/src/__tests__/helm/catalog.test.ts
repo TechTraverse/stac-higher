@@ -28,15 +28,17 @@ const compose = parse(readFileSync(join(REPO, "docker-compose.yml"), "utf8"));
 const enforced = parse(readFileSync(join(REPO, "infra/compose.auth-enforced.yml"), "utf8"));
 const chartValues = parse(readFileSync(join(CHART_DIR, "values.yaml"), "utf8"));
 
-/** The enforced overlay's auth-proxy env, with compose's `$$` escapes undone. */
-function overlayEnv(): Record<string, string> {
+/** A compose service's auth-proxy env, with compose's `$$` escapes undone. */
+function proxyEnvOf(file: any): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const e of enforced.services["auth-proxy"].environment as string[]) {
+  for (const e of file.services["auth-proxy"].environment as string[]) {
     const i = e.indexOf("=");
     out[e.slice(0, i)] = e.slice(i + 1).replaceAll("$$", "$");
   }
   return out;
 }
+const overlayEnv = () => proxyEnvOf(enforced);
+const baseEnv = () => proxyEnvOf(compose);
 
 describe("catalog image pins (ADR 0015 pair)", () => {
   it("third-party images match the compose pins", () => {
@@ -76,6 +78,33 @@ describe.skipIf(!helmReady())("chart catalog plane", () => {
     expect(env.PGSSLMODE).toBe("verify-full");
     const internal = cm(render({ auth: { issuerInternal: "http://idp.internal:8080/realms/example/" } }), "auth-proxy");
     expect(internal.OIDC_DISCOVERY_INTERNAL_URL).toBe("http://idp.internal:8080/realms/example/.well-known/openid-configuration");
+  });
+
+  describe("proxy mode follows auth.mode, as compose's base file and enforced overlay do", () => {
+    const BYPASS = { auth: { mode: "bypass", allowDevBypass: true } };
+    const proxyContainer = (docs: Doc[]) =>
+      docs.find((d) => d.kind === "Deployment" && d.metadata.name === "stac-higher-auth-proxy").spec.template.spec.containers[0];
+    const ENFORCED_ONLY = ["ALLOWED_JWT_AUDIENCES", "AUTH_BEARER_AUDIENCE_CLAIM", "ITEMS_FILTER_CLS", "ITEMS_FILTER_PATH", "POLICY_DATABASE_URL", "POLICY_ROLES_CLAIM", "POLICY_WRITE_ROLES"];
+
+    it("bypass renders the pass-through proxy, so the BFF's tokenless writes reach stac-api", () => {
+      const docs = render(BYPASS);
+      const env = effectiveEnv(docs, proxyContainer(docs));
+      expect(env.DEFAULT_PUBLIC).toBe(baseEnv().DEFAULT_PUBLIC);
+      expect(JSON.parse(String(env.PRIVATE_ENDPOINTS))).toEqual(JSON.parse(baseEnv().PRIVATE_ENDPOINTS));
+      expect(JSON.parse(String(env.PRIVATE_ENDPOINTS))).toEqual({});
+      for (const k of [...ENFORCED_ONLY, "CATALOG_BFF_SHARED_SECRET", "PGUSER", "PGPASSWORD"]) expect(env, k).not.toHaveProperty(k);
+      // Every proxy setting compose's base file makes, the chart makes too.
+      for (const k of Object.keys(baseEnv())) expect(env, k).toHaveProperty(k);
+    });
+
+    it("oidc renders the enforced proxy with every setting the overlay makes", () => {
+      const docs = render();
+      const env = effectiveEnv(docs, proxyContainer(docs));
+      for (const k of [...Object.keys(baseEnv()), ...Object.keys(overlayEnv())]) expect(env, k).toHaveProperty(k);
+      expect(JSON.parse(String(env.PRIVATE_ENDPOINTS))).toEqual(JSON.parse(overlayEnv().PRIVATE_ENDPOINTS));
+      expect(env.CATALOG_BFF_SHARED_SECRET).toEqual({ secret: "stac-higher-platform", key: "CATALOG_BFF_SHARED_SECRET" });
+      expect(env.PGUSER).toEqual({ secret: "stac-higher-db-proxy-policy", key: "username" });
+    });
   });
 
   it("the proxy pins the token issuer to auth.issuer exactly as given (upstream v1.4.0 iss check)", () => {

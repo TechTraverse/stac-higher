@@ -11,7 +11,11 @@ uids are the images' own users (verified on GHCR, R-7 plan); tipg's image runs a
 {{- $pg := list (list "PGUSER" "username") (list "PGPASSWORD" "password") -}}
 {{- $pgPlain := list (list "POSTGRES_USER" "username") (list "POSTGRES_PASS" "password") -}}
 {{- $uvicorn := list "--host" "0.0.0.0" "--proxy-headers" "--forwarded-allow-ips=*" -}}
-{{- $proxyEnv := concat (include "stac-higher.secretEnv" (dict "secret" $sn.dbProxyPolicy "pairs" $pg) | fromYamlArray) (include "stac-higher.secretEnv" (dict "secret" $sn.platform "pairs" (list (list "CATALOG_BFF_SHARED_SECRET" "CATALOG_BFF_SHARED_SECRET"))) | fromYamlArray) -}}
+{{- /* Only the enforced proxy (auth.mode oidc) runs the write policy, which reads the policy role and the BFF secret. */ -}}
+{{- $proxyEnv := list -}}
+{{- if eq $v.auth.mode "oidc" -}}
+{{- $proxyEnv = concat (include "stac-higher.secretEnv" (dict "secret" $sn.dbProxyPolicy "pairs" $pg) | fromYamlArray) (include "stac-higher.secretEnv" (dict "secret" $sn.platform "pairs" (list (list "CATALOG_BFF_SHARED_SECRET" "CATALOG_BFF_SHARED_SECRET"))) | fromYamlArray) -}}
+{{- end -}}
 {{- $specs := list
   (dict "component" "stac-api" "values" $v.catalog.stacApi "port" 8082 "uid" 1000 "gid" 1000 "serviceAccount" ""
     "image" (include "stac-higher.mirrorRef" (dict "root" $ "ref" $v.catalog.stacApi.image))

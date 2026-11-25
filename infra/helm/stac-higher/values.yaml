@@ -50,7 +50,9 @@ database:
 auth:
   mode: oidc # R-5: oidc | bypass
   allowDevBypass: false # bypass without this fails to render
-  issuer: null # R-5: OIDC issuer URL -> OIDC_ISSUER (required when oidc)
+  # R-5: OIDC issuer URL -> the app's OIDC_ISSUER and the catalog proxy's discovery URL and OIDC_ISSUER.
+  # Required in every mode: the proxy cannot start without a reachable discovery URL, even pass-through (bypass).
+  issuer: null
   clientId: null # R-5: OIDC client id -> OIDC_CLIENT_ID (required when oidc)
   issuerInternal: "" # -> OIDC_ISSUER_INTERNAL
   audiences: [stac-higher] # R-5: comma-joined -> AUTH_BEARER_AUDIENCES

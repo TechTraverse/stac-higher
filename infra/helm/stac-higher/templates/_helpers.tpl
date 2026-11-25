@@ -451,7 +451,7 @@ affinity:
 {{- define "stac-higher.validateCatalog" -}}
 {{- $v := .Values -}}
 {{- if not $v.auth.issuer -}}
-{{- fail "auth.issuer is required in every auth mode: the catalog auth-proxy needs its OIDC discovery URL" -}}
+{{- fail "auth.issuer is required in every auth mode: the catalog auth-proxy needs a reachable OIDC discovery URL to start, even pass-through (bypass), because its startup health-checks that URL" -}}
 {{- end -}}
 {{- $hosts := dict -}}
 {{- range $k := list "app" "catalog" "titiler" "tipg" "cubeServer" -}}
@@ -585,8 +585,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ $full }}-env-{{ .component }}
+          {{- with .env }}
           env:
-            {{- toYaml .env | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: {{ .readinessPath }}

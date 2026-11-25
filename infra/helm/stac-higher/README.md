@@ -80,7 +80,7 @@ Rendering fails with a message starting with the offending key path.
 | `auth` | | Authentication. |
 | `auth.mode` | `oidc` | `oidc` or `bypass`. |
 | `auth.allowDevBypass` | `false` | `bypass` fails to render without it. |
-| `auth.issuer`, `auth.clientId` | `null` | Required with `oidc`. |
+| `auth.issuer`, `auth.clientId` | `null` | `clientId` is required with `oidc`. `issuer` is required in every mode: the catalog proxy's startup health-checks its discovery URL (upstream `WAIT_FOR_UPSTREAM`) and fails without it, even pass-through. |
 | `auth.issuerInternal` | `""` | `OIDC_ISSUER_INTERNAL`. |
 | `auth.audiences` | `[stac-higher]` | Comma-joined into `AUTH_BEARER_AUDIENCES`. |
 | `auth.audienceClaim` | `aud` | `aud` or `client_id`. |
@@ -259,7 +259,12 @@ images cannot follow `global.imageDigests` or the mirror rewrite (evidence:
   generates alphanumeric ones).
 - Only titiler and the cube-server have an AWS identity (their R-5
   ServiceAccounts); no catalog pod mounts an API token. No static AWS key is set.
-- The proxy runs the auth-enforced write policy exactly as
+- With `auth.mode: bypass` the proxy runs pass-through, as `docker-compose.yml`'s
+  base file runs it (`PRIVATE_ENDPOINTS={}`, no write policy): the app's BFF
+  sends writes without a token in bypass, which an enforced proxy would refuse.
+  It still needs `auth.issuer`, because upstream stac-auth-proxy requires
+  `OIDC_DISCOVERY_URL` and health-checks it at startup.
+- With `auth.mode: oidc` the proxy runs the auth-enforced write policy exactly as
   `infra/compose.auth-enforced.yml` configures it: reads public, transactions
   need a token with the `auth.audiences` audience, item writes need the BFF
   secret or an operator/admin role on an externally writable collection.

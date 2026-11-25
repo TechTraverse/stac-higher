@@ -33,6 +33,8 @@ discovery document it fetched (the internal one when issuerInternal is set). Pin
 given: the trailing-slash trim above is only for building discovery URLs, and some issuers end in "/". */ -}}
 {{- $_ := set $proxy "OIDC_ISSUER" (toString $v.auth.issuer) -}}
 {{- $_ := set $proxy "DEFAULT_PUBLIC" "true" -}}
+{{- if eq $v.auth.mode "oidc" -}}
+{{- /* Enforced: infra/compose.auth-enforced.yml. */ -}}
 {{- $_ := set $proxy "PRIVATE_ENDPOINTS" `{"^/collections$":["POST"],"^/collections/([^/]+)$":["PUT","PATCH","DELETE"],"^/collections/([^/]+)/items$":["POST"],"^/collections/([^/]+)/items/([^/]+)$":["PUT","PATCH","DELETE"],"^/collections/([^/]+)/bulk_items$":["POST"]}` -}}
 {{- $_ := set $proxy "ALLOWED_JWT_AUDIENCES" (join "," $v.auth.audiences) -}}
 {{- $_ := set $proxy "AUTH_BEARER_AUDIENCE_CLAIM" $v.auth.audienceClaim -}}
@@ -41,6 +43,11 @@ given: the trailing-slash trim above is only for building discovery URLs, and so
 {{- $_ := set $proxy "POLICY_DATABASE_URL" $dsn -}}
 {{- $_ := set $proxy "POLICY_ROLES_CLAIM" (include "stac-higher.proxyRolesClaim" .) -}}
 {{- $_ := set $proxy "POLICY_WRITE_ROLES" (include "stac-higher.proxyWriteRoles" .) -}}
+{{- else -}}
+{{- /* bypass: pass-through, as docker-compose.yml's base file runs it. The app's BFF sends writes without a token
+in bypass, so an enforced proxy would answer every UI write 401. No policy factory, so no policy role or BFF secret. */ -}}
+{{- $_ := set $proxy "PRIVATE_ENDPOINTS" "{}" -}}
+{{- end -}}
 
 {{- $titiler := deepCopy $common -}}
 {{- $_ := set $titiler "POSTGRES_HOST" $d.host -}}
