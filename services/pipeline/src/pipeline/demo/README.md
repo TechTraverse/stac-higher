@@ -429,6 +429,65 @@ are deleted here: like the app's catalog delete, it marks each collection's whol
 prefix `collection_delete` in `asset_gc`, and the GC job removes
 `assets/goes19-c13-cube/_cube/` after the collection's grace period (ADR 0022).
 
+## In-cluster mode (`--in-cluster`)
+
+The same seeds against a **deployed** stack, run by the chart's demo-seed Job
+(`demoSeed.enabled`, chart README "Demo seed"; R-10, GitHub #146). Everything
+above is compose mode and does not change without the flag.
+
+```sh
+# what the Job runs, one container per seed, in this order
+python -m pipeline.demo --in-cluster seed --no-build-image
+python -m pipeline.demo --in-cluster goes-seed --no-build-image --deliver
+python -m pipeline.demo --in-cluster cube-seed
+python -m pipeline.demo --in-cluster images-seed
+```
+
+What `--in-cluster` changes:
+
+| | Compose | In-cluster |
+|---|---|---|
+| Endpoints | published ports (`localhost:8082`, `:5433`, `:9000`) | the environment; an explicit flag still wins: `DEMO_STAC_URL` (stac-fastapi, required), `DATABASE_URL` + libpq's `PGUSER`/`PGPASSWORD`/`PGSSLMODE`/`PGSSLROOTCERT` (required), `STAGING_BUCKET` (required), `DEMO_APP_URL` (the app Service; required for `images-*`), `DEMO_PUBLIC_APP_URL` / `DEMO_PUBLIC_TITILER_URL` (printed hints only) |
+| Platform bucket | MinIO at `--s3-endpoint` with MinIO's keys | the pipeline's own client from `STAGING_S3_*`: blank endpoint and keys mean AWS and the default credential chain (the pod's workload identity). `--s3-endpoint` is refused |
+| Runtime image | built (`docker buildx bake`) or checked | never built or checked: no Docker daemon in a pod, and the deployment pins `PROCESS_RUNTIME_IMAGE`. `seed`/`goes-seed` refuse without `--no-build-image` |
+| `goes-seed --deliver` | MinIO keys, `stac-higher-deliveries` (created), `--internal-s3-endpoint` | the Terraform demo-destination key (below); `--internal-s3-endpoint` is ignored |
+| `teardown`, `goes-teardown` | as above | refused: they delete platform bytes directly, which a deployed platform allows only through `asset_gc` (ADR 0011) |
+
+`status`, `goes-status`, `cube-*` and `images-*` work in either mode.
+
+### The demo destination
+
+`goes-seed --deliver --in-cluster` delivers `goes-geocolor` to the bucket the
+Terraform `demo-destination` module made, with the module's write-only IAM
+user key, sealed into the `goes-geocolor-dest` connection exactly as a
+customer would enter theirs (spec §7.1). It reads:
+
+- `DEMO_DESTINATION_BUCKET`, `DEMO_DESTINATION_REGION`;
+- `DEMO_DESTINATION_ACCESS_KEY_ID`, `DEMO_DESTINATION_SECRET_ACCESS_KEY`, from
+  the Secret the chart materialises from `demoDestination.credentialsSecretArn`
+  (or `demoSeed.existingDestinationSecret`).
+
+All four are checked, like `CREDENTIALS_MASTER_KEY`, before anything is
+written. The connection config is `{"bucket", "region"}`: no endpoint, no
+path-style. The seed does not create the bucket (the key could not). The key
+is write-only, so delivery's server-side copy falls back to streaming, as
+the S3 adapter documents.
+
+### Preconditions in a cluster
+
+1. The database is migrated: the chart's pre-install hooks do it before the
+   Job exists.
+2. The STAC API is reachable at `demoSeed.stacUrl` and its ingress policy
+   admits pods labelled `app.kubernetes.io/component=demo-seed`. Until it is
+   up, the Job's pod fails with `cannot reach ...` and is retried
+   (`demoSeed.backoffLimit`). Every seed is idempotent, so a retry is safe.
+3. `images-seed` needs an operator bearer token for the app
+   (`STAC_HIGHER_BEARER`, from `demoSeed.appBearer`) whose lifetime covers the
+   run, and `goes-seed` first.
+4. The runs the seeds trigger (extractor, GeoColor, image scans) need the
+   Kubernetes executor (K-5, I-160). Until then the seeds succeed but every
+   run fails at launch (`docs/ISSUES.md` I-164).
+
 ## Relationship to the other harnesses
 
 - **`pipeline.loadgen`** measures throughput with synthetic volume through an

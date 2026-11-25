@@ -1956,6 +1956,30 @@ while its images or chart failed. Nothing deployable is published until
 half-fails" covers cleanup.
 
 Follow-up idea: cosign-sign the chart and the images, and verify on pull.
+### I-164 · The in-cluster demo seed is render-verified; what it cannot do yet 🟡
+
+The demo seed Job (R-10) and `pipeline.demo --in-cluster` are proven by
+render tests and pytest only; the first live run is R-11. Known gaps:
+
+- **Process runs.** The extractor, GeoColor and the image scans the seeds
+  trigger need the Kubernetes executor (I-160). Before K-5 the seeds succeed
+  and every run they trigger fails at launch.
+- **STAC API ingress.** The Job reaches stac-fastapi at `demoSeed.stacUrl`
+  directly, as compose's seeds use `:8082`. The catalog plane's ingress
+  NetworkPolicy (R-7) must admit `app.kubernetes.io/component=demo-seed`, or
+  the Job retries until `backoffLimit`.
+- **`images-seed` bearer.** It authenticates to the app with a static
+  operator bearer token from a Secret (`demoSeed.appBearer`). An IdP access
+  token expires (Cognito: 1 hour by default), so the deployment refreshes it
+  before each run.
+- **Teardown.** `teardown` and `goes-teardown` delete platform bytes directly
+  and refuse in-cluster (ADR 0011); a deployed demo is removed through the
+  app.
+- **Re-seed per release.** The Job re-runs whenever its pod spec changes
+  (new image), which replaces the demo processes' revisions and their run
+  history.
+
+Tracked in: GitHub #147 (R-11 runs it live).
 
 ## Resolved — archived
 
