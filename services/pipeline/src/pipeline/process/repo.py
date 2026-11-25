@@ -28,7 +28,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.process.hardware import DEFAULT_HARDWARE_PROFILE
-from pipeline.process.ledger import CAPACITY_RETRY_SECONDS, capacity_detail
+from pipeline.process.ledger import (
+    CAPACITY_RETRY_SECONDS,
+    capacity_detail,
+    extract_capacity_detail,
+)
 from pipeline.process.matcher import ProcessSource
 
 logger = logging.getLogger(__name__)
@@ -57,6 +61,13 @@ _PROFILE_SQL = f"coalesce(rev.runtime->'hardware'->>'profile', '{DEFAULT_HARDWAR
 _EXEMPT_SQL = (
     f"(r.association_id IS NOT NULL AND {_PROFILE_SQL} = %(default_profile)s)"
 )
+
+
+#: K-4 A3: the advisory-lock key of the EXEMPT extractor pool. Profile keys
+#: are `process-capacity:<id>`, so no profile can collide with it.
+EXTRACT_CAPACITY_LOCK = "process-extract-capacity"
+#: What `_admit_and_claim` reports when the exempt pool, not a profile, is full.
+_EXTRACT_POOL = "\x00extract-pool"
 
 
 def capacity_exempt(*, is_extract: bool, profile: str) -> bool:
@@ -312,6 +323,7 @@ class ProcessRepo(abc.ABC):
         *,
         capacities: Capacities | None = None,
         backend: str = DEFAULT_EXECUTOR_BACKEND,
+        extract_capacity: int | None = None,
     ) -> QueuedRun | None:
         """Claim ONE run by id, or None when it is not claimable (already
         running, still deferred, waiting for capacity, or gone).
@@ -331,6 +343,12 @@ class ProcessRepo(abc.ABC):
         counts (K-3 ruling: extraction throughput must not regress); an
         extractor on any other profile is admitted like a process run.
         ``capacities=None`` admits everything.
+
+        **The exempt pool (K-4 addendum A3).** With ``extract_capacity``, an
+        exempt extractor run is admitted only while fewer than that many
+        exempt runs are admitted deployment-wide (its own advisory lock,
+        ``EXTRACT_CAPACITY_LOCK``); otherwise it waits exactly as a run on a
+        full profile does. None leaves the pool unbounded.
         """
 
     @abc.abstractmethod
@@ -341,6 +359,7 @@ class ProcessRepo(abc.ABC):
         *,
         capacities: Capacities | None = None,
         backend: str = DEFAULT_EXECUTOR_BACKEND,
+        extract_capacity: int | None = None,
     ) -> list[QueuedRun]:
         """Claim up to ``limit`` runnable rows, oldest first: `queued` with no
         deferral and no pending ``next_attempt_at`` (or ones that have
@@ -831,6 +850,7 @@ class PgProcessRepo(ProcessRepo):
         capacities: Capacities | None,
         backend: str,
         mark_profile: bool,
+        extract_capacity: int | None = None,
     ) -> tuple[QueuedRun | None, str | None]:
         """One transaction: admit and claim ``run_id``, or not. Returns
         ``(run, None)`` on a claim, ``(None, profile)`` when its profile is
@@ -850,32 +870,36 @@ class PgProcessRepo(ProcessRepo):
             return None, None
         profile, is_extract = str(found[0]), bool(found[1])
         exempt = capacity_exempt(is_extract=is_extract, profile=profile)
-        capacity = None if capacities is None or exempt else capacities.get(profile)
+        if exempt:
+            # K-4 A3: the exempt extractor pool, counted deployment-wide.
+            capacity = extract_capacity
+            lock_key = EXTRACT_CAPACITY_LOCK
+            pool_sql = _EXEMPT_SQL
+            detail = extract_capacity_detail(capacity) if capacity is not None else ""
+        else:
+            capacity = None if capacities is None else capacities.get(profile)
+            lock_key = f"process-capacity:{profile}"
+            pool_sql = f"NOT {_EXEMPT_SQL} AND {_PROFILE_SQL} = %(profile)s"
+            detail = capacity_detail(profile, capacity) if capacity is not None else ""
         params = {
             "id": run_id, "now": now, "backend": backend, "profile": profile,
             "default_profile": DEFAULT_HARDWARE_PROFILE,
         }
         if capacity is not None:
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtext(%s))", (f"process-capacity:{profile}",)
-            )
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
             cur = await conn.execute(
                 "SELECT count(*) FROM stac_higher.process_runs r"
                 "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
                 " WHERE r.status = 'running' AND r.executor_backend IS NOT NULL"
-                f"  AND NOT {_EXEMPT_SQL} AND {_PROFILE_SQL} = %(profile)s",
+                f"  AND {pool_sql}",
                 params,
             )
             admitted = int((await cur.fetchone())[0])
             if admitted >= capacity:
                 # Not claimed, no attempt spent: the queued run says why and
                 # when it may be tried again. The tick marks every due queued
-                # run on the profile at once (`mark_profile`).
-                target = (
-                    f"NOT {_EXEMPT_SQL} AND {_PROFILE_SQL} = %(profile)s"
-                    if mark_profile
-                    else "r.id = %(id)s"
-                )
+                # run in the pool at once (`mark_profile`).
+                target = pool_sql if mark_profile else "r.id = %(id)s"
                 await conn.execute(
                     "UPDATE stac_higher.process_runs r"
                     "   SET phase = 'pending_capacity', phase_detail = %(detail)s,"
@@ -884,12 +908,12 @@ class PgProcessRepo(ProcessRepo):
                     f" WHERE rev.id = r.revision_id AND {self._QUEUED_DUE} AND {target}",
                     {
                         **params,
-                        "detail": capacity_detail(profile, capacity),
+                        "detail": detail,
                         "retry_at": now + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS),
                     },
                 )
                 await conn.commit()
-                return None, profile
+                return None, _EXTRACT_POOL if exempt else profile
         cur = await conn.execute(
             "UPDATE stac_higher.process_runs r"
             "    SET status = 'running', started_at = %(now)s,"
@@ -916,6 +940,7 @@ class PgProcessRepo(ProcessRepo):
         *,
         capacities: Capacities | None = None,
         backend: str = DEFAULT_EXECUTOR_BACKEND,
+        extract_capacity: int | None = None,
     ) -> list[QueuedRun]:
         # Candidates are read without locks, oldest first (ties by id), then
         # admitted one transaction each. A full profile joins `full` and is
@@ -924,6 +949,7 @@ class PgProcessRepo(ProcessRepo):
         # either claims, fills a profile, or retires a candidate, so it ends.
         claimed: list[QueuedRun] = []
         full: list[str] = []
+        extract_full = False
         tried: list[str] = []
         due = f"({self._QUEUED_DUE} OR {self._FAILED_DUE})"
         async with await self._connect() as conn:
@@ -933,12 +959,14 @@ class PgProcessRepo(ProcessRepo):
                     "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
                     f" WHERE {due}"
                     "   AND NOT (r.id::text = ANY(%(tried)s::text[]))"
-                    f"   AND ({_EXEMPT_SQL}"
-                    f"        OR NOT ({_PROFILE_SQL} = ANY(%(full)s::text[])))"
+                    f"   AND (({_EXEMPT_SQL} AND NOT %(extract_full)s)"
+                    f"        OR (NOT {_EXEMPT_SQL}"
+                    f"            AND NOT ({_PROFILE_SQL} = ANY(%(full)s::text[]))))"
                     " ORDER BY r.created_at, r.id"
                     " LIMIT %(page)s",
                     {
                         "now": now, "tried": tried, "full": full,
+                        "extract_full": extract_full,
                         "page": limit - len(claimed),
                         "default_profile": DEFAULT_HARDWARE_PROFILE,
                     },
@@ -952,9 +980,13 @@ class PgProcessRepo(ProcessRepo):
                     run, full_profile = await self._admit_and_claim(
                         conn, run_id, now=now, due_sql=due, capacities=capacities,
                         backend=backend, mark_profile=True,
+                        extract_capacity=extract_capacity,
                     )
                     if run is not None:
                         claimed.append(run)
+                    elif full_profile == _EXTRACT_POOL:
+                        extract_full = True
+                        break  # re-page without exempt runs
                     elif full_profile is not None:
                         full.append(full_profile)
                         break  # re-page without that profile
@@ -967,6 +999,7 @@ class PgProcessRepo(ProcessRepo):
         *,
         capacities: Capacities | None = None,
         backend: str = DEFAULT_EXECUTOR_BACKEND,
+        extract_capacity: int | None = None,
     ) -> QueuedRun | None:
         """The tick's admission with an id predicate (G-3). Only a `queued`
         row whose deferral and ``next_attempt_at`` (if any) have elapsed is
@@ -975,7 +1008,7 @@ class PgProcessRepo(ProcessRepo):
         async with await self._connect() as conn:
             run, _full = await self._admit_and_claim(
                 conn, run_id, now=now, due_sql=self._QUEUED_DUE, capacities=capacities,
-                backend=backend, mark_profile=False,
+                backend=backend, mark_profile=False, extract_capacity=extract_capacity,
             )
         return run
 

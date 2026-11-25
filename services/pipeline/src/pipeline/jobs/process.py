@@ -287,7 +287,8 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         now = dt.datetime.now(dt.UTC)
         profiles = load_run_profiles(settings)
         runs = await repo.claim_due_runs(
-            now, RUN_BATCH, capacities=docker_capacities(profiles) if profiles else None
+            now, RUN_BATCH, capacities=docker_capacities(profiles) if profiles else None,
+            extract_capacity=settings.process_extract_max_running,
         )
         if not runs:
             return
@@ -305,7 +306,8 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         now = dt.datetime.now(dt.UTC)
         profiles = load_run_profiles(settings)
         run = await repo.claim_run(
-            run_id, now, capacities=docker_capacities(profiles) if profiles else None
+            run_id, now, capacities=docker_capacities(profiles) if profiles else None,
+            extract_capacity=settings.process_extract_max_running,
         )
         if run is None:
             logger.debug(

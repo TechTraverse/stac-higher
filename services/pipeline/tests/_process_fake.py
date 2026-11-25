@@ -9,7 +9,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from pipeline.process.ledger import CAPACITY_RETRY_SECONDS, capacity_detail
+from pipeline.process.ledger import (
+    CAPACITY_RETRY_SECONDS,
+    capacity_detail,
+    extract_capacity_detail,
+)
 from pipeline.process.matcher import ProcessSource
 from pipeline.process.repo import (
     CANCELLED_ERROR,
@@ -176,6 +180,18 @@ class FakeProcessRepo(ProcessRepo):
             own if profile == self._profile() else 0
         )
 
+    def admitted_exempt(self) -> int:
+        """Exempt extractor runs admitted right now (addendum A3)."""
+        return sum(
+            1
+            for row in self.enqueued
+            if row["status"] == "running"
+            and row.get("executor_backend")
+            and capacity_exempt(
+                is_extract=row["association_id"] is not None, profile=self._profile()
+            )
+        )
+
     async def claim_run(
         self,
         run_id: str,
@@ -183,6 +199,7 @@ class FakeProcessRepo(ProcessRepo):
         *,
         capacities: Mapping[str, int | None] | None = None,
         backend: str = "docker",
+        extract_capacity: int | None = None,
     ) -> QueuedRun | None:
         for row in self.enqueued:
             if row["run_id"] != run_id or row["status"] != "queued":
@@ -198,10 +215,18 @@ class FakeProcessRepo(ProcessRepo):
             exempt = capacity_exempt(
                 is_extract=row["association_id"] is not None, profile=profile
             )
-            capacity = None if capacities is None or exempt else capacities.get(profile)
-            if capacity is not None and self.admitted(profile) >= capacity:
+            if exempt:
+                # K-4 A3: the deployment-wide exempt extractor pool.
+                capacity = extract_capacity
+                full = capacity is not None and self.admitted_exempt() >= capacity
+                detail = extract_capacity_detail(capacity) if capacity is not None else None
+            else:
+                capacity = None if capacities is None else capacities.get(profile)
+                full = capacity is not None and self.admitted(profile) >= capacity
+                detail = capacity_detail(profile, capacity) if capacity is not None else None
+            if full:
                 row["phase"] = "pending_capacity"
-                row["phase_detail"] = capacity_detail(profile, capacity)
+                row["phase_detail"] = detail
                 row["next_attempt_at"] = now + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS)
                 return None
             row["status"] = "running"
@@ -243,6 +268,7 @@ class FakeProcessRepo(ProcessRepo):
         *,
         capacities: Mapping[str, int | None] | None = None,
         backend: str = "docker",
+        extract_capacity: int | None = None,
     ) -> list[QueuedRun]:
         # Scripted: the tick's admission and paging are Pg-only and covered by
         # tests/test_integration_process_capacity.py.

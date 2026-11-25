@@ -1423,20 +1423,26 @@ is not claimed: it stays `queued` as `pending_capacity` with
   against that profile's capacity, waits when it is full, and gets
   `NanoCpus` (and `DeviceRequests` where the profile has them), so an
   operator cannot use an extractor to bypass a large or GPU profile's
-  limits. The reason: before and after K-3 a pipeline process executes one
-  process run at a time (`execute_run` waits on the Docker daemon
-  synchronously and blocks the worker's event loop; WORKER_CONCURRENCY does
-  not apply to runs until K-4). Capping default-profile extractors at
-  `standard`'s 1 CPU, or counting them against its capacity of 2
-  (`infra/hardware-profiles/local.json`), would slow each extraction or hold
-  back tick-claimed batches. **Residual:** extractor runs on `standard` are
-  bounded by neither `standard`'s capacity nor its CPU cap. Only the worker
-  bounds them: one run at a time per pipeline process today, the worker's
-  slot count once K-4 makes runs asynchronous. Revisit with K-4.
+  limits. The reason: before K-4 a pipeline process executed one process
+  run at a time, and capping default-profile extractors at `standard`'s 1
+  CPU, or counting them against its capacity of 2
+  (`infra/hardware-profiles/local.json`), would slow each extraction or
+  hold back tick-claimed batches. **K-4 replaced the worker bound** (runs
+  are now submitted and reconciled, so the worker no longer serialises
+  them) with a deployment-wide pool: exempt extractor runs are admitted in
+  the claim under their own advisory lock, at most
+  `PROCESS_EXTRACT_MAX_RUNNING` (default 4, Helm
+  `processRuns.extractMaxRunning`) at once; past it they wait as
+  `pending_capacity` like a run on a full profile (K-4 plan addendum A3).
+  **Residual:** up to that many default-profile extractor containers run
+  with no CPU cap at the same time, so a slow or hostile hand-written
+  extractor on `standard` can take that many host CPUs' worth of contention
+  until it times out; each is still memory-capped. Lower the setting on a
+  small host.
 - A run already `running` when migration 029 lands has no admitted marker
   and does not count, so a deploy can briefly admit past `capacity` until
   those runs finish.
-- Tracked in: `services/pipeline/src/pipeline/process/repo.py` (`_admit_and_claim`), `services/pipeline/src/pipeline/jobs/process.py`.
+- Tracked in: `services/pipeline/src/pipeline/process/repo.py` (`_admit_and_claim`, `EXTRACT_CAPACITY_LOCK`), `services/pipeline/src/pipeline/jobs/process.py`, `services/pipeline/src/pipeline/config.py` (`PROCESS_EXTRACT_MAX_RUNNING`).
 - Found in: K-3 and its review (2026-11-25).
 
 ### I-171 · The socket proxy's `INFO=1` discloses daemon metadata to every service on the default network 🟡

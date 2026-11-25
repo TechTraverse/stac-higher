@@ -117,3 +117,12 @@ def capacity_detail(profile_id: str, capacity: int) -> str:
     """The `phase_detail` a capacity release records — what the UI's
     *Waiting for capacity* tooltip shows."""
     return f"profile {profile_id!r} is at its capacity of {capacity} on this host"
+
+
+def extract_capacity_detail(limit: int) -> str:
+    """K-4 A3: the `phase_detail` of an exempt extractor run held back because
+    the deployment's exempt pool is full."""
+    return (
+        "extractor runs on the default profile are at this deployment's limit of "
+        f"{limit} running at once (PROCESS_EXTRACT_MAX_RUNNING)"
+    )

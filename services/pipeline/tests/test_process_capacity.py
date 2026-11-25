@@ -252,3 +252,38 @@ async def test_hardware_unavailable_is_a_dead_run_not_a_requeue():
     assert repo.finished[-1]["status"] == "dead"
     assert repo.finished[-1]["error"] == message
     assert repo.finished[-1]["next_attempt_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_exempt_extractor_runs_are_bounded_by_their_own_pool():
+    """K-4 addendum A3: submission no longer holds the worker, so exempt
+    extractor runs are counted against PROCESS_EXTRACT_MAX_RUNNING — never
+    against the profile, and a full pool never holds back a process run."""
+    from pipeline.process.ledger import extract_capacity_detail
+
+    repo = FakeProcessRepo()
+    caps = docker_capacities(profiles(1))
+    for association in ("a1", "a2"):
+        run = await _enqueue(repo, association_id=association)
+        assert await repo.claim_run(run, NOW, capacities=caps, extract_capacity=2) is not None
+    held = await _enqueue(repo, association_id="a3")
+    assert await repo.claim_run(held, NOW, capacities=caps, extract_capacity=2) is None
+    row = repo._row(held)
+    assert (row["status"], row["phase"]) == ("queued", PHASE_PENDING_CAPACITY)
+    assert row["phase_detail"] == extract_capacity_detail(2)
+    assert "PROCESS_EXTRACT_MAX_RUNNING" in row["phase_detail"]
+    # The profile (capacity 1) is untouched by the two exempt runs.
+    transform = await _enqueue(repo)
+    assert await repo.claim_run(transform, NOW, capacities=caps, extract_capacity=2) is not None
+
+
+def test_extract_max_running_setting_is_strict():
+    assert Settings.from_env(env={}).process_extract_max_running == 4
+    blank = Settings.from_env(env={"PROCESS_EXTRACT_MAX_RUNNING": ""})
+    assert blank.process_extract_max_running == 4
+    assert Settings.from_env(
+        env={"PROCESS_EXTRACT_MAX_RUNNING": "2"}
+    ).process_extract_max_running == 2
+    for bad in ("0", "-1", "2.5", "many"):
+        with pytest.raises(ValueError, match="PROCESS_EXTRACT_MAX_RUNNING"):
+            Settings.from_env(env={"PROCESS_EXTRACT_MAX_RUNNING": bad})

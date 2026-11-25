@@ -118,6 +118,13 @@ describe.skipIf(!helmReady())("chart config layer", () => {
     expect(p.PROCESS_STS_ROLE_ARN).toBe("arn:aws:iam::000000000000:role/stac-higher-example-process-run");
   });
 
+  it("the exempt extractor pool is a pipeline setting, defaulting to 4 (K-4)", () => {
+    expect(data(render(), "env-pipeline").PROCESS_EXTRACT_MAX_RUNNING).toBe("4");
+    expect(data(render(), "env-shared")).not.toHaveProperty("PROCESS_EXTRACT_MAX_RUNNING");
+    const e = data(render({ processRuns: { extractMaxRunning: 2 } }), "env-pipeline");
+    expect(e.PROCESS_EXTRACT_MAX_RUNNING).toBe("2");
+  });
+
   it("one cap and one grace feed both runtimes", () => {
     const docs = render();
     for (const s of ["env-app", "env-pipeline"]) {

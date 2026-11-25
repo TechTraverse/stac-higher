@@ -345,3 +345,31 @@ async def test_an_admission_refuses_to_start_inside_an_open_transaction():
         await PgProcessRepo._begin_read_committed(conn)
         cur = await conn.execute("SHOW transaction_isolation")
         assert (await cur.fetchone())[0] == "read committed"
+
+
+async def test_exempt_extractor_runs_wait_for_their_own_pool(slot):
+    """Addendum A3: the exempt pool is counted under its own lock, and the
+    tick skips exempt candidates once it is full without stalling others."""
+    await cap._require_quiet_default_profile(slot)
+    await cap._require_quiet_database(slot)
+    repo = _repo()
+    caps = slot["capacities"]
+    now = dt.datetime.now(dt.UTC)
+    for _ in range(2):
+        run_id = await _run(slot, "std", extractor=True)
+        assert await repo.claim_run(run_id, now, capacities=caps, extract_capacity=2)
+    held = await _run(slot, "std", extractor=True)
+    assert await repo.claim_run(held, now, capacities=caps, extract_capacity=2) is None
+    status, _h, _b, _a, _e, phase, next_attempt_at, _c = await _state(held)
+    assert (status, phase) == ("queued", "pending_capacity")
+    # The tick: the held extractor is due again later, a process run on a
+    # free profile is claimed in the same call, the extractor is not.
+    later = next_attempt_at + dt.timedelta(seconds=1)
+    transform = await _run(slot, "free")
+    claimed = await repo.claim_due_runs(later, 10, capacities=caps, extract_capacity=2)
+    assert [r.id for r in claimed] == [transform]
+    assert (await _state(held))[0] == "queued"
+    # The tick re-marked it waiting (15 s); unbounded (None) admits it after.
+    again = later + dt.timedelta(seconds=20)
+    claimed = await repo.claim_due_runs(again, 10, capacities=caps, extract_capacity=None)
+    assert [r.id for r in claimed] == [held]

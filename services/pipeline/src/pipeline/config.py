@@ -202,6 +202,12 @@ DEFAULT_PROCESS_STS_ROLE_ARN = "arn:aws:iam::000000000000:role/stac-higher-proce
 #: (M5-C, the M2-0 sweep pattern). Comfortably above the default run timeout
 #: so a legitimately slow run is never mistaken for a stranded one.
 DEFAULT_PROCESS_RUN_STALL_SECONDS = 3600
+#: K-4 (plan addendum A3): how many EXEMPT extractor runs (an extractor on the
+#: default profile, `repo.capacity_exempt`) may be admitted at once across the
+#: deployment. Before K-4 the worker ran one process run at a time, which was
+#: their only bound; submit-then-reconcile removes it. 4 is at or above the
+#: old per-process bound, so ingest throughput cannot regress.
+DEFAULT_PROCESS_EXTRACT_MAX_RUNNING = 4
 #: GOES spec §4: the highest `runtime.network.level` this deployment permits.
 #: `isolated` until the egress proxy (spec §11) exists; the pipeline enforces
 #: it at launch independently of the app's write gate.
@@ -386,6 +392,20 @@ def _parse_credential_grace_seconds(raw: str | None) -> int:
     return int(value)
 
 
+def _parse_extract_max_running(raw: str | None) -> int:
+    """K-4 A3: a whole number >= 1; blank means the default. Zero or a sign
+    is refused rather than read as "unbounded" -- an unbounded exempt pool is
+    exactly what this setting exists to prevent."""
+    value = _optional(raw)
+    if value is None:
+        return DEFAULT_PROCESS_EXTRACT_MAX_RUNNING
+    if not _SECONDS.fullmatch(value) or int(value) < 1:
+        raise ValueError(
+            f"PROCESS_EXTRACT_MAX_RUNNING must be a whole number >= 1, got {raw!r}"
+        )
+    return int(value)
+
+
 def _parse_staging_keys(env: dict[str, str]) -> tuple[str | None, str | None]:
     access = _optional(env.get("STAGING_S3_ACCESS_KEY_ID"))
     secret = _optional(env.get("STAGING_S3_SECRET_ACCESS_KEY"))
@@ -464,6 +484,7 @@ class Settings:
     #: resolve. None => fall back to the pipeline's staging endpoint.
     process_run_s3_endpoint: str | None = None
     process_run_stall_seconds: int = DEFAULT_PROCESS_RUN_STALL_SECONDS
+    process_extract_max_running: int = DEFAULT_PROCESS_EXTRACT_MAX_RUNNING
     process_network_max: str = DEFAULT_PROCESS_NETWORK_MAX
     #: K-1: path of the hardware-profile document — see DEFAULT_PROCESS_HARDWARE_PROFILES_FILE.
     process_hardware_profiles_file: str | None = DEFAULT_PROCESS_HARDWARE_PROFILES_FILE
@@ -619,6 +640,9 @@ class Settings:
                     "PROCESS_RUN_STALL_SECONDS",
                     str(DEFAULT_PROCESS_RUN_STALL_SECONDS),
                 )
+            ),
+            process_extract_max_running=_parse_extract_max_running(
+                env.get("PROCESS_EXTRACT_MAX_RUNNING")
             ),
             process_network_max=_parse_network_max(
                 env.get("PROCESS_NETWORK_MAX", DEFAULT_PROCESS_NETWORK_MAX)
