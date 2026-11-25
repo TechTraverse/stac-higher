@@ -273,7 +273,10 @@ images cannot follow `global.imageDigests` or the mirror rewrite (evidence:
   base file runs it (`PRIVATE_ENDPOINTS={}`, no write policy): the app's BFF
   sends writes without a token in bypass, which an enforced proxy would refuse.
   It still needs `auth.issuer`, because upstream stac-auth-proxy requires
-  `OIDC_DISCOVERY_URL` and health-checks it at startup.
+  `OIDC_DISCOVERY_URL` and health-checks it at startup. **A bypass deployment's
+  catalog host accepts unauthenticated writes** (and they skip the app's audit
+  log): keep it private, by restricting `networkPolicy.publicIngressFrom` or
+  leaving `ingress.catalog` off.
 - With `auth.mode: oidc` the proxy runs the auth-enforced write policy exactly as
   `infra/compose.auth-enforced.yml` configures it: reads public, transactions
   need a token with the `auth.audiences` audience, item writes need the BFF
