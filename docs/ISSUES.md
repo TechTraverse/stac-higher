@@ -1397,6 +1397,34 @@ assert-and-warn on the file (the M3-A `use_queue` pattern).
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/hardware.py`.
 - Found in: K-1 Task 4/5 reviews (2026-09-15).
 
+### I-164 · Docker capacity is retried by the minute tick and counted across every worker 🟡
+K-3 releases a run whose profile is full back to `queued` with
+`next_attempt_at = now + 15 s` (spec §8), but nothing re-dispatches it at
+15 s: the claim is the one-minute run tick's, so the real wait is 15–75 s.
+The count is also the whole database's `running` rows on the profile, not
+this Docker host's: the profile's `capacity` reads as "per host" only while
+one worker host runs process jobs (the local and single-host shape). And it
+bites only when two runs on one profile are in flight at once, which needs
+worker concurrency above one for process jobs. Fix candidates: K-4's run
+watcher (or a delayed `process_run_now` once the queue interface can
+schedule one) for the latency; a host id on the claim if multi-host Docker
+ever ships (the cluster leg uses Kueue quotas instead, K-5/K-6).
+- Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/repo.py` (`count_running_on_profile`).
+- Found in: K-3 (2026-11-25).
+
+### I-165 · The socket proxy's `INFO=1` discloses daemon metadata to the pipeline 🟡
+K-3 enables the proxy's read-only `INFO` section so the executor can ask
+`GET /info` whether the daemon has an NVIDIA runtime before sending GPU
+`DeviceRequests`. The same answer carries the daemon's version, kernel, OS,
+CPU and memory totals, container counts and registry configuration. The
+pipeline already lists, creates and removes containers through the proxy, so
+this is a small widening, and a compose test pins the whole enabled set
+(`CONTAINERS`, `POST`, `IMAGES`, `INFO`). Alternative if it matters: drop the
+probe and map the daemon's start-time "could not select device driver"
+error to `HardwareUnavailable` instead (string matching on daemon wording).
+- Tracked in: `docker-compose.yml` (`docker-socket-proxy`), `services/pipeline/tests/test_compose_scanner.py`.
+- Found in: K-3 (2026-11-25).
+
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡
 Both need GitHub Advanced Security on a private repo, which this repo does not
 have (`gh api repos/TechTraverse/stac-higher` → `security_and_analysis: null`),

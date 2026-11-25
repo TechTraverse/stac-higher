@@ -746,11 +746,26 @@ validates it strictly at deploy time and serves it minus each profile's
 re-checks the revision's `hardware` block at launch (`check_hardware_bounds`)
 and a run outside its profile — or naming a profile this deployment lacks —
 dies with the bound in its error, before inputs are planned or credentials
-minted. `backend` is opaque until K-3 (Docker: `NanoCpus`, `DeviceRequests`,
-per-profile capacity) and K-5 (Kubernetes) consume it. `RunSpec` already
-carries `cpu`, `gpu_count`, the resolved `profile` and a `priority`
-(`interactive` for a UI test run, `triggered` otherwise) that nothing reads
-yet.
+minted. `RunSpec` carries `cpu`, `gpu_count`, the resolved `profile` and a
+`priority` (`interactive` for a UI test run, `triggered` otherwise; unread
+until Kueue, K-5/K-6).
+
+K-3 consumes `backend.docker` (`docker_backend()`, lenient: an absent block
+is unbounded with no device requests, a malformed one is a dead run naming
+the profile). `DockerExecutor` sets `NanoCpus` from a process run's `cpu`
+(image scans stay uncapped), and for `gpu_count > 0` sends the profile's
+`device_requests` with `Count` = `gpu_count` — only when `GET /info` on the
+socket proxy (`INFO=1`, read-only, probed once per executor) reports an
+`nvidia` runtime. Otherwise, or when the daemon refuses the CPU count
+("Range of CPUs …"), the launch raises `HardwareUnavailable` and the run is
+`dead`. `capacity` is the per-host concurrent-run limit per profile:
+`run_one` counts the `running` runs on the profile claimed ahead of this one
+(`count_running_on_profile`, joining `process_revisions`); when full,
+`release_for_capacity` puts the run back to `queued` with its attempt
+restored, `phase = pending_capacity`, a `phase_detail` naming the limit and
+`next_attempt_at = now + 15 s`, which both claim statements honour. Claims
+set `phase = starting`; finish and the stall sweep clear it (migration 029).
+`backend.kubernetes` stays opaque until K-5.
 
 ## Shutdown
 

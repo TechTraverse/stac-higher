@@ -56,12 +56,28 @@ const baseRun = {
   process_id: "p1", source_id: null, status: "succeeded" as const, attempts: 1,
   input_items: [], output_items: [], log_ref: null, error: null, rate_deferred_until: null,
   is_test: false, created_at: "2026-09-02T01:00:00Z", started_at: null, finished_at: null,
+  phase: null, phase_detail: null,
 };
+const CAPACITY_DETAIL = "profile 'standard' is at its capacity of 2 on this host";
 const RUNS = [
   { ...baseRun, id: "run-1", revision_id: "rev-new" },
   { ...baseRun, id: "run-2", revision_id: "rev-old" },
   { ...baseRun, id: "run-3", revision_id: "rev-gone" },
   { ...baseRun, id: "run-4", revision_id: "rev-missing" },
+  // K-3 phases. Pinned to a revision not on the page, so they add no
+  // hardware cell and the K-2 summary assertions above stay as they are.
+  {
+    ...baseRun, id: "run-5", revision_id: "rev-missing", status: "queued" as const,
+    phase: "pending_capacity" as const, phase_detail: CAPACITY_DETAIL,
+  },
+  {
+    ...baseRun, id: "run-6", revision_id: "rev-missing", status: "running" as const,
+    phase: "starting" as const,
+  },
+  {
+    ...baseRun, id: "run-7", revision_id: "rev-missing", status: "running" as const,
+    phase: "running" as const,
+  },
 ];
 
 function hardwareCells() {
@@ -83,5 +99,20 @@ describe("RunRow pinned hardware (K-2, spec §9)", () => {
     state.profilesLoaded = false;
     render(<RunsCard id="p1" canMutate={false} isExtractor={false} revisions={REVISIONS} />);
     expect(hardwareCells()).toEqual(["2 vCPU · 2 GB", "1 vCPU · 512 MB", "1 vCPU · 4 GB"]);
+  });
+});
+
+describe("RunRow phase chip (K-3, spec §9)", () => {
+  it("says Waiting for capacity with the detail as its tooltip, and Starting", () => {
+    state.profilesLoaded = true;
+    render(<RunsCard id="p1" canMutate={false} isExtractor={false} revisions={REVISIONS} />);
+    const waiting = screen.getAllByTestId("run-phase-pending_capacity");
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]).toHaveTextContent("Waiting for capacity");
+    expect(waiting[0]).toHaveAttribute("title", CAPACITY_DETAIL);
+    expect(screen.getAllByTestId("run-phase-starting")).toHaveLength(1);
+    expect(screen.getByTestId("run-phase-starting")).toHaveTextContent("Starting");
+    // `running` + phase `running`: the status badge already says it.
+    expect(screen.queryByTestId("run-phase-running")).toBeNull();
   });
 });

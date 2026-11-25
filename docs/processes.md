@@ -146,9 +146,16 @@ oversized run. The form runs the deploy check itself first and shows the
 bound under the fieldset, with **Deploy** disabled until the value fits — so
 a revision whose numbers its profile no longer admits shows up when you open
 it, though its runs keep dying at launch until you redeploy it. Every run row shows the hardware its
-pinned revision asked for. The Docker backend applies `cpu` and the
-profile's device requests from K-3 on; until then the numbers are recorded
-and enforced against the bounds only.
+pinned revision asked for.
+
+On the Docker backend the numbers are limits, not hints: `memory_mb` caps
+memory, `cpu` caps CPU time (fractional values work — `0.25` is a quarter
+of a core), and a run with `gpu_count` above 0 gets that many GPUs through
+the profile's device requests. A GPU run needs a Docker host with the NVIDIA
+container runtime; on any other host (Docker Desktop on macOS never has one)
+it **dies at launch** naming the profile, because no amount of waiting
+provides the hardware. A run asking for more CPUs than the host has dies the
+same way.
 
 ## Bring your own image
 
@@ -690,6 +697,17 @@ that run's batch rather than starting another. Once a run is claimed it is
 out of reach, so anything arriving after that starts the next run — you never
 lose items to a batch already executing, and you never see the same item in
 two runs.
+
+A claimed run can also wait for **capacity**: each hardware profile carries
+how many of its runs one Docker host runs at once (the deployment's profile
+file, `backend.docker.capacity`; the local set allows 2 `standard` and 1
+`cpu-large`). When that many are already running, the run goes back to the
+queue as *Waiting for capacity* — the tooltip names the profile and the
+limit — and is tried again from 15 s later, at the next sweep (so within
+about a minute), without spending an attempt. Runs on a full profile go in
+the order they were claimed. A claimed run shows *Starting* until it
+finishes. On a cluster (K-5 on) the same wait is Kueue holding the run for
+quota.
 
 ## Rate ceiling
 
