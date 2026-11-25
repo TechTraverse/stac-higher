@@ -755,10 +755,13 @@ is unbounded with no device requests, a malformed one is a dead run naming
 the profile). `DockerExecutor` sets `NanoCpus` from a process run's `cpu`
 (image scans stay uncapped), and for `gpu_count > 0` sends the profile's
 `device_requests` with `Count` = `gpu_count` — only when `GET /info` on the
-socket proxy (`INFO=1`, read-only, probed once per executor) reports an
-`nvidia` runtime. Otherwise, or when the daemon refuses the CPU count
-("Range of CPUs …"), the launch raises `HardwareUnavailable` and the run is
-`dead`. `capacity` is the per-host concurrent-run limit per profile:
+socket proxy (`INFO=1`, read-only, cached per executor once it succeeds)
+reports an `nvidia` runtime. The launch raises `HardwareUnavailable` and the
+run is `dead`, naming the profile, when: the host has no such runtime; the
+proxy refuses `/info` with a 403 for a GPU run; the daemon refuses the
+device driver on create or start ("could not select device driver"); or the
+run's `cpu` exceeds the daemon's `NCPU` (checked up front, best effort, with
+the daemon's "Range of CPUs" refusal on create as the fallback). `capacity` is the per-host concurrent-run limit per profile:
 `run_one` counts the `running` runs on the profile claimed ahead of this one
 (`count_running_on_profile`, joining `process_revisions`); when full,
 `release_for_capacity` puts the run back to `queued` with its attempt

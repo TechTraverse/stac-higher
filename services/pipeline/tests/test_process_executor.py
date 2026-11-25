@@ -1191,7 +1191,7 @@ def test_launch_sets_nanocpus_from_cpu():
     host = api.created_config()["HostConfig"]
     assert host["NanoCpus"] == 1_500_000_000
     assert "DeviceRequests" not in host
-    assert _info_calls(api) == 0  # no GPU asked, no probe
+    assert _info_calls(api) == 1  # the NCPU check; the answer is cached
 
 
 def test_a_fractional_cpu_rounds_to_whole_nanocpus():
@@ -1275,8 +1275,10 @@ def test_an_unreachable_info_endpoint_is_an_executor_fault_not_a_dead_run():
     assert not isinstance(err.value, HardwareUnavailable)
     # A failed probe is not cached as "no GPU": the next launch asks again.
     api.responses["/info"] = {"Runtimes": {"nvidia": {}}}
+    calls = _info_calls(api)
     ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
-    assert _info_calls(api) == 2
+    assert _info_calls(api) == calls + 1
+    assert "DeviceRequests" in api.created_config()["HostConfig"]
 
 
 def test_more_cpus_than_the_host_has_is_hardware_unavailable():
@@ -1297,3 +1299,67 @@ def test_more_cpus_than_the_host_has_is_hardware_unavailable():
     api = FakeApi({"create": refusal})
     with pytest.raises(HardwareUnavailable, match="profile 'standard' asks for 4 CPUs"):
         executor_with(api).launch(_spec(cpu=4))
+
+
+def test_a_403_from_info_kills_a_gpu_run_instead_of_requeueing_forever():
+    """K-3 review: a proxy without INFO=1 answers 403. Waiting will not
+    change a proxy setting, so a GPU run dies naming the profile."""
+    from pipeline.process.executor import HardwareUnavailable
+
+    refused = EngineHTTPError("docker GET /info failed: 403", status=403, detail="Forbidden")
+    api = FakeApi({"create": {"Id": "c1"}, "/info": refused})
+    with pytest.raises(HardwareUnavailable, match=r"refuses GET /info \(INFO=1\)"):
+        executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    assert not any("create" in p for _, p, _ in api.calls)
+
+
+def test_a_403_from_info_does_not_stop_a_cpu_run():
+    refused = EngineHTTPError("docker GET /info failed: 403", status=403, detail="Forbidden")
+    api = FakeApi({"create": {"Id": "c1"}, "/info": refused})
+    executor_with(api).launch(_spec(cpu=2))
+    assert api.created_config()["HostConfig"]["NanoCpus"] == 2_000_000_000
+
+
+@pytest.mark.parametrize("stage", ["create", "start"])
+def test_a_missing_device_driver_is_hardware_unavailable(stage):
+    """The daemon refuses DeviceRequests for a driver it lacks, on create or
+    on start by version; that requeued forever as an outage before."""
+    from pipeline.process.executor import HardwareUnavailable
+
+    refusal = EngineHTTPError(
+        f"docker POST {stage} failed: 500",
+        status=500,
+        detail=(
+            '{"message":"could not select device driver \\"nvidia\\"'
+            ' with capabilities: [[gpu]]"}'
+        ),
+    )
+    responses = {"/info": {"Runtimes": {"nvidia": {}}}}
+    if stage == "create":
+        responses["create"] = refusal
+    else:
+        responses["create"] = {"Id": "c1"}
+        responses["/start"] = refusal
+    api = FakeApi(responses)
+    with pytest.raises(HardwareUnavailable, match="needs a device driver"):
+        executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    if stage == "start":
+        # The created container is reaped, not leaked.
+        assert any(m == "DELETE" and "c1" in p for m, p, _ in api.calls)
+
+
+def test_more_cpus_than_the_daemon_reports_is_refused_before_create():
+    from pipeline.process.executor import HardwareUnavailable
+
+    api = FakeApi({"create": {"Id": "c1"}, "/info": {"NCPU": 2}})
+    with pytest.raises(
+        HardwareUnavailable, match=r"asks for 4 CPUs, more than this Docker host has \(2\)"
+    ):
+        executor_with(api).launch(_spec(cpu=4))
+    assert not any("create" in p for _, p, _ in api.calls)
+
+
+def test_cpus_within_the_daemon_count_launch():
+    api = FakeApi({"create": {"Id": "c1"}, "/info": {"NCPU": 4}})
+    executor_with(api).launch(_spec(cpu=4))
+    assert api.created_config()["HostConfig"]["NanoCpus"] == 4_000_000_000

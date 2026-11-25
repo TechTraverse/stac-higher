@@ -913,4 +913,8 @@ These supersede the tasks above where they disagree.
   malformed block makes the profile file unusable. That is the
   infrastructure path: requeue with no attempt spent. It is not a dead run
   for every run on the profile. An integral float `capacity` is accepted.
-- **Socket proxy.** `INFO=1` (I-171).
+- **Socket proxy.** `INFO=1` (I-171). `GET /info` also gives `NCPU`, which is
+  checked against the run's `cpu` before create (best effort; the daemon's
+  "Range of CPUs" refusal is the fallback). A 403 from `/info` on a GPU run,
+  and "could not select device driver" on create or start, are
+  `HardwareUnavailable` (dead), not an outage.
