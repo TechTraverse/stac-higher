@@ -1397,7 +1397,7 @@ assert-and-warn on the file (the M3-A `use_queue` pattern).
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/hardware.py`.
 - Found in: K-1 Task 4/5 reviews (2026-09-15).
 
-### I-164 · Docker capacity is retried by the minute tick and counted across every worker 🟡
+### I-170 · Docker capacity is retried by the minute tick and counted across every worker 🟡
 K-3 releases a run whose profile is full back to `queued` with
 `next_attempt_at = now + 15 s` (spec §8), but nothing re-dispatches it at
 15 s: the claim is the one-minute run tick's, so the real wait is 15–75 s.
@@ -1412,7 +1412,7 @@ ever ships (the cluster leg uses Kueue quotas instead, K-5/K-6).
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/repo.py` (`count_running_on_profile`).
 - Found in: K-3 (2026-11-25).
 
-### I-165 · The socket proxy's `INFO=1` discloses daemon metadata to the pipeline 🟡
+### I-171 · The socket proxy's `INFO=1` discloses daemon metadata to the pipeline 🟡
 K-3 enables the proxy's read-only `INFO` section so the executor can ask
 `GET /info` whether the daemon has an NVIDIA runtime before sending GPU
 `DeviceRequests`. The same answer carries the daemon's version, kernel, OS,
