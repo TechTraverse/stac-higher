@@ -284,3 +284,53 @@ async def test_one_failing_row_does_not_stop_the_sweep(monkeypatch):
     monkeypatch.setattr(rec, "reconcile", flaky)
     assert await rec.sweep(limit=10) == 2
     assert h.row(good.id)["phase"] == "running"
+
+
+# -- Task 9: a freed slot wakes a waiter ---------------------------------------
+
+
+async def test_a_finished_run_wakes_one_capacity_waiter_on_its_profile():
+    h = Harness(MemoryExecutor(default_states=[exited(0)]))
+    run = await h.submitted()
+    waiting = []
+    for _ in range(2):
+        run_id = await h.repo.enqueue_run(
+            process_id="p1", revision_id="rev-1", source_id=None, input_items=[],
+            deferred_until=None, is_test=True,
+        )
+        h.row(run_id).update(phase="pending_capacity",
+                             next_attempt_at=NOW + dt.timedelta(seconds=15))
+        waiting.append(run_id)
+    assert await h.reconciler().reconcile(run) == "succeeded"
+    assert h.run_now == [waiting[0]]  # one slot, the oldest waiter
+    assert h.row(waiting[0])["next_attempt_at"] is None
+    assert h.row(waiting[1])["next_attempt_at"] is not None
+
+
+async def test_an_exempt_extractor_wakes_only_the_exempt_pool():
+    h = Harness(MemoryExecutor(default_states=[exited(0)]))
+    run = await h.submitted(association_id="assoc-1")
+    process_waiter = await h.repo.enqueue_run(
+        process_id="p1", revision_id="rev-1", source_id=None, input_items=[],
+        deferred_until=None, is_test=True,
+    )
+    extract_waiter = await h.repo.enqueue_run(
+        process_id="p1", revision_id="rev-1", source_id=None, input_items=[],
+        deferred_until=None, association_id="assoc-2",
+    )
+    for run_id in (process_waiter, extract_waiter):
+        h.row(run_id).update(phase="pending_capacity", next_attempt_at=NOW)
+    await h.reconciler().reconcile(run)
+    assert h.run_now == [extract_waiter]
+
+
+async def test_a_still_running_run_wakes_nobody():
+    h = Harness(MemoryExecutor(default_states=[RunState("running")]))
+    run = await h.submitted()
+    waiter = await h.repo.enqueue_run(
+        process_id="p1", revision_id="rev-1", source_id=None, input_items=[],
+        deferred_until=None, is_test=True,
+    )
+    h.row(waiter).update(phase="pending_capacity", next_attempt_at=NOW)
+    await h.reconciler().reconcile(run)
+    assert h.run_now == []

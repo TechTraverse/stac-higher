@@ -429,6 +429,24 @@ class FakeProcessRepo(ProcessRepo):
         self.finished[-1]["status"] = "cancelled" if outcome == "cancelled" else "queued"
         return outcome
 
+    async def wake_capacity_waiters(
+        self, profile_id: str, *, exempt: bool, limit: int
+    ) -> list[str]:
+        woken: list[str] = []
+        for row in self.enqueued:
+            if len(woken) >= limit:
+                break
+            row_exempt = capacity_exempt(
+                is_extract=row["association_id"] is not None, profile=self._profile()
+            )
+            in_pool = row_exempt if exempt else (
+                not row_exempt and self._profile() == profile_id
+            )
+            if row["status"] == "queued" and row.get("phase") == "pending_capacity" and in_pool:
+                row["next_attempt_at"] = None
+                woken.append(row["run_id"])
+        return woken
+
     async def record_submission(
         self,
         run_id: str,

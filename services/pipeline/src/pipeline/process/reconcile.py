@@ -48,6 +48,7 @@ from pipeline.process.executor import (
     RunHandle,
     RunState,
 )
+from pipeline.process.hardware import DEFAULT_HARDWARE_PROFILE
 from pipeline.process.launch import collect_run_log
 from pipeline.process.ledger import (
     DEFAULT_MAX_ATTEMPTS_ON_UNREADABLE_RUNTIME,
@@ -55,7 +56,7 @@ from pipeline.process.ledger import (
     INFRA_RETRY_SECONDS,
     outcome_transition,
 )
-from pipeline.process.repo import ProcessRepo, SubmittedRun
+from pipeline.process.repo import ProcessRepo, SubmittedRun, capacity_exempt
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +282,8 @@ class Reconciler:
             "process run requeued before its credentials expire",
             extra={"run_id": run.id, "process_id": run.process_id, "outcome": outcome},
         )
-        await self._after_commit(run, handle, outcome, None)
+        # No wake: the run itself is resubmitted at once into the slot it freed.
+        await self._after_commit(run, handle, outcome, None, wake=False)
         if outcome == "requeued":
             await self.enqueue_run_now(run.id)
         return outcome
@@ -308,8 +310,28 @@ class Reconciler:
             handle=handle, process_id=run.process_id, run_id=run.id,
         )
 
+    async def _wake_waiters(self, run: SubmittedRun) -> None:
+        """K-4 Task 9: the run left `running`, so one slot in its admission
+        pool is free — ask for the oldest run waiting for it now, not at the
+        next tick (I-170). Best effort: the tick still retries waiters."""
+        try:
+            profile = parse_process_runtime(run.runtime).hardware_profile
+        except ProcessConfigError:
+            profile = DEFAULT_HARDWARE_PROFILE
+        exempt = capacity_exempt(is_extract=run.association_id is not None, profile=profile)
+        try:
+            woken = await self.repo.wake_capacity_waiters(profile, exempt=exempt, limit=1)
+            for run_id in woken:
+                await self.enqueue_run_now(run_id)
+        except Exception:
+            logger.warning(
+                "could not wake a run waiting for capacity",
+                extra={"run_id": run.id, "profile": profile}, exc_info=True,
+            )
+
     async def _after_commit(
-        self, run: SubmittedRun, handle: RunHandle, written: str, error: str | None
+        self, run: SubmittedRun, handle: RunHandle, written: str, error: str | None,
+        *, wake: bool = True,
     ) -> None:
         """The verdict is durable: reap, then publish or fail the batch."""
         PROCESS_RUNS.labels(outcome=written).inc()
@@ -321,6 +343,8 @@ class Reconciler:
                 "process run reap failed after its verdict",
                 extra={"run_id": run.id}, exc_info=True,
             )
+        if wake:
+            await self._wake_waiters(run)
         if written == "succeeded":
             # Only a SUCCESSFUL run publishes (ADR 0014).
             await self.enqueue_finalize(run.id, run.process_id)

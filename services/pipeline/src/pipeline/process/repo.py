@@ -401,6 +401,18 @@ class ProcessRepo(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def wake_capacity_waiters(
+        self, profile_id: str, *, exempt: bool, limit: int
+    ) -> list[str]:
+        """K-4 Task 9 (I-170's latency half): a run just left `running`, so
+        its admission pool has a free slot. Clear ``next_attempt_at`` on up to
+        ``limit`` of the oldest `queued` runs waiting as `pending_capacity` in
+        the same pool — the profile's process runs, or (``exempt``) the
+        exempt extractor pool — and return their ids for an immediate claim.
+        The claim still runs the admission count, so a wake never
+        oversubscribes a pool."""
+
+    @abc.abstractmethod
     async def requeue_without_attempt(
         self,
         run_id: str,
@@ -1125,6 +1137,28 @@ class PgProcessRepo(ProcessRepo):
                 claimed_at=claimed_at,
                 unsubmitted=True,
             )
+
+    async def wake_capacity_waiters(  # pragma: no cover
+        self, profile_id: str, *, exempt: bool, limit: int
+    ) -> list[str]:
+        pool = _EXEMPT_SQL if exempt else f"NOT {_EXEMPT_SQL} AND {_PROFILE_SQL} = %(profile)s"
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE stac_higher.process_runs w SET next_attempt_at = NULL"
+                " WHERE w.id IN ("
+                "   SELECT r.id FROM stac_higher.process_runs r"
+                "     JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
+                "    WHERE r.status = 'queued' AND r.phase = 'pending_capacity'"
+                f"     AND {pool}"
+                "    ORDER BY r.created_at, r.id LIMIT %(limit)s"
+                "    FOR UPDATE OF r SKIP LOCKED)"
+                " RETURNING w.id::text",
+                {"profile": profile_id, "limit": limit,
+                 "default_profile": DEFAULT_HARDWARE_PROFILE},
+            )
+            ids = [str(r[0]) for r in await cur.fetchall()]
+            await conn.commit()
+        return ids
 
     async def record_submission(  # pragma: no cover
         self,

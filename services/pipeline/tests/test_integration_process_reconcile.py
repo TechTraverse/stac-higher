@@ -373,3 +373,27 @@ async def test_exempt_extractor_runs_wait_for_their_own_pool(slot):
     again = later + dt.timedelta(seconds=20)
     claimed = await repo.claim_due_runs(again, 10, capacities=caps, extract_capacity=None)
     assert [r.id for r in claimed] == [held]
+
+
+async def test_wake_capacity_waiters_clears_the_oldest_on_the_profile(slot):
+    """Task 9: the oldest waiter in the pool, and only that pool."""
+    repo = _repo()
+    caps = slot["capacities"]
+    profile = slot["profiles"]["one"]
+    now = dt.datetime.now(dt.UTC)
+    holder = await _run(slot, created_ago=30)
+    assert await repo.claim_run(holder, now, capacities=caps) is not None
+    older = await _run(slot, created_ago=20)
+    newer = await _run(slot, created_ago=10)
+    other = await _run(slot, "two", created_ago=25)
+    for run_id in (older, newer):
+        assert await repo.claim_run(run_id, now, capacities=caps) is None
+    await _exec(
+        "UPDATE stac_higher.process_runs SET phase = 'pending_capacity',"
+        " next_attempt_at = now() + interval '15 seconds' WHERE id = %s",
+        (other,),
+    )
+    assert await repo.wake_capacity_waiters(profile, exempt=False, limit=1) == [older]
+    assert (await _state(older))[6] is None
+    assert (await _state(newer))[6] is not None
+    assert (await _state(other))[6] is not None
