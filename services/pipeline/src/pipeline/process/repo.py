@@ -26,6 +26,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pipeline.process.hardware import DEFAULT_HARDWARE_PROFILE
 from pipeline.process.ledger import CAPACITY_RETRY_SECONDS, capacity_detail
 from pipeline.process.matcher import ProcessSource
 
@@ -45,8 +46,21 @@ Capacities = Mapping[str, "int | None"]
 DEFAULT_EXECUTOR_BACKEND = "docker"
 
 #: The profile a revision's runs are admitted against (spec §4: an absent
-#: `hardware` block is `standard`).
-_PROFILE_SQL = "coalesce(rev.runtime->'hardware'->>'profile', 'standard')"
+#: `hardware` block is the default profile).
+_PROFILE_SQL = f"coalesce(rev.runtime->'hardware'->>'profile', '{DEFAULT_HARDWARE_PROFILE}')"
+
+#: K-3 ruling (narrowed): an extractor run on the DEFAULT profile is exempt
+#: from capacity (it is ingest work; extraction throughput must not regress).
+#: An extractor whose revision names any other profile is admitted like a
+#: process run. Parameterised by %(default_profile)s.
+_EXEMPT_SQL = (
+    f"(r.association_id IS NOT NULL AND {_PROFILE_SQL} = %(default_profile)s)"
+)
+
+
+def capacity_exempt(*, is_extract: bool, profile: str) -> bool:
+    """The exemption rule in Python (the fake and the launch path use it)."""
+    return is_extract and profile == DEFAULT_HARDWARE_PROFILE
 
 
 @dataclass(frozen=True)
@@ -234,10 +248,11 @@ class ProcessRepo(abc.ABC):
         ``capacity`` runs on that profile are admitted right now (``running``
         with ``executor_backend`` set). Otherwise it is not claimed: it stays
         ``queued`` as ``phase = pending_capacity`` with ``next_attempt_at``
-        15 s out, and no attempt is spent. Extractor runs
-        (``association_id`` set) are exempt and never count (K-3 ruling:
-        capacity must not throttle ingest). ``capacities=None`` admits
-        everything.
+        15 s out, and no attempt is spent. An extractor run
+        (``association_id`` set) on the DEFAULT profile is exempt and never
+        counts (K-3 ruling: extraction throughput must not regress); an
+        extractor on any other profile is admitted like a process run.
+        ``capacities=None`` admits everything.
         """
 
     @abc.abstractmethod
@@ -598,8 +613,8 @@ class PgProcessRepo(ProcessRepo):
     #
     # THE INVARIANT: at no committed instant are more than `capacity` runs
     # ADMITTED on a profile, whatever the workers' clocks say. Admitted means
-    # `status = 'running' AND executor_backend IS NOT NULL AND association_id
-    # IS NULL` (extractor runs are exempt). Every admission happens in ONE
+    # `status = 'running' AND executor_backend IS NOT NULL`, minus extractor
+    # runs on the default profile (exempt, `_EXEMPT_SQL`). Every admission happens in ONE
     # transaction that takes `pg_advisory_xact_lock('process-capacity:' ||
     # profile)`, counts the admitted runs in a statement that starts after
     # the lock is held (so it sees every earlier admission, all of which
@@ -665,8 +680,12 @@ class PgProcessRepo(ProcessRepo):
             await conn.commit()
             return None, None
         profile, is_extract = str(found[0]), bool(found[1])
-        capacity = None if capacities is None or is_extract else capacities.get(profile)
-        params = {"id": run_id, "now": now, "backend": backend, "profile": profile}
+        exempt = capacity_exempt(is_extract=is_extract, profile=profile)
+        capacity = None if capacities is None or exempt else capacities.get(profile)
+        params = {
+            "id": run_id, "now": now, "backend": backend, "profile": profile,
+            "default_profile": DEFAULT_HARDWARE_PROFILE,
+        }
         if capacity is not None:
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))", (f"process-capacity:{profile}",)
@@ -675,7 +694,7 @@ class PgProcessRepo(ProcessRepo):
                 "SELECT count(*) FROM stac_higher.process_runs r"
                 "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
                 " WHERE r.status = 'running' AND r.executor_backend IS NOT NULL"
-                f"  AND r.association_id IS NULL AND {_PROFILE_SQL} = %(profile)s",
+                f"  AND NOT {_EXEMPT_SQL} AND {_PROFILE_SQL} = %(profile)s",
                 params,
             )
             admitted = int((await cur.fetchone())[0])
@@ -684,7 +703,7 @@ class PgProcessRepo(ProcessRepo):
                 # when it may be tried again. The tick marks every due queued
                 # run on the profile at once (`mark_profile`).
                 target = (
-                    f"r.association_id IS NULL AND {_PROFILE_SQL} = %(profile)s"
+                    f"NOT {_EXEMPT_SQL} AND {_PROFILE_SQL} = %(profile)s"
                     if mark_profile
                     else "r.id = %(id)s"
                 )
@@ -742,11 +761,15 @@ class PgProcessRepo(ProcessRepo):
                     "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
                     f" WHERE {due}"
                     "   AND NOT (r.id::text = ANY(%(tried)s::text[]))"
-                    "   AND (r.association_id IS NOT NULL"
+                    f"   AND ({_EXEMPT_SQL}"
                     f"        OR NOT ({_PROFILE_SQL} = ANY(%(full)s::text[])))"
                     " ORDER BY r.created_at, r.id"
                     " LIMIT %(page)s",
-                    {"now": now, "tried": tried, "full": full, "page": limit - len(claimed)},
+                    {
+                        "now": now, "tried": tried, "full": full,
+                        "page": limit - len(claimed),
+                        "default_profile": DEFAULT_HARDWARE_PROFILE,
+                    },
                 )
                 candidates = [str(r[0]) for r in await cur.fetchall()]
                 await conn.commit()

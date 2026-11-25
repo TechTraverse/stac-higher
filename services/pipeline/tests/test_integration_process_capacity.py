@@ -32,6 +32,7 @@ import uuid
 import psycopg
 import pytest
 
+from pipeline.process.hardware import DEFAULT_HARDWARE_PROFILE
 from pipeline.process.ledger import CAPACITY_RETRY_SECONDS
 from pipeline.process.repo import PgProcessRepo
 
@@ -68,6 +69,14 @@ async def slot():
             " VALUES (%s, %s, %s::jsonb, 'itest')",
             (revisions[key], process_id, json.dumps(runtime)),
         )
+    # No hardware block: the DEFAULT profile (`standard`), as every built-in
+    # extractor revision is.
+    revisions["std"] = str(uuid.uuid4())
+    await _exec(
+        "INSERT INTO stac_higher.process_revisions (id, process_id, runtime, created_by)"
+        " VALUES (%s, %s, '{\"kind\": \"inline_python\"}'::jsonb, 'itest')",
+        (revisions["std"], process_id),
+    )
     await _exec(
         "INSERT INTO stac_higher.process_sources (id, process_id, collection_id)"
         " VALUES (%s, %s, %s)",
@@ -88,7 +97,10 @@ async def slot():
         yield {
             "process_id": process_id, "profiles": profiles, "revisions": revisions,
             "source_id": source_id, "association_id": association_id,
-            "capacities": {profiles["one"]: 1, profiles["two"]: 2, profiles["free"]: None},
+            "capacities": {
+                profiles["one"]: 1, profiles["two"]: 2, profiles["free"]: None,
+                DEFAULT_HARDWARE_PROFILE: 1,
+            },
         }
     finally:
         await _exec("DELETE FROM stac_higher.process_runs WHERE process_id = %s", (process_id,))
@@ -143,16 +155,29 @@ async def _row(run_id):
     return rows[0] if rows else None
 
 
-async def _admitted(profile):
+async def _admitted(profile, *, extractors=False):
+    """Admitted runs on ``profile`` as the claim counts them: on the default
+    profile extractor runs are exempt; elsewhere pass ``extractors=True``."""
     rows = await _exec(
         "SELECT count(*) FROM stac_higher.process_runs r"
         "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
         " WHERE r.status = 'running' AND r.executor_backend IS NOT NULL"
-        "   AND r.association_id IS NULL"
-        "   AND rev.runtime->'hardware'->>'profile' = %s",
-        (profile,),
+        "   AND (%s OR r.association_id IS NULL)"
+        "   AND coalesce(rev.runtime->'hardware'->>'profile', 'standard') = %s",
+        (extractors, profile),
     )
     return rows[0][0]
+
+
+async def _require_quiet_default_profile(slot):
+    """Counting `standard` on a shared database would count live runs."""
+    rows = await _exec(
+        "SELECT count(*) FROM stac_higher.process_runs"
+        " WHERE process_id <> %s AND status IN ('queued', 'running')",
+        (slot["process_id"],),
+    )
+    if rows[0][0]:
+        pytest.skip("the database holds other runs; use a throwaway database")
 
 
 async def _require_quiet_database(slot):
@@ -197,19 +222,46 @@ async def test_a_full_profile_is_not_claimed_and_waits_for_capacity(slot):
     assert (await _row(second))[1:3] == ("starting", None)
 
 
-async def test_extractor_runs_are_exempt_and_do_not_count(slot):
+async def test_an_extractor_on_a_bounded_non_default_profile_is_admitted_like_a_process_run(
+    slot,
+):
+    """K-3 ruling, narrowed: only the DEFAULT profile exempts an extractor."""
     repo = PgProcessRepo(DATABASE_URL)
     caps, profile = slot["capacities"], slot["profiles"]["one"]
     now = dt.datetime.now(dt.UTC)
-    # One queued extractor run per association (027's index): claim each
-    # before queueing the next.
-    extract_a = await _run(slot, extractor=True)
-    assert await repo.claim_run(extract_a, now, capacities=caps) is not None
-    extract_b = await _run(slot, extractor=True)
-    assert await repo.claim_run(extract_b, now, capacities=caps) is not None
-    assert await _admitted(profile) == 0  # extractors never count
+    extract = await _run(slot, extractor=True)
+    assert await repo.claim_run(extract, now, capacities=caps) is not None
+    assert await _admitted(profile, extractors=True) == 1
+    transform = await _run(slot)
+    assert await repo.claim_run(transform, now, capacities=caps) is None
+    assert (await _row(transform))[1] == "pending_capacity"
+    # ...and the other way round: a full profile holds an extractor back.
+    await _exec("DELETE FROM stac_higher.process_runs WHERE id = %s", (transform,))
+    await repo.finish_run(extract, status="succeeded", error=None, log_ref=None,
+                          next_attempt_at=None)
     transform = await _run(slot)
     assert await repo.claim_run(transform, now, capacities=caps) is not None
+    held = await _run(slot, extractor=True)
+    assert await repo.claim_run(held, now, capacities=caps) is None
+    assert (await _row(held))[:2] == ("queued", "pending_capacity")
+
+
+async def test_extractor_runs_on_the_default_profile_are_exempt_and_do_not_count(slot):
+    await _require_quiet_default_profile(slot)
+    repo = PgProcessRepo(DATABASE_URL)
+    caps = slot["capacities"]  # standard: 1
+    now = dt.datetime.now(dt.UTC)
+    transform = await _run(slot, "std")
+    assert await repo.claim_run(transform, now, capacities=caps) is not None
+    # standard is now full for process runs, yet extractors on it still run,
+    # and they never count toward it. One queued extractor per association
+    # (027's index): claim each before queueing the next.
+    for _ in range(3):
+        extract = await _run(slot, "std", extractor=True)
+        assert await repo.claim_run(extract, now, capacities=caps) is not None
+    assert await _admitted(DEFAULT_HARDWARE_PROFILE) == 1
+    another = await _run(slot, "std")
+    assert await repo.claim_run(another, now, capacities=caps) is None
 
 
 async def test_two_concurrent_claims_never_admit_past_capacity(slot):

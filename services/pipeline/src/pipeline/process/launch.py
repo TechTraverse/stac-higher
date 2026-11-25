@@ -300,7 +300,7 @@ def build_run_spec(
     profile: HardwareProfile | None = None,
     priority: str = "triggered",
     image: ResolvedImage | None = None,
-    extractor: bool = False,
+    cpu_exempt: bool = False,
 ) -> RunSpec:
     """The COMPLETE environment of a run, assembled in one place.
 
@@ -352,7 +352,7 @@ def build_run_spec(
         user_image=resolved.user_image,
         entrypoint=entrypoint,
         registry_auth=resolved.registry_auth,
-        extractor=extractor,
+        cpu_exempt=cpu_exempt,
     )
 
 
@@ -373,7 +373,7 @@ def execute_run(
     profile: HardwareProfile | None = None,
     priority: str = "triggered",
     image: ResolvedImage | None = None,
-    extractor: bool = False,
+    cpu_exempt: bool = False,
 ) -> RunOutcome:
     """Mint credentials, launch, wait, capture the log, reap. Always reap.
 
@@ -400,7 +400,7 @@ def execute_run(
         profile=profile,
         priority=priority,
         image=image,
-        extractor=extractor,
+        cpu_exempt=cpu_exempt,
     )
 
     import time

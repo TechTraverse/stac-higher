@@ -16,6 +16,7 @@ from pipeline.process.repo import (
     QueuedRun,
     RateWindow,
     RunRecord,
+    capacity_exempt,
 )
 
 
@@ -157,7 +158,9 @@ class FakeProcessRepo(ProcessRepo):
             for row in self.enqueued
             if row["status"] == "running"
             and row.get("executor_backend")
-            and row["association_id"] is None
+            and not capacity_exempt(
+                is_extract=row["association_id"] is not None, profile=self._profile()
+            )
         )
         return self.admitted_elsewhere.get(profile, 0) + (
             own if profile == self._profile() else 0
@@ -182,11 +185,10 @@ class FakeProcessRepo(ProcessRepo):
                 return None
             # K-3: the Pg claim's admission (extractor runs exempt).
             profile = self._profile()
-            capacity = (
-                None
-                if capacities is None or row["association_id"] is not None
-                else capacities.get(profile)
+            exempt = capacity_exempt(
+                is_extract=row["association_id"] is not None, profile=profile
             )
+            capacity = None if capacities is None or exempt else capacities.get(profile)
             if capacity is not None and self.admitted(profile) >= capacity:
                 row["phase"] = "pending_capacity"
                 row["phase_detail"] = capacity_detail(profile, capacity)

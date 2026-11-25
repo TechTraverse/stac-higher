@@ -61,7 +61,7 @@ from pipeline.process.launch import (
     resolve_run_image,
 )
 from pipeline.process.ledger import infrastructure_transition, outcome_transition
-from pipeline.process.repo import ProcessRepo, QueuedRun
+from pipeline.process.repo import ProcessRepo, QueuedRun, capacity_exempt
 from pipeline.process.staging import InputStagingError, RemoteFetcher, stage_inputs
 
 logger = logging.getLogger(__name__)
@@ -302,7 +302,8 @@ async def run_one(
             profile=profile,
             priority="interactive" if run.is_test else "triggered",
             image=resolved,
-            extractor=is_extract,
+            # K-3 ruling: only an extractor on the default profile is uncapped.
+            cpu_exempt=capacity_exempt(is_extract=is_extract, profile=profile.id),
         )
     except (ImagePullFailed, ImageMissing) as err:
         # Spec §8.4: the registry refused the digest. A per-run outcome that

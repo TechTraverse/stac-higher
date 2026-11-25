@@ -1397,7 +1397,7 @@ assert-and-warn on the file (the M3-A `use_queue` pattern).
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/hardware.py`.
 - Found in: K-1 Task 4/5 reviews (2026-09-15).
 
-### I-170 · Docker capacity: a waiting run is retried by the minute tick, counted across every worker, and extractor runs are exempt 🟡
+### I-170 · Docker capacity: a waiting run is retried by the minute tick, counted across every worker, and default-profile extractor runs are exempt 🟡
 K-3 admits a process or test run in the claim itself (per-profile advisory
 lock; `executor_backend` is the admitted marker). A run whose profile is full
 is not claimed: it stays `queued` as `pending_capacity` with
@@ -1413,17 +1413,26 @@ is not claimed: it stays `queued` as `pending_capacity` with
   runs process jobs (the local and single-host shape). A host id on the
   claim would be needed for multi-host Docker. The cluster leg uses Kueue
   quotas instead (K-5/K-6).
-- **Ruling: extractor runs are exempt.** Spec §8 is silent on extractor runs
-  (G-6, association-triggered). They are not admitted against capacity, do
-  not count toward it, and are not CPU-capped by `NanoCpus`, so K-3 leaves
-  ingest throughput exactly where it was. Before and after K-3 a pipeline
-  process executes one process run at a time, because `execute_run` waits on
-  the Docker daemon synchronously and blocks the worker's event loop
-  (WORKER_CONCURRENCY does not apply to runs; K-4 removes the block). Capping
-  extractors to `standard`'s 1 CPU, or counting them against its capacity of
-  2 (`infra/hardware-profiles/local.json`), would slow each extraction or
-  hold back tick-claimed batches. Revisit with K-4, when runs really run
-  concurrently.
+- **Ruling: extractor runs on the default profile are exempt.** Spec §8 does
+  not say how extractor runs (G-6, association-triggered) relate to
+  capacity. The rule: an extractor run whose revision is on the default
+  profile (`standard`; a revision without a `hardware` block, which is every
+  built-in extractor, is `standard`) is not admitted against capacity, does
+  not count toward it, and launches without `NanoCpus`. An extractor whose
+  revision names ANY other profile is treated like a process run: it counts
+  against that profile's capacity, waits when it is full, and gets
+  `NanoCpus` (and `DeviceRequests` where the profile has them), so an
+  operator cannot use an extractor to bypass a large or GPU profile's
+  limits. The reason: before and after K-3 a pipeline process executes one
+  process run at a time (`execute_run` waits on the Docker daemon
+  synchronously and blocks the worker's event loop; WORKER_CONCURRENCY does
+  not apply to runs until K-4). Capping default-profile extractors at
+  `standard`'s 1 CPU, or counting them against its capacity of 2
+  (`infra/hardware-profiles/local.json`), would slow each extraction or hold
+  back tick-claimed batches. **Residual:** extractor runs on `standard` are
+  bounded by neither `standard`'s capacity nor its CPU cap. Only the worker
+  bounds them: one run at a time per pipeline process today, the worker's
+  slot count once K-4 makes runs asynchronous. Revisit with K-4.
 - A run already `running` when migration 029 lands has no admitted marker
   and does not count, so a deploy can briefly admit past `capacity` until
   those runs finish.

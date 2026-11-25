@@ -124,8 +124,26 @@ async def test_admitted_runs_count_until_they_finish():
 
 
 @pytest.mark.asyncio
-async def test_extractor_runs_are_exempt_from_capacity_and_never_count():
-    """K-3 ruling: an extractor run (association-triggered) is ingest work;
+async def test_an_extractor_on_a_bounded_non_default_profile_is_admitted_like_a_process_run():
+    """K-3 ruling, narrowed: the exemption is for the DEFAULT profile only.
+    An extractor whose revision names `cpu-large` counts against it and waits
+    when it is full."""
+    repo = FakeProcessRepo(
+        runtime={"kind": "inline_python", "memory_mb": 8192,
+                 "hardware": {"profile": "cpu-large", "cpu": 4, "gpu_count": 0}},
+    )
+    caps = docker_capacities(profiles(2, large_capacity=1))
+    first = await _enqueue(repo, association_id="assoc-1")
+    assert await repo.claim_run(first, NOW, capacities=caps) is not None
+    assert repo.admitted("cpu-large") == 1
+    second = await _enqueue(repo, association_id="assoc-2")
+    assert await repo.claim_run(second, NOW, capacities=caps) is None
+    assert repo.enqueued[1]["phase"] == PHASE_PENDING_CAPACITY
+
+
+@pytest.mark.asyncio
+async def test_extractor_runs_on_the_default_profile_are_exempt_and_never_count():
+    """K-3 ruling: an extractor run on the default profile is ingest work;
     a full `standard` must not hold it back, and it must not fill `standard`
     for process runs either."""
     repo = FakeProcessRepo(admitted_elsewhere={"standard": 2})
@@ -157,7 +175,7 @@ async def test_run_one_no_longer_counts_or_releases():
 
 
 @pytest.mark.asyncio
-async def test_an_extractor_run_is_launched_without_a_cpu_cap_marker():
+async def test_only_an_extractor_on_the_default_profile_launches_cpu_exempt():
     repo = FakeProcessRepo()
     executor = MemoryExecutor(results=[ExitStatus(0)])
     run = QueuedRun(
@@ -166,9 +184,18 @@ async def test_an_extractor_run_is_launched_without_a_cpu_cap_marker():
         association_id="assoc-1",
     )
     await _run(repo, executor, capacity=1, run=run)
-    assert executor.launched[0].extractor is True
-    await _run(repo, executor, capacity=1)
-    assert executor.launched[1].extractor is False
+    assert executor.launched[0].cpu_exempt is True
+    await _run(repo, executor, capacity=1)  # a process run on standard
+    assert executor.launched[1].cpu_exempt is False
+    large = QueuedRun(
+        id="run-y", process_id="proc-1", revision_id="rev-1", source_id=None, attempts=1,
+        input_items=[], code="pass", env=[], association_id="assoc-1",
+        runtime={"kind": "inline_python", "memory_mb": 8192,
+                 "hardware": {"profile": "cpu-large", "cpu": 4, "gpu_count": 0}},
+    )
+    await _run(repo, executor, capacity=1, run=large)  # an extractor on cpu-large
+    assert executor.launched[2].cpu_exempt is False
+    assert executor.launched[2].cpu == 4
 
 
 @pytest.mark.asyncio

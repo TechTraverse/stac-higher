@@ -158,6 +158,15 @@ def _image_missing_message(spec: RunSpec) -> str:
     return f"image {spec.image!r} is not on the docker daemon; {PLATFORM_IMAGE_BUILD_HINT}"
 
 
+def _pinned(image: str) -> tuple[str, str]:
+    """Spec §8.4: a user image runs only by digest. Returns (reference,
+    digest) or raises :class:`ImagePullFailed` -- before any daemon call."""
+    reference, sep, digest = image.partition("@")
+    if not sep or not is_image_reference(reference) or not is_image_digest(digest):
+        raise ImagePullFailed(f"refusing to launch a user image not pinned by digest: {image!r}")
+    return reference, digest
+
+
 def assert_safe_docker_host(docker_host: str) -> None:
     """Startup self-check (spec §14 risk list): refuse a raw-socket
     ``DOCKER_HOST``.
@@ -251,11 +260,7 @@ class DockerExecutor(Executor):
         The inspect is by the pinned name, so "present" means THIS digest is
         on the daemon; a tag of the same repository is irrelevant.
         """
-        reference, sep, digest = image.partition("@")
-        if not sep or not is_image_reference(reference) or not is_image_digest(digest):
-            raise ImagePullFailed(
-                f"refusing to launch a user image not pinned by digest: {image!r}"
-            )
+        reference, digest = _pinned(image)
         try:
             self._request("GET", f"/images/{urllib.parse.quote(image, safe='/:@')}/json")
             return
@@ -383,7 +388,9 @@ class DockerExecutor(Executor):
         # K-3 (spec §8): GPUs are device requests, and only on a host that
         # can honour them -- otherwise the run dies here, before a pull or a
         # container, naming the profile. No GPU asked, no probe.
-        cpu_capped = spec.kind == "process" and not spec.extractor
+        if spec.user_image:
+            _pinned(spec.image)  # an unpinned image is refused before any daemon call
+        cpu_capped = spec.kind == "process" and not spec.cpu_exempt
         if cpu_capped:
             self._check_cpus(spec)
         device_requests = self._device_requests(spec) if spec.gpu_count > 0 else None
@@ -423,7 +430,8 @@ class DockerExecutor(Executor):
         if cpu_capped:
             # K-3: the profile's cpu becomes a limit, like memory. A scan is
             # sized by the image policy, not a profile, and an extractor run
-            # is ingest work (K-3 ruling), so both stay uncapped.
+            # on the default profile is ingest work (K-3 ruling), so both stay
+            # uncapped.
             config["HostConfig"]["NanoCpus"] = round(spec.cpu * 1_000_000_000)
         if device_requests:
             config["HostConfig"]["DeviceRequests"] = device_requests

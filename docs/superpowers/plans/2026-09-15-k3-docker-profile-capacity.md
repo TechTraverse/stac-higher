@@ -900,15 +900,26 @@ These supersede the tasks above where they disagree.
   (`tests/test_integration_process_capacity.py`, run against Postgres).
   K-4's watcher reuses `executor_backend` as the admitted marker, together
   with `next_attempt_at`.
-- **Ruling: extractor runs are exempt from capacity and from `NanoCpus`.**
-  Spec §8 does not say how extractor runs (G-6) relate to profile capacity.
-  Process runs block the worker's event loop (`execute_run` waits
-  synchronously), so a pipeline process has executed one run at a time
-  before and after K-3. Counting extractors against `standard` (capacity 2)
-  would hold back tick batches, and capping them at `standard`'s 1 CPU would
-  slow each extraction, both regressions on ingest throughput. Extractor runs
-  are claimed without admission, never count, and launch without
-  `NanoCpus` (`RunSpec.extractor`). See ISSUES I-170.
+- **Ruling: extractor runs on the default profile are exempt from capacity
+  and from `NanoCpus`; extractors on any other profile are not.** Spec §8
+  does not say how extractor runs (G-6) relate to profile capacity. An
+  extractor run whose revision is on `DEFAULT_HARDWARE_PROFILE` (`standard`,
+  which includes every revision without a `hardware` block, so every
+  built-in extractor) is claimed without admission, never counts, and
+  launches without `NanoCpus` (`RunSpec.cpu_exempt`; one rule,
+  `repo.capacity_exempt`, used by the claim SQL, the fake and the launch
+  path). An extractor whose revision names any other profile is admitted
+  like a process run: it counts, waits when the profile is full, and gets
+  `NanoCpus` and the profile's `DeviceRequests`. Why: process runs block the
+  worker's event loop (`execute_run` waits synchronously), so a pipeline
+  process has executed one run at a time before and after K-3. Counting
+  default-profile extractors against `standard` (capacity 2) would hold back
+  tick batches, and capping them at `standard`'s 1 CPU would slow each
+  extraction, both regressions on ingest throughput. Narrowed after a
+  security review: a blanket exemption would let an operator's extractor
+  bypass a large or GPU profile's limits. Residual: extractor runs on
+  `standard` are bounded only by the worker (one run at a time per pipeline
+  process today, the worker's slot count after K-4). See ISSUES I-170.
 - **Ruling: the `backend.docker` block is validated with the document.** A
   malformed block makes the profile file unusable. That is the
   infrastructure path: requeue with no attempt spent. It is not a dead run
