@@ -678,7 +678,8 @@ describe("process credential budget contract (tests/contract-fixtures/process-cr
     setting: string; grace_setting: string; grace_default_seconds: number;
     deploy_refusal: { status: number; code: string };
     cases: { name: string; max_credential_seconds: number | null; max_queue_wait_seconds: number;
-             timeout_seconds: number; grace_seconds: number; deploy_allowed: boolean }[];
+             timeout_seconds: number; grace_seconds: number; deploy_allowed: boolean;
+             mint_allowed: boolean }[];
     cap_min_seconds: number;
     parse_cases: { name: string; variable: string; raw: string | null; result: number | null | "reject" }[];
   };
@@ -687,6 +688,10 @@ describe("process credential budget contract (tests/contract-fixtures/process-cr
     expect(fx.grace_setting).toBe(CREDENTIAL_GRACE_SECONDS_ENV);
     expect(fx.grace_default_seconds).toBe(DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS);
     expect(fx.deploy_refusal).toEqual({ status: CREDENTIAL_BUDGET_STATUS, code: CREDENTIAL_BUDGET_CODE });
+  });
+  // K-4: the pipeline's mint counts the queue wait too, so they agree.
+  it.each(fx.cases)("deploy and mint agree: $name", (c) => {
+    expect(c.deploy_allowed).toBe(c.mint_allowed);
   });
   it.each(fx.cases)("$name", (c) => {
     expect(credentialBudgetError({ maxCredentialSeconds: c.max_credential_seconds, maxQueueWaitSeconds: c.max_queue_wait_seconds,

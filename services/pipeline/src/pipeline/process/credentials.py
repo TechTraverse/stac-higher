@@ -28,6 +28,7 @@ refusal beats credentials expiring mid-run.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import re
 from collections.abc import Sequence
@@ -71,18 +72,33 @@ class CredentialBudgetExceeded(Exception):
     code: ClassVar[str] = "credential_budget_exceeded"
 
     def __init__(
-        self, *, requested_seconds: int, max_seconds: int, timeout_seconds: int, grace_seconds: int
+        self,
+        *,
+        requested_seconds: int,
+        max_seconds: int,
+        timeout_seconds: int,
+        grace_seconds: int,
+        queue_wait_seconds: int = 0,
     ) -> None:
         self.requested_seconds = requested_seconds
         self.max_seconds = max_seconds
         self.timeout_seconds = timeout_seconds
         self.grace_seconds = grace_seconds
+        self.queue_wait_seconds = queue_wait_seconds
         super().__init__(
             f"{self.code}: run credentials would need {requested_seconds} s "
-            f"(timeout {timeout_seconds} s + grace {grace_seconds} s, "
+            f"({_budget_terms(queue_wait_seconds, timeout_seconds, grace_seconds)}, "
             f"STS minimum {MIN_DURATION_SECONDS} s) but "
             f"PROCESS_MAX_CREDENTIAL_SECONDS is {max_seconds} s"
         )
+
+
+def _budget_terms(queue_wait_seconds: int, timeout_seconds: int, grace_seconds: int) -> str:
+    """K-4 (spec §5.4): the duration's terms, as both refusals word them."""
+    return (
+        f"max_queue_wait {queue_wait_seconds} s + timeout {timeout_seconds} s "
+        f"+ grace {grace_seconds} s"
+    )
 
 
 #: How much of STS's own text a duration rejection keeps: enough for "exceeds
@@ -108,18 +124,21 @@ class CredentialDurationRejected(CredentialBudgetExceeded):
         timeout_seconds: int,
         grace_seconds: int,
         sts_message: str,
+        queue_wait_seconds: int = 0,
     ) -> None:
         self.requested_seconds = requested_seconds
         self.max_seconds = max_seconds
         self.timeout_seconds = timeout_seconds
         self.grace_seconds = grace_seconds
+        self.queue_wait_seconds = queue_wait_seconds
         if len(sts_message) > _STS_MESSAGE_LIMIT:
             sts_message = sts_message[:_STS_MESSAGE_LIMIT] + "..."
         current = "unset" if max_seconds is None else f"{max_seconds} s"
         Exception.__init__(
             self,
             f"{self.code}: STS refused run credentials of {requested_seconds} s "
-            f"(timeout {timeout_seconds} s + grace {grace_seconds} s): {sts_message} "
+            f"({_budget_terms(queue_wait_seconds, timeout_seconds, grace_seconds)}): "
+            f"{sts_message} "
             f"Set PROCESS_MAX_CREDENTIAL_SECONDS (now {current}) to at most the role's "
             "maximum session duration (its MaxSessionDuration; 3600 s when the "
             "pipeline's own credentials are an assumed role, i.e. role chaining) so "
@@ -164,6 +183,10 @@ class RunCredentials:
     prefix: str
     endpoint_url: str | None
     region: str
+    #: K-4: a LOWER BOUND on when these expire — the clock read before the
+    #: STS call plus the duration asked for. Recorded on the run row
+    #: (`credentials_expire_at`); never part of the run's env (ADR 0013).
+    expires_at: dt.datetime | None = None
 
     def as_env(self) -> dict[str, str]:
         """The subset of the run's environment that concerns storage.
@@ -276,6 +299,8 @@ def mint_prefix_credentials(
     timeout_seconds: int,
     sts_client=None,
     read_prefixes: Sequence[str] = (),
+    queue_wait_seconds: int = 0,
+    now: dt.datetime | None = None,
 ) -> RunCredentials:
     """Mint credentials good only for ``prefix`` plus read access to
     ``read_prefixes``. A process run's prefix is ``staging/runs/{run_id}/``;
@@ -287,7 +312,14 @@ def mint_prefix_credentials(
     duration itself, and :class:`RunCredentialsError` on any other STS
     failure -- the caller must
     fail the run rather than start it with wider access.
+
+    K-4 (spec §5.4, plan R7/R8): the duration is ``max(900, queue_wait +
+    timeout + grace)``, so a run that waits ``max_queue_wait_seconds`` for
+    capacity still starts with credentials that outlive it. Over the cap it
+    is REFUSED, never clamped (the app's deploy gate counts the same sum).
     """
+    if queue_wait_seconds < 0:
+        raise ValueError(f"queue_wait_seconds must not be negative, got {queue_wait_seconds}")
     _validate_scoped_prefix(prefix, what="prefix")
     for read_prefix in read_prefixes:
         _validate_scoped_prefix(read_prefix, what="a read prefix")
@@ -298,7 +330,8 @@ def mint_prefix_credentials(
         )
     bucket = settings.staging_bucket
     duration = max(
-        MIN_DURATION_SECONDS, timeout_seconds + settings.process_credential_grace_seconds
+        MIN_DURATION_SECONDS,
+        queue_wait_seconds + timeout_seconds + settings.process_credential_grace_seconds,
     )
     cap = settings.process_max_credential_seconds
     if cap is not None and duration > cap:
@@ -307,7 +340,10 @@ def mint_prefix_credentials(
             max_seconds=cap,
             timeout_seconds=timeout_seconds,
             grace_seconds=settings.process_credential_grace_seconds,
+            queue_wait_seconds=queue_wait_seconds,
         )
+    # Read BEFORE the call: the real expiry is at least this + duration.
+    minted_at = now or dt.datetime.now(dt.UTC)
     client = sts_client if sts_client is not None else build_sts_client(settings)
 
     try:
@@ -341,6 +377,7 @@ def mint_prefix_credentials(
                 timeout_seconds=timeout_seconds,
                 grace_seconds=settings.process_credential_grace_seconds,
                 sts_message=sts_message,
+                queue_wait_seconds=queue_wait_seconds,
             ) from err
         raise RunCredentialsError(
             "could not mint run-scoped storage credentials via STS "
@@ -369,6 +406,7 @@ def mint_prefix_credentials(
         prefix=prefix,
         endpoint_url=settings.process_run_s3_endpoint or settings.staging_s3_endpoint,
         region=settings.staging_s3_region,
+        expires_at=minted_at + dt.timedelta(seconds=duration),
     )
 
 
@@ -377,11 +415,14 @@ def mint_run_credentials(
     run_id: str,
     timeout_seconds: int,
     *,
+    queue_wait_seconds: int = 0,
     sts_client=None,
     read_prefixes: Sequence[str] = (),
+    now: dt.datetime | None = None,
 ) -> RunCredentials:
     """Mint credentials good only for ``staging/runs/{run_id}/`` plus read
-    access to ``read_prefixes`` (the source collections' canonical prefixes)."""
+    access to ``read_prefixes`` (the source collections' canonical prefixes),
+    lasting the profile's queue wait + timeout + grace (K-4)."""
     return mint_prefix_credentials(
         settings,
         session_name=f"stac-run-{run_id}",
@@ -389,4 +430,6 @@ def mint_run_credentials(
         timeout_seconds=timeout_seconds,
         sts_client=sts_client,
         read_prefixes=read_prefixes,
+        queue_wait_seconds=queue_wait_seconds,
+        now=now,
     )

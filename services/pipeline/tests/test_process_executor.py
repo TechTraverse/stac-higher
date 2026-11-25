@@ -1455,3 +1455,53 @@ def test_cpus_within_the_daemon_count_launch():
     api = FakeApi({"create": {"Id": "c1"}, "/info": {"NCPU": 4}})
     executor_with(api).submit(_spec(cpu=4))
     assert api.created_config()["HostConfig"]["NanoCpus"] == 4_000_000_000
+
+
+# -- K-4: credentials outlive the queue wait (spec §5.4, plan R7/R8) ----------
+
+
+def test_mint_adds_the_queue_wait_to_the_duration():
+    sts = FakeSts(_OK_STS)
+    mint_run_credentials(settings(), RUN, 900, queue_wait_seconds=600, sts_client=sts)
+    assert sts.kwargs["DurationSeconds"] == 600 + 900 + 300
+
+
+def test_mint_reports_a_lower_bound_expiry():
+    t = dt.datetime(2026, 11, 25, 12, 0, tzinfo=dt.UTC)
+    creds = mint_run_credentials(
+        settings(), RUN, 900, queue_wait_seconds=600, sts_client=FakeSts(_OK_STS), now=t
+    )
+    assert creds.expires_at == t + dt.timedelta(seconds=1800)
+    # Never part of the run's environment (ADR 0013's env contract).
+    assert not any("EXPIR" in name for name in creds.as_env())
+
+
+def test_the_refusal_names_the_queue_wait():
+    with pytest.raises(CredentialBudgetExceeded) as err:
+        mint_run_credentials(
+            settings(PROCESS_MAX_CREDENTIAL_SECONDS=3600), RUN, 2701, queue_wait_seconds=600,
+            sts_client=FakeSts(_OK_STS),
+        )
+    message = str(err.value)
+    assert message.startswith("credential_budget_exceeded")
+    assert "max_queue_wait 600 s + timeout 2701 s + grace 300 s" in message
+    assert err.value.queue_wait_seconds == 600
+
+
+def test_a_negative_queue_wait_is_refused():
+    with pytest.raises(ValueError):
+        mint_run_credentials(settings(), RUN, 900, queue_wait_seconds=-1,
+                             sts_client=FakeSts(_OK_STS))
+
+
+def test_a_scan_mints_without_a_queue_wait():
+    from pipeline.images.scan_launch import execute_scan
+    from pipeline.process.memory_executor import MemoryExecutor
+    from test_image_scan_launch import APPROVED, POLICY, SCAN, FakeStore
+
+    sts = FakeSts(_OK_STS)
+    execute_scan(
+        MemoryExecutor(), settings(), POLICY, FakeStore(), scan_id=SCAN, image=APPROVED,
+        kind="admission", registry_auth=None, sts_client=sts,
+    )
+    assert sts.kwargs["DurationSeconds"] == max(900, POLICY.scan_timeout_seconds + 300)

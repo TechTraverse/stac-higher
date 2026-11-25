@@ -615,8 +615,8 @@ class _Sts:
 
 @pytest.mark.parametrize("case", BUDGET["cases"], ids=lambda c: c["name"])
 def test_process_credential_budget_mint_cases(case):
-    # Mint ignores max_queue_wait_seconds until K-4 (#12) adds it to the duration.
     cap = case["max_credential_seconds"]
+    wait = case["max_queue_wait_seconds"]
     settings = Settings.from_env(
         {
             BUDGET["setting"]: "" if cap is None else str(cap),
@@ -625,12 +625,23 @@ def test_process_credential_budget_mint_cases(case):
         }
     )
     if case["mint_allowed"]:
-        mint_run_credentials(settings, "run-1", case["timeout_seconds"], sts_client=_Sts())
+        mint_run_credentials(
+            settings, "run-1", case["timeout_seconds"], queue_wait_seconds=wait, sts_client=_Sts()
+        )
     else:
         with pytest.raises(CredentialBudgetExceeded) as err:
-            mint_run_credentials(settings, "run-1", case["timeout_seconds"], sts_client=_Sts())
+            mint_run_credentials(
+                settings, "run-1", case["timeout_seconds"], queue_wait_seconds=wait,
+                sts_client=_Sts(),
+            )
         assert err.value.code == BUDGET["mint_refusal"]["error"]
         assert str(err.value).startswith(BUDGET["mint_refusal"]["error"])
+
+
+@pytest.mark.parametrize("case", BUDGET["cases"], ids=lambda c: c["name"])
+def test_process_credential_budget_deploy_and_mint_agree(case):
+    """K-4: both runtimes count the queue wait, so they agree on every case."""
+    assert case["deploy_allowed"] == case["mint_allowed"]
 
 
 def test_process_credential_budget_defaults_match_golden():

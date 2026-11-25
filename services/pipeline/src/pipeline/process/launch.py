@@ -385,6 +385,8 @@ def execute_run(
         settings,
         run_id,
         runtime.timeout_seconds,
+        # K-4 (spec §5.4): the run may wait this long for capacity first.
+        queue_wait_seconds=profile.max_queue_wait_seconds if profile else 0,
         sts_client=sts_client,
         read_prefixes=read_prefixes,
     )
