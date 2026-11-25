@@ -1957,6 +1957,41 @@ half-fails" covers cleanup.
 
 Follow-up idea: cosign-sign the chart and the images, and verify on pull.
 
+### I-165 · The catalog plane's database TLS and runtime users are render-verified only 🟡
+
+R-7 runs stac-fastapi, tipg, titiler, the proxy policy and the cube-server
+against RDS with `PGSSLMODE=verify-full` and `PGSSLROOTCERT`. libpq reads both
+(titiler, proxy policy, cube-server); stac-fastapi and tipg use asyncpg, which
+reads the same variables, but no test has connected either through TLS. tipg's
+image runs as root, so the chart runs it as uid 65534 on a read-only root
+filesystem; the other uids are the images' own users (read from GHCR). All of
+this is first exercised on a cluster in the deploy rehearsal.
+
+Tracked in: GitHub #147.
+
+### I-166 · Third-party catalog clients put the role password in their own URL 🟡
+
+The chart passes no credential in a URL, but titiler-pgstac, tipg and
+stac-fastapi assemble `postgresql://user:password@…` from `POSTGRES_*` / `PG*`
+themselves. Terraform's generated passwords are alphanumeric, so they are safe;
+an `existing`-mode deployment must give `stac_api` and `stac_reader` URL-safe
+passwords.
+
+### I-167 · tipg as `stac_reader` sees only what PUBLIC may read in `public` 🟡
+
+Spec §7.2 gives `stac_reader` "SELECT on the vector tables it serves", but no
+vector tables exist yet: tipg lists PostGIS function collections only (I-126).
+R-7 adds no grant. A future seeded vector table must grant SELECT to the
+reader role in the same change, or tipg on the chart will not list it.
+
+### I-168 · BFF responses carry the proxy's in-cluster host in their links 🟡
+
+The app forwards BFF writes to `http://<fullname>-auth-proxy:8000`, so
+stac-fastapi builds the links in a write response from that host, not the
+public catalog URL. The UI does not follow links from write responses today;
+anything that starts to should rewrite them or set
+`app.builtinCatalogInternalUrl` to the public URL.
+
 ### I-169 · The in-cluster demo seed is render-verified; what it cannot do yet 🟡
 
 The demo seed Job (R-10) and `pipeline.demo --in-cluster` are proven by
