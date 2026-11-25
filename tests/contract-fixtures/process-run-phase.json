@@ -1,0 +1,5 @@
+{
+  "style": "pinned-enum",
+  "$comment": "K-3 (process-compute spec §5.2): the sub-states of a run the pipeline writes to process_runs.phase and the app's CHECK constraint and UI read. pending_capacity = queued, released because its profile is full on this host; starting = claimed, not yet reported running; running = the backend reported it (K-4's watcher). phase is NULL on a plain queued row and on every terminal row.",
+  "phases": ["pending_capacity", "starting", "running"]
+}

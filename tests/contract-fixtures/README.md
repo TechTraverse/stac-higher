@@ -243,6 +243,15 @@ are not in the registry (I-107).
   `hardwareBoundsError()` / `check_hardware_bounds()` — `reason` is the
   message both sides produce (empty on accept). The deployment sets are
   NOT fixtures: `infra/hardware-profiles/{local,kind,eks}.json`.
+  Since K-3, `bounds_cases[]` also carry non-numeric values (a string cpu,
+  a boolean or fractional `gpu_count`, a fractional `memory_mb`): both
+  checks refuse them with the same message before comparing bounds.
+- `process-run-phase.json` (K-3) is style `pinned-enum`. `phases` is the
+  `process_runs.phase` vocabulary in canonical order. Three things consume
+  it: migration 029's CHECK constraint (`processes-migration.test.ts`), the
+  app's `ProcessRunPhase` (`processes-run-phase.test.ts`) and the
+  pipeline's `PHASES` in `pipeline/process/ledger.py`
+  (`test_process_hardware.py`).
 
 ## Additional fixture styles (R queue, R-1/R-2)
 

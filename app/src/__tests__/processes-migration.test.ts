@@ -7,6 +7,8 @@
  * an FK into pgstac, or the §7 coalescing rule surviving only as a comment.
  * Read as text, like the migration-021 pins.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { migrationEntry, migrationSource } from "./helpers/migration-source";
 
@@ -154,5 +156,58 @@ describe("migration 028 (built-in processes — X-4)", () => {
     expect(sql).toContain("CREATE UNIQUE INDEX IF NOT EXISTS processes_live_builtin_idx");
     expect(sql).toContain("ON stac_higher.processes (group_id, builtin_id)");
     expect(sql).toContain("WHERE builtin_id IS NOT NULL AND deleted_at IS NULL");
+  });
+});
+
+const PHASES: string[] = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../../../tests/contract-fixtures/process-run-phase.json", import.meta.url),
+    ),
+    "utf8",
+  ),
+).phases;
+
+describe("migration 029 (executor phase columns — K-3)", () => {
+  const sql = migrationEntry("029_process_runs_executor_phase");
+
+  it("sits between X-4's 028 and C-1's 030 in MIGRATIONS", () => {
+    // Applied by NAME (runMigrations skips recorded names), so a database
+    // already at 033 still applies 029 — migrate-ordering.test.ts proves it.
+    const at = migrate.indexOf('"029_process_runs_executor_phase"');
+    expect(at).toBeGreaterThan(migrate.indexOf('"028_builtin_processes"'));
+    expect(at).toBeLessThan(migrate.indexOf('"030_container_images"'));
+  });
+
+  it("adds the six spec §5.2 columns plus next_attempt_at, all nullable", () => {
+    for (const column of [
+      "executor_backend text",
+      "executor_handle text",
+      "phase text",
+      "phase_detail text",
+      "submitted_at timestamptz",
+      "cancel_requested_at timestamptz",
+      "next_attempt_at timestamptz",
+    ]) {
+      expect(sql).toContain(`ADD COLUMN IF NOT EXISTS ${column}`);
+      expect(sql).not.toContain(`${column} NOT NULL`);
+    }
+  });
+
+  it("constrains phase to exactly the fixture's vocabulary", () => {
+    const check = sql.match(/phase IN \(([^)]+)\)/);
+    expect(check).not.toBeNull();
+    const listed = check![1].split(",").map((s) => s.trim().replace(/'/g, ""));
+    expect(listed).toEqual(PHASES);
+    expect(sql).toContain("phase IS NULL OR phase IN");
+  });
+
+  it("adds the CHECK idempotently (a re-applied entry must not fail)", () => {
+    expect(sql).toMatch(/IF NOT EXISTS \([\s\S]*?conname = 'process_runs_phase_check'/);
+  });
+
+  it("does not touch the status CHECK — cancelled is K-4's", () => {
+    expect(sql).not.toContain("cancelled");
+    expect(sql).not.toContain("process_runs_status_check");
   });
 });

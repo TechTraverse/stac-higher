@@ -195,6 +195,8 @@ function run(overrides: Partial<ApiProcessRun> = {}): ApiProcessRun {
     created_at: "2026-08-31T00:00:00.000Z",
     started_at: null,
     finished_at: null,
+    phase: null,
+    phase_detail: null,
     ...overrides,
   };
 }
