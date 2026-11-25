@@ -143,7 +143,7 @@ Rendering fails with a message starting with the offending key path.
 | `demoSeed.existingDestinationSecret` | `""` | `existing` mode: Secret with `access_key_id`/`secret_access_key`. In `external-secrets` mode the chart renders `<fullname>-demo-destination` from `demoDestination.credentialsSecretArn`. |
 | `demoSeed.appBearer` | | `secretName` (required with `images-seed`) and `key` (`token`): an operator bearer token for the app API. |
 | `demoSeed.extraArgs` | `{}` | Extra CLI args per chosen seed, e.g. `{goes-seed: ["--window", "-2h"]}`. |
-| `demoSeed.waitReadySeconds` | `600` | Each seed waits up to this long for the STAC API (and, for `images-seed`, the app) to answer before it writes (`--wait-ready`). |
+| `demoSeed.waitReadySeconds` | `600` | Each seed waits up to this long for the STAC API (and, for `images-seed`, the app) to answer with a 2xx-4xx status before it writes (`--wait-ready`; a 5xx or a broken connection is not ready). |
 | `demoSeed.backoffLimit`, `demoSeed.activeDeadlineSeconds` | `0`, `3600` | No pod retries by default: a retry would redo every seed that already succeeded. The deadline covers `images-seed`'s scan wait. |
 | `demoSeed.resources` | 100m / 512Mi, memory limit 1Gi | Per seed container. |
 
@@ -239,10 +239,14 @@ what in-cluster mode changes:
   A failed Job stays failed with its logs; the seeds before the failing one
   have completed.
 - **Runs once per pod spec.** The Job name ends in a hash of its pod
-  template rendered without the chart-version labels: a chart-only release
-  (new chart version or appVersion, same image digests) leaves the completed
-  Job alone, while a new image, new seeds, or new args, env or Secret
-  references create a new Job (the old one is pruned) and re-seed. With tags
+  template, and that hash input is the very template the Job carries, so the
+  name and the (immutable) `spec.template` only ever change together. The pod
+  carries selector labels only; the chart version and appVersion labels sit
+  on the Job's own metadata, which may change. A chart-only release (new
+  chart version or appVersion, same image digests) therefore leaves the
+  completed Job and its template untouched, while a new image, new seeds, or
+  new args, env or Secret references create a new Job (the old one is pruned)
+  and re-seed. With tags
   instead of digests the image tag defaults to the appVersion, so a new
   appVersion is a new image and re-seeds. Re-seeding replaces the demo
   processes' revisions and their run history. To re-run by hand, delete the

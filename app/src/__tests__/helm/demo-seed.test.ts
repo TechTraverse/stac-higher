@@ -87,13 +87,28 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     expect(job(render({ demoSeed: { extraArgs: { "goes-seed": ["--window", "-3h"] } } })).metadata.name).not.toBe(a);
   });
 
-  it("a chart-only release (new version and appVersion, same digests) keeps the Job name", () => {
-    const old = renderAsVersion("0.1.0", { global: { imageDigests: DIGESTS } });
-    const next = renderAsVersion("0.2.0", { global: { imageDigests: DIGESTS } });
-    expect(job(next).metadata.name).toBe(job(old).metadata.name);
-    // the emitted labels still carry the version; only the hash ignores them
-    expect(job(next).spec.template.metadata.labels["helm.sh/chart"]).toBe("stac-higher-0.2.0");
-    expect(job(next).spec.template.metadata.labels["app.kubernetes.io/version"]).toBe("0.2.0");
+  it("a chart-only release (new version and appVersion, same digests) keeps the Job and its template", () => {
+    const old = job(renderAsVersion("0.1.0", { global: { imageDigests: DIGESTS } }));
+    const next = job(renderAsVersion("0.2.0", { global: { imageDigests: DIGESTS } }));
+    expect(next.metadata.name).toBe(old.metadata.name);
+    // spec.template is immutable once the Job has started: under the same name it must not move at all,
+    // or helm upgrade / an Argo sync fails with "field is immutable"
+    expect(next.spec.template).toEqual(old.spec.template);
+    expect(next.spec.template.metadata.labels["helm.sh/chart"]).toBeUndefined();
+    expect(next.spec.template.metadata.labels["app.kubernetes.io/version"]).toBeUndefined();
+    expect(next.spec.template.metadata.annotations).toBeUndefined();
+    // the version lives on the Job's own (mutable) metadata
+    expect(old.metadata.labels["helm.sh/chart"]).toBe("stac-higher-0.1.0");
+    expect(next.metadata.labels["helm.sh/chart"]).toBe("stac-higher-0.2.0");
+    expect(next.metadata.labels["app.kubernetes.io/version"]).toBe("0.2.0");
+  });
+
+  it("whenever the template changes, the name changes with it", () => {
+    // tags, not digests: the image tag defaults to appVersion, so a new appVersion is a new image
+    const old = job(renderAsVersion("0.1.0", {}));
+    const next = job(renderAsVersion("0.2.0", {}));
+    expect(next.spec.template).not.toEqual(old.spec.template);
+    expect(next.metadata.name).not.toBe(old.metadata.name);
   });
 
   it("a changed image digest or seed list does change the Job name", () => {

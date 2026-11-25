@@ -2,9 +2,12 @@
 R-10 demo seed: `python -m pipeline.demo --in-cluster <seed>` once per distinct pod spec.
 A plain Job, not a hook: it needs the migrated database (pre-install hooks) and the running
 catalog plane, and an Argo PostSync hook would re-seed on every sync. Its name carries a hash
-of its pod template rendered with selector labels only (no chart version, no appVersion), so a
-chart-only release leaves it alone (no immutable-field error, no re-run) while a new image, a
-new seed list or new args/env/Secret references run a new Job. No ttlSecondsAfterFinished:
+of its pod template, and the hash input and the emitted spec.template are ONE render, so the
+name and the (immutable) template can only change together. The pod carries selector labels
+only (no chart version, no appVersion); the full labels sit on the Job's own metadata, which
+is mutable. So a chart-only release leaves the Job alone (no immutable-field error, no
+re-run) while a new image, a new seed list or new args/env/Secret references run a new Job
+under a new name. No ttlSecondsAfterFinished:
 a vanished Job would be recreated by the next sync. backoffLimit defaults to 0: a pod retry
 would redo every seed that already succeeded (each replaces its processes' run history), so
 start-up ordering is absorbed inside the pod by --wait-ready instead. Re-run by hand:
@@ -61,7 +64,6 @@ kubectl delete job, then upgrade or sync.
 {{- $containers = append $containers $c -}}
 {{- end -}}
 {{- $pod := include "stac-higher.demoSeedPod" (dict "root" . "containers" $containers) -}}
-{{- $hashPod := include "stac-higher.demoSeedPod" (dict "root" . "containers" $containers "hashOnly" true) -}}
 {{- if eq $v.secrets.mode "external-secrets" }}
 {{- if $ds.deliver }}
 {{ include "stac-higher.externalSecret" (dict "root" . "name" $destSecret "remoteKey" $v.demoDestination.credentialsSecretArn "json" true "hook" false "keys" (list "access_key_id" "secret_access_key")) }}
@@ -71,7 +73,7 @@ kubectl delete job, then upgrade or sync.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ printf "%s-demo-seed-%s" $full ($hashPod | sha256sum | trunc 8) }}
+  name: {{ printf "%s-demo-seed-%s" $full ($pod | sha256sum | trunc 8) }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "stac-higher.labels" (dict "root" . "component" "demo-seed") | nindent 4 }}
@@ -82,20 +84,17 @@ spec:
     {{- $pod | nindent 4 }}
 {{- end }}
 
-{{- /* The pod template. (dict "root" $ "containers" <list of rendered containers> "hashOnly" bool)
-hashOnly renders selector labels only: the Job name hashes that variant, so the chart version and
-appVersion labels never change it (the image refs still do, through the containers). */ -}}
+{{- /* The pod template, rendered once: it is both the Job name's hash input and the emitted
+spec.template. Selector labels only, never the chart version or appVersion, and no annotations:
+anything version-bearing here would change an immutable field on a chart-only upgrade.
+(dict "root" $ "containers" <list of rendered containers>) */ -}}
 {{- define "stac-higher.demoSeedPod" -}}
 {{- $r := .root -}}
 {{- $p := $r.Values.pipeline -}}
 {{- $n := len .containers -}}
 metadata:
   labels:
-    {{- if .hashOnly }}
     {{- include "stac-higher.selectorLabels" (dict "root" $r "component" "demo-seed") | nindent 4 }}
-    {{- else }}
-    {{- include "stac-higher.labels" (dict "root" $r "component" "demo-seed") | nindent 4 }}
-    {{- end }}
 spec:
   restartPolicy: Never
   serviceAccountName: {{ include "stac-higher.serviceAccountName" (dict "root" $r "component" "pipeline") }}
