@@ -127,15 +127,39 @@ async def test_capacity_is_per_profile():
 
 
 @pytest.mark.asyncio
-async def test_a_malformed_docker_block_is_a_dead_run_naming_the_profile():
+async def test_a_malformed_docker_block_requeues_as_infrastructure(tmp_path):
+    """K-3 review: an operator typo in the profile file (`"capacity": "2"`)
+    is the deployment's fault, like an unreadable file: back to `queued`
+    without spending an attempt, never `dead` for every run on the profile
+    (for an extractor, `on_dead` would fail the ingest batch too)."""
+    import json
+
+    bad = {
+        "version": 1,
+        "profiles": [
+            {
+                "id": "standard", "label": "S", "description": "", "tier": "cpu",
+                "accelerator": None, "cpu": {"min": 0.25, "max": 4, "default": 1},
+                "memory_mb": {"min": 128, "max": 16384, "default": 512}, "gpu_count": None,
+                "max_queue_wait_seconds": 60, "image": None,
+                "backend": {"docker": {"capacity": "2"}},
+            }
+        ],
+    }
+    path = tmp_path / "profiles.json"
+    path.write_text(json.dumps(bad))
     repo = FakeProcessRepo()
     executor = MemoryExecutor(results=[ExitStatus(0)])
-    result = await _run(
-        repo, executor, capacity=None, profile_set=profiles(None, docker={"capacity": "two"})
+    result = await run_one(
+        queued(), repo=repo, executor=executor,
+        settings=Settings.from_env({"PROCESS_HARDWARE_PROFILES_FILE": str(path)}),
+        storage_client=FakeStore(), resolve_secret=lambda ref: "x", now=NOW,
+        sts_client=FakeSts(),
     )
-    assert result.status == "dead"
+    assert result.status == "queued"
     assert executor.launched == []
-    assert "profile 'standard': backend.docker.capacity" in repo.finished[-1]["error"]
+    assert repo.finished[-1]["status"] == "queued"
+    assert "backend.docker.capacity" in repo.finished[-1]["error"]
 
 
 @pytest.mark.asyncio

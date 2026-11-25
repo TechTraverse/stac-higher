@@ -245,7 +245,11 @@ are not in the registry (I-107).
   NOT fixtures: `infra/hardware-profiles/{local,kind,eks}.json`.
   Since K-3, `bounds_cases[]` also carry non-numeric values (a string cpu,
   a boolean or fractional `gpu_count`, a fractional `memory_mb`): both
-  checks refuse them with the same message before comparing bounds.
+  checks refuse them with the same message before comparing bounds. Two
+  K-3 `cases[]` pin the `backend.docker` block: opaque to the app (accept),
+  parsed with the document by the pipeline, which rejects a malformed block
+  (an unusable profile file requeues runs as infrastructure) and accepts an
+  integral float `capacity`.
 - `process-run-phase.json` (K-3) is style `pinned-enum`. `phases` is the
   `process_runs.phase` vocabulary in canonical order. Three things consume
   it: migration 029's CHECK constraint (`processes-migration.test.ts`), the

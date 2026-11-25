@@ -204,6 +204,7 @@ def test_docker_backend_is_lenient_about_an_absent_block(backend):
     "bad",
     [
         {"capacity": "two"},
+        {"capacity": "2"},
         {"capacity": 0},
         {"capacity": True},
         {"capacity": 1.5},
@@ -212,12 +213,29 @@ def test_docker_backend_is_lenient_about_an_absent_block(backend):
         "docker",
     ],
 )
-def test_docker_backend_rejects_a_malformed_block(bad):
+def test_a_malformed_docker_block_makes_the_document_unusable(bad):
+    """K-3 review: validated with the document, so the runner's unreadable-
+    profile path requeues (infrastructure) instead of every run on the
+    profile dying over an operator typo."""
+    with pytest.raises(HardwareProfileError, match=r"profile 'standard': backend\.docker"):
+        parse_hardware_profiles(_one_profile({"docker": bad}))
+
+
+def test_an_integral_float_capacity_is_accepted():
     from pipeline.process.hardware import docker_backend
 
-    profile = parse_hardware_profiles(_one_profile({"docker": bad})).standard
-    with pytest.raises(HardwareProfileError, match=r"profile 'standard': backend\.docker"):
-        docker_backend(profile)
+    profile = parse_hardware_profiles(_one_profile({"docker": {"capacity": 2.0}})).standard
+    assert docker_backend(profile).capacity == 2
+    assert isinstance(docker_backend(profile).capacity, int)
+
+
+def test_docker_capacities_maps_every_profile():
+    from pipeline.process.hardware import docker_capacities
+
+    assert docker_capacities(load_hardware_profiles(LOCAL_SET)) == {
+        "standard": 2,
+        "cpu-large": 1,
+    }
 
 
 def test_the_shipped_local_set_has_a_readable_docker_block():

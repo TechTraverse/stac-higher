@@ -1237,9 +1237,10 @@ def test_a_gpu_profile_without_device_requests_is_refused_not_launched_gpu_less(
     import dataclasses
 
     from pipeline.process.executor import HardwareUnavailable
+    from pipeline.process.hardware import DockerBackend
 
     gpu = _k3_profiles().get("gpu-l4")
-    bare = dataclasses.replace(gpu, backend={"docker": {"capacity": 1}})
+    bare = dataclasses.replace(gpu, docker=DockerBackend(capacity=1))
     api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"nvidia": {}}}})
     with pytest.raises(HardwareUnavailable, match=r"no backend\.docker\.device_requests"):
         executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1, profile_obj=bare))
