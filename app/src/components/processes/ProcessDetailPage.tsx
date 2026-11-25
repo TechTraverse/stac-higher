@@ -993,7 +993,8 @@ function RunRow({
             </Badge>
           )}
           {run.status === "running" && run.phase === "starting" && (
-            // Claimed, not yet reported running by the backend (K-3/K-4).
+            // Claimed and admitted. Until K-4's watcher writes `running`, this
+            // stays for the whole run.
             <Badge variant="outline" data-testid="run-phase-starting">
               Starting
             </Badge>

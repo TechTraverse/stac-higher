@@ -689,8 +689,9 @@ silently receive an empty string where a credential was intended.
 Within seconds of the triggering item landing. The catalog write wakes the
 dispatcher over a Postgres `NOTIFY`, the dispatcher queues your run, and the
 run is handed straight to the executor — no clock in between. A one-minute
-sweep still exists, but only to recover a run whose immediate job was lost, to
-release one the rate ceiling deferred, and to retry a failed one.
+sweep (the run tick) still exists, but only to recover a run whose immediate
+job was lost, to release one the rate ceiling deferred or that waited for
+capacity, and to retry a failed one.
 
 Items that arrive for the same source while a run is still **queued** join
 that run's batch rather than starting another. Once a run is claimed it is
