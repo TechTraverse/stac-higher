@@ -30,7 +30,9 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     const docs = render({}, "base");
     expect(jobs(docs)).toEqual([]);
     expect(docs.find((d: Doc) => d.kind === "ExternalSecret" && d.metadata.name.includes("demo"))).toBeUndefined();
-    // the R-5 scenario carries demoDestination, which alone renders nothing
+  });
+
+  it("R-5's demoDestination alone renders nothing", () => {
     const r5 = renderChart({ valuesFiles: [scenario("base")[0].replace("base.yaml", "r5-helm-values.yaml"), scenario("base")[0].replace("base.yaml", "r5-deployment.yaml")] });
     expect(r5.ok, r5.stderr).toBe(true);
     expect(jobs(r5.docs)).toEqual([]);
