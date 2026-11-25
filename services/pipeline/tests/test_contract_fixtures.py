@@ -668,6 +668,6 @@ def test_process_run_status_vocabulary_matches_golden():
     assert list(ledger.STATUSES) == fixture["statuses"]
     assert list(ledger.TERMINAL_STATUSES) == fixture["terminal"]
     assert list(ledger.CANCELLABLE_STATUSES) == fixture["cancellable"]
-    assert ledger.CANCEL_CHANNEL == fixture["cancel_channel"]
+    assert fixture["cancel_channel"] == ledger.CANCEL_CHANNEL
     assert set(ledger.OPEN_STATUSES) | set(ledger.TERMINAL_STATUSES) == set(ledger.STATUSES)
     assert not set(ledger.OPEN_STATUSES) & set(ledger.TERMINAL_STATUSES)
