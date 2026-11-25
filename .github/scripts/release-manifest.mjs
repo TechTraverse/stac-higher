@@ -7,8 +7,10 @@
 //
 // Dependency-free Node >= 22 ESM. Usage:
 //   node release-manifest.mjs --version v1.2.3 --git-sha <40 hex> \
-//     --repository <owner>/<repo> --digests-dir <dir> --out <file>
+//     --repository <owner>/<repo> --digests-dir <dir> --out <file> \
+//     [--chart-digest sha256:<64 hex>]
 // <dir> holds one file per image, named by its key, containing its digest.
+// --chart-digest (a release, after the chart push) adds `chart.digest`.
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,8 +29,15 @@ export const IMAGE_KEYS = Object.freeze([
   "auth-proxy",
 ]);
 
-// No `+build` metadata: Docker tags cannot carry `+`.
-const VERSION_RE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/;
+// SemVer 2.0 with a `v` prefix and no `+build` metadata (Docker tags cannot
+// carry `+`). Pre-release identifiers are non-empty and numeric ones have no
+// leading zero, so every version this accepts is one Helm accepts too.
+// scripts/package-chart.sh holds the same rule in bash; a test keeps the two
+// in step (app/src/__tests__/release-manifest.test.ts).
+const PRE_ID = String.raw`(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)`;
+export const VERSION_RE = new RegExp(
+  String.raw`^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-${PRE_ID}(?:\.${PRE_ID})*)?$`,
+);
 const SHA_RE = /^[0-9a-f]{40}$/;
 const REPOSITORY_RE = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
@@ -40,16 +49,19 @@ const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
  *   version: string,
  *   gitSha: string,
  *   images: Record<string, ImageEntry>,
- *   chart: { ref: string, version: string },
+ *   chart: { ref: string, version: string, digest?: string },
  *   terraformModules: { ref: string },
  * }} ReleaseManifest
  */
 
 /**
- * @param {{ version: string, gitSha: string, repository: string, digests: Record<string, string> }} input
+ * `chartDigest` is the pushed chart's OCI manifest digest. A release passes
+ * it (the chart is pushed before the manifest is built); a dry run, which
+ * pushes nothing, omits it and the manifest has no `chart.digest`.
+ * @param {{ version: string, gitSha: string, repository: string, digests: Record<string, string>, chartDigest?: string }} input
  * @returns {ReleaseManifest}
  */
-export function buildReleaseManifest({ version, gitSha, repository, digests }) {
+export function buildReleaseManifest({ version, gitSha, repository, digests, chartDigest }) {
   /** @type {string[]} */
   const problems = [];
   if (typeof version !== "string" || !VERSION_RE.test(version)) {
@@ -72,6 +84,9 @@ export function buildReleaseManifest({ version, gitSha, repository, digests }) {
   for (const key of Object.keys(given)) {
     if (!IMAGE_KEYS.includes(key)) problems.push(`unexpected image ${key}`);
   }
+  if (chartDigest !== undefined && (typeof chartDigest !== "string" || !DIGEST_RE.test(chartDigest))) {
+    problems.push(`chart digest must be sha256:<64 lowercase hex>, got ${JSON.stringify(chartDigest)}`);
+  }
   if (problems.length > 0) throw new Error(problems.join("\n"));
 
   const semver = version.slice(1);
@@ -89,7 +104,11 @@ export function buildReleaseManifest({ version, gitSha, repository, digests }) {
     version,
     gitSha,
     images,
-    chart: { ref: `oci://ghcr.io/${ownerLc}/charts/stac-higher`, version: semver },
+    chart: {
+      ref: `oci://ghcr.io/${ownerLc}/charts/stac-higher`,
+      version: semver,
+      ...(chartDigest === undefined ? {} : { digest: chartDigest }),
+    },
     terraformModules: {
       ref: `git::https://github.com/${owner}/${repo}.git//infra/terraform/modules/stac-higher?ref=${version}`,
     },
@@ -126,6 +145,7 @@ export function main(argv) {
         repository: { type: "string" },
         "digests-dir": { type: "string" },
         out: { type: "string" },
+        "chart-digest": { type: "string" },
       },
     });
     for (const flag of ["version", "git-sha", "repository", "digests-dir", "out"]) {
@@ -136,6 +156,7 @@ export function main(argv) {
       gitSha: /** @type {string} */ (values["git-sha"]),
       repository: /** @type {string} */ (values.repository),
       digests: readDigestsDir(/** @type {string} */ (values["digests-dir"])),
+      chartDigest: values["chart-digest"],
     });
     writeFileSync(/** @type {string} */ (values.out), JSON.stringify(manifest, null, 2) + "\n");
     return 0;

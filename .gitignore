@@ -52,5 +52,9 @@ pgdata/
 *.tfplan
 *.tfvars
 
+# Helm subchart archives: `helm dependency build` fetches them from the
+# committed Chart.lock (scripts/package-chart.sh); only the lock is committed.
+infra/helm/stac-higher/charts/*.tgz
+
 __pycache__/
 *.pyc
