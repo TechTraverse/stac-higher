@@ -136,9 +136,13 @@ describe.skipIf(!helmReady())("chart config layer", () => {
     expect(e.S3_BUCKET).toBe("stac-higher-example-platform");
     expect(e.TITILER_URL).toBe("https://titiler.example.com");
     expect(e.BUILTIN_CATALOG_PUBLIC_URL).toBe("https://catalog.example.com");
-    expect(e).not.toHaveProperty("BUILTIN_CATALOG_URL");
-    expect(e).not.toHaveProperty("SAFE_FETCH_ALLOW_HOSTS");
     expect(e).not.toHaveProperty("AUTH_BYPASS_FORCE");
+  });
+
+  it("BFF writes default to the in-cluster auth-proxy", () => {
+    const e = data(render(), "env-app");
+    expect(e.BUILTIN_CATALOG_URL).toBe("http://stac-higher-auth-proxy:8000");
+    expect(e.SAFE_FETCH_ALLOW_HOSTS).toBe("stac-higher-auth-proxy");
   });
 
   it("bypass sets AUTH_BYPASS_FORCE only when allowed", () => {

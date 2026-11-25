@@ -157,8 +157,8 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     });
     it("renders with the optional R-5 sections omitted", () => {
       // R-5 omits `auth` and `demoDestination` when off (never null). The chart
-      // defaults then apply; oidc without an issuer is refused, so the deployment
-      // supplies the dev-bypass override here.
+      // defaults then apply; a missing issuer is refused (R-7: in every mode, the
+      // catalog proxy needs it), so the deployment supplies its own IdP here.
       const tmp = mkdtempSync(join(tmpdir(), "r5-omit-"));
       try {
         const doc = parse(readFileSync(r5[0], "utf8"));
@@ -168,10 +168,11 @@ describe.skipIf(!helmReady())("chart values contract", () => {
         writeFileSync(f, stringify(doc));
         const r = renderChart({
           valuesFiles: [f, r5[1]],
-          values: { auth: { mode: "bypass", allowDevBypass: true } },
+          values: { auth: { issuer: "https://idp.example.com/realms/example", clientId: "stac-higher-example" } },
         });
         expect(r.ok, r.stderr).toBe(true);
         fails({ valuesFiles: [f, r5[1]] }, "auth.issuer");
+        fails({ valuesFiles: [f, r5[1]], values: { auth: { mode: "bypass", allowDevBypass: true } } }, "auth.issuer");
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }
@@ -199,11 +200,27 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     });
     it("refuses partial digests", () => {
       fails(base({ global: { imageDigests: { app: D("a") } } }), "global.imageDigests.pipeline");
+      // R-7: the catalog workloads reference titiler, cube-server and auth-proxy too.
+      const withoutTitiler = Object.fromEntries(IMAGE_KEYS.filter((k: string) => k !== "titiler").map((k: string) => [k, D("a")]));
+      fails(base({ global: { imageDigests: withoutTitiler } }), "global.imageDigests.titiler");
     });
   });
 
   it("refuses an app URL with a path", () => {
     fails(base({ publicUrls: { app: "https://example.com/stac" } }), "publicUrls.app");
+  });
+
+  it("refuses a service URL with a path, and two services on one host", () => {
+    for (const k of ["catalog", "titiler", "tipg", "cubeServer"]) {
+      fails(base({ publicUrls: { [k]: "https://svc.example.com/x" } }), `publicUrls.${k}`);
+    }
+    fails(base({ publicUrls: { tipg: "https://titiler.example.com/" } }), "publicUrls.tipg");
+    const ok = renderChart(base({ publicUrls: { tipg: "https://tipg.example.com/" } }));
+    expect(ok.ok, ok.stderr).toBe(true);
+  });
+
+  it("the catalog proxy needs auth.issuer in every auth mode", () => {
+    fails(base({ auth: { mode: "bypass", allowDevBypass: true, issuer: "" } }), "auth.issuer");
   });
 
   it("verify-full needs exactly one CA source", () => {

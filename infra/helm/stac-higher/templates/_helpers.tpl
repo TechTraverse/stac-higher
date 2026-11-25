@@ -48,7 +48,12 @@ app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 
 {{/* Pulled form: the registry host is swapped for its mirror prefix when one is configured. */}}
 {{- define "stac-higher.pullRef" -}}
-{{- $ref := include "stac-higher.imageRef" . -}}
+{{- include "stac-higher.mirrorRef" (dict "root" .root "ref" (include "stac-higher.imageRef" .)) -}}
+{{- end -}}
+
+{{/* Any image ref in its pulled form (also the third-party catalog images). (dict "root" $ "ref" <ref>) */}}
+{{- define "stac-higher.mirrorRef" -}}
+{{- $ref := .ref -}}
 {{- $host := index (splitList "/" $ref) 0 -}}
 {{- $mirrors := .root.Values.registry.mirrorPrefixes | default dict -}}
 {{- $prefix := get $mirrors $host | default "" -}}
@@ -287,8 +292,9 @@ spec:
 {{- fail (printf "global.imageDigests.%s must match sha256:<64 hex>" $k) -}}
 {{- end -}}
 {{- end -}}
+{{- include "stac-higher.validateCatalog" . -}}
 {{- if $digests -}}
-{{- range $k := list "app" "pipeline" "image-scanner" "process-runtime" "process-runtime-stactools" -}}
+{{- range $k := list "app" "pipeline" "image-scanner" "process-runtime" "process-runtime-stactools" "titiler" "cube-server" "auth-proxy" -}}
 {{- if not (hasKey $digests $k) -}}
 {{- fail (printf "global.imageDigests.%s is missing: when any digest is set, every referenced image needs one" $k) -}}
 {{- end -}}
@@ -438,5 +444,217 @@ tolerations:
 {{- with $j.affinity }}
 affinity:
   {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
+{{/* R-7 cross-field rules for the catalog plane and the cube-server. */}}
+{{- define "stac-higher.validateCatalog" -}}
+{{- $v := .Values -}}
+{{- if not $v.auth.issuer -}}
+{{- fail "auth.issuer is required in every auth mode: the catalog auth-proxy needs its OIDC discovery URL" -}}
+{{- end -}}
+{{- $hosts := dict -}}
+{{- range $k := list "app" "catalog" "titiler" "tipg" "cubeServer" -}}
+{{- $raw := get $v.publicUrls $k -}}
+{{- $u := urlParse (trimSuffix "/" $raw) -}}
+{{- if or $u.path $u.query $u.fragment -}}
+{{- fail (printf "publicUrls.%s must be a bare origin without a path, query or fragment, got %q" $k $raw) -}}
+{{- end -}}
+{{- if hasKey $hosts $u.hostname -}}
+{{- fail (printf "publicUrls.%s shares host %q with publicUrls.%s; every public service needs its own host" $k $u.hostname (get $hosts $u.hostname)) -}}
+{{- end -}}
+{{- $_ := set $hosts $u.hostname $k -}}
+{{- end -}}
+{{- range $k := list "stacApi" "tipg" -}}
+{{- $img := (get $v.catalog $k).image -}}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $img) -}}
+{{- fail (printf "catalog.%s.image must be pinned by digest (<ref>@sha256:<64 hex>), got %q" $k $img) -}}
+{{- end -}}
+{{- end -}}
+{{- range $k := list "stacApi" "authProxy" "titiler" "tipg" -}}
+{{- range $e := keys ((get $v.catalog $k).env | default dict) | sortAlpha -}}
+{{- if regexMatch "(SECRET|TOKEN|PASSWORD|_PASS$|_KEY$|_KEY_ID$)" (upper $e) -}}
+{{- fail (printf "catalog.%s.env.%s looks like a secret; env values are rendered into a ConfigMap, so wire secrets through the secrets layer instead" $k $e) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $e := keys ($v.cubeServer.env | default dict) | sortAlpha -}}
+{{- if regexMatch "(SECRET|TOKEN|PASSWORD|_PASS$|_KEY$|_KEY_ID$)" (upper $e) -}}
+{{- fail (printf "cubeServer.env.%s looks like a secret; env values are rendered into a ConfigMap, so wire secrets through the secrets layer instead" $e) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (not $v.catalog.authProxy.rolesClaim) $v.auth.claimsMapping (hasKey $v.auth.claimsMapping "roles") (not (kindIs "string" $v.auth.claimsMapping.roles)) -}}
+{{- fail "catalog.authProxy.rolesClaim must be set: auth.claimsMapping.roles is not a single claim path" -}}
+{{- end -}}
+{{- end -}}
+
+{{/* POLICY_ROLES_CLAIM for the proxy write policy (ADR 0015): explicit, else the app's roles claim path, else Keycloak's. */}}
+{{- define "stac-higher.proxyRolesClaim" -}}
+{{- $v := .Values -}}
+{{- $m := $v.auth.claimsMapping | default dict -}}
+{{- if $v.catalog.authProxy.rolesClaim -}}
+{{- $v.catalog.authProxy.rolesClaim -}}
+{{- else if and (hasKey $m "roles") (kindIs "string" $m.roles) -}}
+{{- $m.roles -}}
+{{- else -}}
+realm_access.roles
+{{- end -}}
+{{- end -}}
+
+{{/* POLICY_WRITE_ROLES: explicit, else every raw role value the app maps to operator or admin (claims.ts: a roleMap
+entry maps a raw value; an unmapped raw value passes through and survives only as member/operator/admin). */}}
+{{- define "stac-higher.proxyWriteRoles" -}}
+{{- $v := .Values -}}
+{{- if $v.catalog.authProxy.writeRoles -}}
+{{- join "," $v.catalog.authProxy.writeRoles -}}
+{{- else -}}
+{{- $roleMap := (($v.auth.claimsMapping | default dict).roleMap) | default dict -}}
+{{- $out := list -}}
+{{- range $raw, $role := $roleMap -}}
+{{- if has $role (list "operator" "admin") -}}
+{{- $out = append $out $raw -}}
+{{- end -}}
+{{- end -}}
+{{- range $r := list "operator" "admin" -}}
+{{- if not (hasKey $roleMap $r) -}}
+{{- $out = append $out $r -}}
+{{- end -}}
+{{- end -}}
+{{- $out | uniq | sortAlpha | join "," -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Rolls the catalog workloads when their config changes. */}}
+{{- define "stac-higher.catalogChecksum" -}}
+{{- $b := .Template.BasePath -}}
+{{- cat (include (print $b "/catalog-config.yaml") .) (include (print $b "/db-ca.yaml") .) | sha256sum -}}
+{{- end -}}
+
+{{/*
+One catalog-plane or cube-server Deployment + Service (R-7). (dict "root" $ "component" <label> "values" <section>
+"image" <pulled ref> "port" N "uid" N "gid" N "serviceAccount" <name or ""> "command" <list or nil>
+"readinessPath" <path> "tmpSize" <quantity> "env" <list of env entries>)
+No ServiceAccount -> the namespace default; every pod runs without an API token.
+*/}}
+{{- define "stac-higher.catalogDeployment" -}}
+{{- $r := .root -}}
+{{- $s := .values -}}
+{{- $full := include "stac-higher.fullname" $r -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-{{ .component }}
+  namespace: {{ $r.Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" $r "component" .component) | nindent 4 }}
+spec:
+  replicas: {{ $s.replicas }}
+  selector:
+    matchLabels:
+      {{- include "stac-higher.selectorLabels" (dict "root" $r "component" .component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "stac-higher.labels" (dict "root" $r "component" .component) | nindent 8 }}
+      annotations:
+        {{- $ann := merge (deepCopy ($s.podAnnotations | default dict)) (dict "checksum/config" (include "stac-higher.catalogChecksum" $r)) }}
+        {{- toYaml $ann | nindent 8 }}
+    spec:
+      {{- with .serviceAccount }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .uid }}
+        runAsGroup: {{ .gid }}
+        fsGroup: {{ .gid }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .component }}
+          image: {{ .image | quote }}
+          {{- with .command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ $full }}-env-{{ .component }}
+          env:
+            {{- toYaml .env | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: {{ .readinessPath }}
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            {{- toYaml $s.resources | nindent 12 }}
+          securityContext:
+            {{- include "stac-higher.containerSecurityContext" (dict "readOnly" true) | nindent 12 }}
+          volumeMounts:
+            {{- with include "stac-higher.caVolumeMount" (dict "root" $r) }}
+            - {{- . | nindent 14 }}
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- with include "stac-higher.caVolume" (dict "root" $r "hook" false) }}
+        - {{- . | nindent 10 }}
+        {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .tmpSize }}
+      {{- with $s.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $s.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $s.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-{{ .component }}
+  namespace: {{ $r.Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" $r "component" .component) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "stac-higher.selectorLabels" (dict "root" $r "component" .component) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .port }}
+      targetPort: http
+      protocol: TCP
+{{- end -}}
+
+{{/* secretKeyRef env pairs. (dict "secret" <name> "pairs" (list (list ENV key) ...)) */}}
+{{- define "stac-higher.secretEnv" -}}
+{{- $s := .secret -}}
+{{- range $p := .pairs }}
+- name: {{ index $p 0 }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $s }}
+      key: {{ index $p 1 }}
 {{- end }}
 {{- end -}}

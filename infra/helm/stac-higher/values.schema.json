@@ -474,6 +474,50 @@
               "type": "object"
             }
           }
+        },
+        "catalog": {
+          "type": "object",
+          "properties": {
+            "annotations": {
+              "type": "object"
+            },
+            "tlsSecretName": {
+              "type": "string"
+            }
+          }
+        },
+        "titiler": {
+          "type": "object",
+          "properties": {
+            "annotations": {
+              "type": "object"
+            },
+            "tlsSecretName": {
+              "type": "string"
+            }
+          }
+        },
+        "tipg": {
+          "type": "object",
+          "properties": {
+            "annotations": {
+              "type": "object"
+            },
+            "tlsSecretName": {
+              "type": "string"
+            }
+          }
+        },
+        "cubeServer": {
+          "type": "object",
+          "properties": {
+            "annotations": {
+              "type": "object"
+            },
+            "tlsSecretName": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -491,6 +535,12 @@
         },
         "metricsFrom": {
           "type": "array"
+        },
+        "publicIngressFrom": {
+          "type": [
+            "array",
+            "null"
+          ]
         }
       }
     },
@@ -613,6 +663,203 @@
               }
             }
           }
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "properties": {
+        "stacApi": {
+          "type": "object",
+          "properties": {
+            "replicas": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "requests": {
+                  "type": "object"
+                },
+                "limits": {
+                  "type": "object"
+                }
+              }
+            },
+            "env": {
+              "type": "object"
+            },
+            "podAnnotations": {
+              "type": "object"
+            },
+            "nodeSelector": {
+              "type": "object"
+            },
+            "tolerations": {
+              "type": "array"
+            },
+            "affinity": {
+              "type": "object"
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "authProxy": {
+          "type": "object",
+          "properties": {
+            "replicas": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "requests": {
+                  "type": "object"
+                },
+                "limits": {
+                  "type": "object"
+                }
+              }
+            },
+            "env": {
+              "type": "object"
+            },
+            "podAnnotations": {
+              "type": "object"
+            },
+            "nodeSelector": {
+              "type": "object"
+            },
+            "tolerations": {
+              "type": "array"
+            },
+            "affinity": {
+              "type": "object"
+            },
+            "rolesClaim": {
+              "type": "string"
+            },
+            "writeRoles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "titiler": {
+          "type": "object",
+          "properties": {
+            "replicas": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "requests": {
+                  "type": "object"
+                },
+                "limits": {
+                  "type": "object"
+                }
+              }
+            },
+            "env": {
+              "type": "object"
+            },
+            "podAnnotations": {
+              "type": "object"
+            },
+            "nodeSelector": {
+              "type": "object"
+            },
+            "tolerations": {
+              "type": "array"
+            },
+            "affinity": {
+              "type": "object"
+            }
+          }
+        },
+        "tipg": {
+          "type": "object",
+          "properties": {
+            "replicas": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "requests": {
+                  "type": "object"
+                },
+                "limits": {
+                  "type": "object"
+                }
+              }
+            },
+            "env": {
+              "type": "object"
+            },
+            "podAnnotations": {
+              "type": "object"
+            },
+            "nodeSelector": {
+              "type": "object"
+            },
+            "tolerations": {
+              "type": "array"
+            },
+            "affinity": {
+              "type": "object"
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "cubeServer": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          }
+        },
+        "env": {
+          "type": "object"
+        },
+        "podAnnotations": {
+          "type": "object"
+        },
+        "nodeSelector": {
+          "type": "object"
+        },
+        "tolerations": {
+          "type": "array"
+        },
+        "affinity": {
+          "type": "object"
         }
       }
     },

@@ -22,10 +22,10 @@
 {{- $_ := set $app "TIPG_URL" $v.publicUrls.tipg -}}
 {{- $_ := set $app "CUBE_SERVER_URL" $v.publicUrls.cubeServer -}}
 {{- $hosts := list -}}
-{{- if $v.app.builtinCatalogInternalUrl -}}
-{{- $_ := set $app "BUILTIN_CATALOG_URL" $v.app.builtinCatalogInternalUrl -}}
-{{- $hosts = append $hosts (urlParse $v.app.builtinCatalogInternalUrl).hostname -}}
-{{- end -}}
+{{- /* R-7: BFF writes go to the in-cluster auth-proxy unless the deployment names another target. */ -}}
+{{- $internal := $v.app.builtinCatalogInternalUrl | default (printf "http://%s-auth-proxy:8000" (include "stac-higher.fullname" .)) -}}
+{{- $_ := set $app "BUILTIN_CATALOG_URL" $internal -}}
+{{- $hosts = append $hosts (urlParse $internal).hostname -}}
 {{- $hosts = concat $hosts ($v.app.safeFetchAllowHosts | default list) -}}
 {{- if $hosts -}}
 {{- $_ := set $app "SAFE_FETCH_ALLOW_HOSTS" (join "," $hosts) -}}
