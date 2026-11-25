@@ -13,8 +13,24 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 const mutateAsync = vi.fn(async (_args: unknown) => ({}));
 
+const PROFILES = [
+  {
+    id: "standard", label: "Standard", description: "General purpose.", tier: "cpu",
+    accelerator: null, cpu: { min: 0.25, max: 4, default: 1 },
+    memory_mb: { min: 128, max: 16384, default: 512 }, gpu_count: null,
+    max_queue_wait_seconds: 1800, image: null,
+  },
+  {
+    id: "cpu-large", label: "CPU — large", description: "Many cores.", tier: "cpu-large",
+    accelerator: null, cpu: { min: 2, max: 8, default: 4 },
+    memory_mb: { min: 4096, max: 32768, default: 8192 }, gpu_count: null,
+    max_queue_wait_seconds: 3600, image: null,
+  },
+];
+
 vi.mock("@/lib/processes/queries", () => ({
   useDeployRevision: () => ({ mutateAsync, isPending: false }),
+  useHardwareProfiles: () => ({ data: { backend: "docker", profiles: PROFILES } }),
 }));
 vi.mock("@/lib/connections/queries", () => ({
   useConnections: () => ({ data: [] }),
@@ -216,5 +232,111 @@ describe("CodeCard runtime chooser (C-3, container-images spec §9.3)", () => {
     expect(screen.getByRole("radio", { name: /Container image/ })).toBeChecked();
     expect((screen.getByLabelText("Image") as HTMLSelectElement).value).toBe(APPROVED.id);
     expect(screen.getByLabelText("Command (optional)")).toHaveValue("tool 'a b'");
+  });
+});
+
+describe("CodeCard hardware (K-2, process-compute spec §9)", () => {
+  const DEPLOYED = {
+    kind: "inline_python",
+    image: null,
+    runtime_image: "default",
+    memory_mb: 8192,
+    timeout_seconds: 3600,
+    retry: { max_attempts: 3, backoff: "exponential" },
+    network: { level: "isolated", hosts: [] },
+    hardware: { profile: "cpu-large", cpu: 4, gpu_count: 0 },
+  };
+
+  function card(currentRevision: string | null, currentRuntime: Record<string, unknown> | null) {
+    return (
+      <CodeCard
+        id={PROCESS_ID}
+        groupId="earth-observation"
+        currentCode="print(1)"
+        currentEnv={[]}
+        currentRevision={currentRevision}
+        currentRuntime={currentRuntime}
+        canMutate
+        kind="transform"
+      />
+    );
+  }
+
+  function deployedRuntime() {
+    return (
+      mutateAsync.mock.calls[0][0] as unknown as {
+        input: { runtime: { hardware: unknown; memory_mb: number; timeout_seconds: number } };
+      }
+    ).input.runtime;
+  }
+
+  it("deploys the schema defaults when there is no revision", async () => {
+    setup();
+    expect(screen.getByRole("group", { name: "Hardware" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Hardware profile")).toHaveValue("standard");
+    expect(screen.getByLabelText("Memory (MB)")).toHaveValue(512);
+    fireEvent.click(screen.getByRole("button", { name: /Deploy revision/ }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(deployedRuntime().hardware).toEqual({ profile: "standard", cpu: 1, gpu_count: 0 });
+    expect(deployedRuntime().memory_mb).toBe(512);
+    expect(deployedRuntime().timeout_seconds).toBe(900);
+  });
+
+  it("starts from the current revision's hardware, memory and timeout", () => {
+    render(card("rev-1", DEPLOYED));
+    expect(screen.getByLabelText("Hardware profile")).toHaveValue("cpu-large");
+    expect(screen.getByLabelText("CPU (cores)")).toHaveValue(4);
+    expect(screen.getByLabelText("Memory (MB)")).toHaveValue(8192);
+    expect(screen.getByLabelText("Timeout (seconds)")).toHaveValue(3600);
+  });
+
+  it("re-syncs when the current revision moves", () => {
+    const view = render(card(null, null));
+    expect(screen.getByLabelText("Memory (MB)")).toHaveValue(512);
+    view.rerender(card("rev-2", DEPLOYED));
+    expect(screen.getByLabelText("Hardware profile")).toHaveValue("cpu-large");
+    expect(screen.getByLabelText("Memory (MB)")).toHaveValue(8192);
+    expect(screen.getByLabelText("Timeout (seconds)")).toHaveValue(3600);
+  });
+
+  it("re-syncs when the revision's runtime arrives after the revision id", () => {
+    const view = render(card("rev-1", null));
+    expect(screen.getByLabelText("Hardware profile")).toHaveValue("standard");
+    view.rerender(card("rev-1", DEPLOYED));
+    expect(screen.getByLabelText("Hardware profile")).toHaveValue("cpu-large");
+    expect(screen.getByLabelText("Memory (MB)")).toHaveValue(8192);
+  });
+
+  it("will not deploy a stored value its profile no longer admits, and says why (I-130)", () => {
+    render(card("rev-1", { ...DEPLOYED, hardware: { profile: "standard", cpu: 1, gpu_count: 0 }, memory_mb: 32768 }));
+    expect(screen.getByTestId("hardware-issue")).toHaveTextContent(
+      "memory_mb 32768 is outside profile 'standard' bounds 128–16384",
+    );
+    expect(screen.getByRole("button", { name: /Deploy revision/ })).toBeDisabled();
+    expect(screen.getByTestId("deploy-blocked")).toHaveTextContent(
+      "memory_mb 32768 is outside profile 'standard' bounds 128–16384",
+    );
+    // Back inside the bounds, the deploy is open again.
+    fireEvent.change(screen.getByLabelText("Memory (MB)"), { target: { value: "16384" } });
+    expect(screen.getByRole("button", { name: /Deploy revision/ })).toBeEnabled();
+    expect(screen.queryByTestId("deploy-blocked")).toBeNull();
+  });
+
+  it("will not deploy a cleared memory input", () => {
+    setup();
+    fireEvent.change(screen.getByLabelText("Memory (MB)"), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: /Deploy revision/ })).toBeDisabled();
+    expect(screen.getByTestId("deploy-blocked")).toHaveTextContent(/memory_mb 0 is outside/);
+  });
+
+  it("deploys the picked profile at its defaults after a profile change", async () => {
+    setup();
+    fireEvent.change(screen.getByLabelText("Hardware profile"), { target: { value: "cpu-large" } });
+    expect(screen.getByLabelText("CPU (cores)")).toHaveValue(4);
+    expect(screen.getByLabelText("Memory (MB)")).toHaveValue(8192);
+    fireEvent.click(screen.getByRole("button", { name: /Deploy revision/ }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(deployedRuntime().hardware).toEqual({ profile: "cpu-large", cpu: 4, gpu_count: 0 });
+    expect(deployedRuntime().memory_mb).toBe(8192);
   });
 });

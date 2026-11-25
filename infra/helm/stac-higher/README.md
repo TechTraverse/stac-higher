@@ -57,7 +57,7 @@ Rendering fails with a message starting with the offending key path.
 | `aws.region` | `us-east-1` | Becomes `AWS_REGION`, `AWS_DEFAULT_REGION`, `S3_REGION`, `STAGING_S3_REGION`. |
 | `aws.bucket` | `null` | The platform bucket (`S3_BUCKET`, `STAGING_BUCKET`). |
 | `aws.kmsKeyArn` | `""` | Informational; the bucket's default SSE-KMS applies. |
-| `aws.processRunRoleArn` | `null` | `PROCESS_STS_ROLE_ARN`. |
+| `aws.processRunRoleArn` | `null` | `PROCESS_STS_ROLE_ARN`; its partition is also the run session policy's. |
 | `aws.processMaxCredentialSeconds` | `3600` | Integer >= 900; `PROCESS_MAX_CREDENTIAL_SECONDS`. An explicit `null` removes the cap. Hardware profiles whose queue wait plus grace cannot fit under it fail the render. |
 | `aws.s3PrefixListCidrs` | `[]` | Consumed by R-8. |
 | `publicUrls` | | Browser-facing URLs. |

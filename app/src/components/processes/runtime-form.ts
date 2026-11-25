@@ -7,8 +7,12 @@
  */
 import { imageSnapshotSchema, type ImageSnapshot } from "@/lib/images/reference";
 import { formatCommand, parseCommand } from "@/lib/processes/command";
+import { DEFAULT_HARDWARE } from "@/lib/processes/hardware-public";
 import {
+  hardwareSchema,
   PROCESS_RUNTIME_IMAGE_ALIASES,
+  type ProcessHardware,
+  type ProcessKind,
   type ProcessNetwork,
   type ProcessRuntime,
   type ProcessRuntimeKind,
@@ -61,10 +65,49 @@ export function runtimeFormFromRevision(
   return { ...DEFAULT_RUNTIME_FORM, runtimeImage: alias };
 }
 
+/**
+ * K-2: what the revision asked the hardware for — the Hardware fieldset's
+ * profile and counts plus the memory and timeout beside them. Read leniently,
+ * field by field like `runtimeFormFromRevision`: an absent `hardware` block
+ * is every revision stored before K-1 and means `standard` (spec §4), and a
+ * value the write gate would never have stored falls back to its default
+ * rather than blanking the form.
+ */
+export interface ResourceFormState {
+  hardware: ProcessHardware;
+  memoryMb: number;
+  timeoutSeconds: number;
+}
+
+const DEFAULT_MEMORY_MB = 512;
+
+/** GOES spec §6.5: an extractor runs against one ingested file rather than a
+ * batch, so it defaults to a much shorter timeout than a transform. */
+export function defaultTimeoutSeconds(kind: ProcessKind): number {
+  return kind === "extractor" ? 120 : 900;
+}
+
+function positiveInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+export function resourcesFromRevision(
+  runtime: Record<string, unknown> | null | undefined,
+  kind: ProcessKind,
+): ResourceFormState {
+  const hardware = hardwareSchema.safeParse(runtime?.hardware);
+  return {
+    hardware: hardware.success ? hardware.data : DEFAULT_HARDWARE,
+    memoryMb: positiveInt(runtime?.memory_mb) ?? DEFAULT_MEMORY_MB,
+    timeoutSeconds: positiveInt(runtime?.timeout_seconds) ?? defaultTimeoutSeconds(kind),
+  };
+}
+
 export interface RuntimeLimits {
   memory_mb: number;
   timeout_seconds: number;
   network: ProcessNetwork;
+  hardware: ProcessHardware;
 }
 
 export type RuntimePayload =
@@ -77,9 +120,7 @@ export function buildRuntimePayload(form: RuntimeFormState, limits: RuntimeLimit
     timeout_seconds: limits.timeout_seconds,
     retry: { max_attempts: 3, backoff: "exponential" as const },
     network: limits.network,
-    // K-1: no hardware picker in this form yet (K-2 adds it) — the schema's
-    // own default profile at its default cpu, no GPU.
-    hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
+    hardware: limits.hardware,
   };
   if (form.kind === "inline_python") {
     return {

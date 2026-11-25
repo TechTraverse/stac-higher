@@ -86,6 +86,13 @@ export const processKeys = {
   runs: (id: string) => [...processKeys.detail(id), "runs"] as const,
 } as const;
 
+/** The deployment's hardware profiles (K-2). Deployment config, so it sits
+ * outside `processKeys` — a process mutation must not refetch it. */
+export const hardwareKeys = {
+  all: () => ["hardware"] as const,
+  profiles: () => [...hardwareKeys.all(), "profiles"] as const,
+};
+
 /** The platform-wide image registry (C-3). Catalog-agnostic like every
  * platform factory; mutations invalidate by the `all()` prefix. */
 export const imageKeys = {

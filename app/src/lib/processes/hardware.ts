@@ -18,12 +18,18 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
+import {
+  DEFAULT_HARDWARE,
+  hardwareBoundsError as profilesBoundsError,
+  type PublicHardwareProfile as ClientHardwareProfile,
+} from "./hardware-public";
+
 export const HARDWARE_TIERS = ["cpu", "cpu-large", "gpu"] as const;
-export const DEFAULT_HARDWARE_PROFILE = "standard";
+export const DEFAULT_HARDWARE_PROFILE = DEFAULT_HARDWARE.profile;
 /** What an absent `hardware` block means on BOTH sides — equals the shipped
  * sets' `standard.cpu.default` (tests pin it). */
-export const DEFAULT_HARDWARE_CPU = 1;
-export const DEFAULT_HARDWARE_GPU_COUNT = 0;
+export const DEFAULT_HARDWARE_CPU = DEFAULT_HARDWARE.cpu;
+export const DEFAULT_HARDWARE_GPU_COUNT = DEFAULT_HARDWARE.gpu_count;
 
 const PROFILE_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -124,37 +130,27 @@ export function findProfile(set: HardwareProfileSet, id: string): HardwareProfil
   return set.profiles.find((p) => p.id === id);
 }
 
-/** JS prints `0.25` and `4.5` the way Python's `str(0.25)` does — the fixture
- * pins both sides against the same numbers. */
-function fmt(n: number): string {
-  return String(n);
-}
-
 /** The write-gate half of the dual enforcement (spec §4). Returns the message
  * to refuse with, or null when the block is within its profile's bounds — the
  * SAME text `check_hardware_bounds` raises in the pipeline (the fixture's
- * `bounds_cases[].reason` pins both). */
+ * `bounds_cases[].reason` pins both). The check itself lives in
+ * `hardware-public.ts` so the deploy form runs the identical one (K-2). */
 export function hardwareBoundsError(
   hardware: { profile: string; cpu: number; gpu_count: number },
   memoryMb: number,
   set: HardwareProfileSet,
 ): string | null {
-  const profile = findProfile(set, hardware.profile);
-  if (!profile) return `hardware.profile '${hardware.profile}' is not a hardware profile of this deployment`;
-  if (hardware.cpu < profile.cpu.min || hardware.cpu > profile.cpu.max) {
-    return `hardware.cpu ${fmt(hardware.cpu)} is outside profile '${profile.id}' bounds ${fmt(profile.cpu.min)}–${fmt(profile.cpu.max)}`;
-  }
-  if (profile.gpu_count === null) {
-    if (hardware.gpu_count !== 0) return `hardware.gpu_count must be 0: profile '${profile.id}' has no accelerator`;
-  } else if (hardware.gpu_count < profile.gpu_count.min || hardware.gpu_count > profile.gpu_count.max) {
-    return `hardware.gpu_count ${hardware.gpu_count} is outside profile '${profile.id}' bounds ${fmt(profile.gpu_count.min)}–${fmt(profile.gpu_count.max)}`;
-  }
-  if (memoryMb < profile.memory_mb.min || memoryMb > profile.memory_mb.max) {
-    return `memory_mb ${memoryMb} is outside profile '${profile.id}' bounds ${fmt(profile.memory_mb.min)}–${fmt(profile.memory_mb.max)}`;
-  }
-  return null;
+  return profilesBoundsError(hardware, memoryMb, set.profiles);
 }
 
 export function publicProfiles(set: HardwareProfileSet): PublicHardwareProfile[] {
   return set.profiles.map(({ backend: _backend, ...rest }) => rest);
 }
+
+// K-2: the browser reads profiles through `hardware-public.ts` (this module
+// imports node:fs). These assignments fail to compile if the two shapes drift
+// in either direction.
+type ServerMatchesClient = PublicHardwareProfile extends ClientHardwareProfile ? true : never;
+type ClientMatchesServer = ClientHardwareProfile extends PublicHardwareProfile ? true : never;
+const _shapesAgree: [ServerMatchesClient, ClientMatchesServer] = [true, true];
+void _shapesAgree;

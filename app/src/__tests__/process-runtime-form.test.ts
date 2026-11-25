@@ -3,6 +3,7 @@ import { formatCommand, parseCommand } from "@/lib/processes/command";
 import {
   DEFAULT_RUNTIME_FORM,
   buildRuntimePayload,
+  resourcesFromRevision,
   revisionImageDigest,
   runtimeFormFromRevision,
 } from "@/components/processes/runtime-form";
@@ -17,6 +18,7 @@ const LIMITS = {
   memory_mb: 512,
   timeout_seconds: 900,
   network: { level: "isolated" as const, hosts: [] },
+  hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
 };
 
 describe("parseCommand / formatCommand (spec §3: command is kind 3's Cmd)", () => {
@@ -123,6 +125,74 @@ describe("buildRuntimePayload", () => {
       LIMITS,
     );
     expect(broken.ok).toBe(false);
+  });
+});
+
+describe("buildRuntimePayload hardware (K-2)", () => {
+  it("carries the form's hardware and memory on every kind", () => {
+    const limits = { ...LIMITS, memory_mb: 8192, hardware: { profile: "cpu-large", cpu: 4, gpu_count: 0 } };
+    for (const form of [
+      DEFAULT_RUNTIME_FORM,
+      { ...DEFAULT_RUNTIME_FORM, kind: "inline_python_on_image" as const, image: SNAP },
+      { ...DEFAULT_RUNTIME_FORM, kind: "container" as const, image: SNAP },
+    ]) {
+      const payload = buildRuntimePayload(form, limits);
+      if (!payload.ok) throw new Error(payload.error);
+      expect(payload.runtime.hardware).toEqual({ profile: "cpu-large", cpu: 4, gpu_count: 0 });
+      expect(payload.runtime.memory_mb).toBe(8192);
+    }
+  });
+});
+
+describe("resourcesFromRevision (K-2: hardware, memory and timeout sync into the form)", () => {
+  it("is the schema defaults with no revision, the timeout by process kind", () => {
+    expect(resourcesFromRevision(null, "transform")).toEqual({
+      hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
+      memoryMb: 512,
+      timeoutSeconds: 900,
+    });
+    expect(resourcesFromRevision(null, "extractor").timeoutSeconds).toBe(120);
+  });
+
+  it("reads what the revision deployed", () => {
+    expect(
+      resourcesFromRevision(
+        {
+          kind: "inline_python",
+          memory_mb: 8192,
+          timeout_seconds: 3600,
+          hardware: { profile: "cpu-large", cpu: 4, gpu_count: 0 },
+        },
+        "transform",
+      ),
+    ).toEqual({
+      hardware: { profile: "cpu-large", cpu: 4, gpu_count: 0 },
+      memoryMb: 8192,
+      timeoutSeconds: 3600,
+    });
+  });
+
+  it("reads a revision stored before K-1 as standard, keeping its memory and timeout", () => {
+    expect(
+      resourcesFromRevision({ kind: "inline_python", memory_mb: 2048, timeout_seconds: 60 }, "extractor"),
+    ).toEqual({
+      hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
+      memoryMb: 2048,
+      timeoutSeconds: 60,
+    });
+  });
+
+  it("falls back field by field on values the write gate would never have stored", () => {
+    expect(
+      resourcesFromRevision(
+        { memory_mb: "lots", timeout_seconds: -1, hardware: { profile: "Not An Id", cpu: 1 } },
+        "transform",
+      ),
+    ).toEqual({
+      hardware: { profile: "standard", cpu: 1, gpu_count: 0 },
+      memoryMb: 512,
+      timeoutSeconds: 900,
+    });
   });
 });
 

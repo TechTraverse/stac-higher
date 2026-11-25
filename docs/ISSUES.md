@@ -1369,24 +1369,23 @@ demo's catch-up in the same process — re-measure in a quiet window too.
 - Found in: M3-C Task 7 measurement (2026-09-14).
 - Status 2026-09-15: vsicurl tuning applied in `raster_io.py` (`VSICURL_TUNING`); re-measurement by the lead pending.
 - Resolved 2026-09-15 (ea5e0b2 + the `m3c-vsi` measurement): itemize mean 0.283 → **0.094 s** (baseline 0.063 — the residual 1.5× is the range-read latency of a statistics pass over `/vsis3` against an in-memory read, accepted); RSS flat at ~212–245 MiB across 60 × 64 MB items (peak 270 from a 90 MiB start). Not tuned further: `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` also hides a pre-existing `.aux.xml` beside an object, so precomputed statistics no longer short-circuit the pass — the pipeline's sidecar strategy reads sidecars through the adapter, not GDAL's probe, so nothing depends on it.
-### I-130 · Stored revisions with `memory_mb` above their profile's ceiling die at launch, with no deploy-time notice 🟡
+### I-130 · Stored revisions with `memory_mb` above their profile's ceiling die at launch until redeployed 🟡
 Neither schema ever had a `memory_mb` maximum; `standard.memory_mb.max` is now
 16384 (`infra/hardware-profiles/local.json`), so a revision deployed before
 K-1 with more memory becomes a `dead` run naming the bound
 (`check_hardware_bounds`) on its next run; a deployment shipping a tighter
-`standard` widens the exposure. No migration; fix candidates: a deploy-time
-advisory listing over-bound current revisions, or a one-off audit query in
-`docs/backend.md`.
-- Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `app/src/lib/processes/hardware.ts`. GitHub #10 (K-2 surfaces the bound at deploy time).
+`standard` (or shrinking any profile later) widens the exposure.
+Since K-2 the deploy form surfaces it: the form starts from the current
+revision's hardware and memory, runs the write gate's own bounds check
+(`hardwareFormIssue` in `lib/processes/hardware-public.ts`, the same code the
+route calls), shows the bound inline on the offending input and keeps
+**Deploy** disabled with that reason until the value fits. Residual, accepted:
+nothing changes a STORED revision, so its runs keep dying at launch until
+someone opens the process and redeploys, and nothing lists the over-bound
+current revisions across processes (a one-off audit query is the fix
+candidate if a deployment ever shrinks its profiles).
+- Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `app/src/lib/processes/hardware-public.ts`.
 - Found in: K-1 final review (2026-09-15).
-
-### I-131 · The deploy form's memory input is free-form against a per-profile bound 🟡
-`ProcessDetailPage.tsx`'s `CodeCard` pins `standard` / cpu 1 and lets an
-operator type any memory; an out-of-bounds value is refused by the write gate
-with a 400 the form shows as a toast. Closed by K-2 (the hardware picker
-bounds the inputs from the profile).
-- Tracked in: `app/src/components/processes/ProcessDetailPage.tsx`. GitHub #10 (K-2 closes this).
-- Found in: K-1 Task 3 review (2026-09-14).
 
 ### I-132 · A permanently unreadable hardware-profile file requeues every run forever with a WARNING only 🟡
 By ruling, an unreadable `PROCESS_HARDWARE_PROFILES_FILE` is an
@@ -1962,3 +1961,4 @@ Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs her
 - **I-55** · No queue-level ingest retry / `stored` stall — 🟢 resolved (2026-07-30)
 - **I-56** · Delivery pre-record + stall sweep — 🟢 resolved (M2-0)
 - **I-100** · `file_mtime` was the ledger settle time, not the object's modified time — 🟢 resolved (G-6: DISCOVER persists `source_mtime`; `file_mtime` prefers it)
+- **I-131** · The deploy form's memory input was free-form against a per-profile bound — 🟢 resolved (K-2 hardware picker, GitHub #10)
