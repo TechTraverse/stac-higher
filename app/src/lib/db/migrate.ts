@@ -1486,8 +1486,19 @@ const MIGRATIONS = [
     // number order and a database already at 033 applies just this one
     // (migrate-ordering.test.ts). It touches only process_runs, which none
     // of 030–033 alter, so applying it after them is equivalent.
+    //
+    // Locking: process_runs is hot (every claim, finish and the UI poll), and
+    // ALTER TABLE takes ACCESS EXCLUSIVE. lock_timeout bounds how long this
+    // waits behind a long transaction (and so how long it queues every
+    // other reader behind itself); on timeout the whole migration
+    // transaction rolls back and the next request retries. It is reset
+    // before the entry ends because runMigrations() runs every pending
+    // migration in ONE transaction. The ADD COLUMNs carry no default, so they
+    // are catalog-only; the CHECK is NOT VALID (every existing row's phase is
+    // NULL, so there is nothing to scan for, and new writes are checked).
     name: "029_process_runs_executor_phase",
     sql: `
+      SET LOCAL lock_timeout = '10s';
       ALTER TABLE stac_higher.process_runs
         ADD COLUMN IF NOT EXISTS executor_backend text,
         ADD COLUMN IF NOT EXISTS executor_handle text,
@@ -1500,14 +1511,17 @@ const MIGRATIONS = [
       BEGIN
         IF NOT EXISTS (
           SELECT 1 FROM pg_constraint
-          WHERE conname = 'process_runs_phase_check'
+          WHERE conrelid = 'stac_higher.process_runs'::regclass
+            AND conname = 'process_runs_phase_check'
         ) THEN
           ALTER TABLE stac_higher.process_runs
             ADD CONSTRAINT process_runs_phase_check
-            CHECK (phase IS NULL OR phase IN ('pending_capacity','starting','running'));
+            CHECK (phase IS NULL OR phase IN ('pending_capacity','starting','running'))
+            NOT VALID;
         END IF;
       END
       $do$;
+      SET LOCAL lock_timeout TO DEFAULT;
     `,
   },
   {

@@ -202,8 +202,20 @@ describe("migration 029 (executor phase columns — K-3)", () => {
     expect(sql).toContain("phase IS NULL OR phase IN");
   });
 
-  it("adds the CHECK idempotently (a re-applied entry must not fail)", () => {
-    expect(sql).toMatch(/IF NOT EXISTS \([\s\S]*?conname = 'process_runs_phase_check'/);
+  it("adds the CHECK idempotently, looked up on process_runs only", () => {
+    expect(sql).toMatch(
+      /IF NOT EXISTS \([\s\S]*?conrelid = 'stac_higher\.process_runs'::regclass[\s\S]*?conname = 'process_runs_phase_check'/,
+    );
+  });
+
+  it("does not hold the hot table hostage: bounded lock wait, no validation scan", () => {
+    expect(sql).toContain("SET LOCAL lock_timeout = '10s';");
+    // Reset inside the entry: every pending migration shares one transaction.
+    expect(sql.indexOf("SET LOCAL lock_timeout TO DEFAULT;")).toBeGreaterThan(
+      sql.indexOf("ADD CONSTRAINT process_runs_phase_check"),
+    );
+    expect(sql).toMatch(/CHECK \(phase IS NULL OR phase IN \([^)]*\)\)\s*NOT VALID;/);
+    expect(sql).not.toMatch(/ADD COLUMN IF NOT EXISTS \w+ \w+ (NOT NULL|DEFAULT)/);
   });
 
   it("does not touch the status CHECK — cancelled is K-4's", () => {
