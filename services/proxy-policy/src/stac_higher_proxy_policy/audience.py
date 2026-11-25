@@ -1,6 +1,6 @@
 """Claim-aware token audience check for the derived stac-auth-proxy image (R-3).
 
-Upstream ``EnforceAuthMiddleware`` (pinned v1.2.0) hands ``ALLOWED_JWT_AUDIENCES``
+Upstream ``EnforceAuthMiddleware`` (pinned v1.4.0) hands ``ALLOWED_JWT_AUDIENCES``
 to PyJWT, which matches the ``aud`` claim only and demands it when configured.
 Cognito *access* tokens carry ``client_id`` instead of ``aud``, so every one is
 rejected. ``AUTH_BEARER_AUDIENCE_CLAIM`` selects the claim:

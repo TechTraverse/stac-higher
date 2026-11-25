@@ -1,6 +1,6 @@
 """stac-auth-proxy items-filter factory enforcing ``externally_writable`` (ADR 0015).
 
-Loaded by stac-auth-proxy (pinned v1.2.0) via ``ITEMS_FILTER_CLS`` in the
+Loaded by stac-auth-proxy (pinned v1.4.0) via ``ITEMS_FILTER_CLS`` in the
 auth-enforced compose overlay only. Per request, ``Cql2BuildFilterMiddleware``
 calls the instance with::
 
@@ -12,7 +12,11 @@ calls the instance with::
 and the returned CQL2 expression (text or CQL2-JSON dict) is validated and
 placed on request state. For reads it is appended to the query string /
 response-validated; for transaction requests ``Cql2ValidateTransactionMiddleware``
-evaluates it against the item body (``matches``) and rejects mismatches.
+evaluates it against the item body (``matches``) and rejects mismatches. Since
+v1.4.0 a refused PUT/PATCH/DELETE also calls the instance a second time with
+the same context but ``method: "GET"`` (the read filter, to answer 403 rather
+than 404 for a record the caller can read); reads are ``1 = 1`` here, so such
+refusals are 403.
 
 Policy (spec §5.2 / ADR 0015):
 
@@ -45,9 +49,10 @@ Failure posture for the DB set: serve the last-known-good set when a refresh
 fails; with no cached set at all, fail CLOSED (constant false) rather than
 letting writes through unvalidated.
 
-NOTE (source-verified, upstream 1.2.0): ``Expr.matches`` raises when the body
-lacks a referenced property, so a direct-push item body that omits
-``"collection"`` is rejected 500-shaped rather than 403 — direct writers must
+NOTE (source-verified, upstream 1.2.0 and 1.4.0, create path): ``Expr.matches``
+raises when the body lacks a referenced property, so a direct-push item body
+that omits ``"collection"`` is rejected 500-shaped rather than 403 (1.4.0
+catches this on update/delete only) — direct writers must
 include ``collection`` in the item body (the STAC Transaction spec puts it
 there anyway). Pinned by the integration legs at P7-Z.
 """
@@ -80,8 +85,13 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Transaction-shaped ITEM paths only (never /search, never /collections).
 # Kept in lockstep with the overlay's ITEMS_FILTER_PATH override, which must
 # also route bulk_items here (the upstream default items_filter_path does not).
+# Matched like upstream's `match_path` (v1.4.0+) widens its own rules: ignoring
+# case and one trailing slash. Anything upstream treats as a transaction path
+# must take the write branch here, or the write would get `1 = 1`.
 ITEMS_TRANSACTION_PATH = re.compile(
-    r"^/collections/(?P<collection_id>[^/]+)/(?P<kind>items|bulk_items)(?:/(?P<item_id>[^/]+))?$"
+    r"^/collections/(?P<collection_id>[^/]+)/(?P<kind>items|bulk_items)"
+    r"(?:/(?P<item_id>[^/]+))?/?$",
+    re.IGNORECASE,
 )
 
 BFF_HEADER = "x-bff-auth"
@@ -185,7 +195,7 @@ class ExternallyWritableItemsFilter:
         if self._bff_exempt(req.get("headers") or {}):
             return CONSTANT_TRUE
 
-        if match.group("kind") == "bulk_items":
+        if match.group("kind").lower() == "bulk_items":
             # Bulk push is unsupported in Phase 7: deny, never parse the body.
             logger.info("denying bulk_items write without BFF exemption (%s %s)", method, path)
             return CONSTANT_FALSE
