@@ -212,6 +212,11 @@ image's Python, not `psql`. Notes:
 
 ## Install paths
 
+Every release publishes the chart at `oci://ghcr.io/<owner>/charts/stac-higher`,
+version = the release tag without `v`. Pinning a release (chart, image digests
+and Terraform module ref) from a GitHub or GitLab pipeline:
+[`docs/releases.md`](../../../docs/releases.md), "Consuming a release".
+
 Helm, with the digests from a release manifest (`docs/releases.md`, "Feeding
 the chart"):
 

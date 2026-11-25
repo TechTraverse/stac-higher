@@ -10,9 +10,39 @@ on:
 permissions:
   contents: read
 
+# A pull request's newer push cancels its older run. Every other run gets a
+# group of its own (the run id), so a main or v* tag run is never cancelled
+# or queued behind another.
+concurrency:
+  group: containers-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  version:
+    # The release version, checked before anything builds or pushes: the
+    # v* tag on a tag push, else v0.0.0-dryrun.<run number>. One rule for the
+    # chart and the manifest (docs/releases.md "The chart package"), so a tag
+    # Helm would reject fails here, not after the images are out.
+    name: Release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check
+        id: check
+        env:
+          VERSION: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v0.0.0-dryrun.{0}', github.run_number) }}
+        run: |
+          scripts/package-chart.sh --check-tag "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
   build:
     name: Image · ${{ matrix.image.name }}
+    needs: [version]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -148,6 +178,7 @@ jobs:
     # `fixtures` context the registry COPY needs. The variant's build runs the
     # registry-driven import smoke (spec §6), so a stale package fails here.
     name: Image · process-runtime (+ stactools)
+    needs: [version]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -246,13 +277,97 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
+  chart:
+    # Packages the chart on every run (docs/releases.md "The chart package"),
+    # stamped with the release version: the v* tag, or 0.0.0-dryrun.<run> on
+    # every other run, which stops at the workflow artifact (the dry run).
+    name: Chart · package
+    needs: [version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.1
+      - name: Package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: scripts/package-chart.sh "$VERSION" "$RUNNER_TEMP/chart"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: chart
+          path: ${{ runner.temp }}/chart/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  chart-push:
+    # v* tags only, and only once every image is pushed and the chart has
+    # packaged (spec §11: images, then chart, then manifest). chart itself
+    # stays read-only, so no pull request or manual run reaches a write-scoped
+    # chart job. The ref is the manifest's chart.ref (owner lowercased) at
+    # chart.version (tag without v).
+    name: Chart · push to GHCR
+    needs: [build, runtime, chart]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.1
+      - uses: actions/download-artifact@v7
+        with:
+          name: chart
+          path: chart
+      - name: Push
+        id: push
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          archive="chart/stac-higher-${version}.tgz"
+          registry="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+          [ -f "$archive" ] || { echo "::error::no $archive in the chart artifact"; exit 1; }
+          helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<<"$REGISTRY_TOKEN"
+          # Helm prints "Pushed: <ref>" and "Digest: <digest>" (pkg/registry/client.go).
+          helm push "$archive" "$registry" 2>&1 | tee push.log
+          digest=$(sed -n 's/^Digest: *//p' push.log | tr -d '[:space:]')
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::helm push reported no chart digest"; exit 1; }
+          # The pushed version must resolve before the manifest names it.
+          helm show chart "$registry/stac-higher" --version "$version"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Chart"
+            echo
+            echo "- Ref: \`${registry}/stac-higher\` version \`${version}\`"
+            echo "- Digest: \`${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   release-manifest:
     # Collects every image digest into release-manifest.json (docs/releases.md).
     # Every run produces a dry-run artifact (version v0.0.0-dryrun.<run>), so
-    # the wiring is proven on each PR. On a v* tag release-attach adds the file
-    # to the GitHub release.
+    # the wiring is proven on each PR. On a v* tag it waits for chart-push and
+    # records the chart digest, so a manifest never names a chart that was not
+    # pushed; release-attach then adds the file to the GitHub release. On other
+    # runs chart-push is skipped, and the chart's dry-run package must succeed.
     name: Release manifest
-    needs: [build, runtime]
+    needs: [version, build, runtime, chart, chart-push]
+    if: >-
+      !cancelled()
+      && needs.build.result == 'success'
+      && needs.runtime.result == 'success'
+      && needs.chart.result == 'success'
+      && (needs.chart-push.result == 'success'
+          || (needs.chart-push.result == 'skipped'
+              && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -269,10 +384,19 @@ jobs:
           path: digests
       - name: Generate
         env:
-          VERSION: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v0.0.0-dryrun.{0}', github.run_number) }}
-        run: >
-          node .github/scripts/release-manifest.mjs --version "$VERSION" --git-sha "$GITHUB_SHA"
-          --repository "$GITHUB_REPOSITORY" --digests-dir digests --out release-manifest.json
+          VERSION: ${{ needs.version.outputs.version }}
+          RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          CHART_DIGEST: ${{ needs.chart-push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          args=(--version "$VERSION" --git-sha "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY"
+                --digests-dir digests --out release-manifest.json)
+          if [ "$RELEASE" = "true" ]; then
+            # A release manifest always carries the pushed chart's digest.
+            [ -n "$CHART_DIGEST" ] || { echo "::error::chart-push reported no digest"; exit 1; }
+            args+=(--chart-digest "$CHART_DIGEST")
+          fi
+          node .github/scripts/release-manifest.mjs "${args[@]}"
       - uses: actions/upload-artifact@v7
         with:
           name: release-manifest
