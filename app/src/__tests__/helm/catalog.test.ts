@@ -78,6 +78,17 @@ describe.skipIf(!helmReady())("chart catalog plane", () => {
     expect(internal.OIDC_DISCOVERY_INTERNAL_URL).toBe("http://idp.internal:8080/realms/example/.well-known/openid-configuration");
   });
 
+  it("the proxy pins the token issuer to auth.issuer exactly as given (upstream v1.4.0 iss check)", () => {
+    expect(cm(render(), "auth-proxy").OIDC_ISSUER).toBe("https://idp.example.com/realms/example");
+    // With an internal issuer the discovery document reports it; tokens still carry the public one.
+    const internal = cm(render({ auth: { issuerInternal: "http://idp.internal:8080/realms/example" } }), "auth-proxy");
+    expect(internal.OIDC_ISSUER).toBe("https://idp.example.com/realms/example");
+    // Issuers such as Auth0's end in "/": kept for the iss check, trimmed only for the discovery URL.
+    const slash = cm(render({ auth: { issuer: "https://tenant.example.com/" } }), "auth-proxy");
+    expect(slash.OIDC_ISSUER).toBe("https://tenant.example.com/");
+    expect(slash.OIDC_DISCOVERY_URL).toBe("https://tenant.example.com/.well-known/openid-configuration");
+  });
+
   it("proxy role mapping follows the app's claims mapping", () => {
     const keycloak = cm(render({ auth: { claimsMapping: null } }), "auth-proxy");
     expect([keycloak.POLICY_ROLES_CLAIM, keycloak.POLICY_WRITE_ROLES]).toEqual(["realm_access.roles", "admin,operator"]);

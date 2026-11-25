@@ -267,6 +267,11 @@ images cannot follow `global.imageDigests` or the mirror rewrite (evidence:
   `auth.claimsMapping` (the raw values the app maps to `operator`/`admin`) unless
   `catalog.authProxy.rolesClaim` / `writeRoles` are set. `auth.issuer` is
   therefore required in every auth mode.
+- The proxy accepts tokens from one issuer only: `OIDC_ISSUER` is `auth.issuer`
+  exactly as given (a trailing `/` is kept). With `auth.issuerInternal` the
+  proxy fetches discovery and keys in-network but still requires the public
+  issuer in `iss`, so a token minted at the internal URL is refused
+  (`docs/auth.md`).
 - The app's BFF writes go to the proxy inside the cluster
   (`BUILTIN_CATALOG_URL=http://<fullname>-auth-proxy:8000`).
 - The two third-party images are pinned by digest and take the GHCR mirror

@@ -28,6 +28,10 @@ No credential and no DSN userinfo here: logins come from runtime Secrets in the 
 {{- $_ := set $proxy "UPSTREAM_URL" (printf "http://%s-stac-api:8082" $full) -}}
 {{- $_ := set $proxy "OIDC_DISCOVERY_URL" (printf "%s/.well-known/openid-configuration" $issuer) -}}
 {{- $_ := set $proxy "OIDC_DISCOVERY_INTERNAL_URL" (printf "%s/.well-known/openid-configuration" $issuerInternal) -}}
+{{- /* Since upstream v1.4.0 the proxy checks every token's `iss` against OIDC_ISSUER, else against the issuer in the
+discovery document it fetched (the internal one when issuerInternal is set). Pin it to the public issuer exactly as
+given: the trailing-slash trim above is only for building discovery URLs, and some issuers end in "/". */ -}}
+{{- $_ := set $proxy "OIDC_ISSUER" (toString $v.auth.issuer) -}}
 {{- $_ := set $proxy "DEFAULT_PUBLIC" "true" -}}
 {{- $_ := set $proxy "PRIVATE_ENDPOINTS" `{"^/collections$":["POST"],"^/collections/([^/]+)$":["PUT","PATCH","DELETE"],"^/collections/([^/]+)/items$":["POST"],"^/collections/([^/]+)/items/([^/]+)$":["PUT","PATCH","DELETE"],"^/collections/([^/]+)/bulk_items$":["POST"]}` -}}
 {{- $_ := set $proxy "ALLOWED_JWT_AUDIENCES" (join "," $v.auth.audiences) -}}
