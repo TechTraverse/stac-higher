@@ -14,6 +14,10 @@ envelope (`{}`), exactly as the app does — the pipeline's build_adapter
 treats a NULL credentials column as a configuration error, not as anonymous —
 and --deliver seals the delivery connection's MinIO credentials with the same
 key, exactly as pipeline.loadgen does.
+
+In-cluster (`--in-cluster`, R-10) --deliver seals the Terraform
+demo-destination key instead (`DEMO_DESTINATION_*`, the chart's Secret), into a
+plain AWS connection, exactly as a customer would enter theirs.
 """
 
 from __future__ import annotations
@@ -21,7 +25,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 import psycopg
 
@@ -32,12 +37,15 @@ from pipeline.demo.platform import (
     enable_serving,
     ensure_bucket,
     ensure_runtime_image,
+    in_cluster,
     install_process,
     put_collection,
+    refuse_byte_delete_in_cluster,
     remove_process,
     request,
     s3_client,
     say,
+    ui_url,
     upsert_association,
     upsert_connection,
 )
@@ -79,6 +87,15 @@ GEOCOLOR_RUNTIME = {
     "network": {"level": "isolated", "hosts": []},
 }
 TRIGGER = {"kind": "item_event", "item_filter": None}
+
+#: In-cluster --deliver: the demo-destination bucket and its write-only user's
+#: key (R-5's `demo-destination` module -> Secrets Manager -> the chart's Secret).
+DESTINATION_ENV = (
+    "DEMO_DESTINATION_BUCKET",
+    "DEMO_DESTINATION_REGION",
+    "DEMO_DESTINATION_ACCESS_KEY_ID",
+    "DEMO_DESTINATION_SECRET_ACCESS_KEY",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -123,6 +140,53 @@ def deliver_config() -> dict:
         "retry": {"max_attempts": 5, "backoff": "exponential"},
         "max_concurrent_transfers": 4,
     }
+
+
+@dataclass(frozen=True)
+class Destination:
+    """Where `--deliver` sends the output collection, and with what key."""
+
+    config: dict
+    credentials: dict = field(repr=False)
+    #: compose makes its MinIO bucket; a deployed destination already exists
+    #: (Terraform) and its write-only key could not create one anyway.
+    create_bucket: bool
+
+
+def delivery_destination(args: argparse.Namespace, env: Mapping[str, str]) -> Destination:
+    """Compose: MinIO's bucket and keys. In-cluster: the demo-destination
+    bucket and key from the environment, all four required — checked before
+    any write, like the master key."""
+    if not in_cluster(args):
+        return Destination(
+            config={
+                "bucket": DEST_BUCKET,
+                "region": "us-east-1",
+                "endpoint": args.internal_s3_endpoint,
+                "force_path_style": True,
+            },
+            credentials={"access_key_id": "minioadmin", "secret_access_key": "minioadmin"},
+            create_bucket=True,
+        )
+    values = {var: (env.get(var) or "").strip() for var in DESTINATION_ENV}
+    missing = [var for var, value in values.items() if not value]
+    if missing:
+        raise SystemExit(
+            "goes-seed --deliver --in-cluster needs the demo destination (the Terraform\n"
+            "demo-destination module, the chart's demoDestination values): "
+            + ", ".join(missing)
+        )
+    return Destination(
+        config={
+            "bucket": values["DEMO_DESTINATION_BUCKET"],
+            "region": values["DEMO_DESTINATION_REGION"],
+        },
+        credentials={
+            "access_key_id": values["DEMO_DESTINATION_ACCESS_KEY_ID"],
+            "secret_access_key": values["DEMO_DESTINATION_SECRET_ACCESS_KEY"],
+        },
+        create_bucket=False,
+    )
 
 
 def collection_documents() -> list[dict]:
@@ -215,8 +279,9 @@ def seed(args: argparse.Namespace) -> int:
     check_migrations(args.database_url, REQUIRED_MIGRATION)
 
     master_key = _require_master_key()
+    destination = delivery_destination(args, os.environ) if args.deliver else None
     # After the cheap checks, before any write: a refused build changes nothing.
-    ensure_runtime_image(build=args.build_image)
+    ensure_runtime_image(build=args.build_image, in_cluster=in_cluster(args))
 
     # The connection opens FIRST so the competing-association refusal happens
     # before the catalog is touched, not after two collections were replaced.
@@ -301,26 +366,16 @@ def seed(args: argparse.Namespace) -> int:
             f" <= {args.max_files} file(s)/poll)"
         )
 
-        if args.deliver:
-            client = s3_client(args.s3_endpoint)
-            ensure_bucket(client, DEST_BUCKET)
-            credentials = seal(
-                json.dumps(
-                    {"access_key_id": "minioadmin", "secret_access_key": "minioadmin"}
-                ),
-                master_key,
-            )
+        if destination is not None:
+            bucket = destination.config["bucket"]
+            if destination.create_bucket:
+                ensure_bucket(s3_client(args.s3_endpoint), bucket)
             dest_connection = upsert_connection(
                 conn,
                 name=DEST_CONNECTION_NAME,
                 protocol="s3",
-                config={
-                    "bucket": DEST_BUCKET,
-                    "region": "us-east-1",
-                    "endpoint": args.internal_s3_endpoint,
-                    "force_path_style": True,
-                },
-                credentials=credentials,
+                config=destination.config,
+                credentials=seal(json.dumps(destination.credentials), master_key),
                 group=GROUP,
                 created_by=CREATED_BY,
             )
@@ -332,17 +387,19 @@ def seed(args: argparse.Namespace) -> int:
                 config=deliver_config(),
                 created_by=CREATED_BY,
             )
-            say(f"  deliver association {delivery} (-> s3://{DEST_BUCKET}/goes/)")
+            say(f"  deliver association {delivery} (-> s3://{bucket}/goes/)")
 
+    ui = ui_url(args)
     say("")
     say("The ingest poll runs on the pipeline's minute tick. Watch it with:")
     say("  uv run python -m pipeline.demo goes-status")
     say("")
-    say(f"UI:    http://localhost:4321/collections/{SOURCE_COLLECTION}/items")
-    say(f"       http://localhost:4321/collections/{OUTPUT_COLLECTION}/items")
-    say("       http://localhost:4321/processes")
-    say(f"Tiles: {args.titiler_url}/collections/{OUTPUT_COLLECTION}"
-        "/WebMercatorQuad/tilejson.json?assets=visual")
+    say(f"UI:    {ui}/collections/{SOURCE_COLLECTION}/items")
+    say(f"       {ui}/collections/{OUTPUT_COLLECTION}/items")
+    say(f"       {ui}/processes")
+    if args.titiler_url:
+        say(f"Tiles: {args.titiler_url}/collections/{OUTPUT_COLLECTION}"
+            "/WebMercatorQuad/tilejson.json?assets=visual")
     return 0
 
 
@@ -405,6 +462,7 @@ def status(args: argparse.Namespace) -> int:
 
 
 def teardown(args: argparse.Namespace) -> int:
+    refuse_byte_delete_in_cluster(args, "goes-teardown")
     with psycopg.connect(args.database_url, autocommit=True) as conn:
         # Both collections are fixed, well-known names. Somebody else's ingest
         # association may be sitting on one (the W-1 seed association is, on

@@ -33,6 +33,12 @@ PRECONDITION: the app must have run its migrations against this database (they
 run on its first API request). `seed` checks and says so rather than failing
 half-built. Both seeds build the process runtime image first (`docker buildx
 bake`, a no-op when cached); `--no-build-image` only checks it exists.
+
+`--in-cluster` (R-10) is the chart's demo-seed Job: endpoints come from the
+environment the Job sets (`DEMO_STAC_URL`, `DATABASE_URL` + libpq's `PG*`,
+`STAGING_BUCKET`, ...), the platform bucket is reached as the pipeline reaches
+it, no image is built or checked (`--no-build-image` is required), and
+`goes-seed --deliver` seals the demo-destination key. See README.md.
 """
 
 from __future__ import annotations
@@ -73,12 +79,16 @@ from pipeline.demo.platform import (
     check_migrations,
     enable_serving,
     ensure_runtime_image,
+    in_cluster,
     install_process,
+    platform_s3_client,
     put_collection,
+    refuse_byte_delete_in_cluster,
     remove_process,
     request,
     s3_client,
     say,
+    ui_url,
 )
 from pipeline.storage.keys import canonical_asset_key
 
@@ -87,6 +97,29 @@ DEFAULT_TITILER_URL = "http://localhost:8084"
 DEFAULT_S3_ENDPOINT = "http://localhost:9000"
 DEFAULT_DATABASE_URL = "postgresql://username:password@localhost:5433/postgis"
 DEFAULT_BUCKET = "stac-higher"
+DEFAULT_UI_URL = "http://localhost:4321"
+DEFAULT_APP_URL = "http://127.0.0.1:4321"
+
+#: compose mode: every endpoint flag left unset takes its published-port default.
+COMPOSE_DEFAULTS = {
+    "stac_url": DEFAULT_STAC_URL,
+    "titiler_url": DEFAULT_TITILER_URL,
+    "s3_endpoint": DEFAULT_S3_ENDPOINT,
+    "database_url": DEFAULT_DATABASE_URL,
+    "bucket": DEFAULT_BUCKET,
+    "ui_url": DEFAULT_UI_URL,
+    "app_url": DEFAULT_APP_URL,
+}
+#: in-cluster mode: (arg, env var the chart's Job sets, required). `app_url`
+#: exists only on the images-* subcommands, so it is required only there.
+CLUSTER_ENV = (
+    ("stac_url", "DEMO_STAC_URL", True),
+    ("database_url", "DATABASE_URL", True),
+    ("bucket", "STAGING_BUCKET", True),
+    ("app_url", "DEMO_APP_URL", True),
+    ("titiler_url", "DEMO_PUBLIC_TITILER_URL", False),
+    ("ui_url", "DEMO_PUBLIC_APP_URL", False),
+)
 SCENE_ITEM_ID = "demo-scene-001"
 SCENE_FILENAME = "scene.tif"
 
@@ -205,7 +238,7 @@ def _install_process(conn: psycopg.Connection) -> None:
 
 def seed(args: argparse.Namespace) -> int:
     _check_migrations(args.database_url)
-    ensure_runtime_image(build=args.build_image)
+    ensure_runtime_image(build=args.build_image, in_cluster=in_cluster(args))
 
     _say("catalog")
     _put_collection(
@@ -224,7 +257,7 @@ def seed(args: argparse.Namespace) -> int:
     _say("object storage")
     payload = build_scene_cog()
     key = canonical_asset_key(SOURCE_COLLECTION, SCENE_ITEM_ID, SCENE_FILENAME)
-    _s3(args.s3_endpoint).put_object(
+    platform_s3_client(args).put_object(
         Bucket=args.bucket,
         Key=key,
         Body=payload,
@@ -258,9 +291,10 @@ def seed(args: argparse.Namespace) -> int:
         _say("Seeded without the scene item (--no-trigger), so no run was started.")
 
     _say("")
-    _say(f"UI:    http://localhost:4321/collections/{SOURCE_COLLECTION}/items/{SCENE_ITEM_ID}")
-    _say(f"Tiles: {args.titiler_url}/collections/{SOURCE_COLLECTION}/items/{SCENE_ITEM_ID}"
-         "/WebMercatorQuad/tilejson.json?assets=visual")
+    _say(f"UI:    {ui_url(args)}/collections/{SOURCE_COLLECTION}/items/{SCENE_ITEM_ID}")
+    if args.titiler_url:
+        _say(f"Tiles: {args.titiler_url}/collections/{SOURCE_COLLECTION}/items/{SCENE_ITEM_ID}"
+             "/WebMercatorQuad/tilejson.json?assets=visual")
     return 0
 
 
@@ -297,6 +331,7 @@ def status(args: argparse.Namespace) -> int:
 
 
 def teardown(args: argparse.Namespace) -> int:
+    refuse_byte_delete_in_cluster(args, "teardown")
     with psycopg.connect(args.database_url, autocommit=True) as conn:
         remove_process(conn, PROCESS_ID)
         conn.execute(
@@ -323,13 +358,51 @@ def teardown(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def resolve_endpoints(args: argparse.Namespace, env) -> None:
+    """Fill every endpoint flag left unset (None). Compose: the published-port
+    defaults, exactly as before R-10. In-cluster: the environment the chart's
+    Job sets; an explicit flag still wins. Missing required ones are named
+    together, before anything runs."""
+    if not args.in_cluster:
+        for attr, default in COMPOSE_DEFAULTS.items():
+            if hasattr(args, attr) and getattr(args, attr) is None:
+                setattr(args, attr, default)
+        return
+    if args.s3_endpoint is not None:
+        raise SystemExit(
+            "--s3-endpoint is compose-only. In-cluster the platform bucket is reached\n"
+            "the way the pipeline reaches it (STAGING_S3_* and the default credential chain)."
+        )
+    missing = []
+    for attr, var, required in CLUSTER_ENV:
+        if not hasattr(args, attr) or getattr(args, attr) is not None:
+            continue
+        value = (env.get(var) or "").strip()
+        if not value and required:
+            missing.append(f"{var} (or --{attr.replace('_', '-')})")
+        setattr(args, attr, value or None)
+    if missing:
+        raise SystemExit("--in-cluster needs: " + ", ".join(missing))
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m pipeline.demo", description=__doc__)
-    parser.add_argument("--stac-url", default=DEFAULT_STAC_URL)
-    parser.add_argument("--titiler-url", default=DEFAULT_TITILER_URL)
-    parser.add_argument("--s3-endpoint", default=DEFAULT_S3_ENDPOINT)
-    parser.add_argument("--database-url", default=DEFAULT_DATABASE_URL)
-    parser.add_argument("--bucket", default=DEFAULT_BUCKET)
+    parser.add_argument(
+        "--in-cluster",
+        action="store_true",
+        help="run as the chart's demo-seed Job: endpoints from the environment,"
+        " never build or check images (R-10; see README.md)",
+    )
+    parser.add_argument("--stac-url", default=None, help=f"default: {DEFAULT_STAC_URL}")
+    parser.add_argument("--titiler-url", default=None, help=f"default: {DEFAULT_TITILER_URL}")
+    parser.add_argument(
+        "--s3-endpoint", default=None, help=f"compose only; default: {DEFAULT_S3_ENDPOINT}"
+    )
+    parser.add_argument("--database-url", default=None, help=f"default: {DEFAULT_DATABASE_URL}")
+    parser.add_argument("--bucket", default=None, help=f"default: {DEFAULT_BUCKET}")
+    parser.add_argument(
+        "--ui-url", default=None, help=f"app URL for printed hints; default: {DEFAULT_UI_URL}"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     seed_parser = sub.add_parser("seed", help="build the demo pipeline (idempotent)")
@@ -364,12 +437,13 @@ def main(argv: list[str] | None = None) -> int:
     goes_parser.add_argument(
         "--deliver",
         action="store_true",
-        help="also deliver the output collection to MinIO (needs CREDENTIALS_MASTER_KEY)",
+        help="also deliver the output collection: to MinIO on compose, to the"
+        " demo-destination bucket in-cluster (needs CREDENTIALS_MASTER_KEY)",
     )
     goes_parser.add_argument(
         "--internal-s3-endpoint",
         default="http://minio:9000",
-        help="how the PIPELINE reaches MinIO (default: http://minio:9000)",
+        help="compose only: how the PIPELINE reaches MinIO (default: http://minio:9000)",
     )
     _add_build_image_flag(goes_parser)
     goes_parser.set_defaults(func=goes.seed)
@@ -410,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         help="add demo container images through the app API and deploy their"
         " kind-2 GOES twin + canary (C-5)",
     )
-    images_seed_parser.add_argument("--app-url", default="http://127.0.0.1:4321")
+    images_seed_parser.add_argument("--app-url", default=None, help=f"default: {DEFAULT_APP_URL}")
     images_seed_parser.add_argument(
         "--bearer", default=os.environ.get("STAC_HIGHER_BEARER"),
         help="bearer token for the app API (default: $STAC_HIGHER_BEARER)",
@@ -437,7 +511,9 @@ def main(argv: list[str] | None = None) -> int:
     images_status_parser = sub.add_parser(
         "images-status", help="the images live-gate scenario: image states, runs, alerts"
     )
-    images_status_parser.add_argument("--app-url", default="http://127.0.0.1:4321")
+    images_status_parser.add_argument(
+        "--app-url", default=None, help=f"default: {DEFAULT_APP_URL}"
+    )
     images_status_parser.add_argument(
         "--bearer", default=os.environ.get("STAC_HIGHER_BEARER"),
         help="bearer token for the app API (default: $STAC_HIGHER_BEARER)",
@@ -463,8 +539,12 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true", help="skip the in-progress-run check"
     )
     images_teardown_parser.set_defaults(func=images.teardown)
+    return parser
 
-    args = parser.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    resolve_endpoints(args, os.environ)
     try:
         return args.func(args)
     except SeedError as err:
