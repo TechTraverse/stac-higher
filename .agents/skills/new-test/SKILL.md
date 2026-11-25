@@ -14,6 +14,9 @@ Understand the public surface before writing assertions.
 - **Unit** (pure logic, no DOM): `app/src/__tests__/<name>.test.ts`
 - **API route / authz gate** (Astro server route): `app/src/__tests__/api-<name>.test.ts`
   or `authz-<name>-gate.test.ts` — the most common new test in this repo
+- **Middleware + page render** (`.astro`): `app/src/__tests__/<name>.container.test.ts` —
+  Astro's Container API, run by the `astro-container` vitest project
+  (`app/vitest.container.config.ts`); see `runtime-config-request.container.test.ts`
 - **Component** (React rendering): `app/src/__tests__/<name>.test.tsx` — uses `@testing-library/react`
 - **E2E** (browser workflow): `app/e2e/<name>.spec.ts` — Playwright. Read the `run-e2e` skill for preconditions and selector gotchas before writing e2e specs.
 - **Pipeline (Python)**: `services/pipeline/tests/test_<name>.py` — pytest;

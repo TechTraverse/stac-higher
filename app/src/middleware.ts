@@ -4,9 +4,29 @@ import { resolveRequestAuth } from "@/lib/auth/bearer";
 import { getAuthConfig } from "@/lib/auth/config";
 import { anonymous } from "@/lib/auth/types";
 import { applyApiGuard } from "@/lib/authz/guard";
+import { buildRuntimeConfig } from "@/lib/runtime-config/server";
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const { pathname } = context.url;
+
+  // Browser runtime config (R-1, spec §8), read from the env per request and
+  // resolved HERE, before the page starts streaming: a bad value thrown from
+  // the Layout would arrive after the 200 status line (#194). Page routes
+  // only — the API never reads it, and a bad browser-facing URL must not take
+  // the API down. The body stays generic; the log names the variable.
+  if (!pathname.startsWith("/api/")) {
+    try {
+      context.locals.runtimeConfig = buildRuntimeConfig();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[runtime-config] ${pathname}: ${msg}`);
+      return new Response("Internal server error", {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+  }
+
   if (
     pathname.startsWith("/api/extensions") ||
     pathname.startsWith("/api/audit") ||

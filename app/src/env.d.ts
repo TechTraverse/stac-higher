@@ -9,5 +9,10 @@ declare namespace App {
      * beneath the guard's method/path/outcome/status (and reason on a
      * denial); redacted by `writeAudit`. Never put a secret here. */
     auditDetail?: Record<string, unknown>;
+    /** Browser runtime config (R-1, spec §8), resolved from the env by
+     * `src/middleware.ts` before a page route renders, so a bad value is a 500
+     * instead of an error mid-stream (#194). Set on every non-`/api/` route;
+     * `Layout.astro` injects it. Unset on API routes. */
+    runtimeConfig?: import("./lib/runtime-config").RuntimeConfig;
   }
 }
