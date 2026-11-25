@@ -71,30 +71,45 @@ def test_client_id_mode_rejects_foreign_tokens_end_to_end(monkeypatch):
     """create_app → TestClient: the swapped middleware answers, not upstream's."""
     monkeypatch.setenv(AUDIENCE_CLAIM_ENV, "client_id")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    # The discovery document is fetched in-network, so its issuer differs from
+    # the public one the tokens carry; OIDC_ISSUER (upstream 1.4.0) bridges it.
+    public_issuer = "http://localhost:8180/realms/test"
     oidc = SimpleNamespace(
-        metadata={},
+        metadata={"issuer": "http://idp.invalid/realms/test"},
+        issuer="http://idp.invalid/realms/test",
         jwks_client=SimpleNamespace(
             get_signing_key_from_jwt=lambda _token: SimpleNamespace(key=key.public_key())
         ),
     )
     # The only network hop on the 401 path is the lazy OIDC discovery fetch.
     monkeypatch.setattr(ClaimAwareEnforceAuthMiddleware, "oidc_config", property(lambda _: oidc))
-    client = TestClient(create_app(_settings()))
+    settings = _settings().model_copy(update={"oidc_issuer": public_issuer})
+    client = TestClient(create_app(settings))
 
     def post(claims: dict) -> Any:
         token = jwt.encode(
-            {"exp": int(time.time()) + 3600, "sub": "u1", "token_use": "access", **claims},
+            {
+                "exp": int(time.time()) + 3600,
+                "iss": public_issuer,
+                "sub": "u1",
+                "token_use": "access",
+                **claims,
+            },
             key,
             algorithm="RS256",
         )
         return client.post("/collections", json={}, headers={"Authorization": f"Bearer {token}"})
 
     # Upstream's aud-only check would answer "Invalid or expired token" (no aud
-    # claim) for the first and accept the second; both must be audience 401s.
+    # claim) for the first and accept the second; both must be audience 401s,
+    # which also proves the swap kept upstream's oidc_issuer kwarg.
     for claims in ({"client_id": "other-client"}, {"client_id": "app-client", "aud": "app-client"}):
         response = post(claims)
         assert response.status_code == 401
         assert response.json() == {"detail": "Invalid token audience"}
+    # A token from another issuer fails upstream's issuer check first.
+    response = post({"client_id": "app-client", "iss": "http://idp.invalid/realms/test"})
+    assert response.json() == {"detail": "Invalid or expired token"}
     assert client.post("/collections", json={}).status_code == 401
 
 
@@ -140,7 +155,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 # https://github.com/developmentseed/stac-auth-proxy/blob/v<tag>/uv.lock.
 # A base bump must add the new tag's row (ADR 0015 lockstep).
 UPSTREAM_LOCKED = {
-    "1.2.0": {"starlette": "1.3.1", "fastapi": "0.137.1", "pyjwt": "2.13.0"},
+    "1.4.0": {"starlette": "1.7.0", "fastapi": "0.162.5", "pyjwt": "2.15.1", "cql2": "0.6.1"},
 }
 
 
@@ -157,7 +172,7 @@ def test_dev_pin_matches_the_dockerfile_base():
     assert _dockerfile_base_tag() == importlib.metadata.version("stac-auth-proxy")
 
 
-@pytest.mark.parametrize("dist", ["starlette", "fastapi", "pyjwt"])
+@pytest.mark.parametrize("dist", ["starlette", "fastapi", "pyjwt", "cql2"])
 def test_dev_extra_runs_the_base_images_locked_version(dist):
     tag = _dockerfile_base_tag()
     assert tag in UPSTREAM_LOCKED, f"add upstream v{tag}'s uv.lock versions to UPSTREAM_LOCKED"
