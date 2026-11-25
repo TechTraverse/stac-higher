@@ -693,6 +693,10 @@
             }
           }
         },
+        "waitReadySeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
         "backoffLimit": {
           "type": "integer",
           "minimum": 0

@@ -186,7 +186,8 @@ demoSeed:
     secretName: "" # Secret holding an operator bearer token; required with images-seed
     key: token # key inside secretName
   extraArgs: {} # per-seed extra CLI args, e.g. {goes-seed: ["--window", "-2h"]}
-  backoffLimit: 6 # pod retries while the stack comes up
+  waitReadySeconds: 600 # each seed waits this long for the STAC API (and app) to answer before writing
+  backoffLimit: 0 # 0: a pod retry would redo every seed that already succeeded
   activeDeadlineSeconds: 3600 # Job deadline (images-seed may wait 1800s for scans)
   resources: # per seed container
     requests: { cpu: 100m, memory: 512Mi }

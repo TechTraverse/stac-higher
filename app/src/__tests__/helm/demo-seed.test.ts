@@ -1,7 +1,12 @@
 // @vitest-environment node
 // R-10 (GitHub #146): the one-shot demo seed Job, off by default.
+import { spawnSync } from "node:child_process";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { helmReady, renderChart, scenario, containersOf, effectiveEnv } from "../../../../infra/helm/stac-higher/tests/render.mjs";
+import { parseAllDocuments } from "yaml";
+import { CHART_DIR, KUBE_VERSION, helmReady, renderChart, scenario, containersOf, effectiveEnv } from "../../../../infra/helm/stac-higher/tests/render.mjs";
 
 type Doc = any;
 function render(values: object = {}, scen = "demo-seed") {
@@ -22,8 +27,32 @@ const job = (docs: Doc[]) => {
 };
 const podOf = (docs: Doc[]) => job(docs).spec.template.spec;
 const byName = (docs: Doc[], name: string) => containersOf(podOf(docs)).find((c: any) => c.name === name);
-const DEMO = ["python", "-m", "pipeline.demo", "--in-cluster"];
+const DEMO = ["python", "-m", "pipeline.demo", "--in-cluster", "--wait-ready", "600"];
 const EXISTING = { platform: "p", dbMaster: "m", dbOwner: "own", dbStacApi: "a", dbStacReader: "r", dbProxyPolicy: "x", dbCubeServer: "c" };
+const D = (c: string) => "sha256:" + c.repeat(64);
+const DIGESTS = { app: D("a"), pipeline: D("b"), "image-scanner": D("c"), "process-runtime": D("d"), "process-runtime-stactools": D("e") };
+
+/** Render a copy of the chart whose Chart.yaml carries another version and appVersion. */
+function renderAsVersion(version: string, values: object) {
+  const tmp = mkdtempSync(join(tmpdir(), "demo-seed-chart-"));
+  try {
+    const chart = join(tmp, "stac-higher");
+    cpSync(CHART_DIR, chart, { recursive: true });
+    const meta = readFileSync(join(chart, "Chart.yaml"), "utf8")
+      .replace(/^version: .*$/m, `version: ${version}`)
+      .replace(/^appVersion: .*$/m, `appVersion: "${version}"`);
+    writeFileSync(join(chart, "Chart.yaml"), meta);
+    const inline = join(tmp, "inline.json");
+    writeFileSync(inline, JSON.stringify(values));
+    const args = ["template", "stac-higher", chart, "--namespace", "stac-higher", "--kube-version", KUBE_VERSION];
+    for (const f of [...scenario("demo-seed"), inline]) args.push("-f", f);
+    const r = spawnSync("helm", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    expect(r.status, r.stderr).toBe(0);
+    return parseAllDocuments(r.stdout).map((d) => d.toJS()).filter((d) => d != null);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
 
 describe.skipIf(!helmReady())("chart demo seed Job", () => {
   it("is off by default", () => {
@@ -43,7 +72,8 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     expect(j.metadata.annotations?.["helm.sh/hook"]).toBeUndefined();
     expect(j.metadata.annotations?.["argocd.argoproj.io/hook"]).toBeUndefined();
     expect(j.spec.ttlSecondsAfterFinished).toBeUndefined();
-    expect(j.spec.backoffLimit).toBe(6);
+    // 0: a pod retry would redo every seed that already succeeded; --wait-ready absorbs start-up instead
+    expect(j.spec.backoffLimit).toBe(0);
     expect(j.spec.activeDeadlineSeconds).toBe(3600);
     expect(j.spec.template.spec.restartPolicy).toBe("Never");
     expect(j.metadata.labels["app.kubernetes.io/component"]).toBe("demo-seed");
@@ -55,6 +85,21 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     expect(a).toMatch(/^stac-higher-demo-seed-[0-9a-f]{8}$/);
     expect(job(render()).metadata.name).toBe(a);
     expect(job(render({ demoSeed: { extraArgs: { "goes-seed": ["--window", "-3h"] } } })).metadata.name).not.toBe(a);
+  });
+
+  it("a chart-only release (new version and appVersion, same digests) keeps the Job name", () => {
+    const old = renderAsVersion("0.1.0", { global: { imageDigests: DIGESTS } });
+    const next = renderAsVersion("0.2.0", { global: { imageDigests: DIGESTS } });
+    expect(job(next).metadata.name).toBe(job(old).metadata.name);
+    // the emitted labels still carry the version; only the hash ignores them
+    expect(job(next).spec.template.metadata.labels["helm.sh/chart"]).toBe("stac-higher-0.2.0");
+    expect(job(next).spec.template.metadata.labels["app.kubernetes.io/version"]).toBe("0.2.0");
+  });
+
+  it("a changed image digest or seed list does change the Job name", () => {
+    const a = job(render({ global: { imageDigests: DIGESTS } })).metadata.name;
+    expect(job(render({ global: { imageDigests: { ...DIGESTS, pipeline: D("f") } } })).metadata.name).not.toBe(a);
+    expect(job(render({ global: { imageDigests: DIGESTS }, demoSeed: { seeds: ["seed", "goes-seed"] } })).metadata.name).not.toBe(a);
   });
 
   it("a new image re-runs the seed; another workload's knob does not", () => {
@@ -79,7 +124,7 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     const docs = render();
     for (const c of containersOf(podOf(docs))) {
       expect(c.image).toBe("ghcr.io/techtraverse/stac-higher-pipeline:0.1.0");
-      expect(c.command.slice(0, 5)).toEqual([...DEMO, c.name]);
+      expect(c.command.slice(0, DEMO.length + 1)).toEqual([...DEMO, c.name]);
     }
     expect(byName(docs, "seed").command).toEqual([...DEMO, "seed", "--no-build-image"]);
     expect(byName(docs, "goes-seed").command).toEqual([...DEMO, "goes-seed", "--no-build-image", "--deliver", "--window", "-2h"]);
@@ -87,6 +132,7 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     expect(byName(docs, "images-seed").command).toEqual([...DEMO, "images-seed"]);
     const noDeliver = render({ demoSeed: { deliver: false } });
     expect(byName(noDeliver, "goes-seed").command).not.toContain("--deliver");
+    expect(byName(render({ demoSeed: { waitReadySeconds: 0 } }), "seed").command.slice(4, 6)).toEqual(["--wait-ready", "0"]);
   });
 
   it("reads the pipeline's config and runtime Secrets, never hook copies", () => {
@@ -103,7 +149,6 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
       expect(env.STAGING_S3_ENDPOINT).toBe("");
       expect(env.PGUSER).toEqual({ secret: "stac-higher-db-owner", key: "username" });
       expect(env.PGPASSWORD).toEqual({ secret: "stac-higher-db-owner", key: "password" });
-      expect(env.CREDENTIALS_MASTER_KEY).toEqual({ secret: "stac-higher-platform", key: "CREDENTIALS_MASTER_KEY" });
       for (const e of c.env) if (e.valueFrom?.secretKeyRef) expect(e.valueFrom.secretKeyRef.name).not.toMatch(/-hook-/);
     }
   });
@@ -119,6 +164,13 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     const images = effectiveEnv(docs, byName(docs, "images-seed"));
     expect(images.STAC_HIGHER_BEARER).toEqual({ secret: "stac-higher-demo-bearer", key: "token" });
     expect(images.DEMO_DESTINATION_ACCESS_KEY_ID).toBeUndefined();
+    // only goes-seed and cube-seed seal connection credentials
+    for (const n of ["goes-seed", "cube-seed"]) {
+      expect(effectiveEnv(docs, byName(docs, n)).CREDENTIALS_MASTER_KEY).toEqual({ secret: "stac-higher-platform", key: "CREDENTIALS_MASTER_KEY" });
+    }
+    for (const n of ["seed", "images-seed"]) {
+      expect(effectiveEnv(docs, byName(docs, n)).CREDENTIALS_MASTER_KEY).toBeUndefined();
+    }
     for (const n of ["seed", "cube-seed"]) {
       const env = effectiveEnv(docs, byName(docs, n));
       expect(env.STAC_HIGHER_BEARER).toBeUndefined();
@@ -191,6 +243,28 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     ["a duplicate seed", { demoSeed: { seeds: ["seed", "seed"] } }, "seeds"],
   ])("refuses %s, naming the key", (_name, values, needle) => {
     fails(values, needle);
+  });
+
+  it("a restricted app policy admits the seed pod when images-seed is chosen", () => {
+    const appPolicy = (docs: Doc[]) => docs.find((d) => d.kind === "NetworkPolicy" && d.metadata.name === "stac-higher-app");
+    const cidr = [{ ipBlock: { cidr: "10.0.0.0/16" } }];
+    const docs = render({ networkPolicy: { appIngressFrom: cidr } });
+    const from = appPolicy(docs).spec.ingress[0].from;
+    expect(from[0]).toEqual(cidr[0]);
+    const peer = from[1].podSelector.matchLabels;
+    expect(peer["app.kubernetes.io/component"]).toBe("demo-seed");
+    expect(job(docs).spec.template.metadata.labels).toMatchObject(peer); // it selects the real pod
+    expect(appPolicy(docs).spec.ingress[0].ports).toEqual([{ protocol: "TCP", port: 4321 }]);
+  });
+
+  it("the app policy is untouched when it is open or images-seed is not chosen", () => {
+    const appPolicy = (docs: Doc[]) => docs.find((d) => d.kind === "NetworkPolicy" && d.metadata.name === "stac-higher-app");
+    expect(appPolicy(render()).spec.ingress).toEqual([{ ports: [{ protocol: "TCP", port: 4321 }] }]);
+    const cidr = [{ ipBlock: { cidr: "10.0.0.0/16" } }];
+    const noImages = render({ networkPolicy: { appIngressFrom: cidr }, demoSeed: { seeds: ["seed", "goes-seed"] } });
+    expect(appPolicy(noImages).spec.ingress[0].from).toEqual(cidr);
+    const off = render({ networkPolicy: { appIngressFrom: cidr }, demoSeed: { enabled: false } });
+    expect(appPolicy(off).spec.ingress[0].from).toEqual(cidr);
   });
 
   it("images-seed needs no bearer when it is not chosen", () => {
