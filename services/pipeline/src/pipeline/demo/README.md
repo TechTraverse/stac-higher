@@ -429,6 +429,78 @@ are deleted here: like the app's catalog delete, it marks each collection's whol
 prefix `collection_delete` in `asset_gc`, and the GC job removes
 `assets/goes19-c13-cube/_cube/` after the collection's grace period (ADR 0022).
 
+## In-cluster mode (`--in-cluster`)
+
+The same seeds against a **deployed** stack, run by the chart's demo-seed Job
+(`demoSeed.enabled`, chart README "Demo seed"; R-10, GitHub #146). Everything
+above is compose mode and does not change without the flag.
+
+```sh
+# what the Job runs, one container per seed, in this order
+python -m pipeline.demo --in-cluster --wait-ready 600 seed --no-build-image
+python -m pipeline.demo --in-cluster --wait-ready 600 goes-seed --no-build-image --deliver
+python -m pipeline.demo --in-cluster --wait-ready 600 cube-seed
+python -m pipeline.demo --in-cluster --wait-ready 600 images-seed
+```
+
+What `--in-cluster` changes:
+
+| | Compose | In-cluster |
+|---|---|---|
+| Endpoints | published ports (`localhost:8082`, `:5433`, `:9000`) | the environment; an explicit flag still wins: `DEMO_STAC_URL` (stac-fastapi, required), `DATABASE_URL` + libpq's `PGUSER`/`PGPASSWORD`/`PGSSLMODE`/`PGSSLROOTCERT` (required), `STAGING_BUCKET` (required), `DEMO_APP_URL` (the app Service; required for `images-*`), `DEMO_PUBLIC_APP_URL` / `DEMO_PUBLIC_TITILER_URL` (printed hints only) |
+| Platform bucket | MinIO at `--s3-endpoint` with MinIO's keys | the pipeline's own client from `STAGING_S3_*`: blank endpoint and keys mean AWS and the default credential chain (the pod's workload identity). `--s3-endpoint` is refused |
+| Start-up | runs at once | `--wait-ready SECONDS` (any mode; the chart passes it) waits for the STAC API, and for `images-*` the app, to answer with a 2xx-4xx status before the first write (a 5xx, refused, timed-out or garbled connection is not ready) |
+| Runtime image | built (`docker buildx bake`) or checked | never built or checked: no Docker daemon in a pod, and the deployment pins `PROCESS_RUNTIME_IMAGE`. `seed`/`goes-seed` refuse without `--no-build-image` |
+| `goes-seed --deliver` | MinIO keys, `stac-higher-deliveries` (created), `--internal-s3-endpoint` | the Terraform demo-destination key (below); `--internal-s3-endpoint` is ignored |
+| `teardown`, `goes-teardown` | as above | refused: they delete platform bytes directly, which a deployed platform allows only through `asset_gc` (ADR 0011) |
+
+`status`, `goes-status`, `cube-*` and `images-*` work in either mode.
+
+### The demo destination
+
+`goes-seed --deliver --in-cluster` delivers `goes-geocolor` to the bucket the
+Terraform `demo-destination` module made, with the module's write-only IAM
+user key, sealed into the `goes-geocolor-dest` connection exactly as a
+customer would enter theirs (spec §7.1). It reads:
+
+- `DEMO_DESTINATION_BUCKET`, `DEMO_DESTINATION_REGION`;
+- `DEMO_DESTINATION_ACCESS_KEY_ID`, `DEMO_DESTINATION_SECRET_ACCESS_KEY`, from
+  the Secret the chart materialises from `demoDestination.credentialsSecretArn`
+  (or `demoSeed.existingDestinationSecret`).
+
+All four are checked, like `CREDENTIALS_MASTER_KEY`, before anything is
+written. The connection config is `{"bucket", "region"}`: no endpoint, no
+path-style. The seed does not create the bucket (the key could not). The key
+is write-only, so delivery's server-side copy falls back to streaming, as
+the S3 adapter documents.
+
+### Preconditions in a cluster
+
+1. The database is migrated: the chart's pre-install hooks do it before the
+   Job exists.
+2. The STAC API is reachable at `demoSeed.stacUrl` and its ingress policy
+   admits pods labelled `app.kubernetes.io/component=demo-seed`. Each seed
+   first waits for it (`--wait-ready SECONDS`, the chart's
+   `demoSeed.waitReadySeconds`; for `images-*` the app too) and only then
+   writes. The Job does not retry a failed pod (`backoffLimit: 0`): a retry
+   would start again from the first seed and replace every demo process's
+   revisions and run history.
+3. `images-seed` needs an operator bearer token for the app
+   (`STAC_HIGHER_BEARER`, from `demoSeed.appBearer`) whose lifetime covers the
+   run, and `goes-seed` first.
+4. The runs the seeds trigger (extractor, GeoColor, image scans) need the
+   Kubernetes executor (K-5, I-160). Until then `seed`, `goes-seed` and
+   `cube-seed` complete but every run they trigger fails at launch, and
+   `images-seed` waits out its scan timeout and fails the Job: leave it out
+   until K-5 (`docs/ISSUES.md` I-169).
+
+**Writes bypass the app, as on compose.** The seeds write catalog documents
+straight to stac-fastapi and platform rows straight to the database as the
+owner role, not through the BFF or an audited API route, so no `audit_log`
+rows record them (`images-seed`'s image adds go through `/api/images`, which
+audits). That is an accepted deviation for an operator-run demo Job
+(I-169).
+
 ## Relationship to the other harnesses
 
 - **`pipeline.loadgen`** measures throughput with synthetic volume through an

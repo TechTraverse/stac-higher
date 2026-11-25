@@ -652,8 +652,64 @@
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "seeds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["seed", "goes-seed", "cube-seed", "images-seed"]
+          }
+        },
+        "stacUrl": {
+          "type": "string"
+        },
+        "deliver": {
+          "type": "boolean"
+        },
+        "existingDestinationSecret": {
+          "type": "string"
+        },
+        "appBearer": {
+          "type": "object",
+          "properties": {
+            "secretName": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "extraArgs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "waitReadySeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "backoffLimit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resources": {
+          "type": "object"
         }
-      }
+      },
+      "additionalProperties": false
     }
   }
 }

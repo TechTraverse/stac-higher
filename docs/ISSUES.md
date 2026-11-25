@@ -1957,6 +1957,49 @@ half-fails" covers cleanup.
 
 Follow-up idea: cosign-sign the chart and the images, and verify on pull.
 
+### I-169 · The in-cluster demo seed is render-verified; what it cannot do yet 🟡
+
+The demo seed Job (R-10) and `pipeline.demo --in-cluster` are proven by
+render tests and pytest only; the first live run is R-11. Known gaps and
+accepted deviations:
+
+- **Process runs.** The extractor, GeoColor and the image scans the seeds
+  trigger need the Kubernetes executor (I-160). Before K-5 `seed`,
+  `goes-seed` and `cube-seed` complete and every run they trigger fails at
+  launch.
+- **`images-seed` fails the Job before K-5.** It waits for scans that never
+  run, then refuses to deploy an image that is not `approved`, so its
+  container exits non-zero after `--scan-timeout` (1800 s by default). The
+  Job runs with `backoffLimit: 0`, so that failure is final and does not
+  re-run the seeds before it: a pod retry would start from the first seed
+  and replace every demo process's revisions and run history on each attempt.
+  Start-up ordering is handled inside the pod instead (`--wait-ready`). Leave
+  `images-seed` out of `demoSeed.seeds` until K-5.
+- **Writes bypass the app.** As on compose, the seeds write catalog documents
+  straight to stac-fastapi and `stac_higher` rows straight to the database as
+  the owner role, not through the BFF (ADR 0008) or an audited API route, so
+  no `audit_log` rows record them. Accepted for an operator-run demo Job, the
+  same split `pipeline.loadgen` uses. (`images-seed` adds its images through
+  `/api/images`, which audits; its processes are direct writes like the
+  rest.)
+- **STAC API ingress.** The Job reaches stac-fastapi at `demoSeed.stacUrl`
+  directly, as compose's seeds use `:8082`. The catalog plane's ingress
+  NetworkPolicy (R-7) must admit `app.kubernetes.io/component=demo-seed`, or
+  every seed times out in `--wait-ready` and the Job fails.
+- **`images-seed` bearer.** It authenticates to the app with a static
+  operator bearer token from a Secret (`demoSeed.appBearer`). An IdP access
+  token expires (Cognito: 1 hour by default), so the deployment refreshes it
+  before each run.
+- **Teardown.** `teardown` and `goes-teardown` delete platform bytes directly
+  and refuse in-cluster (ADR 0011); a deployed demo is removed through the
+  app.
+- **Re-seed on a new image.** The Job re-runs when its image, seed list,
+  args, env or Secret references change (not on a chart-only release with
+  the same digests), which replaces the demo processes' revisions and run
+  history.
+
+Tracked in: GitHub #147 (R-11 runs it live).
+
 ## Resolved — archived
 
 Fully-closed entries live in [`ISSUES-ARCHIVE.md`](ISSUES-ARCHIVE.md); stubs here keep inbound references landing.

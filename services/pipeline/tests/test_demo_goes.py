@@ -380,7 +380,7 @@ def test_goes_seed_builds_the_runtime_image_before_it_writes(goes_seed_module, m
     builds: list[bool] = []
     monkeypatch.setattr(module, "put_collection", lambda *a, **k: written.append(a))
 
-    def failed_build(*, build):
+    def failed_build(*, build, in_cluster=False):
         builds.append(build)
         raise SystemExit("docker buildx bake failed")
 

@@ -1,0 +1,199 @@
+{{- /*
+R-10 demo seed: `python -m pipeline.demo --in-cluster <seed>` once per distinct pod spec.
+A plain Job, not a hook: it needs the migrated database (pre-install hooks) and the running
+catalog plane, and an Argo PostSync hook would re-seed on every sync. Its name carries a hash
+of its pod template, and the hash input and the emitted spec.template are ONE render, so the
+name and the (immutable) template can only change together. The pod carries selector labels
+only (no chart version, no appVersion); the full labels sit on the Job's own metadata, which
+is mutable. So a chart-only release leaves the Job alone (no immutable-field error, no
+re-run) while a new image, a new seed list or new args/env/Secret references run a new Job
+under a new name. No ttlSecondsAfterFinished:
+a vanished Job would be recreated by the next sync. backoffLimit defaults to 0: a pod retry
+would redo every seed that already succeeded (each replaces its processes' run history), so
+start-up ordering is absorbed inside the pod by --wait-ready instead. Re-run by hand:
+kubectl delete job, then upgrade or sync.
+*/ -}}
+{{- if .Values.demoSeed.enabled }}
+{{- $v := .Values -}}
+{{- $ds := $v.demoSeed -}}
+{{- $full := include "stac-higher.fullname" . -}}
+{{- $esMode := eq $v.secrets.mode "external-secrets" -}}
+{{- if not (regexMatch "^https?://[^/]+" ($ds.stacUrl | default "")) -}}
+{{- fail (printf "demoSeed.stacUrl is required when demoSeed.enabled: the in-cluster stac-fastapi URL (http://...), got %q" ($ds.stacUrl | default "")) -}}
+{{- end -}}
+{{- if and (has "images-seed" $ds.seeds) (not $ds.appBearer.secretName) -}}
+{{- fail "demoSeed.appBearer.secretName is required with images-seed: a Secret holding an operator bearer token for the app API" -}}
+{{- end -}}
+{{- if $ds.deliver -}}
+{{- if not (has "goes-seed" $ds.seeds) -}}
+{{- fail "demoSeed.deliver needs goes-seed in demoSeed.seeds (it is goes-seed --deliver)" -}}
+{{- end -}}
+{{- if not $v.demoDestination.bucket -}}
+{{- fail "demoDestination.bucket is required when demoSeed.deliver (the Terraform demo-destination module's helm_values)" -}}
+{{- end -}}
+{{- if and $esMode (not $v.demoDestination.credentialsSecretArn) -}}
+{{- fail "demoDestination.credentialsSecretArn is required when demoSeed.deliver and secrets.mode=external-secrets" -}}
+{{- end -}}
+{{- if and (not $esMode) (not $ds.existingDestinationSecret) -}}
+{{- fail "demoSeed.existingDestinationSecret is required when demoSeed.deliver and secrets.mode=existing (a Secret with access_key_id and secret_access_key)" -}}
+{{- end -}}
+{{- end -}}
+{{- range $k := keys ($ds.extraArgs | default dict) | sortAlpha -}}
+{{- if not (has $k $ds.seeds) -}}
+{{- fail (printf "demoSeed.extraArgs.%s names a seed that is not in demoSeed.seeds" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- $chosen := list -}}
+{{- range $s := list "seed" "goes-seed" "cube-seed" "images-seed" -}}
+{{- if has $s $ds.seeds -}}
+{{- $chosen = append $chosen $s -}}
+{{- end -}}
+{{- end -}}
+{{- $destSecret := ternary (printf "%s-demo-destination" $full) $ds.existingDestinationSecret $esMode -}}
+{{- $containers := list -}}
+{{- range $s := $chosen -}}
+{{- $cmd := list "python" "-m" "pipeline.demo" "--in-cluster" "--wait-ready" (toString $ds.waitReadySeconds) $s -}}
+{{- if has $s (list "seed" "goes-seed") -}}
+{{- $cmd = append $cmd "--no-build-image" -}}
+{{- end -}}
+{{- if and (eq $s "goes-seed") $ds.deliver -}}
+{{- $cmd = append $cmd "--deliver" -}}
+{{- end -}}
+{{- $cmd = concat $cmd (get ($ds.extraArgs | default dict) $s | default list) -}}
+{{- $c := include "stac-higher.demoSeedContainer" (dict "root" $ "seed" $s "command" $cmd "destSecret" $destSecret) -}}
+{{- $containers = append $containers $c -}}
+{{- end -}}
+{{- $pod := include "stac-higher.demoSeedPod" (dict "root" . "containers" $containers) -}}
+{{- if eq $v.secrets.mode "external-secrets" }}
+{{- if $ds.deliver }}
+{{ include "stac-higher.externalSecret" (dict "root" . "name" $destSecret "remoteKey" $v.demoDestination.credentialsSecretArn "json" true "hook" false "keys" (list "access_key_id" "secret_access_key")) }}
+---
+{{- end }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-demo-seed-%s" $full ($pod | sha256sum | trunc 8) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "demo-seed") | nindent 4 }}
+spec:
+  backoffLimit: {{ $ds.backoffLimit }}
+  activeDeadlineSeconds: {{ $ds.activeDeadlineSeconds }}
+  template:
+    {{- $pod | nindent 4 }}
+{{- end }}
+
+{{- /* The pod template, rendered once: it is both the Job name's hash input and the emitted
+spec.template. Selector labels only, never the chart version or appVersion, and no annotations:
+anything version-bearing here would change an immutable field on a chart-only upgrade.
+(dict "root" $ "containers" <list of rendered containers>) */ -}}
+{{- define "stac-higher.demoSeedPod" -}}
+{{- $r := .root -}}
+{{- $p := $r.Values.pipeline -}}
+{{- $n := len .containers -}}
+metadata:
+  labels:
+    {{- include "stac-higher.selectorLabels" (dict "root" $r "component" "demo-seed") | nindent 4 }}
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ include "stac-higher.serviceAccountName" (dict "root" $r "component" "pipeline") }}
+  automountServiceAccountToken: false
+  securityContext:
+    {{- include "stac-higher.podSecurityContext" (dict "uid" 999) | nindent 4 }}
+  {{- if gt $n 1 }}
+  initContainers:
+    {{- range $c := initial .containers }}
+    {{- $c | nindent 4 }}
+    {{- end }}
+  {{- end }}
+  containers:
+    {{- last .containers | nindent 4 }}
+  volumes:
+    {{- with include "stac-higher.caVolume" (dict "root" $r "hook" false) }}
+    - {{- . | nindent 6 }}
+    {{- end }}
+    - name: tmp
+      emptyDir:
+        sizeLimit: 512Mi
+  {{- with $p.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $p.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $p.affinity }}
+  affinity:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end -}}
+
+{{- /* One seed container. Secrets only where needed: the destination key in goes-seed with
+deliver, the bearer in images-seed. Runtime Secrets only, never hook copies (I-156).
+(dict "root" $ "seed" <name> "command" <list> "destSecret" <name>) */ -}}
+{{- define "stac-higher.demoSeedContainer" -}}
+{{- $r := .root -}}
+{{- $v := $r.Values -}}
+{{- $full := include "stac-higher.fullname" $r -}}
+- name: {{ .seed }}
+  image: {{ include "stac-higher.image" (dict "root" $r "key" "pipeline") | quote }}
+  command: {{ toJson .command }}
+  envFrom:
+    - configMapRef:
+        name: {{ $full }}-env-shared
+    - configMapRef:
+        name: {{ $full }}-env-pipeline
+  env:
+    - name: DEMO_STAC_URL
+      value: {{ trimSuffix "/" $v.demoSeed.stacUrl | quote }}
+    - name: DEMO_APP_URL
+      value: {{ printf "http://%s-app" $full | quote }}
+    - name: DEMO_PUBLIC_APP_URL
+      value: {{ trimSuffix "/" $v.publicUrls.app | quote }}
+    - name: DEMO_PUBLIC_TITILER_URL
+      value: {{ trimSuffix "/" $v.publicUrls.titiler | quote }}
+    {{- include "stac-higher.dbCredentialEnv" (dict "secret" (include "stac-higher.secretName" (dict "root" $r "name" "dbOwner"))) | nindent 4 }}
+    {{- if has .seed (list "goes-seed" "cube-seed") }}
+    {{- /* only these two seal connection credentials (goes-nodd, the destination) */}}
+    - name: CREDENTIALS_MASTER_KEY
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "stac-higher.secretName" (dict "root" $r "name" "platform") }}
+          key: CREDENTIALS_MASTER_KEY
+    {{- end }}
+    {{- if and (eq .seed "goes-seed") $v.demoSeed.deliver }}
+    - name: DEMO_DESTINATION_BUCKET
+      value: {{ $v.demoDestination.bucket | quote }}
+    - name: DEMO_DESTINATION_REGION
+      value: {{ default $v.aws.region $v.demoDestination.region | quote }}
+    - name: DEMO_DESTINATION_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: {{ .destSecret }}
+          key: access_key_id
+    - name: DEMO_DESTINATION_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: {{ .destSecret }}
+          key: secret_access_key
+    {{- end }}
+    {{- if eq .seed "images-seed" }}
+    - name: STAC_HIGHER_BEARER
+      valueFrom:
+        secretKeyRef:
+          name: {{ $v.demoSeed.appBearer.secretName }}
+          key: {{ $v.demoSeed.appBearer.key }}
+    {{- end }}
+  resources:
+    {{- toYaml $v.demoSeed.resources | nindent 4 }}
+  securityContext:
+    {{- include "stac-higher.containerSecurityContext" (dict "readOnly" $v.pipeline.readOnlyRootFilesystem) | nindent 4 }}
+  volumeMounts:
+    {{- with include "stac-higher.caVolumeMount" (dict "root" $r) }}
+    - {{- . | nindent 6 }}
+    {{- end }}
+    - name: tmp
+      mountPath: /tmp
+{{- end -}}

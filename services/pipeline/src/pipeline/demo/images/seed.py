@@ -35,12 +35,14 @@ from pipeline.demo.images import canary_code
 from pipeline.demo.platform import (
     check_migrations,
     enable_serving,
+    in_cluster,
     install_process,
     json_request,
     put_collection,
     remove_process,
     request,
     say,
+    ui_url,
 )
 
 REQUIRED_MIGRATION = "030_container_images"
@@ -454,7 +456,10 @@ def seed(args: argparse.Namespace) -> int:
         )
         say(f"  process {CANARY_NAME} deployed (no outputs)")
 
-    app_url = args.app_url.rstrip("/")
+    # In-cluster `--app-url` is the app's Service, not what a browser opens.
+    app_url = (
+        ui_url(args) if in_cluster(args) and getattr(args, "ui_url", None) else args.app_url
+    ).rstrip("/")
     say("")
     say(f"UI:    {app_url}/images")
     say(f"       {app_url}/processes")

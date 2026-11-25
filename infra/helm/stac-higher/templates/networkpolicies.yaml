@@ -26,7 +26,13 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    - {{- with .Values.networkPolicy.appIngressFrom }}
+    {{- $appFrom := .Values.networkPolicy.appIngressFrom | default list }}
+    {{- $ds := .Values.demoSeed }}
+    {{- if and $appFrom $ds.enabled (has "images-seed" $ds.seeds) }}
+    {{- /* R-10: images-seed calls the app API from inside the namespace */}}
+    {{- $appFrom = append $appFrom (dict "podSelector" (dict "matchLabels" (include "stac-higher.selectorLabels" (dict "root" . "component" "demo-seed") | fromYaml))) }}
+    {{- end }}
+    - {{- with $appFrom }}
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}

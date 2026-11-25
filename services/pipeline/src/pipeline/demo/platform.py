@@ -10,22 +10,31 @@ or makes one, and never stacks duplicates.
 
 The HTTP/S3/announce helpers live here too, so `demo/goes/seed.py` can use them
 without importing the CLI module that imports it back.
+
+In-cluster mode (`--in-cluster`, R-10) is the chart's demo-seed Job: no Docker
+daemon, the platform bucket reached as the pipeline reaches it. `in_cluster()`
+and `platform_s3_client()` are the two switches every seeder shares.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 import boto3
 import psycopg
 from botocore.client import Config
+
+from pipeline.config import Settings
+from pipeline.storage.platform import build_platform_client
 
 #: The checkout this module lives in (`services/pipeline/src/pipeline/demo/`).
 REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -77,6 +86,44 @@ def json_request(
     return _http(url, method=method, body=body, extra_headers=headers)
 
 
+def reachable(url: str) -> bool:
+    """True once `url` answers with 2xx-4xx: a 4xx is the service itself
+    answering (a root without a route, an auth gate). A 5xx is a half-up
+    service or a proxy in front of nothing, and a refused, timed-out or
+    garbled connection is not an answer; both count as not ready, because the
+    write that follows would fail and the Job does not retry."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=5) as resp:
+            return resp.status < 500
+    except urllib.error.HTTPError as err:
+        return err.code < 500
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        return False
+
+
+def wait_ready(
+    urls: Sequence[str],
+    *,
+    timeout_s: int,
+    probe: Callable[[str], bool] = reachable,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    interval_s: float = 5.0,
+) -> None:
+    """Wait, before any write, until every URL answers or `timeout_s` passes.
+
+    The chart's Job runs with backoffLimit 0 because a pod retry would redo
+    every seed that already succeeded, so start-up ordering (the catalog plane
+    or the app still coming up) is absorbed here instead of by a retry."""
+    deadline = clock() + timeout_s
+    for url in urls:
+        while not probe(url):
+            if clock() >= deadline:
+                raise SystemExit(f"{url} did not answer within {timeout_s}s (--wait-ready)")
+            say(f"waiting for {url}")
+            sleep(interval_s)
+
+
 def s3_client(endpoint: str):
     return boto3.client(
         "s3",
@@ -88,6 +135,40 @@ def s3_client(endpoint: str):
     )
 
 
+def in_cluster(args) -> bool:
+    """True for `--in-cluster`. `getattr` so a hand-built Namespace (tests,
+    callers predating R-10) means compose."""
+    return bool(getattr(args, "in_cluster", False))
+
+
+def platform_s3_client(args):
+    """The platform bucket's client. Compose: MinIO at `--s3-endpoint` with
+    MinIO's keys. In-cluster: the pipeline's own client, from the same
+    `STAGING_S3_*` environment the pipeline Deployment reads — blank endpoint
+    and keys mean AWS's endpoint and the default credential chain, i.e. the
+    pod's workload identity."""
+    if in_cluster(args):
+        return build_platform_client(Settings.from_env())
+    return s3_client(args.s3_endpoint)
+
+
+def refuse_byte_delete_in_cluster(args, command: str) -> None:
+    """`teardown` and `goes-teardown` delete platform bytes directly: fine on a
+    throwaway compose bucket, but a deployed platform deletes bytes only
+    through the `asset_gc` queue (ADR 0011). Refused before any connection."""
+    if in_cluster(args):
+        raise SystemExit(
+            f"{command} deletes platform bytes directly, which a deployed platform\n"
+            "allows only through the asset_gc queue (ADR 0011), so it is not\n"
+            "available --in-cluster. Remove the demo through the app instead."
+        )
+
+
+def ui_url(args) -> str:
+    """The browser-facing app URL for the hints a seeder prints."""
+    return (getattr(args, "ui_url", None) or "http://localhost:4321").rstrip("/")
+
+
 def ensure_bucket(client, bucket: str) -> None:
     try:
         client.head_bucket(Bucket=bucket)
@@ -95,7 +176,7 @@ def ensure_bucket(client, bucket: str) -> None:
         client.create_bucket(Bucket=bucket)
 
 
-def ensure_runtime_image(*, build: bool = True) -> None:
+def ensure_runtime_image(*, build: bool = True, in_cluster: bool = False) -> None:
     """Build the process runtime image every demo run executes in, or refuse.
 
     `docker compose up` does not build it, and without it every run fails to
@@ -107,7 +188,19 @@ def ensure_runtime_image(*, build: bool = True) -> None:
     `build=False` only checks the image exists. A `PROCESS_RUNTIME_IMAGE`
     override names an image this checkout does not build, so it is only
     checked, never built.
+
+    `in_cluster=True` (the chart's Job) never builds and cannot check: a pod has
+    no Docker daemon, and the image is the deployment's pinned
+    `PROCESS_RUNTIME_IMAGE`. A build request there is refused before any write.
     """
+    if in_cluster:
+        if build:
+            raise SystemExit(
+                "in-cluster mode never builds the process runtime image (there is no\n"
+                "Docker daemon in a pod). Pass --no-build-image."
+            )
+        say("process runtime image: not checked in-cluster (the deployment pins it)")
+        return
     image = os.environ.get("PROCESS_RUNTIME_IMAGE") or DEFAULT_RUNTIME_IMAGE
     try:
         if build and image == DEFAULT_RUNTIME_IMAGE:

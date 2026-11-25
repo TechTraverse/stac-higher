@@ -468,6 +468,29 @@ def test_seed_prints_ui_links_using_the_given_app_url(images_seed_module, monkey
     assert not any("localhost:4321" in line for line in said)
 
 
+def test_seed_prints_the_public_app_url_in_cluster(images_seed_module, monkeypatch):
+    """In-cluster `--app-url` is the app's Service; the printed links are the
+    browser-facing `--ui-url` (DEMO_PUBLIC_APP_URL), never the Service."""
+    module = images_seed_module
+    said: list[str] = []
+    monkeypatch.setattr(module, "say", said.append)
+    client = _runtime_slim_client("approved")
+    monkeypatch.setattr(module, "AppClient", lambda base_url, bearer=None: client)
+
+    args = _images_args(
+        in_cluster=True, app_url="http://stac-higher-app", ui_url="https://app.example.com/"
+    )
+    assert module.seed(args) == 0
+
+    assert any(line == "UI:    https://app.example.com/images" for line in said)
+    assert not any("stac-higher-app" in line for line in said)
+
+    # without a public URL it falls back to --app-url rather than print nothing
+    said.clear()
+    assert module.seed(_images_args(in_cluster=True, app_url="http://stac-higher-app")) == 0
+    assert any(line == "UI:    http://stac-higher-app/images" for line in said)
+
+
 def test_a_403_on_the_exception_names_the_admin_identity(images_seed_module, monkeypatch):
     module = images_seed_module
     client = _runtime_slim_client("rejected", exception_status=403)
