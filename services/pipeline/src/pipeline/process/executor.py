@@ -135,6 +135,11 @@ class RunSpec:
     entrypoint: tuple[str, ...] = ()
     #: Pull credential for a user image; None = anonymous.
     registry_auth: RegistryAuth | None = None
+    #: K-3 ruling: an EXTRACTOR run (G-6, association-triggered) is ingest
+    #: work, sized by the platform rather than by an operator's profile choice,
+    #: so the executor does not cap its CPU (and the claim does not count it
+    #: against the profile's capacity). Process and test runs only.
+    extractor: bool = False
 
 
 @dataclass(frozen=True)

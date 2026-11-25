@@ -1212,6 +1212,14 @@ def test_an_image_scan_is_not_cpu_limited_by_a_profile():
     assert "NanoCpus" not in api.created_config()["HostConfig"]
 
 
+def test_an_extractor_run_is_not_cpu_capped():
+    """K-3 ruling: extractor runs are ingest work, sized by the platform; a
+    profile's cpu must not throttle them (they were uncapped before K-3)."""
+    api = FakeApi({"create": {"Id": "c1"}})
+    executor_with(api).launch(_spec(cpu=1, extractor=True))
+    assert "NanoCpus" not in api.created_config()["HostConfig"]
+
+
 def test_launch_sends_device_requests_when_the_host_has_an_nvidia_runtime():
     api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"nvidia": {}, "runc": {}}}})
     executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=2))

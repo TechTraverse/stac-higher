@@ -359,9 +359,10 @@ class DockerExecutor(Executor):
             # stray container was, and so the reap sweep can find orphans.
             "Labels": labels,
         }
-        if spec.kind == "process":
+        if spec.kind == "process" and not spec.extractor:
             # K-3: the profile's cpu becomes a limit, like memory. A scan is
-            # sized by the image policy, not a profile, so it stays uncapped.
+            # sized by the image policy, not a profile, and an extractor run
+            # is ingest work (K-3 ruling), so both stay uncapped.
             config["HostConfig"]["NanoCpus"] = round(spec.cpu * 1_000_000_000)
         if device_requests:
             config["HostConfig"]["DeviceRequests"] = device_requests

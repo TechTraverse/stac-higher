@@ -1,21 +1,25 @@
 """K-3: per-profile capacity on the Docker host (process-compute spec §8).
 
-A claimed run whose profile already has ``capacity`` runs ``running`` on this
-host, claimed ahead of it, is released back to ``queued`` as
-``pending_capacity``, claimable again in 15 s, with no attempt spent and
-nothing staged, minted or launched.
+Admission is decided IN THE CLAIM (K-3 review): a process or test run whose
+profile already has ``capacity`` runs admitted is not claimed at all — it
+stays ``queued`` as ``pending_capacity``, claimable again in 15 s, with no
+attempt spent. Extractor runs are exempt (K-3 ruling: capacity must not
+throttle ingest). These tests drive the fake's claim, which mirrors the Pg
+admission; the Pg statements, the advisory lock and the tick's paging are
+pinned by tests/test_integration_process_capacity.py against Postgres.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pytest
 
 from _process_fake import FakeProcessRepo
 from pipeline.config import Settings
 from pipeline.process.executor import ExitStatus
-from pipeline.process.hardware import parse_hardware_profiles
+from pipeline.process.hardware import docker_capacities, parse_hardware_profiles
 from pipeline.process.ledger import CAPACITY_RETRY_SECONDS, PHASE_PENDING_CAPACITY
 from pipeline.process.memory_executor import MemoryExecutor
 from pipeline.process.repo import QueuedRun
@@ -67,63 +71,104 @@ async def _run(repo, executor, *, capacity, run=None, profile_set=None):
     )
 
 
-@pytest.mark.asyncio
-async def test_a_full_profile_releases_the_run_without_spending_an_attempt():
-    repo = FakeProcessRepo(running_on_profile={"standard": 2})
-    executor = MemoryExecutor(results=[ExitStatus(0)])
-    result = await _run(repo, executor, capacity=2)
-    assert result.status == "queued"
-    assert executor.launched == []
-    assert repo.released == [
-        {
-            "run_id": "run-1",
-            "next_attempt_at": NOW + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS),
-            "detail": "profile 'standard' is at its capacity of 2 on this host",
-        }
-    ]
-    # Not a finish: the row goes back to queued with its attempt restored by
-    # release_for_capacity, never through finish_run's requeue.
-    assert repo.finished == []
-    # Counted against the runs claimed AHEAD of this one (no livelock when two
-    # workers claim the last slot at once: the earlier claim proceeds).
-    assert repo.counted == [("standard", "run-1")]
+async def _enqueue(repo, *, association_id=None):
+    return await repo.enqueue_run(
+        process_id="proc-1", revision_id="rev-1", source_id=None, input_items=[],
+        deferred_until=None, is_test=True, association_id=association_id,
+    )
 
 
 @pytest.mark.asyncio
-async def test_a_profile_with_room_launches():
-    repo = FakeProcessRepo(running_on_profile={"standard": 1})
+async def test_a_full_profile_is_not_claimed_and_no_attempt_is_spent():
+    repo = FakeProcessRepo(admitted_elsewhere={"standard": 2})
+    caps = docker_capacities(profiles(2))
+    run_id = await _enqueue(repo)
+    assert await repo.claim_run(run_id, NOW, capacities=caps) is None
+    row = repo.enqueued[0]
+    assert row["status"] == "queued"
+    assert row["phase"] == PHASE_PENDING_CAPACITY
+    assert row["phase_detail"] == "profile 'standard' is at its capacity of 2 on this host"
+    assert row["next_attempt_at"] == NOW + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS)
+    assert row.get("executor_backend") is None
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_run_is_claimable_once_its_retry_is_due_and_room_frees():
+    repo = FakeProcessRepo(admitted_elsewhere={"standard": 2})
+    caps = docker_capacities(profiles(2))
+    run_id = await _enqueue(repo)
+    assert await repo.claim_run(run_id, NOW, capacities=caps) is None
+    repo.admitted_elsewhere["standard"] = 1
+    assert await repo.claim_run(run_id, NOW + dt.timedelta(seconds=1), capacities=caps) is None
+    later = NOW + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS)
+    claimed = await repo.claim_run(run_id, later, capacities=caps)
+    assert claimed is not None
+    row = repo.enqueued[0]
+    assert (row["status"], row["phase"], row["executor_backend"]) == (
+        "running", "starting", "docker",
+    )
+
+
+@pytest.mark.asyncio
+async def test_admitted_runs_count_until_they_finish():
+    repo = FakeProcessRepo()
+    caps = docker_capacities(profiles(1))
+    first = await _enqueue(repo)
+    assert await repo.claim_run(first, NOW, capacities=caps) is not None
+    second = await _enqueue(repo)
+    assert await repo.claim_run(second, NOW, capacities=caps) is None
+    await repo.finish_run(first, status="succeeded", error=None, log_ref=None,
+                          next_attempt_at=None)
+    later = NOW + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS)
+    assert await repo.claim_run(second, later, capacities=caps) is not None
+
+
+@pytest.mark.asyncio
+async def test_extractor_runs_are_exempt_from_capacity_and_never_count():
+    """K-3 ruling: an extractor run (association-triggered) is ingest work;
+    a full `standard` must not hold it back, and it must not fill `standard`
+    for process runs either."""
+    repo = FakeProcessRepo(admitted_elsewhere={"standard": 2})
+    caps = docker_capacities(profiles(2))
+    extract = await _enqueue(repo, association_id="assoc-1")
+    assert await repo.claim_run(extract, NOW, capacities=caps) is not None
+    repo.admitted_elsewhere["standard"] = 1
+    transform = await _enqueue(repo)
+    assert await repo.claim_run(transform, NOW, capacities=caps) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_unbounded_profile_and_no_capacities_always_admit():
+    repo = FakeProcessRepo(admitted_elsewhere={"standard": 99})
+    assert await repo.claim_run(
+        await _enqueue(repo), NOW, capacities=docker_capacities(profiles(None))
+    ) is not None
+    assert await repo.claim_run(await _enqueue(repo), NOW, capacities=None) is not None
+
+
+@pytest.mark.asyncio
+async def test_run_one_no_longer_counts_or_releases():
+    """Admission is the claim's job: run_one launches whatever it is handed."""
+    repo = FakeProcessRepo()
     executor = MemoryExecutor(results=[ExitStatus(0)])
-    result = await _run(repo, executor, capacity=2)
+    result = await _run(repo, executor, capacity=1)
     assert result.status == "succeeded"
     assert len(executor.launched) == 1
-    assert repo.released == []
 
 
 @pytest.mark.asyncio
-async def test_an_unbounded_profile_never_counts():
-    repo = FakeProcessRepo(running_on_profile={"standard": 99})
+async def test_an_extractor_run_is_launched_without_a_cpu_cap_marker():
+    repo = FakeProcessRepo()
     executor = MemoryExecutor(results=[ExitStatus(0)])
-    result = await _run(repo, executor, capacity=None)
-    assert result.status == "succeeded"
-    assert repo.counted == []  # the repo was not even asked
-
-
-@pytest.mark.asyncio
-async def test_capacity_is_per_profile():
-    """A full `standard` does not hold a `cpu-large` run back, and the count
-    asked for is the run's own profile."""
-    repo = FakeProcessRepo(running_on_profile={"standard": 5, "cpu-large": 0})
-    executor = MemoryExecutor(results=[ExitStatus(0)])
-    run = queued(
-        runtime={
-            "kind": "inline_python",
-            "memory_mb": 8192,
-            "hardware": {"profile": "cpu-large", "cpu": 4, "gpu_count": 0},
-        }
+    run = QueuedRun(
+        id="run-x", process_id="proc-1", revision_id="rev-1", source_id=None, attempts=1,
+        input_items=[], runtime={"kind": "inline_python"}, code="pass", env=[],
+        association_id="assoc-1",
     )
-    result = await _run(repo, executor, capacity=1, run=run)
-    assert result.status == "succeeded"
-    assert repo.counted == [("cpu-large", "run-1")]
+    await _run(repo, executor, capacity=1, run=run)
+    assert executor.launched[0].extractor is True
+    await _run(repo, executor, capacity=1)
+    assert executor.launched[1].extractor is False
 
 
 @pytest.mark.asyncio
@@ -132,8 +177,6 @@ async def test_a_malformed_docker_block_requeues_as_infrastructure(tmp_path):
     is the deployment's fault, like an unreadable file: back to `queued`
     without spending an attempt, never `dead` for every run on the profile
     (for an extractor, `on_dead` would fail the ingest batch too)."""
-    import json
-
     bad = {
         "version": 1,
         "profiles": [
@@ -160,27 +203,6 @@ async def test_a_malformed_docker_block_requeues_as_infrastructure(tmp_path):
     assert executor.launched == []
     assert repo.finished[-1]["status"] == "queued"
     assert "backend.docker.capacity" in repo.finished[-1]["error"]
-
-
-@pytest.mark.asyncio
-async def test_a_released_run_is_claimable_again_with_its_phase():
-    """The fake models the ledger: release puts the row back to queued as
-    pending_capacity, and the next claim flips it to starting."""
-    repo = FakeProcessRepo(running_on_profile={"standard": 1})
-    run_id = await repo.enqueue_run(
-        process_id="proc-1", revision_id="rev-1", source_id=None, input_items=[],
-        deferred_until=None,
-    )
-    claimed = await repo.claim_run(run_id, NOW)
-    assert claimed is not None and repo.enqueued[0]["phase"] == "starting"
-    await _run(repo, MemoryExecutor(), capacity=1, run=claimed)
-    assert repo.enqueued[0]["status"] == "queued"
-    assert repo.enqueued[0]["phase"] == PHASE_PENDING_CAPACITY
-    # Not claimable before next_attempt_at, claimable after.
-    assert await repo.claim_run(run_id, NOW) is None
-    later = NOW + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS)
-    again = await repo.claim_run(run_id, later)
-    assert again is not None and repo.enqueued[0]["phase"] == "starting"
 
 
 def test_release_phase_is_the_fixture_value():

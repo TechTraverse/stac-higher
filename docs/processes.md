@@ -150,7 +150,7 @@ pinned revision asked for.
 
 On the Docker backend the numbers are limits, not hints: `memory_mb` caps
 memory, `cpu` caps CPU time (fractional values work — `0.25` is a quarter
-of a core), and a run with `gpu_count` above 0 gets that many GPUs through
+of a core; extractor runs are not CPU-capped), and a run with `gpu_count` above 0 gets that many GPUs through
 the profile's device requests. A GPU run needs a Docker host with the NVIDIA
 container runtime; on any other host (Docker Desktop on macOS never has one)
 it **dies at launch** naming the profile, because no amount of waiting
@@ -698,16 +698,21 @@ out of reach, so anything arriving after that starts the next run — you never
 lose items to a batch already executing, and you never see the same item in
 two runs.
 
-A claimed run can also wait for **capacity**: each hardware profile carries
-how many of its runs one Docker host runs at once (the deployment's profile
-file, `backend.docker.capacity`; the local set allows 2 `standard` and 1
-`cpu-large`). When that many are already running, the run goes back to the
-queue as *Waiting for capacity* — the tooltip names the profile and the
-limit — and is tried again from 15 s later, at the next sweep (so within
-about a minute), without spending an attempt. Runs on a full profile go in
-the order they were claimed. A claimed run shows *Starting* until it
-finishes. On a cluster (K-5 on) the same wait is Kueue holding the run for
-quota.
+A run can also wait for **capacity**: each hardware profile carries how many
+of its runs one Docker host runs at once (the deployment's profile file,
+`backend.docker.capacity`; the local set allows 2 `standard` and 1
+`cpu-large`). When that many are already running, the run is not started: it
+stays queued as *Waiting for capacity* (the tooltip names the profile and the
+limit), without spending an attempt, and the one-minute run tick tries it
+again from 15 s later. A slot that frees is therefore taken within about a
+minute and a quarter. Waiting runs have no queue order: the tick takes the
+oldest first, but a newly triggered run can take a freed slot before them. A
+full profile never holds back runs on other profiles. **Extractor** runs (see
+"Extractors") are exempt: they never wait for capacity, never count toward
+it, and are not CPU-capped. A started run shows *Starting* for its whole run
+today; the *Running* phase and the queue position the spec puts in the
+tooltip come with the asynchronous executor (K-4). On a cluster (K-5 on)
+the same wait is Kueue holding the run for quota.
 
 ## Rate ceiling
 

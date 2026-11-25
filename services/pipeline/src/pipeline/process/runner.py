@@ -60,12 +60,7 @@ from pipeline.process.launch import (
     execute_run,
     resolve_run_image,
 )
-from pipeline.process.ledger import (
-    CAPACITY_RETRY_SECONDS,
-    capacity_detail,
-    infrastructure_transition,
-    outcome_transition,
-)
+from pipeline.process.ledger import infrastructure_transition, outcome_transition
 from pipeline.process.repo import ProcessRepo, QueuedRun
 from pipeline.process.staging import InputStagingError, RemoteFetcher, stage_inputs
 
@@ -106,7 +101,7 @@ async def run_one(
 
     Order (GOES spec §3.2, C-2 spec §8.4): parse -> code rule -> network cap
     -> run image (alias, or the user image re-checked by digest) -> hardware
-    bounds -> profile capacity (K-3) -> plan inputs (repo reads) -> stage remote inputs -> mint
+    bounds -> plan inputs (repo reads) -> stage remote inputs -> mint
     credentials + launch (a user image is pulled by digest at launch). A
     failure anywhere before launch means no container ever existed.
     """
@@ -189,33 +184,6 @@ async def run_one(
     except HardwareProfileRejected as err:
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
-
-    # K-3 (spec §8): a profile's local capacity. The claim already flipped the
-    # row to `running`; if the runs claimed ahead of it fill the profile on
-    # this host, it goes back to `queued` as *Waiting for capacity* with its
-    # attempt restored — the state the cluster leg shows while Kueue holds a
-    # Workload. Nothing has been staged, minted or launched yet. (The only
-    # executor today is Docker; K-5 skips this for the Kubernetes backend.)
-    capacity = profile.docker.capacity
-    if capacity is not None:
-        running = await repo.count_running_on_profile(profile.id, ahead_of_run_id=run.id)
-        if running >= capacity:
-            await repo.release_for_capacity(
-                run.id,
-                next_attempt_at=at + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS),
-                detail=capacity_detail(profile.id, capacity),
-            )
-            logger.info(
-                "process run waiting for capacity",
-                extra={
-                    "run_id": run.id,
-                    "process_id": run.process_id,
-                    "profile": profile.id,
-                    "running": running,
-                    "capacity": capacity,
-                },
-            )
-            return RunResult(run.id, "queued")
 
     # GOES spec §3: describe the inputs, stage the remote ones, THEN mint+launch.
     # §15: an extractor run (association-triggered) reads the collection its
@@ -334,6 +302,7 @@ async def run_one(
             profile=profile,
             priority="interactive" if run.is_test else "triggered",
             image=resolved,
+            extractor=is_extract,
         )
     except (ImagePullFailed, ImageMissing) as err:
         # Spec §8.4: the registry refused the digest. A per-run outcome that

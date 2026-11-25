@@ -860,7 +860,8 @@ export async function rerunRun(
           SET status = 'queued', attempts = 0, error = NULL,
               started_at = NULL, finished_at = NULL,
               rate_deferred_until = NULL,
-              phase = NULL, phase_detail = NULL, next_attempt_at = NULL
+              phase = NULL, phase_detail = NULL, next_attempt_at = NULL,
+              executor_backend = NULL
         WHERE id = $1 AND process_id = $2 AND status = 'dead'
         RETURNING ${RUN_COLUMNS}`,
       [runId, processId],

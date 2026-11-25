@@ -1397,20 +1397,38 @@ assert-and-warn on the file (the M3-A `use_queue` pattern).
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/hardware.py`.
 - Found in: K-1 Task 4/5 reviews (2026-09-15).
 
-### I-170 · Docker capacity is retried by the minute tick and counted across every worker 🟡
-K-3 releases a run whose profile is full back to `queued` with
-`next_attempt_at = now + 15 s` (spec §8), but nothing re-dispatches it at
-15 s: the claim is the one-minute run tick's, so the real wait is 15–75 s.
-The count is also the whole database's `running` rows on the profile, not
-this Docker host's: the profile's `capacity` reads as "per host" only while
-one worker host runs process jobs (the local and single-host shape). And it
-bites only when two runs on one profile are in flight at once, which needs
-worker concurrency above one for process jobs. Fix candidates: K-4's run
-watcher (or a delayed `process_run_now` once the queue interface can
-schedule one) for the latency; a host id on the claim if multi-host Docker
-ever ships (the cluster leg uses Kueue quotas instead, K-5/K-6).
-- Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/repo.py` (`count_running_on_profile`).
-- Found in: K-3 (2026-11-25).
+### I-170 · Docker capacity: a waiting run is retried by the minute tick, counted across every worker, and extractor runs are exempt 🟡
+K-3 admits a process or test run in the claim itself (per-profile advisory
+lock; `executor_backend` is the admitted marker). A run whose profile is full
+is not claimed: it stays `queued` as `pending_capacity` with
+`next_attempt_at = now + 15 s` (spec §8). Three limits, accepted:
+- **Latency.** Nothing re-dispatches a waiting run at 15 s. The run tick
+  (every minute) claims it, so the real wait after a slot frees is up to
+  about 75 s, and a newly triggered run's immediate claim can take a freed
+  slot before an older waiting run. There is no queue order among waiting
+  runs. Fix candidate: K-4's run watcher, or a delayed `process_run_now`
+  once the queue interface can schedule one.
+- **Scope.** The count is the whole database's admitted runs on the profile,
+  not one Docker host's: `capacity` means "per host" only while one host
+  runs process jobs (the local and single-host shape). A host id on the
+  claim would be needed for multi-host Docker. The cluster leg uses Kueue
+  quotas instead (K-5/K-6).
+- **Ruling: extractor runs are exempt.** Spec §8 is silent on extractor runs
+  (G-6, association-triggered). They are not admitted against capacity, do
+  not count toward it, and are not CPU-capped by `NanoCpus`, so K-3 leaves
+  ingest throughput exactly where it was. Before and after K-3 a pipeline
+  process executes one process run at a time, because `execute_run` waits on
+  the Docker daemon synchronously and blocks the worker's event loop
+  (WORKER_CONCURRENCY does not apply to runs; K-4 removes the block). Capping
+  extractors to `standard`'s 1 CPU, or counting them against its capacity of
+  2 (`infra/hardware-profiles/local.json`), would slow each extraction or
+  hold back tick-claimed batches. Revisit with K-4, when runs really run
+  concurrently.
+- A run already `running` when migration 029 lands has no admitted marker
+  and does not count, so a deploy can briefly admit past `capacity` until
+  those runs finish.
+- Tracked in: `services/pipeline/src/pipeline/process/repo.py` (`_admit_and_claim`), `services/pipeline/src/pipeline/jobs/process.py`.
+- Found in: K-3 and its review (2026-11-25).
 
 ### I-171 · The socket proxy's `INFO=1` discloses daemon metadata to the pipeline 🟡
 K-3 enables the proxy's read-only `INFO` section so the executor can ask
