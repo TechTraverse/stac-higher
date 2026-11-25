@@ -145,7 +145,17 @@ the app. Neither substitutes for the other.
   role for the proxy task (Phase 8 IaC note).
 - The `auth-proxy` and `stac-fastapi-pgstac` images move from `:latest` to
   pins; upstream bumps become deliberate, tested changes (the factory
-  consumes an internal, undocumented context shape).
+  consumes an internal, undocumented context shape). **Bump procedure** for
+  the `auth-proxy` base, all in one PR: move the tag + digest in
+  `infra/proxy-policy/Dockerfile` and `docker-compose.yml`; in
+  `services/proxy-policy/pyproject.toml`'s `dev` extra move
+  `stac-auth-proxy==<tag>` **and** the `starlette` / `fastapi` / `pyjwt`
+  `==` pins to the versions in upstream's `uv.lock` at that tag (the image is
+  built from it with `uv sync --frozen`); add the tag's row to
+  `UPSTREAM_LOCKED` in `tests/test_app.py`; re-lock; run the proxy-policy
+  suite (`test_dev_pin_matches_the_dockerfile_base` and
+  `test_dev_extra_runs_the_base_images_locked_version` fail on any half
+  bump); then re-run the P7-Z live confirm.
 - Role mapping now exists in two places (the app's claims mapper; the
   factory's claim-path env). Deployments with exotic claims configure both;
   convergence is an OPA-era concern. Logged in ISSUES at merge.

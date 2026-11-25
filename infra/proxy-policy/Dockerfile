@@ -10,7 +10,9 @@
 # together, then re-run the P7-Z live confirm (ADR 0015). The same tag also
 # moves in lockstep with the `stac-auth-proxy` dev pin in
 # services/proxy-policy/pyproject.toml (test_dev_pin_matches_the_dockerfile_base
-# enforces that pairing).
+# enforces that pairing), and with that extra's starlette / fastapi / pyjwt
+# pins, which equal upstream's uv.lock at the tag
+# (test_dev_extra_runs_the_base_images_locked_version).
 #
 # The image also carries the AUTH_BEARER_AUDIENCE_CLAIM check (spec §8, R-3):
 # its process is `python -m stac_higher_proxy_policy`, upstream's app with the

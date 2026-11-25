@@ -39,7 +39,7 @@ Env (kwargs via `ITEMS_FILTER_KWARGS` take precedence):
 | `POLICY_ROLES_CLAIM` | no (`realm_access.roles`) | Dotted path to the roles claim |
 | `POLICY_WRITE_ROLES` | no (`operator,admin`) | Roles allowed to write directly |
 | `POLICY_CACHE_TTL_SECONDS` | no (`15`) | Externally-writable set cache TTL |
-| `AUTH_BEARER_AUDIENCE_CLAIM` | no (`aud`) | `aud` \| `client_id`; anything else fails at startup. In `client_id` mode `ALLOWED_JWT_AUDIENCES` lists app client ids and tokens carrying `aud` are rejected |
+| `AUTH_BEARER_AUDIENCE_CLAIM` | no (`aud`) | `aud` \| `client_id`; anything else fails at startup. In `client_id` mode `ALLOWED_JWT_AUDIENCES` lists app client ids and tokens carrying `aud` are rejected; left empty, any client is accepted (startup warning) |
 
 ## Development
 
@@ -48,6 +48,10 @@ uv sync --extra dev
 uv run pytest          # unit tests — no DB, no Docker, loader injected (also run in CI)
 uv run ruff check .
 ```
+
+The `dev` extra pins `stac-auth-proxy` and its `starlette` / `fastapi` /
+`pyjwt` to exactly what the derived image's base runs (ADR 0015 bump
+procedure), so the suite tests the image's versions.
 
 The tests validate every emitted expression with the same `cql2` engine the
 proxy embeds, and mirror the exact context shape

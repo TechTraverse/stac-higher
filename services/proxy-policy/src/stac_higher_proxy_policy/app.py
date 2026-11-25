@@ -7,6 +7,7 @@ The setting is resolved eagerly: a bad value stops the proxy at startup.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import stac_auth_proxy
@@ -20,6 +21,8 @@ from stac_higher_proxy_policy.audience import (
     resolve_audience_claim,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     claim = resolve_audience_claim(os.environ)
@@ -31,6 +34,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "re-check the derived image against the new version (ADR 0015)"
         )
     entry = app.user_middleware[indexes[0]]
+    if claim == "client_id" and not entry.kwargs.get("allowed_jwt_audiences"):
+        # Mirrors upstream's `aud` semantics (no list, no check), but in this
+        # mode that means any app client in the user pool gets through.
+        logger.warning(
+            "AUTH_BEARER_AUDIENCE_CLAIM=client_id with empty ALLOWED_JWT_AUDIENCES: "
+            "tokens from any client of the identity provider are accepted"
+        )
     # Starlette builds the middleware stack lazily on the first request, so an
     # in-place swap here is picked up. One code path in both claim modes.
     app.user_middleware[indexes[0]] = Middleware(
