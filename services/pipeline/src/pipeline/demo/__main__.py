@@ -89,6 +89,7 @@ from pipeline.demo.platform import (
     s3_client,
     say,
     ui_url,
+    wait_ready,
 )
 from pipeline.storage.keys import canonical_asset_key
 
@@ -403,6 +404,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ui-url", default=None, help=f"app URL for printed hints; default: {DEFAULT_UI_URL}"
     )
+    parser.add_argument(
+        "--wait-ready",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="before the command, wait up to SECONDS for the STAC API (and, for images-*,"
+        " the app) to answer; default 0 = no wait",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     seed_parser = sub.add_parser("seed", help="build the demo pipeline (idempotent)")
@@ -545,6 +554,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     resolve_endpoints(args, os.environ)
+    if args.wait_ready > 0:
+        urls = [args.stac_url] + ([args.app_url] if getattr(args, "app_url", None) else [])
+        wait_ready(urls, timeout_s=args.wait_ready)
     try:
         return args.func(args)
     except SeedError as err:

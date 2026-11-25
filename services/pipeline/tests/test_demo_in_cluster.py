@@ -345,3 +345,124 @@ def test_goes_teardown_refuses_in_cluster(goes, monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         goes.teardown(_goes_args(in_cluster=True))
     assert "asset_gc" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------- #
+# --wait-ready: start-up ordering absorbed inside the pod (the chart's Job runs
+# with backoffLimit 0, because a pod retry would redo every completed seed)
+# --------------------------------------------------------------------------- #
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_wait_ready_returns_once_every_url_answers(monkeypatch):
+    monkeypatch.setattr(platform, "say", lambda *a, **k: None)
+    answers = {"http://stac": [False, False, True], "http://app": [True]}
+    probed: list[str] = []
+
+    def probe(url):
+        probed.append(url)
+        return answers[url].pop(0)
+
+    clock = _Clock()
+    platform.wait_ready(
+        ["http://stac", "http://app"], timeout_s=60, probe=probe, sleep=clock.sleep, clock=clock
+    )
+    assert probed == ["http://stac", "http://stac", "http://stac", "http://app"]
+
+
+def test_wait_ready_gives_up_naming_the_url(monkeypatch):
+    monkeypatch.setattr(platform, "say", lambda *a, **k: None)
+    clock = _Clock()
+    with pytest.raises(SystemExit) as excinfo:
+        platform.wait_ready(
+            ["http://stac"], timeout_s=30, probe=lambda url: False, sleep=clock.sleep, clock=clock
+        )
+    assert "http://stac" in str(excinfo.value)
+    assert clock.now >= 30
+
+
+def test_reachable_counts_any_http_answer_and_not_a_refusal(monkeypatch):
+    import urllib.error
+
+    def answers(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+
+    def refuses(req, timeout):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(platform.urllib.request, "urlopen", answers)
+    assert platform.reachable("http://stac") is True
+    monkeypatch.setattr(platform.urllib.request, "urlopen", refuses)
+    assert platform.reachable("http://stac") is False
+
+
+def test_main_waits_for_the_stac_api_and_the_app_before_the_command(monkeypatch):
+    for key, value in CLUSTER_ENV.items():
+        monkeypatch.setenv(key, value)
+    order: list[object] = []
+    monkeypatch.setattr(
+        demo_main, "wait_ready", lambda urls, *, timeout_s: order.append((list(urls), timeout_s))
+    )
+    monkeypatch.setattr(demo_main.images, "seed", lambda args: order.append("seed") or 0)
+    monkeypatch.setattr(demo_main.goes, "seed", lambda args: order.append("goes") or 0)
+
+    assert demo_main.main(["--in-cluster", "--wait-ready", "600", "images-seed"]) == 0
+    assert order == [
+        ([CLUSTER_ENV["DEMO_STAC_URL"], CLUSTER_ENV["DEMO_APP_URL"]], 600),
+        "seed",
+    ]
+    order.clear()
+    assert demo_main.main(["--in-cluster", "goes-seed", "--no-build-image"]) == 0
+    assert order == ["goes"]  # --wait-ready 0 (the default) waits for nothing
+
+
+# --------------------------------------------------------------------------- #
+# the seeds' own in-cluster paths
+# --------------------------------------------------------------------------- #
+
+
+def test_seed_uploads_the_scene_through_the_pipelines_client_in_cluster(monkeypatch):
+    uploads: list[dict] = []
+    image_steps: list[dict] = []
+
+    class _Bucket:
+        def put_object(self, **kwargs):
+            uploads.append(kwargs)
+
+    def compose_client(*a, **k):
+        raise AssertionError("the compose s3_client must not be used in-cluster")
+
+    clients: list[bool] = []
+    monkeypatch.setattr(
+        demo_main, "platform_s3_client", lambda args: clients.append(args.in_cluster) or _Bucket()
+    )
+    monkeypatch.setattr(demo_main, "_s3", compose_client)
+    monkeypatch.setattr(demo_main, "s3_client", compose_client)
+    monkeypatch.setattr(demo_main, "_check_migrations", lambda *a, **k: None)
+    monkeypatch.setattr(demo_main, "ensure_runtime_image", lambda **k: image_steps.append(k))
+    monkeypatch.setattr(demo_main, "_put_collection", lambda *a, **k: None)
+    monkeypatch.setattr(demo_main, "_put_item", lambda *a, **k: None)
+    monkeypatch.setattr(demo_main, "_enable_serving", lambda *a, **k: None)
+    monkeypatch.setattr(demo_main, "_install_process", lambda *a, **k: None)
+    monkeypatch.setattr(demo_main, "build_scene_cog", lambda: b"cog")
+    monkeypatch.setattr(demo_main.psycopg, "connect", lambda *a, **k: _Conn())
+    monkeypatch.setattr(demo_main, "_say", lambda *a, **k: None)
+
+    args = _parsed(["--in-cluster", "seed", "--no-build-image"], CLUSTER_ENV)
+    assert demo_main.seed(args) == 0
+
+    assert clients == [True]
+    assert image_steps == [{"build": False, "in_cluster": True}]
+    assert len(uploads) == 1
+    assert uploads[0]["Bucket"] == CLUSTER_ENV["STAGING_BUCKET"]
+    assert uploads[0]["Body"] == b"cog"

@@ -21,10 +21,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 import boto3
@@ -82,6 +83,41 @@ def json_request(
     """Like `request()`, with caller-supplied headers (the app's CSRF `Origin`
     check and an optional bearer token — the STAC API needs neither)."""
     return _http(url, method=method, body=body, extra_headers=headers)
+
+
+def reachable(url: str) -> bool:
+    """True once `url` answers at all: any HTTP status counts (the service is
+    up), a refused or timed-out connection does not."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=5):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def wait_ready(
+    urls: Sequence[str],
+    *,
+    timeout_s: int,
+    probe: Callable[[str], bool] = reachable,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    interval_s: float = 5.0,
+) -> None:
+    """Wait, before any write, until every URL answers or `timeout_s` passes.
+
+    The chart's Job runs with backoffLimit 0 because a pod retry would redo
+    every seed that already succeeded, so start-up ordering (the catalog plane
+    or the app still coming up) is absorbed here instead of by a retry."""
+    deadline = clock() + timeout_s
+    for url in urls:
+        while not probe(url):
+            if clock() >= deadline:
+                raise SystemExit(f"{url} did not answer within {timeout_s}s (--wait-ready)")
+            say(f"waiting for {url}")
+            sleep(interval_s)
 
 
 def s3_client(endpoint: str):
