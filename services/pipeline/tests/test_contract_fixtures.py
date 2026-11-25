@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from pipeline.config import Settings
+from pipeline.config import STS_MIN_DURATION_SECONDS, Settings
 from pipeline.connections.adapters.s3 import parse_s3_config
 from pipeline.cubes.config import (
     APPEND_STATUSES,
@@ -636,3 +636,25 @@ def test_process_credential_budget_mint_cases(case):
 def test_process_credential_budget_defaults_match_golden():
     assert Settings.from_env({}).process_credential_grace_seconds == BUDGET["grace_default_seconds"]
     assert Settings.from_env({}).process_max_credential_seconds is None  # unset_means: no limit
+
+
+_SETTINGS_FIELD = {
+    BUDGET["setting"]: "process_max_credential_seconds",
+    BUDGET["grace_setting"]: "process_credential_grace_seconds",
+}
+
+
+@pytest.mark.parametrize("case", BUDGET["parse_cases"], ids=lambda c: c["name"])
+def test_process_credential_budget_settings_parse_like_the_app(case):
+    """#157: both settings are parsed exactly as the app parses them (trimmed,
+    ``^[0-9]+$``, blank = the unset meaning), and a refusal names the variable."""
+    env = {} if case["raw"] is None else {case["variable"]: case["raw"]}
+    if case["result"] == "reject":
+        with pytest.raises(ValueError, match=case["variable"]):
+            Settings.from_env(env)
+    else:
+        assert getattr(Settings.from_env(env), _SETTINGS_FIELD[case["variable"]]) == case["result"]
+
+
+def test_process_credential_budget_cap_floor_matches_golden():
+    assert STS_MIN_DURATION_SECONDS == BUDGET["cap_min_seconds"]

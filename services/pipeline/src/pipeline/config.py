@@ -43,6 +43,9 @@ S3 in cloud; distinct from per-connection endpoints):
   Identity / IRSA / instance profile); set both or neither.
 - ``PROCESS_MAX_CREDENTIAL_SECONDS`` — the longest run credential the pipeline
   will mint: an integer of at least 900 (the STS minimum); blank = no limit.
+- ``PROCESS_CREDENTIAL_GRACE_SECONDS`` — added to a run's timeout for its
+  credential lifetime: a non-negative integer; blank = 300. Both settings are
+  parsed exactly as the app parses them (digits only, no sign).
 - ``STAGING_BUCKET`` — platform bucket name.
 - ``STAGING_S3_FORCE_PATH_STYLE`` — path-style addressing (MinIO needs it).
 - ``STAGING_TTL_SECONDS`` — age after which a ``staging/`` upload is swept.
@@ -75,6 +78,7 @@ S3 in cloud; distinct from per-connection endpoints):
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -349,20 +353,37 @@ def _optional(raw: str | None) -> str | None:
     return value or None
 
 
+#: The app's rule for the credential-budget settings (``^\d+$`` in JS, which is
+#: ASCII-only). Python's ``int()`` would also take ``+300``, ``-60``, ``3_00``
+#: and non-ASCII digits, so the shape is checked first (#157; pinned by
+#: tests/contract-fixtures/process-credential-budget.json).
+_SECONDS = re.compile(r"[0-9]+")
+
+
 def _parse_max_credential_seconds(raw: str | None) -> int | None:
     value = _optional(raw)
     if value is None:
         return None
-    try:
-        seconds = int(value)
-    except ValueError:
-        seconds = -1
-    if seconds < STS_MIN_DURATION_SECONDS:
+    if not _SECONDS.fullmatch(value) or int(value) < STS_MIN_DURATION_SECONDS:
         raise ValueError(
             "PROCESS_MAX_CREDENTIAL_SECONDS must be an integer number of seconds, "
             f"at least {STS_MIN_DURATION_SECONDS} (the STS minimum), got {raw!r}"
         )
-    return seconds
+    return int(value)
+
+
+def _parse_credential_grace_seconds(raw: str | None) -> int:
+    """Blank means the default, as in the app; a sign is refused -- a negative
+    grace would loosen the budget and let run credentials expire mid-run."""
+    value = _optional(raw)
+    if value is None:
+        return DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS
+    if not _SECONDS.fullmatch(value):
+        raise ValueError(
+            "PROCESS_CREDENTIAL_GRACE_SECONDS must be a non-negative integer number of "
+            f"seconds, got {raw!r}"
+        )
+    return int(value)
 
 
 def _parse_staging_keys(env: dict[str, str]) -> tuple[str | None, str | None]:
@@ -585,11 +606,8 @@ class Settings:
             process_log_max_bytes=int(
                 env.get("PROCESS_LOG_MAX_BYTES", str(DEFAULT_PROCESS_LOG_MAX_BYTES))
             ),
-            process_credential_grace_seconds=int(
-                env.get(
-                    "PROCESS_CREDENTIAL_GRACE_SECONDS",
-                    str(DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS),
-                )
+            process_credential_grace_seconds=_parse_credential_grace_seconds(
+                env.get("PROCESS_CREDENTIAL_GRACE_SECONDS")
             ),
             process_max_credential_seconds=_parse_max_credential_seconds(
                 env.get("PROCESS_MAX_CREDENTIAL_SECONDS")
