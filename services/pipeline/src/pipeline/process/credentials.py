@@ -29,6 +29,7 @@ refusal beats credentials expiring mid-run.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar
@@ -47,6 +48,11 @@ MIN_DURATION_SECONDS = STS_MIN_DURATION_SECONDS
 #: prefix costs two ARN-ish strings. Eight keeps a worst-case policy under the
 #: cap with room for long collection ids (GOES spec §14, ISSUES I-90).
 MAX_READ_PREFIXES = 8
+
+#: The commercial partition -- what an unparseable role ARN falls back to.
+DEFAULT_PARTITION = "aws"
+
+_ARN_PARTITION = re.compile(r"^arn:([a-z][a-z0-9-]*):")
 
 
 class RunCredentialsError(Exception):
@@ -126,7 +132,29 @@ class RunCredentials:
         return env
 
 
-def session_policy(bucket: str, prefix: str, read_prefixes: Sequence[str] = ()) -> dict:
+def arn_partition(arn: str) -> str:
+    """The partition (``aws``, ``aws-us-gov``, ``aws-cn``) an ARN names.
+
+    The session policy takes its partition from the role ARN the run assumes
+    (#158): STS cannot assume a role across partitions, so the role and the
+    bucket it scopes always share one, and the ARN is already in hand -- no
+    ``GetCallerIdentity`` round trip and no new way for a mint to fail.
+
+    A value that is not an ARN falls back to the commercial partition. That is
+    fail-closed, not a widening: MinIO ignores ``RoleArn`` entirely, and real
+    STS rejects a malformed one before any policy is evaluated.
+    """
+    match = _ARN_PARTITION.match(arn or "")
+    return match.group(1) if match else DEFAULT_PARTITION
+
+
+def session_policy(
+    bucket: str,
+    prefix: str,
+    read_prefixes: Sequence[str] = (),
+    *,
+    partition: str = DEFAULT_PARTITION,
+) -> dict:
     """The inline policy bounding one run.
 
     Object actions are scoped to the run's prefix. ``read_prefixes`` — the
@@ -135,20 +163,24 @@ def session_policy(bucket: str, prefix: str, read_prefixes: Sequence[str] = ()) 
     BUCKET resource — that is where S3 evaluates it — conditioned on the run
     prefix plus the read prefixes, so a run can enumerate its own outputs and
     its inputs without discovering that anything else exists.
+
+    ``partition`` must match the bucket's: an ``arn:aws:s3:::`` resource
+    matches nothing in GovCloud, and the credentials would grant nothing.
     """
+    bucket_arn = f"arn:{partition}:s3:::{bucket}"
     list_prefixes = [f"{prefix}*", *(f"{p}*" for p in read_prefixes)]
     statements = [
         {
             "Sid": "RunPrefixObjects",
             "Effect": "Allow",
             "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
-            "Resource": [f"arn:aws:s3:::{bucket}/{prefix}*"],
+            "Resource": [f"{bucket_arn}/{prefix}*"],
         },
         {
             "Sid": "RunPrefixList",
             "Effect": "Allow",
             "Action": ["s3:ListBucket"],
-            "Resource": [f"arn:aws:s3:::{bucket}"],
+            "Resource": [bucket_arn],
             "Condition": {"StringLike": {"s3:prefix": list_prefixes}},
         },
     ]
@@ -158,7 +190,7 @@ def session_policy(bucket: str, prefix: str, read_prefixes: Sequence[str] = ()) 
                 "Sid": "SourceCollectionsRead",
                 "Effect": "Allow",
                 "Action": ["s3:GetObject"],
-                "Resource": [f"arn:aws:s3:::{bucket}/{p}*" for p in read_prefixes],
+                "Resource": [f"{bucket_arn}/{p}*" for p in read_prefixes],
             }
         )
     return {"Version": "2012-10-17", "Statement": statements}
@@ -225,7 +257,14 @@ def mint_prefix_credentials(
             # Session names are surfaced in access logs; the run or scan id
             # makes an S3 audit trail directly attributable to its row.
             RoleSessionName=session_name[:64],
-            Policy=json.dumps(session_policy(bucket, prefix, read_prefixes)),
+            Policy=json.dumps(
+                session_policy(
+                    bucket,
+                    prefix,
+                    read_prefixes,
+                    partition=arn_partition(settings.process_sts_role_arn),
+                )
+            ),
             DurationSeconds=duration,
         )
     # Deliberately broad: the contract here is "any STS failure means the run
