@@ -244,6 +244,50 @@ describe.skipIf(!helmReady())("chart catalog plane", () => {
     });
   });
 
+  describe("ingress", () => {
+    const ing = (docs: Doc[], name: string) => docs.find((d) => d.kind === "Ingress" && d.metadata.name === `stac-higher-${name}`);
+    const HOSTS: [string, string, string, string, number][] = [
+      ["catalog", "catalog", "catalog.example.com", "auth-proxy", 8000],
+      ["titiler", "titiler", "titiler.example.com", "titiler", 8084],
+      ["tipg", "tipg", "tipg.example.com", "tipg", 8085],
+      ["cubeServer", "cube-server", "cube.example.com", "cube-server", 8086],
+    ];
+
+    it("one Ingress per public host, routed to its Service", () => {
+      const docs = render({ publicUrls: { tipg: "https://tipg.example.com/" } });
+      for (const [, name, host, svc, port] of HOSTS) {
+        const i = ing(docs, name);
+        expect(i, name).toBeTruthy();
+        expect(i.spec.rules).toEqual([
+          { host, http: { paths: [{ path: "/", pathType: "Prefix", backend: { service: { name: `stac-higher-${svc}`, port: { number: port } } } }] } },
+        ]);
+        expect(i.spec.tls, name).toBeUndefined();
+        expect(docs.some((d) => d.kind === "Service" && d.metadata.name === `stac-higher-${svc}`)).toBe(true);
+      }
+    });
+
+    it("class, annotations and TLS pass through, per host over the shared settings", () => {
+      const docs = render({
+        ingress: {
+          className: "alb",
+          annotations: { "alb.ingress.kubernetes.io/group.name": "stac-higher", a: "shared" },
+          tlsSecretName: "shared-tls",
+          titiler: { annotations: { a: "own" }, tlsSecretName: "titiler-tls" },
+        },
+      });
+      const t = ing(docs, "titiler");
+      expect(t.spec.ingressClassName).toBe("alb");
+      expect(t.metadata.annotations).toEqual({ "alb.ingress.kubernetes.io/group.name": "stac-higher", a: "own" });
+      expect(t.spec.tls).toEqual([{ hosts: ["titiler.example.com"], secretName: "titiler-tls" }]);
+      expect(ing(docs, "tipg").metadata.annotations.a).toBe("shared");
+      expect(ing(docs, "tipg").spec.tls).toEqual([{ hosts: ["tipg.example.com"], secretName: "shared-tls" }]);
+    });
+
+    it("ingress.enabled false renders no Ingress", () => {
+      expect(render({ ingress: { enabled: false } }).filter((d) => d.kind === "Ingress")).toEqual([]);
+    });
+  });
+
   it("refuses an unpinned third-party image", () => {
     const r = renderChart({ valuesFiles: scenario("base"), values: { catalog: { stacApi: { image: "ghcr.io/stac-utils/stac-fastapi-pgstac:6.3.1" } } } });
     expect(r.ok).toBe(false);

@@ -42,9 +42,41 @@ describe.skipIf(!helmReady())("chart network policies", () => {
     expect(p.spec.ingress).toEqual([{ from, ports: [{ protocol: "TCP", port: 8083 }] }]);
   });
 
+  const PORTS: [string, number][] = [["auth-proxy", 8000], ["titiler", 8084], ["tipg", 8085], ["cube-server", 8086]];
+  const appSel = { podSelector: { matchLabels: { "app.kubernetes.io/name": "stac-higher", "app.kubernetes.io/instance": "stac-higher", "app.kubernetes.io/component": "app" } } };
+
+  it("stac-api admits only the auth-proxy", () => {
+    const p = find(render(), "stac-higher-stac-api");
+    expect(p.spec.ingress).toEqual([
+      {
+        from: [{ podSelector: { matchLabels: { "app.kubernetes.io/name": "stac-higher", "app.kubernetes.io/instance": "stac-higher", "app.kubernetes.io/component": "auth-proxy" } } }],
+        ports: [{ protocol: "TCP", port: 8082 }],
+      },
+    ]);
+  });
+
+  it("public catalog ports are open by default and follow publicIngressFrom, else appIngressFrom", () => {
+    const open = render();
+    for (const [c, port] of PORTS) expect(find(open, `stac-higher-${c}`).spec.ingress, c).toEqual([{ ports: [{ protocol: "TCP", port }] }]);
+    const vpc = [{ ipBlock: { cidr: "10.0.0.0/16" } }];
+    const other = [{ ipBlock: { cidr: "10.1.0.0/16" } }];
+    for (const [values, want] of [
+      [{ networkPolicy: { publicIngressFrom: vpc } }, vpc],
+      [{ networkPolicy: { appIngressFrom: other } }, other],
+      [{ networkPolicy: { appIngressFrom: other, publicIngressFrom: vpc } }, vpc],
+    ] as const) {
+      const docs = render(values);
+      for (const [c, port] of PORTS) {
+        const from = c === "auth-proxy" ? [...want, appSel] : want;
+        expect(find(docs, `stac-higher-${c}`).spec.ingress, c).toEqual([{ from, ports: [{ protocol: "TCP", port }] }]);
+      }
+    }
+  });
+
   it("policies select the workloads' real labels", () => {
     const docs = render({ networkPolicy: { metricsFrom: [{ podSelector: {} }] } });
-    for (const [pol, dep] of [["stac-higher-app", "stac-higher-app"], ["stac-higher-pipeline-metrics", "stac-higher-pipeline"]]) {
+    const catalog = ["auth-proxy", "stac-api", "titiler", "tipg", "cube-server"].map((c) => [`stac-higher-${c}`, `stac-higher-${c}`]);
+    for (const [pol, dep] of [["stac-higher-app", "stac-higher-app"], ["stac-higher-pipeline-metrics", "stac-higher-pipeline"], ...catalog]) {
       const sel = find(docs, pol).spec.podSelector.matchLabels;
       expect(Object.keys(sel).length).toBeGreaterThan(0);
       expect(podLabels(docs, dep)).toMatchObject(sel);
