@@ -14,7 +14,7 @@ ECR pull-through cache for the upstream registries the platform's images come fr
 | `dockerhub_credentials_secret_arn` | string | `null` | Secret holding the Docker Hub credentials. |
 | `enable_quay` | bool | `false` | Cache Quay (`quay.io`). |
 | `quay_credentials_secret_arn` | string | `null` | Optional: Quay needs none for public images. |
-| `ecr_prefixes` | object | `{ ghcr = "ghcr", dockerhub = "docker-hub", quay = "quay" }` | ECR repository prefix per upstream, 2-30 chars each. Change one when the account already caches that upstream under the default prefix. |
+| `ecr_prefixes` | object | `{ ghcr = "ghcr", dockerhub = "docker-hub", quay = "quay" }` | ECR repository prefix per upstream, 2-30 chars each, all three distinct (checked even for disabled upstreams). Change one when the account already caches that upstream under the default prefix. |
 | `image_tag_mutability` | string | `"MUTABLE"` | `MUTABLE` or `IMMUTABLE`. MUTABLE is ECR's recommendation for pull-through, so cached tags can refresh. |
 
 ## Outputs
@@ -32,10 +32,22 @@ ECR pull-through cache for the upstream registries the platform's images come fr
 
 Create each upstream secret before applying. The deployment owns them; this module only references their ARNs.
 
-- Name: `ecr-pullthroughcache/<name>` (ECR accepts no other prefix).
+| Input | Upstream | When |
+|---|---|---|
+| `ghcr_credentials_secret_arn` | GHCR | Always required. |
+| `dockerhub_credentials_secret_arn` | Docker Hub | Required when `enable_dockerhub` is true (ECR's Docker Hub upstream always authenticates); the plan fails without it. |
+| `quay_credentials_secret_arn` | Quay | Optional with `enable_quay`; public Quay images need none. |
+
+Every secret, whichever input it fills:
+
+- Name: `ecr-pullthroughcache/<name>` (ECR accepts no other prefix). The inputs refuse any other ARN.
 - Value: JSON `{"username": "...", "accessToken": "..."}`.
 - Encryption: the **default `aws/secretsmanager` key**. ECR rejects a customer managed key here.
 - Same account and region as the cache rules.
+
+## Deploying principal
+
+Besides the ECR, IAM and KMS permissions to create these resources, the principal that runs `apply` needs `iam:PassRole` on the repository-creation role (`<name_prefix>-ecr-repo-creation`, output `repository_creation_role_arn`): each creation template names it as its custom role, and ECR refuses the template if the caller cannot pass it. Scope the permission to that role ARN, with `iam:PassedToService` set to the partition's ECR service principal.
 
 ## Cluster prerequisite
 

@@ -168,3 +168,50 @@ run "rejects_kms_key_id" {
   }
   expect_failures = [var.kms_key_arn]
 }
+
+run "rejects_duplicate_ecr_prefixes" {
+  command = plan
+  variables {
+    ecr_prefixes = { ghcr = "mirror", dockerhub = "mirror", quay = "quay" }
+  }
+  expect_failures = [var.ecr_prefixes]
+}
+
+run "rejects_dockerhub_secret_outside_prefix" {
+  command = plan
+  variables {
+    enable_dockerhub                 = true
+    dockerhub_credentials_secret_arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:dockerhub-creds-AbCdEf"
+  }
+  expect_failures = [var.dockerhub_credentials_secret_arn]
+}
+
+run "rejects_dockerhub_secret_not_an_arn" {
+  command = plan
+  variables {
+    enable_dockerhub                 = true
+    dockerhub_credentials_secret_arn = "ecr-pullthroughcache/dockerhub"
+  }
+  expect_failures = [var.dockerhub_credentials_secret_arn]
+}
+
+run "rejects_quay_secret_outside_prefix" {
+  command = plan
+  variables {
+    enable_quay                 = true
+    quay_credentials_secret_arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:quay-creds-AbCdEf"
+  }
+  expect_failures = [var.quay_credentials_secret_arn]
+}
+
+run "quay_credential_passed_through" {
+  command = plan
+  variables {
+    enable_quay                 = true
+    quay_credentials_secret_arn = "arn:aws-us-gov:secretsmanager:us-gov-west-1:000000000000:secret:ecr-pullthroughcache/quay-AbCdEf"
+  }
+  assert {
+    condition     = aws_ecr_pull_through_cache_rule.this["quay"].credential_arn == var.quay_credentials_secret_arn
+    error_message = "an optional quay credential must reach the quay rule"
+  }
+}

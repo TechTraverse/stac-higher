@@ -88,6 +88,13 @@ variable "ecr_prefixes" {
     ])
     error_message = "Each ecr_prefixes value must be 2-30 characters: lowercase letters and digits, optionally separated by single '.', '_' or '-'."
   }
+
+  # Checked for all three, enabled or not: two rules or templates on one
+  # prefix would otherwise only fail at apply.
+  validation {
+    condition     = length(distinct(values(var.ecr_prefixes))) == length(values(var.ecr_prefixes))
+    error_message = "The three ecr_prefixes values must be distinct: each upstream needs its own cache rule and creation template prefix."
+  }
 }
 
 variable "image_tag_mutability" {

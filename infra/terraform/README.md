@@ -176,6 +176,8 @@ Rules:
 - The VPC, private subnets and the cluster security group (cluster repo).
 - `iam:PassRole` and `eks:CreatePodIdentityAssociation` for the deploying
   principal (Pod Identity mode).
+- `iam:PassRole` on the registry module's repository-creation role for the
+  deploying principal (every mode; see its README).
 - The cluster's IAM OIDC provider (`irsa` mode).
 - The External Secrets Operator's role, which `external_secrets_policy_json`
   is attached to.
