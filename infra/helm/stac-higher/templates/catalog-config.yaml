@@ -64,6 +64,15 @@ in bypass, so an enforced proxy would answer every UI write 401. No policy facto
 {{- $_ := set $titiler "ASSET_HREF_BASE" "/api/assets" -}}
 {{- $_ := set $titiler "AWS_REGION" $v.aws.region -}}
 {{- $_ := set $titiler "AWS_DEFAULT_REGION" $v.aws.region -}}
+{{- /* A non-AWS store (as cube-server's CUBE_S3_ENDPOINT): GDAL's own endpoint settings, the compose titiler's set. */ -}}
+{{- with $v.objectStore.internalEndpoint -}}
+{{- $u := urlParse . -}}
+{{- $_ := set $titiler "AWS_S3_ENDPOINT" $u.host -}}
+{{- $_ := set $titiler "AWS_HTTPS" (ternary "YES" "NO" (eq $u.scheme "https")) -}}
+{{- end -}}
+{{- if $v.objectStore.forcePathStyle -}}
+{{- $_ := set $titiler "AWS_VIRTUAL_HOSTING" "FALSE" -}}
+{{- end -}}
 
 {{- $tipg := deepCopy $common -}}
 {{- $_ := set $tipg "POSTGRES_HOST" $d.host -}}

@@ -69,7 +69,7 @@ Rendering fails with a message starting with the offending key path.
 | `publicUrls.catalog`, `publicUrls.titiler`, `publicUrls.tipg`, `publicUrls.cubeServer` | `null` | Public service URLs; deployment-supplied (R-5 does not emit them). |
 | `objectStore` | | S3 client behaviour. |
 | `objectStore.forcePathStyle` | `false` | Path-style addressing (MinIO). |
-| `objectStore.internalEndpoint` | `""` | `STAGING_S3_ENDPOINT` and `PROCESS_RUN_S3_ENDPOINT`. Blank on AWS (the STS client derives its endpoint from it); set for MinIO only. |
+| `objectStore.internalEndpoint` | `""` | `STAGING_S3_ENDPOINT` and `PROCESS_RUN_S3_ENDPOINT`; also the cube-server's `CUBE_S3_ENDPOINT` and titiler's `AWS_S3_ENDPOINT`. Blank on AWS (the STS client derives its endpoint from it); set for MinIO only. |
 | `database` | | The RDS instance. |
 | `database.host`, `database.name` | `null` | Required. |
 | `database.port` | `5432` | |
@@ -263,6 +263,12 @@ images cannot follow `global.imageDigests` or the mirror rewrite (evidence:
   generates alphanumeric ones).
 - Only titiler and the cube-server have an AWS identity (their R-5
   ServiceAccounts); no catalog pod mounts an API token. No static AWS key is set.
+- Object store: on AWS both use the regional S3 endpoint and the default
+  credential chain. With `objectStore.internalEndpoint` set (an S3-compatible
+  store), the cube-server gets it as `CUBE_S3_ENDPOINT` and titiler as GDAL's
+  `AWS_S3_ENDPOINT`/`AWS_HTTPS` (plus `AWS_VIRTUAL_HOSTING=FALSE` with
+  `objectStore.forcePathStyle`). The chart sets no static keys, so such a store
+  must accept the pods' ambient credentials.
 - With `auth.mode: bypass` the proxy runs pass-through, as `docker-compose.yml`'s
   base file runs it (`PRIVATE_ENDPOINTS={}`, no write policy): the app's BFF
   sends writes without a token in bypass, which an enforced proxy would refuse.

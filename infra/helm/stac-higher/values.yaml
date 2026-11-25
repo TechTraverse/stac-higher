@@ -33,7 +33,7 @@ publicUrls:
 
 objectStore:
   forcePathStyle: false # path-style S3 addressing (MinIO)
-  internalEndpoint: "" # STAGING_S3_ENDPOINT and PROCESS_RUN_S3_ENDPOINT; blank on AWS, set for MinIO only
+  internalEndpoint: "" # STAGING_S3_ENDPOINT, PROCESS_RUN_S3_ENDPOINT, CUBE_S3_ENDPOINT, titiler AWS_S3_ENDPOINT; blank on AWS, set for MinIO only
 
 database:
   host: null # R-5: database host (required)

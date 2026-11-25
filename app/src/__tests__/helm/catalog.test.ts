@@ -160,6 +160,11 @@ describe.skipIf(!helmReady())("chart catalog plane", () => {
     expect(env.AWS_REGION).toBe("us-east-1");
     expect(env.POSTGRES_HOST).toBe("db.example.com");
     expect(Object.keys(env).filter((k) => k.startsWith("AWS_ACCESS") || k.startsWith("AWS_SECRET"))).toEqual([]);
+    // AWS: GDAL's defaults. A non-AWS store: the same endpoint the cube-server and pipeline get.
+    for (const k of ["AWS_S3_ENDPOINT", "AWS_HTTPS", "AWS_VIRTUAL_HOSTING"]) expect(env, k).not.toHaveProperty(k);
+    const minio = cm(render({ objectStore: { internalEndpoint: "http://minio.example.com:9000", forcePathStyle: true } }), "titiler");
+    expect([minio.AWS_S3_ENDPOINT, minio.AWS_HTTPS, minio.AWS_VIRTUAL_HOSTING]).toEqual(["minio.example.com:9000", "NO", "FALSE"]);
+    expect(cm(render({ objectStore: { internalEndpoint: "https://s3.example.com" } }), "titiler").AWS_HTTPS).toBe("YES");
   });
 
   it("extra env is merged last and secret-looking keys are refused", () => {
