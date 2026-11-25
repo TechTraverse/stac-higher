@@ -66,6 +66,7 @@ module "database" {
   allowed_security_group_ids   = var.db_allowed_security_group_ids
   instance_class               = var.db_instance_class
   engine_version               = var.db_engine_version
+  allow_major_version_upgrade  = var.db_allow_major_version_upgrade
   db_name                      = var.db_name
   master_username              = var.db_master_username
   allocated_storage            = var.db_allocated_storage
