@@ -254,7 +254,7 @@ dbJobs:
 demoSeed:
   enabled: false # render the one-shot demo seed Job (python -m pipeline.demo --in-cluster)
   seeds: [seed, goes-seed] # any of seed | goes-seed | cube-seed | images-seed; always run in that order
-  stacUrl: "" # in-cluster stac-fastapi URL the seeds write collections to; required when enabled
+  stacUrl: "" # stac-fastapi URL the seeds write to without a token; "" -> the chart's stac-api Service (never the proxy, which enforces auth with oidc)
   deliver: false # goes-seed --deliver to demoDestination (its key sealed into the connection)
   existingDestinationSecret: "" # secrets.mode=existing: Secret with access_key_id/secret_access_key
   appBearer:

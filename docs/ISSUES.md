@@ -2017,10 +2017,11 @@ accepted deviations:
   same split `pipeline.loadgen` uses. (`images-seed` adds its images through
   `/api/images`, which audits; its processes are direct writes like the
   rest.)
-- **STAC API ingress.** The Job reaches stac-fastapi at `demoSeed.stacUrl`
-  directly, as compose's seeds use `:8082`. The catalog plane's ingress
-  NetworkPolicy (R-7) must admit `app.kubernetes.io/component=demo-seed`, or
-  every seed times out in `--wait-ready` and the Job fails.
+- **STAC API ingress.** The Job reaches stac-fastapi directly, as compose's
+  seeds use `:8082`: `demoSeed.stacUrl`, by default the chart's stac-api
+  Service, not the auth-proxy (which refuses the seeds' tokenless writes with
+  `auth.mode: oidc`). The stac-api NetworkPolicy admits
+  `app.kubernetes.io/component=demo-seed` when `demoSeed.enabled`.
 - **`images-seed` bearer.** It authenticates to the app with a static
   operator bearer token from a Secret (`demoSeed.appBearer`). An IdP access
   token expires (Cognito: 1 hour by default), so the deployment refreshes it

@@ -18,8 +18,8 @@ kubectl delete job, then upgrade or sync.
 {{- $ds := $v.demoSeed -}}
 {{- $full := include "stac-higher.fullname" . -}}
 {{- $esMode := eq $v.secrets.mode "external-secrets" -}}
-{{- if not (regexMatch "^https?://[^/]+" ($ds.stacUrl | default "")) -}}
-{{- fail (printf "demoSeed.stacUrl is required when demoSeed.enabled: the in-cluster stac-fastapi URL (http://...), got %q" ($ds.stacUrl | default "")) -}}
+{{- if and $ds.stacUrl (not (regexMatch "^https?://[^/]+" $ds.stacUrl)) -}}
+{{- fail (printf "demoSeed.stacUrl must be an http(s) URL of the in-cluster stac-fastapi (blank: the chart's stac-api Service), got %q" $ds.stacUrl) -}}
 {{- end -}}
 {{- if and (has "images-seed" $ds.seeds) (not $ds.appBearer.secretName) -}}
 {{- fail "demoSeed.appBearer.secretName is required with images-seed: a Secret holding an operator bearer token for the app API" -}}
@@ -147,7 +147,7 @@ deliver, the bearer in images-seed. Runtime Secrets only, never hook copies (I-1
         name: {{ $full }}-env-pipeline
   env:
     - name: DEMO_STAC_URL
-      value: {{ trimSuffix "/" $v.demoSeed.stacUrl | quote }}
+      value: {{ include "stac-higher.demoSeedStacUrl" $r | quote }}
     - name: DEMO_APP_URL
       value: {{ printf "http://%s-app" $full | quote }}
     - name: DEMO_PUBLIC_APP_URL
@@ -196,4 +196,11 @@ deliver, the bearer in images-seed. Runtime Secrets only, never hook copies (I-1
     {{- end }}
     - name: tmp
       mountPath: /tmp
+{{- end -}}
+
+{{- /* DEMO_STAC_URL: stac-fastapi itself, never the auth-proxy. The seeds POST collections and items with no
+token (pipeline/demo, as compose's seeds use :8082); an enforced proxy (auth.mode oidc) would refuse them.
+Blank demoSeed.stacUrl -> the chart's stac-api Service, the proxy's own UPSTREAM_URL. */ -}}
+{{- define "stac-higher.demoSeedStacUrl" -}}
+{{- trimSuffix "/" (.Values.demoSeed.stacUrl | default (include "stac-higher.stacApiUrl" .)) -}}
 {{- end -}}

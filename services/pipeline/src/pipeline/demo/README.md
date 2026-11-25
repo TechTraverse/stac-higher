@@ -478,8 +478,11 @@ the S3 adapter documents.
 
 1. The database is migrated: the chart's pre-install hooks do it before the
    Job exists.
-2. The STAC API is reachable at `demoSeed.stacUrl` and its ingress policy
-   admits pods labelled `app.kubernetes.io/component=demo-seed`. Each seed
+2. stac-fastapi is reachable at `demoSeed.stacUrl` (by default the chart's
+   stac-api Service; never the auth-proxy, which would refuse the seeds'
+   tokenless writes in oidc mode), and its ingress policy admits pods
+   labelled `app.kubernetes.io/component=demo-seed` (the chart does when
+   `demoSeed.enabled`). Each seed
    first waits for it (`--wait-ready SECONDS`, the chart's
    `demoSeed.waitReadySeconds`; for `images-*` the app too) and only then
    writes. The Job does not retry a failed pod (`backoffLimit: 0`): a retry

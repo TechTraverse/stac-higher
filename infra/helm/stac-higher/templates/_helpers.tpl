@@ -667,3 +667,8 @@ spec:
       key: {{ index $p 1 }}
 {{- end }}
 {{- end -}}
+
+{{/* The in-cluster stac-fastapi URL: the proxy's upstream and the demo seed's default target. */}}
+{{- define "stac-higher.stacApiUrl" -}}
+{{- printf "http://%s-stac-api:8082" (include "stac-higher.fullname" .) -}}
+{{- end -}}

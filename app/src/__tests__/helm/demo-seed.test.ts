@@ -30,7 +30,11 @@ const byName = (docs: Doc[], name: string) => containersOf(podOf(docs)).find((c:
 const DEMO = ["python", "-m", "pipeline.demo", "--in-cluster", "--wait-ready", "600"];
 const EXISTING = { platform: "p", dbMaster: "m", dbOwner: "own", dbStacApi: "a", dbStacReader: "r", dbProxyPolicy: "x", dbCubeServer: "c" };
 const D = (c: string) => "sha256:" + c.repeat(64);
-const DIGESTS = { app: D("a"), pipeline: D("b"), "image-scanner": D("c"), "process-runtime": D("d"), "process-runtime-stactools": D("e") };
+// R-7: with any digest set, the chart needs all eight (the catalog plane references titiler, cube-server, auth-proxy).
+const DIGESTS = {
+  app: D("a"), pipeline: D("b"), "image-scanner": D("c"), "process-runtime": D("d"), "process-runtime-stactools": D("e"),
+  titiler: D("1"), "cube-server": D("2"), "auth-proxy": D("3"),
+};
 
 /** Render a copy of the chart whose Chart.yaml carries another version and appVersion. */
 function renderAsVersion(version: string, values: object) {
@@ -243,9 +247,19 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
     expect(sched.tolerations).toEqual([{ key: "k", operator: "Exists" }]);
   });
 
+  it("a blank stacUrl defaults to the chart's stac-api Service, not the proxy (R-7)", () => {
+    // The seeds write without a token; the enforced proxy would refuse them, so the default is stac-api itself:
+    // the same URL the proxy uses as its upstream.
+    const docs = render({ demoSeed: { stacUrl: "" } });
+    const proxyEnv = docs.find((d) => d.kind === "ConfigMap" && d.metadata.name === "stac-higher-env-auth-proxy").data;
+    for (const c of containersOf(podOf(docs))) {
+      expect(effectiveEnv(docs, c).DEMO_STAC_URL).toBe("http://stac-higher-stac-api:8082");
+    }
+    expect(proxyEnv.UPSTREAM_URL).toBe("http://stac-higher-stac-api:8082");
+  });
+
   // One render per case: a helm exec each, kept under vitest's per-test timeout.
   it.each<[string, object, string]>([
-    ["no STAC URL", { demoSeed: { stacUrl: "" } }, "demoSeed.stacUrl"],
     ["a STAC URL without a scheme", { demoSeed: { stacUrl: "stac:8080" } }, "demoSeed.stacUrl"],
     ["images-seed without a bearer", { demoSeed: { appBearer: { secretName: "" } } }, "demoSeed.appBearer.secretName"],
     ["deliver without goes-seed", { demoSeed: { seeds: ["seed"] } }, "demoSeed.deliver"],

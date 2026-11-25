@@ -25,7 +25,7 @@ No credential and no DSN userinfo here: logins come from runtime Secrets in the 
 {{- $proxy := deepCopy $common -}}
 {{- $issuer := trimSuffix "/" (toString $v.auth.issuer) -}}
 {{- $issuerInternal := trimSuffix "/" ($v.auth.issuerInternal | default $issuer) -}}
-{{- $_ := set $proxy "UPSTREAM_URL" (printf "http://%s-stac-api:8082" $full) -}}
+{{- $_ := set $proxy "UPSTREAM_URL" (include "stac-higher.stacApiUrl" .) -}}
 {{- $_ := set $proxy "OIDC_DISCOVERY_URL" (printf "%s/.well-known/openid-configuration" $issuer) -}}
 {{- $_ := set $proxy "OIDC_DISCOVERY_INTERNAL_URL" (printf "%s/.well-known/openid-configuration" $issuerInternal) -}}
 {{- /* Since upstream v1.4.0 the proxy checks every token's `iss` against OIDC_ISSUER, else against the issuer in the

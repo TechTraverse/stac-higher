@@ -152,7 +152,7 @@ Rendering fails with a message starting with the offending key path.
 | `demoSeed` | | The one-shot demo seed Job (see Demo seed). |
 | `demoSeed.enabled` | `false` | Render the Job. |
 | `demoSeed.seeds` | `[seed, goes-seed]` | Any of `seed`, `goes-seed`, `cube-seed`, `images-seed`; always run in that order. |
-| `demoSeed.stacUrl` | `""` | In-cluster stac-fastapi URL the seeds write collections to (the compose `:8082` equivalent). Required when enabled. |
+| `demoSeed.stacUrl` | `""` | stac-fastapi URL the seeds write collections to (the compose `:8082` equivalent). `""` means the chart's stac-api Service, `http://<fullname>-stac-api:8082`, the proxy's own upstream; an explicit `http(s)` URL overrides it. Never the auth-proxy: the seeds send no token. |
 | `demoSeed.deliver` | `false` | `goes-seed --deliver` to `demoDestination`. Needs `goes-seed`, `demoDestination.bucket` and the key source for the secrets mode. |
 | `demoSeed.existingDestinationSecret` | `""` | `existing` mode: Secret with `access_key_id`/`secret_access_key`. In `external-secrets` mode the chart renders `<fullname>-demo-destination` from `demoDestination.credentialsSecretArn`. |
 | `demoSeed.appBearer` | | `secretName` (required with `images-seed`) and `key` (`token`): an operator bearer token for the app API. |
@@ -336,8 +336,8 @@ what in-cluster mode changes:
   database as the owner role, not through the BFF, so no `audit_log` rows are
   written. Accepted for an operator-run demo Job (I-169).
 - **Network.** The pod only makes egress. It carries
-  `app.kubernetes.io/component=demo-seed`. The STAC API's ingress policy must
-  admit it (R-7). When `networkPolicy.appIngressFrom` restricts the app and
+  `app.kubernetes.io/component=demo-seed`. The stac-api ingress policy admits
+  it whenever `demoSeed.enabled`, beside the auth-proxy. When `networkPolicy.appIngressFrom` restricts the app and
   `images-seed` is chosen, the chart adds the seed pod as a peer on the app's
   policy.
 - **`images-seed` before the Kubernetes executor.** Process runs (the
