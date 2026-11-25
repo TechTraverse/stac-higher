@@ -58,6 +58,11 @@ import {
 } from "@/lib/processes/schemas";
 import { hardwareProfileSetSchema } from "@/lib/processes/hardware";
 import {
+  CANCELLABLE_RUN_STATUSES,
+  PROCESS_RUN_CANCEL_CHANNEL,
+  type ProcessRunStatus,
+} from "@/lib/processes/storage";
+import {
   DEPLOY_IMAGE_STATUSES,
   IMAGE_GATE_REASONS,
   IMAGE_SCAN_KINDS,
@@ -704,5 +709,39 @@ describe("process credential budget contract (tests/contract-fixtures/process-cr
     } else {
       expect(read(env)).toBe(c.result);
     }
+  });
+});
+
+// K-4: the run status vocabulary, its cancellable subset and the cancel
+// channel are shared with the pipeline's ledger.py.
+describe("process run status contract", () => {
+  const fx = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL("../../../tests/contract-fixtures/process-run-status.json", import.meta.url),
+      ),
+      "utf8",
+    ),
+  ) as { statuses: string[]; terminal: string[]; cancellable: string[]; cancel_channel: string };
+
+  it("the app's ProcessRunStatus is exactly the fixture's statuses", () => {
+    const every: Record<ProcessRunStatus, true> = {
+      queued: true,
+      running: true,
+      succeeded: true,
+      failed: true,
+      dead: true,
+      cancelled: true,
+    };
+    expect(Object.keys(every).sort()).toEqual([...fx.statuses].sort());
+  });
+  it("cancellable statuses match, in fixture order", () => {
+    expect([...CANCELLABLE_RUN_STATUSES]).toEqual(fx.cancellable);
+  });
+  it("the cancel channel matches", () => {
+    expect(PROCESS_RUN_CANCEL_CHANNEL).toBe(fx.cancel_channel);
+  });
+  it("terminal and cancellable are subsets of statuses", () => {
+    for (const s of [...fx.terminal, ...fx.cancellable]) expect(fx.statuses).toContain(s);
   });
 });

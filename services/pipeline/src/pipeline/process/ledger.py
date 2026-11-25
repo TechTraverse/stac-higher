@@ -18,9 +18,19 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
-TERMINAL_STATUSES = ("succeeded", "dead")
+#: K-4: the `process_runs.status` vocabulary, pinned by
+#: tests/contract-fixtures/process-run-status.json and migration 031's CHECK.
+STATUSES = ("queued", "running", "succeeded", "failed", "dead", "cancelled")
+#: `cancelled` (K-4) is terminal and never claimable: no claim reads it, and
+#: only the app's audited re-run moves it back to `queued`.
+TERMINAL_STATUSES = ("succeeded", "dead", "cancelled")
 #: A run in one of these is still owed work by the pipeline.
 OPEN_STATUSES = ("queued", "running", "failed")
+#: What the app's cancel verb accepts (K-4 R4: a retry-pending `failed` run
+#: too); `queued`/`failed` flip at once, `running` is flagged for the pipeline.
+CANCELLABLE_STATUSES = ("queued", "failed", "running")
+#: The payload-less channel the app's cancel statement NOTIFYs (R12).
+CANCEL_CHANNEL = "process_run_cancel"
 
 
 @dataclass(frozen=True)
@@ -88,10 +98,14 @@ def infrastructure_transition(
 #: K-3 (spec §5.2): the sub-states of a queued/running row in
 #: ``process_runs.phase``, pinned by tests/contract-fixtures/process-run-phase.json
 #: and migration 029's CHECK. NULL on a plain queued row and on every terminal
-#: row. This slice writes `pending_capacity` and `starting`; `running` is
-#: written by K-4's watcher.
+#: row. The claim writes `starting`, a full profile `pending_capacity`, and
+#: since K-4 the submission and the Reconciler write what the backend reports.
 PHASES = ("pending_capacity", "starting", "running")
 PHASE_PENDING_CAPACITY, PHASE_STARTING, PHASE_RUNNING = PHASES
+#: K-4: what an executor's ``status()`` reports (``RunState.phase``). The two
+#: extra states are never written to ``process_runs.phase``: ``exited`` is a
+#: verdict to collect, ``lost`` a run the backend affirms is gone.
+EXECUTOR_PHASES = (*PHASES, "exited", "lost")
 
 #: How long a run released for capacity waits before a claim may take it
 #: again (spec §8). The claim is the run tick's, so the effective wait is the

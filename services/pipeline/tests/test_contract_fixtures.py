@@ -658,3 +658,16 @@ def test_process_credential_budget_settings_parse_like_the_app(case):
 
 def test_process_credential_budget_cap_floor_matches_golden():
     assert BUDGET["cap_min_seconds"] == STS_MIN_DURATION_SECONDS
+
+
+def test_process_run_status_vocabulary_matches_golden():
+    """K-4: migration 031's CHECK, the app's cancel verb and the ledger agree."""
+    from pipeline.process import ledger
+
+    fixture = _load("process-run-status.json")
+    assert list(ledger.STATUSES) == fixture["statuses"]
+    assert list(ledger.TERMINAL_STATUSES) == fixture["terminal"]
+    assert list(ledger.CANCELLABLE_STATUSES) == fixture["cancellable"]
+    assert ledger.CANCEL_CHANNEL == fixture["cancel_channel"]
+    assert set(ledger.OPEN_STATUSES) | set(ledger.TERMINAL_STATUSES) == set(ledger.STATUSES)
+    assert not set(ledger.OPEN_STATUSES) & set(ledger.TERMINAL_STATUSES)

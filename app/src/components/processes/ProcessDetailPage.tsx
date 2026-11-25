@@ -934,6 +934,8 @@ const RUN_STATUS_VARIANT: Record<
   succeeded: "default",
   failed: "outline",
   dead: "destructive",
+  // K-4: styled in the run row (muted, struck through — plan R20).
+  cancelled: "outline",
 };
 
 function RunRow({

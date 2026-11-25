@@ -26,6 +26,8 @@ const FILL: Record<ProcessRun["status"], string> = {
   dead: "var(--color-danger)",
   running: "var(--color-primary)",
   queued: "var(--color-muted-foreground)",
+  // K-4: an operator's stop is neutral (spec §9), never a failure colour.
+  cancelled: "var(--color-border)",
 };
 
 export function RunSparkline({

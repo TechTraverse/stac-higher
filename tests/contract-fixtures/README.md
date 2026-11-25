@@ -256,6 +256,15 @@ are not in the registry (I-107).
   app's `ProcessRunPhase` (`processes-run-phase.test.ts`) and the
   pipeline's `PHASES` in `pipeline/process/ledger.py`
   (`test_process_hardware.py`).
+- `process-run-status.json` (K-4) is style `pinned-enum`. `statuses` is the
+  `process_runs.status` vocabulary in canonical order (migration 031's
+  `process_runs_status_check`, `processes-migration.test.ts`); `terminal`,
+  `cancellable` and `cancel_channel` are the cancel verb's contract. The
+  app's `ProcessRunStatus`, `CANCELLABLE_RUN_STATUSES` and
+  `PROCESS_RUN_CANCEL_CHANNEL` (`contract-fixtures.test.ts`) and the
+  pipeline's `STATUSES`, `TERMINAL_STATUSES`, `CANCELLABLE_STATUSES` and
+  `CANCEL_CHANNEL` in `pipeline/process/ledger.py`
+  (`test_contract_fixtures.py`) consume it.
 
 ## Additional fixture styles (R queue, R-1/R-2)
 
