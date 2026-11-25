@@ -8,6 +8,17 @@ locals {
   region     = data.aws_region.current.region
   account_id = data.aws_caller_identity.current.account_id
 
+  # Use through the platform services, by any principal of this account.
+  platform_services_scope = {
+    "kms:ViaService" = [
+      "s3.${local.region}.${local.dns_suffix}",
+      "secretsmanager.${local.region}.${local.dns_suffix}",
+      "ecr.${local.region}.${local.dns_suffix}",
+      "rds.${local.region}.${local.dns_suffix}",
+    ]
+    "kms:CallerAccount" = local.account_id
+  }
+
   key_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -28,19 +39,22 @@ locals {
           "kms:ReEncrypt*",
           "kms:GenerateDataKey*",
           "kms:DescribeKey",
-          "kms:CreateGrant",
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = { StringEquals = local.platform_services_scope }
+      },
+      # Grants only for the AWS resources those services attach the key to,
+      # never a grant a caller could hand to an arbitrary principal (AWS's
+      # default service-key policy carries the same condition).
+      {
+        Sid       = "CreateGrantThroughPlatformServices"
+        Effect    = "Allow"
+        Principal = { AWS = "*" }
+        Action    = "kms:CreateGrant"
+        Resource  = "*"
         Condition = {
-          StringEquals = {
-            "kms:ViaService" = [
-              "s3.${local.region}.${local.dns_suffix}",
-              "secretsmanager.${local.region}.${local.dns_suffix}",
-              "ecr.${local.region}.${local.dns_suffix}",
-              "rds.${local.region}.${local.dns_suffix}",
-            ]
-            "kms:CallerAccount" = local.account_id
-          }
+          StringEquals = local.platform_services_scope
+          Bool         = { "kms:GrantIsForAWSResource" = "true" }
         }
       },
       {

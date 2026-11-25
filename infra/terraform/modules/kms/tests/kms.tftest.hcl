@@ -38,30 +38,34 @@ run "root_administers_partition_aware" {
   command = plan
   assert {
     condition     = jsondecode(aws_kms_key.this.policy).Statement[0].Sid == "AccountRootAdministers"
-    error_message = "statement 0 must be AccountRootAdministers"
+    error_message = "statement 0 must be AccountRootAdministers (it keeps the key administrable)"
   }
   assert {
-    condition     = jsondecode(aws_kms_key.this.policy).Statement[0].Effect == "Allow" && jsondecode(aws_kms_key.this.policy).Statement[0].Action == "kms:*"
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["AccountRootAdministers"].Effect == "Allow" && { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["AccountRootAdministers"].Action == "kms:*"
     error_message = "root statement must Allow kms:*"
   }
   assert {
-    condition     = jsondecode(aws_kms_key.this.policy).Statement[0].Principal.AWS == "arn:aws-us-gov:iam::000000000000:root"
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["AccountRootAdministers"].Principal.AWS == "arn:aws-us-gov:iam::000000000000:root"
     error_message = "root principal must use the mocked partition and account"
+  }
+}
+
+run "policy_statement_set" {
+  command = plan
+  assert {
+    condition     = [for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid] == ["AccountRootAdministers", "UseThroughPlatformServices", "CreateGrantThroughPlatformServices", "CloudWatchLogsUse"]
+    error_message = "key policy must hold exactly the four documented statements"
   }
 }
 
 run "platform_services_via_service" {
   command = plan
   assert {
-    condition     = jsondecode(aws_kms_key.this.policy).Statement[1].Sid == "UseThroughPlatformServices"
-    error_message = "statement 1 must be UseThroughPlatformServices"
-  }
-  assert {
-    condition     = jsondecode(aws_kms_key.this.policy).Statement[1].Principal.AWS == "*"
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["UseThroughPlatformServices"].Principal.AWS == "*"
     error_message = "platform-services principal must be * (narrowed by conditions)"
   }
   assert {
-    condition = toset(jsondecode(aws_kms_key.this.policy).Statement[1].Condition.StringEquals["kms:ViaService"]) == toset([
+    condition = toset({ for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["UseThroughPlatformServices"].Condition.StringEquals["kms:ViaService"]) == toset([
       "s3.us-gov-west-1.dns-suffix.example",
       "secretsmanager.us-gov-west-1.dns-suffix.example",
       "ecr.us-gov-west-1.dns-suffix.example",
@@ -70,27 +74,61 @@ run "platform_services_via_service" {
     error_message = "ViaService must list s3, secretsmanager, ecr, rds in the mocked region and dns suffix"
   }
   assert {
-    condition     = jsondecode(aws_kms_key.this.policy).Statement[1].Condition.StringEquals["kms:CallerAccount"] == "000000000000"
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["UseThroughPlatformServices"].Condition.StringEquals["kms:CallerAccount"] == "000000000000"
     error_message = "CallerAccount must be the current account"
   }
   assert {
-    condition     = toset(jsondecode(aws_kms_key.this.policy).Statement[1].Action) == toset(["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey", "kms:CreateGrant"])
-    error_message = "platform-services actions mismatch"
+    condition     = toset({ for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["UseThroughPlatformServices"].Action) == toset(["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"])
+    error_message = "platform-services actions mismatch (kms:CreateGrant lives in its own statement)"
+  }
+}
+
+run "create_grant_only_for_aws_resources" {
+  command = plan
+  assert {
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["CreateGrantThroughPlatformServices"].Effect == "Allow" && { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["CreateGrantThroughPlatformServices"].Principal.AWS == "*"
+    error_message = "the CreateGrant statement must Allow principal * (narrowed by conditions)"
+  }
+  assert {
+    condition     = toset(flatten([{ for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["CreateGrantThroughPlatformServices"].Action])) == toset(["kms:CreateGrant"])
+    error_message = "the CreateGrant statement must grant kms:CreateGrant only"
+  }
+  assert {
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["CreateGrantThroughPlatformServices"].Condition.Bool["kms:GrantIsForAWSResource"] == "true"
+    error_message = "kms:CreateGrant must require kms:GrantIsForAWSResource = true"
+  }
+  assert {
+    condition = toset({ for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["CreateGrantThroughPlatformServices"].Condition.StringEquals["kms:ViaService"]) == toset([
+      "s3.us-gov-west-1.dns-suffix.example",
+      "secretsmanager.us-gov-west-1.dns-suffix.example",
+      "ecr.us-gov-west-1.dns-suffix.example",
+      "rds.us-gov-west-1.dns-suffix.example",
+    ])
+    error_message = "the CreateGrant statement keeps the same ViaService scope"
+  }
+  assert {
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["CreateGrantThroughPlatformServices"].Condition.StringEquals["kms:CallerAccount"] == "000000000000"
+    error_message = "the CreateGrant statement keeps the CallerAccount scope"
+  }
+  # Guard: no statement open to principal * may grant kms:CreateGrant without the AWS-resource condition.
+  assert {
+    condition = alltrue([
+      for s in jsondecode(aws_kms_key.this.policy).Statement :
+      try(s.Condition.Bool["kms:GrantIsForAWSResource"], null) == "true"
+      if try(s.Principal.AWS, null) == "*" && contains(flatten([s.Action]), "kms:CreateGrant")
+    ])
+    error_message = "a principal-* statement grants kms:CreateGrant without kms:GrantIsForAWSResource"
   }
 }
 
 run "cloudwatch_logs_principal" {
   command = plan
   assert {
-    condition     = jsondecode(aws_kms_key.this.policy).Statement[2].Sid == "CloudWatchLogsUse"
-    error_message = "statement 2 must be CloudWatchLogsUse"
-  }
-  assert {
-    condition     = jsondecode(aws_kms_key.this.policy).Statement[2].Principal.Service == "logs.us-gov-west-1.dns-suffix.example"
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["CloudWatchLogsUse"].Principal.Service == "logs.us-gov-west-1.dns-suffix.example"
     error_message = "logs service principal must use region and dns suffix"
   }
   assert {
-    condition     = jsondecode(aws_kms_key.this.policy).Statement[2].Condition.ArnLike["kms:EncryptionContext:aws:logs:arn"] == "arn:aws-us-gov:logs:us-gov-west-1:000000000000:*"
+    condition     = { for s in jsondecode(aws_kms_key.this.policy).Statement : s.Sid => s }["CloudWatchLogsUse"].Condition.ArnLike["kms:EncryptionContext:aws:logs:arn"] == "arn:aws-us-gov:logs:us-gov-west-1:000000000000:*"
     error_message = "logs encryption context must be scoped to this account and region"
   }
 }
