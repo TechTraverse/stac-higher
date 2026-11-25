@@ -657,4 +657,4 @@ def test_process_credential_budget_settings_parse_like_the_app(case):
 
 
 def test_process_credential_budget_cap_floor_matches_golden():
-    assert STS_MIN_DURATION_SECONDS == BUDGET["cap_min_seconds"]
+    assert BUDGET["cap_min_seconds"] == STS_MIN_DURATION_SECONDS

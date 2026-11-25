@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from botocore.exceptions import ClientError
 
 from pipeline.config import Settings
 from pipeline.images.policy import load_image_policy
@@ -24,6 +25,7 @@ from pipeline.process.config import (
 )
 from pipeline.process.credentials import (
     CredentialBudgetExceeded,
+    CredentialDurationRejected,
     RunCredentials,
     RunCredentialsError,
     arn_partition,
@@ -1068,3 +1070,67 @@ def test_scans_are_bounded_by_the_same_cap():
 
 def test_the_budget_refusal_is_not_an_infrastructure_error():
     assert not issubclass(CredentialBudgetExceeded, RunCredentialsError)
+
+
+def _sts_error(code: str, message: str) -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": message}}, "AssumeRole")
+
+
+# #157: what AWS STS answers when DurationSeconds is longer than the role (or
+# role chaining) allows, or outside the API's own bounds.
+_DURATION_REJECTIONS = [
+    "The requested DurationSeconds exceeds the MaxSessionDuration set for this role.",
+    "The requested DurationSeconds exceeds the 1 hour session limit for roles assumed "
+    "by role chaining.",
+    "1 validation error detected: Value '50000' at 'durationSeconds' failed to satisfy "
+    "constraint: Member must have value less than or equal to 43200",
+]
+
+
+@pytest.mark.parametrize("message", _DURATION_REJECTIONS)
+def test_sts_rejecting_the_duration_is_configuration_not_infrastructure(message):
+    """An unset or too-high cap on AWS would otherwise requeue the run forever
+    without spending an attempt (#157)."""
+    sts = FakeSts(error=_sts_error("ValidationError", message))
+    keyed = settings(STAGING_S3_ACCESS_KEY_ID="AK", STAGING_S3_SECRET_ACCESS_KEY="SK-secret")
+    with pytest.raises(CredentialDurationRejected) as err:
+        mint_run_credentials(keyed, RUN, 3600, sts_client=sts)
+    assert isinstance(err.value, CredentialBudgetExceeded)  # the runner finishes it dead
+    assert not isinstance(err.value, RunCredentialsError)
+    assert err.value.requested_seconds == 3900
+    text = str(err.value)
+    assert text.startswith(CredentialBudgetExceeded.code)
+    assert "3900 s" in text and "timeout 3600 s + grace 300 s" in text
+    # Says what to change...
+    assert "PROCESS_MAX_CREDENTIAL_SECONDS" in text and "MaxSessionDuration" in text
+    # ...without the session policy or any credential material.
+    assert '"Statement"' not in text and "s3:PutObject" not in text
+    assert "SK-secret" not in text
+
+
+def test_a_duration_rejection_carries_at_most_a_bounded_slice_of_sts_text():
+    sts = FakeSts(error=_sts_error("ValidationError", "DurationSeconds " + "x" * 5000))
+    with pytest.raises(CredentialDurationRejected) as err:
+        mint_run_credentials(settings(), RUN, 60, sts_client=sts)
+    assert len(str(err.value)) < 1000
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        # A validation failure about something else stays our infrastructure.
+        _sts_error(
+            "ValidationError",
+            "1 validation error detected: Value at 'policy' failed to satisfy constraint: "
+            "Member must have length less than or equal to 2048",
+        ),
+        # Only the ValidationError code counts, whatever the text says.
+        _sts_error("AccessDenied", "not authorized to perform sts:AssumeRole (DurationSeconds)"),
+        _sts_error("RegionDisabledException", "STS is not activated in this region"),
+        RuntimeError("DurationSeconds"),
+    ],
+    ids=["other-validation", "access-denied", "region-disabled", "not-a-client-error"],
+)
+def test_other_sts_failures_keep_their_infrastructure_classification(error):
+    with pytest.raises(RunCredentialsError):
+        mint_run_credentials(settings(), RUN, 60, sts_client=FakeSts(error=error))
