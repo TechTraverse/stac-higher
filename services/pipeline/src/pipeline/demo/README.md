@@ -449,7 +449,7 @@ What `--in-cluster` changes:
 |---|---|---|
 | Endpoints | published ports (`localhost:8082`, `:5433`, `:9000`) | the environment; an explicit flag still wins: `DEMO_STAC_URL` (stac-fastapi, required), `DATABASE_URL` + libpq's `PGUSER`/`PGPASSWORD`/`PGSSLMODE`/`PGSSLROOTCERT` (required), `STAGING_BUCKET` (required), `DEMO_APP_URL` (the app Service; required for `images-*`), `DEMO_PUBLIC_APP_URL` / `DEMO_PUBLIC_TITILER_URL` (printed hints only) |
 | Platform bucket | MinIO at `--s3-endpoint` with MinIO's keys | the pipeline's own client from `STAGING_S3_*`: blank endpoint and keys mean AWS and the default credential chain (the pod's workload identity). `--s3-endpoint` is refused |
-| Start-up | runs at once | `--wait-ready SECONDS` (any mode; the chart passes it) waits for the STAC API, and for `images-*` the app, to answer before the first write |
+| Start-up | runs at once | `--wait-ready SECONDS` (any mode; the chart passes it) waits for the STAC API, and for `images-*` the app, to answer with a 2xx-4xx status before the first write (a 5xx, refused, timed-out or garbled connection is not ready) |
 | Runtime image | built (`docker buildx bake`) or checked | never built or checked: no Docker daemon in a pod, and the deployment pins `PROCESS_RUNTIME_IMAGE`. `seed`/`goes-seed` refuse without `--no-build-image` |
 | `goes-seed --deliver` | MinIO keys, `stac-higher-deliveries` (created), `--internal-s3-endpoint` | the Terraform demo-destination key (below); `--internal-s3-endpoint` is ignored |
 | `teardown`, `goes-teardown` | as above | refused: they delete platform bytes directly, which a deployed platform allows only through `asset_gc` (ADR 0011) |

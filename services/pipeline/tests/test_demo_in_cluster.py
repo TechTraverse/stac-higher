@@ -391,18 +391,77 @@ def test_wait_ready_gives_up_naming_the_url(monkeypatch):
     assert clock.now >= 30
 
 
-def test_reachable_counts_any_http_answer_and_not_a_refusal(monkeypatch):
+class _Response:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.mark.parametrize("status", [200, 204, 301])
+def test_reachable_counts_a_success_or_redirect(monkeypatch, status):
+    monkeypatch.setattr(platform.urllib.request, "urlopen", lambda req, timeout: _Response(status))
+    assert platform.reachable("http://stac") is True
+
+
+@pytest.mark.parametrize("status", [401, 404])
+def test_reachable_counts_a_client_error_as_up(monkeypatch, status):
+    """A 4xx is the service answering (a root without a route, an auth gate)."""
     import urllib.error
 
     def answers(req, timeout):
-        raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
-
-    def refuses(req, timeout):
-        raise urllib.error.URLError("connection refused")
+        raise urllib.error.HTTPError(req.full_url, status, "x", {}, None)
 
     monkeypatch.setattr(platform.urllib.request, "urlopen", answers)
     assert platform.reachable("http://stac") is True
-    monkeypatch.setattr(platform.urllib.request, "urlopen", refuses)
+
+
+@pytest.mark.parametrize("status", [500, 502, 503])
+def test_reachable_treats_a_server_error_as_not_ready(monkeypatch, status):
+    """A half-up service (503 behind its Service, a 502 from a proxy) must not
+    pass: the write after it would fail, and the Job does not retry."""
+    import urllib.error
+
+    def answers(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, status, "x", {}, None)
+
+    monkeypatch.setattr(platform.urllib.request, "urlopen", answers)
+    assert platform.reachable("http://stac") is False
+
+
+def test_reachable_treats_a_5xx_returned_without_raising_as_not_ready(monkeypatch):
+    monkeypatch.setattr(platform.urllib.request, "urlopen", lambda req, timeout: _Response(503))
+    assert platform.reachable("http://stac") is False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "refused",
+        "timeout",
+        "bad-status-line",
+        "remote-disconnected",
+    ],
+)
+def test_reachable_treats_a_broken_connection_as_not_ready(monkeypatch, error):
+    import http.client
+    import urllib.error
+
+    raised = {
+        "refused": urllib.error.URLError("connection refused"),
+        "timeout": TimeoutError("timed out"),
+        "bad-status-line": http.client.BadStatusLine("garbage"),
+        "remote-disconnected": http.client.RemoteDisconnected("closed"),
+    }[error]
+
+    def fails(req, timeout):
+        raise raised
+
+    monkeypatch.setattr(platform.urllib.request, "urlopen", fails)
     assert platform.reachable("http://stac") is False
 
 

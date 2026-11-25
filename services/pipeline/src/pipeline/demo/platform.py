@@ -18,6 +18,7 @@ and `platform_s3_client()` are the two switches every seeder shares.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import subprocess
@@ -86,14 +87,17 @@ def json_request(
 
 
 def reachable(url: str) -> bool:
-    """True once `url` answers at all: any HTTP status counts (the service is
-    up), a refused or timed-out connection does not."""
+    """True once `url` answers with 2xx-4xx: a 4xx is the service itself
+    answering (a root without a route, an auth gate). A 5xx is a half-up
+    service or a proxy in front of nothing, and a refused, timed-out or
+    garbled connection is not an answer; both count as not ready, because the
+    write that follows would fail and the Job does not retry."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url), timeout=5):
-            return True
-    except urllib.error.HTTPError:
-        return True
-    except (urllib.error.URLError, OSError):
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=5) as resp:
+            return resp.status < 500
+    except urllib.error.HTTPError as err:
+        return err.code < 500
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
         return False
 
 
