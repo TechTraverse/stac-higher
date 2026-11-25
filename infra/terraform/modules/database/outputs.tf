@@ -47,3 +47,8 @@ output "ca_cert_identifier" {
   description = "RDS CA certificate identifier in use; the client CA bundle must match it."
   value       = aws_db_instance.this.ca_cert_identifier
 }
+
+output "allow_major_version_upgrade" {
+  description = "Whether the instance permits a major engine_version bump."
+  value       = aws_db_instance.this.allow_major_version_upgrade
+}

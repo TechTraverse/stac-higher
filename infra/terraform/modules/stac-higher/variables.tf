@@ -140,6 +140,12 @@ variable "db_engine_version" {
   default     = "17"
 }
 
+variable "db_allow_major_version_upgrade" {
+  description = "Permit RDS to apply a major db_engine_version bump; RDS refuses one without it. The parameter-group family follows db_engine_version."
+  type        = bool
+  default     = false
+}
+
 variable "db_name" {
   description = "Initial database name."
   type        = string

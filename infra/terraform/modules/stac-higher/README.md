@@ -27,6 +27,13 @@ Pod Identity associations (or IRSA trust policies) are bound to.
   logout URLs to `["<app_url>/"]`;
 - `helm_values.publicUrls.app` is `app_url`.
 
+## Database major-version upgrades
+
+`db_engine_version` pins the PostgreSQL major (default `"17"`). To move to a
+new major, raise it and set `db_allow_major_version_upgrade = true` in the same
+apply; RDS refuses a major bump without the flag. The parameter-group family
+follows `db_engine_version`. Set the flag back to `false` afterwards.
+
 ## External Secrets policy
 
 `external_secrets_policy_json` is an IAM policy that reads the ten platform
