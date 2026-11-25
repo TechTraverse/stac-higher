@@ -130,6 +130,29 @@ Run `actionlint` (built from source at CI's pinned v1.7.12 into a temp dir with 
 
 - [ ] **Step 4: Commit** · `R-9: docs — chart package, consuming a release from GitHub/GitLab, lead release steps`
 
+### Task 4: Review fixes (2026-11-25) — supersede Task 2's placement
+
+Review found that a chart in `release.yml` could publish without its images or manifest, and the other way round. It also found tags (`v1.2.3-rc..1`, `v1.2.3-01`) that passed both regexes but that Helm rejects. Lead ruling: the preferred fix.
+
+- **Placement:** `chart` and `chart-push` move to `containers.yml`, ordered images → chart → manifest (spec §11):
+  - a new `version` job checks the tag (`scripts/package-chart.sh --check-tag`) before any image builds, and outputs the version;
+  - `build` and `runtime` need `version`;
+  - `chart` (contents: read) runs on every event and is the dry run;
+  - `chart-push` (`packages: write`) runs only on `v*` tag pushes and needs `build`, `runtime` and `chart`; it outputs the digest Helm reports (`Digest:`, Helm 4.3.1 `pkg/registry/client.go`);
+  - `release-manifest` needs `chart-push`. On a tag it requires `chart-push` success; on other runs it accepts `skipped`, and in both cases it requires `build`, `runtime` and `chart` success.
+- **`release.yml`** goes back to tag pushes only and keeps the GitHub release job: workflow `contents: read`, job `contents: write`.
+- **Tag rule:** `VERSION_RE` (now exported) and the script's bash copy become SemVer 2.0 pre-release exact, minus `+build`. Every accepted version is one Helm accepts. Checked locally against `helm package` for 12 versions. A vitest case runs the script's `--check-tag` over the accepted and rejected sets and asserts it agrees with `VERSION_RE`.
+- **`chart.digest`:** an optional manifest key, set only when `--chart-digest` is passed (always on a release, never on a dry run). It is additive, so `schemaVersion` stays 1 and R-3's shape test is unchanged.
+- **Script:**
+  - dependencies and repository URLs come from `helm show chart`, which is normalised for block or flow style and omits `[]`, instead of the truncated `helm dependency list`;
+  - `infra/helm/stac-higher/charts/*.tgz` is gitignored.
+- **Concurrency on `containers.yml`:** the group is the ref for pull requests (cancel in progress) and the run id otherwise, so `main` and tag runs are never cancelled or queued.
+- **Docs:**
+  - the GitLab example's script items become block scalars, and both examples parse with `yaml`;
+  - "When a release half-fails";
+  - a chart digest check for consumers;
+  - I-164 narrowed to signing and re-pushable tags.
+
 ## Lead-only (after merge)
 
 1. Cut the first tag from a green `main`: `git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0`.

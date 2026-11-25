@@ -1938,18 +1938,24 @@ Both are verified by rendering only, not on a cluster. Escape hatches:
 `networkPolicy.appIngressFrom`, which should be set to the VPC CIDR for ALB IP
 targets.
 
-### I-164 · The chart is not signed or attested, and its digest is not in the release manifest 🟡
+### I-164 · The chart is not signed or attested, and its version tag can be re-pushed 🟡
 
-The images carry buildx provenance and an SBOM; the chart package carries
-neither, and nothing is cosign-signed (spec §12). The release manifest names
-the chart by ref and version only. `chart-push` runs in `release.yml`, while
-the manifest is built in `containers.yml`, so the push digest goes to the
-`chart-push` job summary instead. An OCI version tag can be pushed again:
-re-running a tag's Release workflow overwrites it. A deployment that needs
-immutability records the digest from the summary and checks it on pull.
-Follow-up idea: build the chart in `containers.yml` before `release-manifest`
-and add `chart.digest` (an added key, so `schemaVersion` stays 1), alongside
-cosign signing.
+The images carry buildx provenance and an SBOM. The chart package carries
+neither, and nothing is cosign-signed (spec §12). The release manifest
+records the pushed chart's digest (`chart.digest`), but an OCI version tag
+can be pushed again: re-running a tag's Containers workflow overwrites
+`charts/stac-higher:X.Y.Z`, as it does the image tags. A deployment that
+needs immutability checks that the version still resolves to `chart.digest`
+before installing (`docs/releases.md` "Consuming a release"), or pins the
+digest (Flux `ref.digest`).
+
+`release.yml` (the GitHub release with the app and pipeline assets) runs
+independently of the Containers order, so a release can show those assets
+while its images or chart failed. Nothing deployable is published until
+`release-manifest.json` is attached; `docs/releases.md` "When a release
+half-fails" covers cleanup.
+
+Follow-up idea: cosign-sign the chart and the images, and verify on pull.
 
 ## Resolved — archived
 
