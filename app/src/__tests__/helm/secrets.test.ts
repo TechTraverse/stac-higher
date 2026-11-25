@@ -64,6 +64,28 @@ describe.skipIf(!helmReady())("chart secrets layer", () => {
     for (const d of owner.spec.data) expect(d.remoteRef.key).toBe(baseValues.secrets.arns.db_stac_higher_owner);
   });
 
+  it("external-secrets mode renders a runtime ExternalSecret per service role (never the hook copy)", () => {
+    const r = renderChart({ valuesFiles: scenario("base") });
+    expect(r.ok, r.stderr).toBe(true);
+    const baseValues = parse(readFileSync(scenario("base")[0], "utf8"));
+    for (const [name, arn] of [
+      ["db-stac-api", "db_stac_api"],
+      ["db-stac-reader", "db_stac_reader"],
+      ["db-proxy-policy", "db_stac_proxy_policy"],
+      ["db-cube-server", "db_cube_server"],
+    ]) {
+      const es = byName(r.docs, `stac-higher-${name}`);
+      expect(es, name).toBeTruthy();
+      expect(es.metadata.annotations?.["helm.sh/hook"]).toBeUndefined();
+      expect(es.spec.target.name).toBe(`stac-higher-${name}`);
+      expect(es.spec.refreshInterval).toBe("1h");
+      expect(es.spec.data.map((d: Doc) => [d.secretKey, d.remoteRef.property, d.remoteRef.key])).toEqual([
+        ["username", "username", baseValues.secrets.arns[arn]],
+        ["password", "password", baseValues.secrets.arns[arn]],
+      ]);
+    }
+  });
+
   it("never wires PROXY_AUTH_TOKEN", () => {
     const r = renderChart({ valuesFiles: scenario("base") });
     const text = JSON.stringify(r.docs);
@@ -141,7 +163,10 @@ describe.skipIf(!helmReady())("chart secrets layer", () => {
         const cm = docs.find((d) => d.metadata.name === `probe-${n}`);
         expect(cm.data.hook).toBe(`r-stac-higher-${SUFFIX[i]}`);
       });
-      expect(docs.find((d) => d.metadata.name === "probe-dbOwner").data.runtime).toBe("r-stac-higher-db-owner");
+      const runtime = { dbOwner: "db-owner", dbStacApi: "db-stac-api", dbStacReader: "db-stac-reader", dbProxyPolicy: "db-proxy-policy", dbCubeServer: "db-cube-server" };
+      for (const [n, suffix] of Object.entries(runtime)) {
+        expect(docs.find((d) => d.metadata.name === `probe-${n}`).data.runtime).toBe(`r-stac-higher-${suffix}`);
+      }
       expect(docs.find((d) => d.metadata.name === "probe-dbMaster").data.runtime).toBe("r-stac-higher-hook-db-master");
     });
 

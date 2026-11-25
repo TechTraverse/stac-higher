@@ -121,15 +121,21 @@ capabilities:
 {{- end -}}
 {{- end -}}
 
+{{/* Runtime Secret names in external-secrets mode, by logical name (R-7 added the four service roles). */}}
+{{- define "stac-higher.runtimeSecretSuffix" -}}
+{{- $m := dict "platform" "platform" "dbOwner" "db-owner" "dbStacApi" "db-stac-api" "dbStacReader" "db-stac-reader" "dbProxyPolicy" "db-proxy-policy" "dbCubeServer" "db-cube-server" -}}
+{{- get $m .name -}}
+{{- end -}}
+
 {{/* Kubernetes Secret name the runtime pods read; "" for an unset dockerHub.
-Note: in external-secrets mode the non-owner db roles resolve to the hook copy, which is recreated each hook phase (I-156); R-6 pods never read them. (dict "root" $ "name" "platform") */}}
+In external-secrets mode every runtime pod reads a runtime copy, never a hook copy (I-156); only dbMaster,
+which no runtime pod reads, resolves to its hook copy. (dict "root" $ "name" "platform") */}}
 {{- define "stac-higher.secretName" -}}
+{{- $suffix := include "stac-higher.runtimeSecretSuffix" . -}}
 {{- if eq .root.Values.secrets.mode "existing" -}}
 {{- get .root.Values.secrets.existing .name -}}
-{{- else if eq .name "platform" -}}
-{{- printf "%s-platform" (include "stac-higher.fullname" .root) | trunc 63 | trimSuffix "-" -}}
-{{- else if eq .name "dbOwner" -}}
-{{- printf "%s-db-owner" (include "stac-higher.fullname" .root) | trunc 63 | trimSuffix "-" -}}
+{{- else if $suffix -}}
+{{- printf "%s-%s" (include "stac-higher.fullname" .root) $suffix | trunc 63 | trimSuffix "-" -}}
 {{- else if eq .name "dockerHub" -}}
 {{- if .root.Values.secrets.dockerHubArn -}}
 {{- printf "%s-dockerhub" (include "stac-higher.fullname" .root) | trunc 63 | trimSuffix "-" -}}
@@ -211,7 +217,7 @@ spec:
 {{- end -}}
 {{- end -}}
 {{- if eq $v.identity.mode "irsa" -}}
-{{- range $c := list "app" "pipeline" -}}
+{{- range $c := list "app" "pipeline" "titiler" "cubeServer" -}}
 {{- if not (get $v.identity.roleArns $c) -}}
 {{- fail (printf "identity.roleArns.%s is required when identity.mode=irsa" $c) -}}
 {{- end -}}

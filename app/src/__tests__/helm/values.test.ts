@@ -100,20 +100,24 @@ describe.skipIf(!helmReady())("chart values contract", () => {
       { valuesFiles: scenario("irsa"), values: { identity: { roleArns: { app: "" } } } },
       "identity.roleArns.app",
     );
-    fails(
-      { valuesFiles: scenario("irsa"), values: { identity: { roleArns: { pipeline: "" } } } },
-      "identity.roleArns.pipeline",
-    );
+    for (const k of ["pipeline", "titiler", "cubeServer"]) {
+      fails(
+        { valuesFiles: scenario("irsa"), values: { identity: { roleArns: { [k]: "" } } } },
+        `identity.roleArns.${k}`,
+      );
+    }
   });
 
   it("pod-identity ServiceAccounts carry no role annotation; irsa ones do", () => {
     const pi = renderChart({ valuesFiles: scenario("base") }).docs as Doc[];
-    for (const n of ["stac-higher-app", "stac-higher-pipeline"]) {
+    for (const n of ["stac-higher-app", "stac-higher-pipeline", "stac-higher-titiler", "stac-higher-cube-server"]) {
       expect(sa(pi, n), n).toBeTruthy();
       expect(sa(pi, n)!.metadata.annotations?.[ROLE_ANN]).toBeUndefined();
     }
     expect(sa(pi, "stac-higher-app")!.automountServiceAccountToken).toBe(false);
     expect(sa(pi, "stac-higher-pipeline")!.automountServiceAccountToken).toBe(true);
+    expect(sa(pi, "stac-higher-titiler")!.automountServiceAccountToken).toBe(false);
+    expect(sa(pi, "stac-higher-cube-server")!.automountServiceAccountToken).toBe(false);
     const irsa = renderChart({ valuesFiles: scenario("irsa") }).docs as Doc[];
     expect(sa(irsa, "stac-higher-app")!.metadata.annotations?.[ROLE_ANN]).toBe(
       "arn:aws:iam::000000000000:role/stac-higher-example-app",
@@ -121,11 +125,22 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     expect(sa(irsa, "stac-higher-pipeline")!.metadata.annotations?.[ROLE_ANN]).toBe(
       "arn:aws:iam::000000000000:role/stac-higher-example-pipeline",
     );
+    expect(sa(irsa, "stac-higher-titiler")!.metadata.annotations?.[ROLE_ANN]).toBe(
+      "arn:aws:iam::000000000000:role/stac-higher-example-titiler",
+    );
+    expect(sa(irsa, "stac-higher-cube-server")!.metadata.annotations?.[ROLE_ANN]).toBe(
+      "arn:aws:iam::000000000000:role/stac-higher-example-cube-server",
+    );
   });
 
   it("ServiceAccounts take R-5's names, not the release name", () => {
     const docs = renderChart(base({}, { releaseName: "other" })).docs as Doc[];
-    expect(sas(docs).map((d) => d.metadata.name).sort()).toEqual(["stac-higher-app", "stac-higher-pipeline"]);
+    expect(sas(docs).map((d) => d.metadata.name).sort()).toEqual([
+      "stac-higher-app",
+      "stac-higher-cube-server",
+      "stac-higher-pipeline",
+      "stac-higher-titiler",
+    ]);
     const c = renderChart(base({ identity: { serviceAccounts: { app: "custom-app" } } })).docs as Doc[];
     expect(sa(c, "custom-app")).toBeTruthy();
   });
