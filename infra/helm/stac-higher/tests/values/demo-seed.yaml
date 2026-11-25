@@ -1,0 +1,14 @@
+# The demo seed Job (R-10) with every seed and delivery to the demo destination. Placeholders only.
+demoDestination:
+  bucket: stac-higher-example-demo
+  region: us-east-1
+  credentialsSecretArn: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/demo/destination_credentials-AbCdEf
+demoSeed:
+  enabled: true
+  seeds: [seed, goes-seed, cube-seed, images-seed]
+  stacUrl: http://stac-higher-stac:8080
+  deliver: true
+  appBearer:
+    secretName: stac-higher-demo-bearer
+  extraArgs:
+    goes-seed: ["--window", "-2h"]

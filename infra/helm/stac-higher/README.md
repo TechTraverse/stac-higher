@@ -38,7 +38,8 @@ it works on Helm 3 and 4 and needs Kubernetes 1.34 or later.
 Every key at depth 2 or less. `null` means required. Section rows list the
 section's own keys; the schema (`values.schema.json`) rejects unknown keys in
 the closed sections (`aws`, `registry`, `publicUrls`, `objectStore`,
-`database`, `identity`, `secrets.arns`, `secrets.existing`, `demoDestination`).
+`database`, `identity`, `secrets.arns`, `secrets.existing`, `demoDestination`,
+`demoSeed`).
 Rendering fails with a message starting with the offending key path.
 
 | Key | Default | Meaning |
@@ -95,8 +96,8 @@ Rendering fails with a message starting with the offending key path.
 | `secrets.dockerHubArn` | `""` | Optional Docker Hub credential (JSON `username`/`token`). |
 | `secrets.externalSecrets` | | `storeRef.name` (required), `storeRef.kind` (`ClusterSecretStore` or `SecretStore`), `refreshInterval` (`1h`). |
 | `secrets.existing` | all `""` | Secret names for `existing` mode. |
-| `demoDestination` | | The demo's destination bucket; consumed by R-10. |
-| `demoDestination.bucket`, `demoDestination.region`, `demoDestination.credentialsSecretArn` | `""` | Consumed by R-10. |
+| `demoDestination` | | The demo's destination bucket (R-5's `demo-destination` module); read only by the demo seed Job with `demoSeed.deliver`. |
+| `demoDestination.bucket`, `demoDestination.region`, `demoDestination.credentialsSecretArn` | `""` | Bucket, its region (blank: `aws.region`), and the Secrets Manager entry holding the write-only user's key (JSON `access_key_id`/`secret_access_key`). |
 | `processRuns` | | Process-run settings. |
 | `processRuns.namespace` | `stac-higher-runs` | R-8 creates it. |
 | `processRuns.networkMax` | `isolated` | `PROCESS_NETWORK_MAX` (app and pipeline). |
@@ -134,8 +135,16 @@ Rendering fails with a message starting with the offending key path.
 | `dbJobs.backoffLimit`, `dbJobs.activeDeadlineSeconds` | `2`, `900` | |
 | `dbJobs.resources` | 100m / 256Mi, memory limit 1Gi | |
 | `dbJobs.nodeSelector`, `dbJobs.tolerations`, `dbJobs.affinity` | empty | |
-| `demoSeed` | | |
-| `demoSeed.enabled` | `false` | Consumed by R-10. |
+| `demoSeed` | | The one-shot demo seed Job (see Demo seed). |
+| `demoSeed.enabled` | `false` | Render the Job. |
+| `demoSeed.seeds` | `[seed, goes-seed]` | Any of `seed`, `goes-seed`, `cube-seed`, `images-seed`; always run in that order. |
+| `demoSeed.stacUrl` | `""` | In-cluster stac-fastapi URL the seeds write collections to (the compose `:8082` equivalent). Required when enabled. |
+| `demoSeed.deliver` | `false` | `goes-seed --deliver` to `demoDestination`. Needs `goes-seed`, `demoDestination.bucket` and the key source for the secrets mode. |
+| `demoSeed.existingDestinationSecret` | `""` | `existing` mode: Secret with `access_key_id`/`secret_access_key`. In `external-secrets` mode the chart renders `<fullname>-demo-destination` from `demoDestination.credentialsSecretArn`. |
+| `demoSeed.appBearer` | | `secretName` (required with `images-seed`) and `key` (`token`): an operator bearer token for the app API. |
+| `demoSeed.extraArgs` | `{}` | Extra CLI args per chosen seed, e.g. `{goes-seed: ["--window", "-2h"]}`. |
+| `demoSeed.backoffLimit`, `demoSeed.activeDeadlineSeconds` | `6`, `3600` | Pod retries while the stack comes up; the deadline covers `images-seed`'s scan wait. |
+| `demoSeed.resources` | 100m / 512Mi, memory limit 1Gi | Per seed container. |
 
 ## Secrets modes
 
@@ -209,6 +218,39 @@ image's Python, not `psql`. Notes:
   roles.
 - The chart's fullname is capped at 42 characters; longer fails the render.
 - Hook objects carry the label `app.kubernetes.io/component=db-hook`.
+
+## Demo seed
+
+Off by default. With `demoSeed.enabled` the chart renders one Job that runs
+`python -m pipeline.demo --in-cluster <seed>` for each chosen seed, one
+container each (all but the last as init containers), in the fixed order
+`seed`, `goes-seed`, `cube-seed`, `images-seed`. What each seed builds and
+what in-cluster mode changes:
+[`../../../services/pipeline/src/pipeline/demo/README.md`](../../../services/pipeline/src/pipeline/demo/README.md).
+
+- **Not a hook.** It needs the migrated database and the running catalog
+  plane. A failed attempt (the stack still coming up) is retried up to
+  `demoSeed.backoffLimit` times.
+- **Runs once per pod spec.** The Job name ends in a hash of its pod
+  template: an upgrade or sync that changes nothing in it leaves the
+  completed Job alone, while a new image or new seed values creates a new
+  Job (the old one is pruned) and re-seeds. Re-seeding replaces the demo
+  processes' revisions and their run history. To re-run by hand, delete the
+  Job and upgrade or sync. The Job sets no `ttlSecondsAfterFinished`,
+  because a GitOps controller would recreate a Job that vanished.
+- **Identity and Secrets.** The pod runs the pipeline image as the pipeline
+  ServiceAccount (its workload identity writes `seed`'s scene to the platform
+  bucket), reads the pipeline's env ConfigMaps, the runtime `db-owner` and
+  `platform` Secrets (never hook copies), and the destination key only in the
+  `goes-seed` container, the bearer only in `images-seed`'s.
+- **Network.** The pod only makes egress. It carries
+  `app.kubernetes.io/component=demo-seed`; the STAC API's ingress policy must
+  admit it, and so must `networkPolicy.appIngressFrom` when it is set and
+  `images-seed` is chosen.
+- **Not available yet:** process runs (the extractor, GeoColor, the scans
+  `images-seed` waits for) need the Kubernetes executor (I-160), so before
+  K-5 the seeds succeed but the runs they trigger fail at launch. See
+  `docs/ISSUES.md` I-164.
 
 ## Install paths
 
@@ -322,4 +364,3 @@ kubectl -n stac-higher delete configmap,externalsecret,job,secret -l app.kuberne
 
 - R-7: the catalog plane (stac-api, titiler, tipg, cube-server), their Services and routes.
 - R-8: the process-run namespace, RBAC, Kueue and NodePool objects, and the runs NetworkPolicy.
-- R-10: the demo seed Job and the demo destination.

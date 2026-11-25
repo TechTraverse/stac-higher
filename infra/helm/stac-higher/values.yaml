@@ -177,4 +177,17 @@ dbJobs:
   affinity: {} # hook Job affinity
 
 demoSeed:
-  enabled: false # consumed by R-10
+  enabled: false # render the one-shot demo seed Job (python -m pipeline.demo --in-cluster)
+  seeds: [seed, goes-seed] # any of seed | goes-seed | cube-seed | images-seed; always run in that order
+  stacUrl: "" # in-cluster stac-fastapi URL the seeds write collections to; required when enabled
+  deliver: false # goes-seed --deliver to demoDestination (its key sealed into the connection)
+  existingDestinationSecret: "" # secrets.mode=existing: Secret with access_key_id/secret_access_key
+  appBearer:
+    secretName: "" # Secret holding an operator bearer token; required with images-seed
+    key: token # key inside secretName
+  extraArgs: {} # per-seed extra CLI args, e.g. {goes-seed: ["--window", "-2h"]}
+  backoffLimit: 6 # pod retries while the stack comes up
+  activeDeadlineSeconds: 3600 # Job deadline (images-seed may wait 1800s for scans)
+  resources: # per seed container
+    requests: { cpu: 100m, memory: 512Mi }
+    limits: { memory: 1Gi }
