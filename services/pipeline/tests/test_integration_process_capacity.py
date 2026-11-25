@@ -382,3 +382,17 @@ async def test_a_non_test_requeue_folds_into_the_queued_run_holding_its_slot(slo
     )
     assert rows[0] == (2, "queued")
     assert await _admitted(profile) == 0
+
+
+async def test_the_stall_sweep_frees_the_slot(slot):
+    await _require_quiet_database(slot)
+    repo = PgProcessRepo(DATABASE_URL)
+    caps, profile = slot["capacities"], slot["profiles"]["one"]
+    long_ago = dt.datetime.now(dt.UTC) - dt.timedelta(hours=2)
+    run = await _run(slot)
+    assert await repo.claim_run(run, long_ago, capacities=caps) is not None
+    assert await _admitted(profile) == 1
+    assert await repo.reset_stalled_runs(long_ago + dt.timedelta(minutes=1), 10) >= 1
+    status, phase, _, _, backend, _ = await _row(run)
+    assert (status, phase, backend) == ("queued", None, None)
+    assert await _admitted(profile) == 0
