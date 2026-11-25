@@ -82,7 +82,7 @@ describe.skipIf(!helmReady())("chart db hook Jobs", () => {
       expect(hookCms).toContain("stac-higher-db-sql");
       if (scen === "base") expect(hookSecrets).toContain("stac-higher-hook-db-master");
       const deps = podSpecs(docs).filter((x) => x.kind === "Deployment");
-      expect(deps.length).toBeGreaterThanOrEqual(2);
+      expect(deps.length).toBeGreaterThanOrEqual(7); // app, pipeline and the five R-7 workloads
       for (const p of deps) {
         for (const v of p.spec.volumes ?? []) {
           expect(hookCms).not.toContain(v.configMap?.name);

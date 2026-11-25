@@ -15,6 +15,8 @@ const ingress = (docs: Doc[]) => find(docs, "Ingress", "stac-higher-app");
 const shared = (docs: Doc[]) => find(docs, "ConfigMap", "stac-higher-env-shared").data;
 
 const DIGEST_IMG = /^000000000000\.dkr\.ecr\.us-east-1\.amazonaws\.com\/ghcr\/techtraverse\/stac-higher-[a-z-]+@sha256:[0-9a-f]{64}$/;
+// R-7: the catalog's third-party images (stac-fastapi, tipg) keep their pinned tag@digest and take the same mirror.
+const THIRD_PARTY_IMG = /^000000000000\.dkr\.ecr\.us-east-1\.amazonaws\.com\/ghcr\/(stac-utils|developmentseed)\/[a-z-]+:[^@/]+@sha256:[0-9a-f]{64}$/;
 
 describe.skipIf(!helmReady())("chart app workload", () => {
   it("every pulled image is digest-pinned and mirrored", () => {
@@ -23,7 +25,8 @@ describe.skipIf(!helmReady())("chart app workload", () => {
     expect(specs.length).toBeGreaterThan(0);
     for (const s of specs) {
       for (const c of containersOf(s.spec)) {
-        expect(c.image, `${s.name}/${c.name}`).toMatch(DIGEST_IMG);
+        const thirdParty = s.name === "stac-higher-stac-api" || s.name === "stac-higher-tipg";
+        expect(c.image, `${s.name}/${c.name}`).toMatch(thirdParty ? THIRD_PARTY_IMG : DIGEST_IMG);
         expect(c.image).not.toContain("//");
       }
     }

@@ -4,7 +4,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { CHART_DIR, helmReady, renderChart, scenario } from "../../../../infra/helm/stac-higher/tests/render.mjs";
+import {
+  CHART_DIR,
+  containersOf,
+  effectiveEnv,
+  helmReady,
+  renderChart,
+  scenario,
+} from "../../../../infra/helm/stac-higher/tests/render.mjs";
 
 type Doc = any;
 const REPO = join(CHART_DIR, "../../..");
@@ -129,6 +136,112 @@ describe.skipIf(!helmReady())("chart catalog plane", () => {
       expect(r.ok).toBe(false);
       expect(r.stderr).toContain(key);
     }
+  });
+
+  describe("workloads", () => {
+    const dep = (docs: Doc[], c: string) => docs.find((d) => d.kind === "Deployment" && d.metadata.name === `stac-higher-${c}`);
+    const container = (docs: Doc[], c: string) => dep(docs, c).spec.template.spec.containers[0];
+    // [component, user env, password env, runtime Secret suffix, existing-mode Secret]
+    const LOGINS: [string, string, string, string, string][] = [
+      ["stac-api", "PGUSER", "PGPASSWORD", "db-stac-api", "stac-higher-db-stac-api"],
+      ["auth-proxy", "PGUSER", "PGPASSWORD", "db-proxy-policy", "stac-higher-db-proxy-policy"],
+      ["titiler", "POSTGRES_USER", "POSTGRES_PASS", "db-stac-reader", "stac-higher-db-stac-reader"],
+      ["tipg", "POSTGRES_USER", "POSTGRES_PASS", "db-stac-reader", "stac-higher-db-stac-reader"],
+      ["cube-server", "PGUSER", "PGPASSWORD", "db-cube-server", "stac-higher-db-cube-server"],
+    ];
+
+    it("each workload logs in as its own role from a runtime Secret", () => {
+      for (const scen of ["base", "existing-secrets"]) {
+        const docs = render({}, scen);
+        for (const [c, u, p, suffix, existing] of LOGINS) {
+          const secret = scen === "base" ? `stac-higher-${suffix}` : existing;
+          const env = effectiveEnv(docs, container(docs, c));
+          expect(env[u], `${scen}/${c}`).toEqual({ secret, key: "username" });
+          expect(env[p], `${scen}/${c}`).toEqual({ secret, key: "password" });
+          for (const v of Object.values(env)) {
+            if (typeof v === "string") expect(v, `${scen}/${c}`).not.toMatch(/\/\/[^/@\s]*@/);
+          }
+        }
+        expect(effectiveEnv(docs, container(docs, "auth-proxy")).CATALOG_BFF_SHARED_SECRET).toEqual({
+          secret: "stac-higher-platform", // the same name in both scenarios
+          key: "CATALOG_BFF_SHARED_SECRET",
+        });
+      }
+    });
+
+    it("catalog workloads read runtime Secrets only", () => {
+      const docs = render();
+      for (const c of COMPONENTS) {
+        expect(JSON.stringify(dep(docs, c).spec), c).not.toMatch(/hook-/);
+      }
+    });
+
+    it("pods are hardened with the image uid and carry no API token", () => {
+      const docs = render();
+      const want: Record<string, [number, number, string | undefined]> = {
+        "stac-api": [1000, 1000, undefined],
+        "auth-proxy": [1001, 1001, undefined],
+        titiler: [1001, 999, "stac-higher-titiler"],
+        tipg: [65534, 65534, undefined],
+        "cube-server": [999, 999, "stac-higher-cube-server"],
+      };
+      for (const [c, [uid, gid, sa]] of Object.entries(want)) {
+        const spec = dep(docs, c).spec.template.spec;
+        expect(spec.securityContext, c).toMatchObject({ runAsNonRoot: true, runAsUser: uid, runAsGroup: gid, fsGroup: gid, seccompProfile: { type: "RuntimeDefault" } });
+        expect(spec.automountServiceAccountToken, c).toBe(false);
+        expect(spec.serviceAccountName, c).toBe(sa);
+        for (const k of containersOf(spec)) {
+          expect(k.securityContext, c).toMatchObject({ allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } });
+          expect(k.volumeMounts.map((m: Doc) => m.mountPath).sort(), c).toEqual(["/etc/stac-higher/db-ca", "/tmp"]);
+        }
+        expect(spec.volumes.find((v: Doc) => v.name === "db-ca").configMap.name, c).toBe("rds-ca-bundle");
+        const env = effectiveEnv(docs, spec.containers[0]);
+        expect([env.HOME, env.PGSSLMODE, env.PGSSLROOTCERT], c).toEqual(["/tmp", "verify-full", "/etc/stac-higher/db-ca/ca-bundle.pem"]);
+      }
+    });
+
+    it("titiler is scheduled on amd64 by default", () => {
+      expect(dep(render(), "titiler").spec.template.spec.nodeSelector).toEqual({ "kubernetes.io/arch": "amd64" });
+      expect(dep(render(), "tipg").spec.template.spec.nodeSelector).toBeUndefined();
+    });
+
+    it("commands, ports, probes and Services", () => {
+      const docs = render();
+      const want: Record<string, [number, string, string[] | undefined]> = {
+        "stac-api": [8082, "/_mgmt/ping", ["uvicorn", "stac_fastapi.pgstac.app:app", "--port", "8082"]],
+        "auth-proxy": [8000, "/healthz", undefined],
+        titiler: [8084, "/healthz", ["uvicorn", "stac_higher_titiler.main:app", "--port", "8084"]],
+        tipg: [8085, "/healthz", ["uvicorn", "tipg.main:app", "--port", "8085"]],
+        "cube-server": [8086, "/health", undefined],
+      };
+      for (const [c, [port, ready, cmd]] of Object.entries(want)) {
+        const k = container(docs, c);
+        expect(k.ports, c).toEqual([{ name: "http", containerPort: port, protocol: "TCP" }]);
+        expect(k.readinessProbe.httpGet, c).toEqual({ path: ready, port: "http" });
+        expect(k.livenessProbe.tcpSocket, c).toEqual({ port: "http" });
+        if (cmd) expect(k.command, c).toEqual([...cmd, "--host", "0.0.0.0", "--proxy-headers", "--forwarded-allow-ips=*"]);
+        else expect(k.command, c).toBeUndefined();
+        const svc = docs.find((d) => d.kind === "Service" && d.metadata.name === `stac-higher-${c}`);
+        expect(svc.spec.ports, c).toEqual([{ name: "http", port, targetPort: "http", protocol: "TCP" }]);
+        expect(dep(docs, c).spec.template.metadata.labels, c).toMatchObject(svc.spec.selector);
+      }
+    });
+
+    it("images: chart keys for ours, the pinned refs for third parties, mirrored alike", () => {
+      const docs = render();
+      expect(container(docs, "titiler").image).toBe("ghcr.io/techtraverse/stac-higher-titiler:0.1.0");
+      expect(container(docs, "auth-proxy").image).toBe("ghcr.io/techtraverse/stac-higher-auth-proxy:0.1.0");
+      expect(container(docs, "cube-server").image).toBe("ghcr.io/techtraverse/stac-higher-cube-server:0.1.0");
+      expect(container(docs, "stac-api").image).toBe(chartValues.catalog.stacApi.image);
+      const m = render({}, "digests-mirror");
+      expect(container(m, "tipg").image).toBe(chartValues.catalog.tipg.image.replace(/^ghcr\.io/, "000000000000.dkr.ecr.us-east-1.amazonaws.com/ghcr"));
+    });
+
+    it("config changes roll the catalog workloads", () => {
+      const sum = (v: object) => dep(render(v), "titiler").spec.template.metadata.annotations["checksum/config"];
+      expect(sum({ catalog: { titiler: { env: { GDAL_CACHEMAX: "10%" } } } })).not.toBe(sum({}));
+      expect(sum({ catalog: { titiler: { replicas: 5 } } })).toBe(sum({}));
+    });
   });
 
   it("refuses an unpinned third-party image", () => {
