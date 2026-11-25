@@ -239,6 +239,27 @@ class ProcessRepo(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def count_running_on_profile(self, profile_id: str, *, ahead_of_run_id: str) -> int:
+        """K-3 (spec §8): how many OTHER `running` runs on this hardware
+        profile were claimed AHEAD of ``ahead_of_run_id`` (earlier
+        ``started_at``, ties by id). The profile lives on the revision's
+        runtime (`hardware.profile`, default `standard`), so this joins
+        process_revisions; no column on the run carries it.
+
+        Counting only the runs ahead is what keeps two workers that claim the
+        last slot at the same moment from releasing each other forever: the
+        earlier claim always proceeds."""
+
+    @abc.abstractmethod
+    async def release_for_capacity(
+        self, run_id: str, *, next_attempt_at: dt.datetime, detail: str
+    ) -> None:
+        """K-3: put a just-claimed run back to `queued` as `pending_capacity`
+        with its attempt restored; claims skip it until ``next_attempt_at``.
+        Like any requeue it may FOLD into the queued run holding its
+        coalescing slot (#67)."""
+
+    @abc.abstractmethod
     async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
         """The collections this process may publish into.
 
@@ -563,7 +584,10 @@ class PgProcessRepo(ProcessRepo):
                 "  SELECT r.id FROM stac_higher.process_runs r"
                 "   WHERE (r.status = 'queued'"
                 "          AND (r.rate_deferred_until IS NULL"
-                "               OR r.rate_deferred_until <= %(now)s))"
+                "               OR r.rate_deferred_until <= %(now)s)"
+                # K-3: a capacity release is claimable again at next_attempt_at.
+                "          AND (r.next_attempt_at IS NULL"
+                "               OR r.next_attempt_at <= %(now)s))"
                 "      OR (r.status = 'failed' AND r.finished_at <= %(now)s)"
                 "   ORDER BY r.created_at"
                 "   LIMIT %(limit)s"
@@ -572,7 +596,8 @@ class PgProcessRepo(ProcessRepo):
                 " UPDATE stac_higher.process_runs r"
                 "    SET status = 'running', started_at = %(now)s,"
                 "        attempts = r.attempts + 1,"
-                "        rate_deferred_until = NULL"
+                "        rate_deferred_until = NULL,"
+                "        phase = 'starting', phase_detail = NULL, next_attempt_at = NULL"
                 "   FROM due, stac_higher.process_revisions rev"
                 "  WHERE r.id = due.id AND rev.id = r.revision_id"
                 " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
@@ -615,12 +640,15 @@ class PgProcessRepo(ProcessRepo):
                 "UPDATE stac_higher.process_runs r"
                 "    SET status = 'running', started_at = %(now)s,"
                 "        attempts = r.attempts + 1,"
-                "        rate_deferred_until = NULL"
+                "        rate_deferred_until = NULL,"
+                "        phase = 'starting', phase_detail = NULL, next_attempt_at = NULL"
                 "   FROM stac_higher.process_revisions rev"
                 "  WHERE r.id = %(run_id)s AND rev.id = r.revision_id"
                 "    AND r.status = 'queued'"
                 "    AND (r.rate_deferred_until IS NULL"
                 "         OR r.rate_deferred_until <= %(now)s)"
+                "    AND (r.next_attempt_at IS NULL"
+                "         OR r.next_attempt_at <= %(now)s)"
                 " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
                 "           r.association_id, r.attempts, r.input_items,"
                 "           rev.runtime, rev.code, rev.env, r.is_test",
@@ -679,7 +707,8 @@ class PgProcessRepo(ProcessRepo):
                     run_id,
                     set_sql=(
                         "error = %(error)s, log_ref = coalesce(%(log_ref)s, log_ref),"
-                        " finished_at = coalesce(%(at)s, now())"
+                        " finished_at = coalesce(%(at)s, now()),"
+                        " phase = NULL, phase_detail = NULL"
                     ),
                     params={"error": error, "log_ref": log_ref, "at": next_attempt_at},
                 )
@@ -690,6 +719,8 @@ class PgProcessRepo(ProcessRepo):
                 "   SET status = %s, error = %s,"
                 "       log_ref = coalesce(%s, log_ref),"
                 "       output_items = coalesce(%s::jsonb, output_items),"
+                # K-3: phase is a sub-state of queued/running only.
+                "       phase = NULL, phase_detail = NULL,"
                 # `failed` rows carry their retry due-time in finished_at,
                 # which is what claim_due_runs compares against; terminal rows
                 # carry the actual finish time.
@@ -705,6 +736,45 @@ class PgProcessRepo(ProcessRepo):
                 ),
             )
             await conn.commit()
+
+    async def count_running_on_profile(  # pragma: no cover
+        self, profile_id: str, *, ahead_of_run_id: str
+    ) -> int:
+        async with await self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT count(*) FROM stac_higher.process_runs r"
+                "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
+                "  JOIN stac_higher.process_runs me ON me.id = %(run_id)s"
+                " WHERE r.status = 'running' AND r.id <> me.id"
+                "   AND coalesce(rev.runtime->'hardware'->>'profile', 'standard') = %(profile)s"
+                # Claimed ahead of this run: the earlier claim proceeds, so two
+                # simultaneous claims of the last slot cannot release each
+                # other forever.
+                "   AND (coalesce(r.started_at, '-infinity'), r.id)"
+                "     < (coalesce(me.started_at, 'infinity'), me.id)",
+                {"run_id": ahead_of_run_id, "profile": profile_id},
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+    async def release_for_capacity(  # pragma: no cover
+        self, run_id: str, *, next_attempt_at: dt.datetime, detail: str
+    ) -> None:
+        # Through `_requeue`: a newer trigger may hold this run's coalescing
+        # slot by now, and a bare UPDATE to `queued` would violate 025/027's
+        # partial unique index (#67). A fold hands the items to that run,
+        # which takes its own capacity check when claimed.
+        async with await self._connect() as conn:
+            await self._requeue(
+                conn,
+                run_id,
+                set_sql=(
+                    "started_at = NULL, attempts = greatest(attempts - 1, 0),"
+                    " phase = 'pending_capacity', phase_detail = %(detail)s,"
+                    " next_attempt_at = %(at)s"
+                ),
+                params={"detail": detail, "at": next_attempt_at},
+            )
 
     async def list_output_collections(  # pragma: no cover
         self, process_id: str
@@ -804,7 +874,7 @@ class PgProcessRepo(ProcessRepo):
                     conn,
                     run_id,
                     set_sql=(
-                        "started_at = NULL,"
+                        "started_at = NULL, phase = NULL, phase_detail = NULL,"
                         " error = 'run was stranded by a worker or executor crash'"
                     ),
                     params={},

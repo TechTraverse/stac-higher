@@ -83,3 +83,23 @@ def infrastructure_transition(
         next_attempt_at=now + dt.timedelta(seconds=retry_wait_seconds),
         error=error,
     )
+
+
+#: K-3 (spec §5.2): the sub-states of a queued/running row in
+#: ``process_runs.phase``, pinned by tests/contract-fixtures/process-run-phase.json
+#: and migration 029's CHECK. NULL on a plain queued row and on every terminal
+#: row. This slice writes `pending_capacity` and `starting`; `running` is
+#: written by K-4's watcher.
+PHASES = ("pending_capacity", "starting", "running")
+PHASE_PENDING_CAPACITY, PHASE_STARTING, PHASE_RUNNING = PHASES
+
+#: How long a run released for capacity waits before a claim may take it
+#: again (spec §8). The claim is the run tick's, so the effective wait is the
+#: first tick at or after this (under a minute) — see docs/ISSUES.md.
+CAPACITY_RETRY_SECONDS = 15
+
+
+def capacity_detail(profile_id: str, capacity: int) -> str:
+    """The `phase_detail` a capacity release records — what the UI's
+    *Waiting for capacity* tooltip shows."""
+    return f"profile {profile_id!r} is at its capacity of {capacity} on this host"

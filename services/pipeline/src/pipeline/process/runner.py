@@ -37,6 +37,7 @@ from pipeline.process.executor import (
 from pipeline.process.hardware import (
     HardwareProfileError,
     HardwareProfileSet,
+    docker_backend,
     load_hardware_profiles,
 )
 from pipeline.process.inputs import (
@@ -59,7 +60,12 @@ from pipeline.process.launch import (
     execute_run,
     resolve_run_image,
 )
-from pipeline.process.ledger import infrastructure_transition, outcome_transition
+from pipeline.process.ledger import (
+    CAPACITY_RETRY_SECONDS,
+    capacity_detail,
+    infrastructure_transition,
+    outcome_transition,
+)
 from pipeline.process.repo import ProcessRepo, QueuedRun
 from pipeline.process.staging import InputStagingError, RemoteFetcher, stage_inputs
 
@@ -100,7 +106,7 @@ async def run_one(
 
     Order (GOES spec §3.2, C-2 spec §8.4): parse -> code rule -> network cap
     -> run image (alias, or the user image re-checked by digest) -> hardware
-    bounds -> plan inputs (repo reads) -> stage remote inputs -> mint
+    bounds -> profile capacity (K-3) -> plan inputs (repo reads) -> stage remote inputs -> mint
     credentials + launch (a user image is pulled by digest at launch). A
     failure anywhere before launch means no container ever existed.
     """
@@ -178,11 +184,40 @@ async def run_one(
     # K-1 spec §4: the hardware block against the deployment's profile set —
     # the same check the app ran at deploy time, run again here because the
     # set is deployment config that may differ from the app's.
+    # K-3: the profile's docker block is read here too, so a malformed one
+    # dies naming the profile (configuration) before anything is staged.
     try:
         profile = check_hardware_bounds_for(runtime, profile_set)
-    except HardwareProfileRejected as err:
+        backend = docker_backend(profile)
+    except (HardwareProfileRejected, HardwareProfileError) as err:
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
+
+    # K-3 (spec §8): a profile's local capacity. The claim already flipped the
+    # row to `running`; if the runs claimed ahead of it fill the profile on
+    # this host, it goes back to `queued` as *Waiting for capacity* with its
+    # attempt restored — the state the cluster leg shows while Kueue holds a
+    # Workload. Nothing has been staged, minted or launched yet. (The only
+    # executor today is Docker; K-5 skips this for the Kubernetes backend.)
+    if backend.capacity is not None:
+        running = await repo.count_running_on_profile(profile.id, ahead_of_run_id=run.id)
+        if running >= backend.capacity:
+            await repo.release_for_capacity(
+                run.id,
+                next_attempt_at=at + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS),
+                detail=capacity_detail(profile.id, backend.capacity),
+            )
+            logger.info(
+                "process run waiting for capacity",
+                extra={
+                    "run_id": run.id,
+                    "process_id": run.process_id,
+                    "profile": profile.id,
+                    "running": running,
+                    "capacity": backend.capacity,
+                },
+            )
+            return RunResult(run.id, "queued")
 
     # GOES spec §3: describe the inputs, stage the remote ones, THEN mint+launch.
     # §15: an extractor run (association-triggered) reads the collection its

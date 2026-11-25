@@ -5,8 +5,9 @@ a CPU/memory range, an optional accelerator with a GPU-count range, a
 queue-wait promise and a base image — in one JSON document both runtimes
 read. The app validates it strictly at its write gate and serves it to the
 UI; this reader is LENIENT in the established direction (an image built
-before a key was added must not brick), keeps ``backend`` opaque until the
-executors consume it (K-3 Docker, K-5 Kubernetes), and re-checks a run's
+before a key was added must not brick), keeps ``backend`` opaque at parse
+time (``docker_backend`` reads the Docker block, K-3; K-5 will read
+``kubernetes``), and re-checks a run's
 ``hardware`` block against the bounds at launch, independently of the app.
 
 **Packaging:** the deployment set reaches the image as ``COPY --from=hardware``
@@ -72,7 +73,8 @@ class HardwareProfile:
     gpu_count: Bounds | None
     max_queue_wait_seconds: int
     image: str | None
-    #: Pipeline-only, opaque here: K-3 reads `backend["docker"]`, K-5 `backend["kubernetes"]`.
+    #: Pipeline-only, opaque here: `docker_backend()` reads `backend["docker"]`
+    #: (K-3); K-5 will read `backend["kubernetes"]`.
     backend: dict[str, Any]
 
 
@@ -250,3 +252,39 @@ def check_hardware_bounds(
             f"{_fmt(profile.memory_mb.min)}–{_fmt(profile.memory_mb.max)}"  # noqa: RUF001
         )
     return profile
+
+
+@dataclass(frozen=True)
+class DockerBackend:
+    """A profile's ``backend.docker`` block (spec §3.4, K-3): the device
+    requests the Docker executor sends when a run asks for GPUs, and how many
+    runs on this profile one host runs at once (None = unbounded)."""
+
+    device_requests: tuple[dict[str, Any], ...] = ()
+    capacity: int | None = None
+
+
+def docker_backend(profile: HardwareProfile) -> DockerBackend:
+    """Read the docker block leniently: an absent (or null) block is the
+    defaults, a present-but-wrong one is a `HardwareProfileError` naming the
+    profile — configuration, so a run on it dies rather than requeueing."""
+    raw = profile.backend.get("docker")
+    if raw is None:
+        return DockerBackend()
+    what = f"profile {profile.id!r}: backend.docker"
+    if not isinstance(raw, dict):
+        raise HardwareProfileError(f"{what} must be an object")
+    requests = raw.get("device_requests")
+    if requests is None:
+        requests = []
+    if not isinstance(requests, list) or not all(isinstance(r, dict) for r in requests):
+        raise HardwareProfileError(f"{what}.device_requests must be a list of objects")
+    capacity = raw.get("capacity")
+    if capacity is not None and (
+        isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1
+    ):
+        raise HardwareProfileError(f"{what}.capacity must be a positive integer or null")
+    return DockerBackend(
+        device_requests=tuple(dict(r) for r in requests),
+        capacity=capacity,
+    )

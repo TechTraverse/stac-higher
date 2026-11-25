@@ -47,6 +47,11 @@ class FakeProcessRepo(ProcessRepo):
     finished: list[dict[str, Any]] = field(default_factory=list)
     source_runs: list[tuple[str, bool]] = field(default_factory=list)
     stalled_reset: int = 0
+    #: K-3: what `count_running_on_profile` reports per profile id.
+    running_on_profile: dict[str, int] = field(default_factory=dict)
+    #: K-3: recorded capacity releases and the (profile, run) counts asked for.
+    released: list[dict[str, Any]] = field(default_factory=list)
+    counted: list[tuple[str, str]] = field(default_factory=list)
     #: mirrors migration 025's/027's partial unique indexes: (process,
     #: ("src", source) | ("assoc", association)) → the QUEUED run id. A claim
     #: removes the entry, exactly as flipping the row to `running` drops it
@@ -148,7 +153,14 @@ class FakeProcessRepo(ProcessRepo):
             deferred = row["deferred_until"]
             if deferred is not None and deferred > now:
                 return None
+            # K-3: a capacity release is claimable again at next_attempt_at.
+            retry_at = row.get("next_attempt_at")
+            if retry_at is not None and retry_at > now:
+                return None
             row["status"] = "running"
+            row["phase"] = "starting"
+            row["phase_detail"] = None
+            row["next_attempt_at"] = None
             # Out of the partial index, so a later trigger starts a new run.
             if row["source_id"] is not None:
                 self._queued.pop((row["process_id"], ("src", row["source_id"])), None)
@@ -205,6 +217,25 @@ class FakeProcessRepo(ProcessRepo):
                 "next_attempt_at": next_attempt_at,
             }
         )
+
+    async def count_running_on_profile(
+        self, profile_id: str, *, ahead_of_run_id: str
+    ) -> int:
+        self.counted.append((profile_id, ahead_of_run_id))
+        return self.running_on_profile.get(profile_id, 0)
+
+    async def release_for_capacity(
+        self, run_id: str, *, next_attempt_at: dt.datetime, detail: str
+    ) -> None:
+        self.released.append(
+            {"run_id": run_id, "next_attempt_at": next_attempt_at, "detail": detail}
+        )
+        for row in self.enqueued:
+            if row["run_id"] == run_id and row["status"] == "running":
+                row["status"] = "queued"
+                row["phase"] = "pending_capacity"
+                row["phase_detail"] = detail
+                row["next_attempt_at"] = next_attempt_at
 
     async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
         return tuple(self.output_collections)

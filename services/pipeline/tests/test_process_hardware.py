@@ -156,3 +156,94 @@ def test_an_integral_float_is_reported_like_the_app_reports_it():
             profiles=profiles, profile_id="gpu-l4", cpu=4, gpu_count=2.0, memory_mb=16384.0
         )
     assert str(err.value) == "hardware.gpu_count 2 is outside profile 'gpu-l4' bounds 1–1"  # noqa: RUF001
+
+
+# ---------------------------------------------------------------------------
+# K-3: the profile's backend.docker block and the run-phase vocabulary
+# ---------------------------------------------------------------------------
+
+PHASE_FIXTURE = FIXTURE.parent / "process-run-phase.json"
+
+
+def _one_profile(backend) -> dict:
+    return {
+        "version": 1,
+        "profiles": [
+            {
+                "id": "standard", "label": "S", "description": "", "tier": "cpu",
+                "accelerator": None, "cpu": {"min": 1, "max": 1, "default": 1},
+                "memory_mb": {"min": 128, "max": 512, "default": 512}, "gpu_count": None,
+                "max_queue_wait_seconds": 60, "image": None, "backend": backend,
+            }
+        ],
+    }
+
+
+def test_docker_backend_reads_capacity_and_device_requests():
+    from pipeline.process.hardware import docker_backend
+
+    request = {"Driver": "nvidia", "Count": -1, "Capabilities": [["gpu"]]}
+    profile = parse_hardware_profiles(
+        _one_profile({"docker": {"device_requests": [request], "capacity": 2}})
+    ).standard
+    backend = docker_backend(profile)
+    assert backend.capacity == 2
+    assert backend.device_requests == (request,)
+
+
+@pytest.mark.parametrize("backend", [{}, {"docker": None}, {"docker": {}}, {"kubernetes": {}}])
+def test_docker_backend_is_lenient_about_an_absent_block(backend):
+    from pipeline.process.hardware import DockerBackend, docker_backend
+
+    profile = parse_hardware_profiles(_one_profile(backend)).standard
+    assert docker_backend(profile) == DockerBackend()
+    assert docker_backend(profile).capacity is None  # unbounded
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"capacity": "two"},
+        {"capacity": 0},
+        {"capacity": True},
+        {"capacity": 1.5},
+        {"device_requests": "gpu"},
+        {"device_requests": ["gpu"]},
+        "docker",
+    ],
+)
+def test_docker_backend_rejects_a_malformed_block(bad):
+    from pipeline.process.hardware import docker_backend
+
+    profile = parse_hardware_profiles(_one_profile({"docker": bad})).standard
+    with pytest.raises(HardwareProfileError, match=r"profile 'standard': backend\.docker"):
+        docker_backend(profile)
+
+
+def test_the_shipped_local_set_has_a_readable_docker_block():
+    from pipeline.process.hardware import docker_backend
+
+    for profile in load_hardware_profiles(LOCAL_SET).profiles:
+        assert docker_backend(profile).capacity is not None
+
+
+def test_phases_match_the_fixture():
+    from pipeline.process.ledger import (
+        PHASE_PENDING_CAPACITY,
+        PHASE_RUNNING,
+        PHASE_STARTING,
+        PHASES,
+    )
+
+    fixture = json.loads(PHASE_FIXTURE.read_text())
+    assert list(PHASES) == fixture["phases"]
+    assert (PHASE_PENDING_CAPACITY, PHASE_STARTING, PHASE_RUNNING) == PHASES
+
+
+def test_capacity_detail_names_the_profile_and_the_limit():
+    from pipeline.process.ledger import capacity_detail
+
+    assert (
+        capacity_detail("standard", 2)
+        == "profile 'standard' is at its capacity of 2 on this host"
+    )
