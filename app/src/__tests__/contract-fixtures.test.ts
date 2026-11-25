@@ -15,7 +15,10 @@ import {
   CREDENTIAL_GRACE_SECONDS_ENV,
   DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS,
   MAX_CREDENTIAL_SECONDS_ENV,
+  STS_MIN_SESSION_SECONDS,
   credentialBudgetError,
+  getCredentialGraceSeconds,
+  getMaxCredentialSeconds,
 } from "@/lib/processes/credential-budget";
 import type { ZodType } from "zod";
 import {
@@ -671,6 +674,8 @@ describe("process credential budget contract (tests/contract-fixtures/process-cr
     deploy_refusal: { status: number; code: string };
     cases: { name: string; max_credential_seconds: number | null; max_queue_wait_seconds: number;
              timeout_seconds: number; grace_seconds: number; deploy_allowed: boolean }[];
+    cap_min_seconds: number;
+    parse_cases: { name: string; variable: string; raw: string | null; result: number | null | "reject" }[];
   };
   it("pins the setting names, the grace default and the refusal", () => {
     expect(fx.setting).toBe(MAX_CREDENTIAL_SECONDS_ENV);
@@ -681,5 +686,23 @@ describe("process credential budget contract (tests/contract-fixtures/process-cr
   it.each(fx.cases)("$name", (c) => {
     expect(credentialBudgetError({ maxCredentialSeconds: c.max_credential_seconds, maxQueueWaitSeconds: c.max_queue_wait_seconds,
       timeoutSeconds: c.timeout_seconds, graceSeconds: c.grace_seconds }) === null).toBe(c.deploy_allowed);
+  });
+
+  // #157: the pipeline parses both settings with the same cases.
+  const readers: Record<string, (env: Record<string, string | undefined>) => number | null> = {
+    [MAX_CREDENTIAL_SECONDS_ENV]: getMaxCredentialSeconds,
+    [CREDENTIAL_GRACE_SECONDS_ENV]: getCredentialGraceSeconds,
+  };
+  it("pins the cap's floor (the STS minimum)", () => {
+    expect(fx.cap_min_seconds).toBe(STS_MIN_SESSION_SECONDS);
+  });
+  it.each(fx.parse_cases)("parses $name", (c) => {
+    const env = c.raw === null ? {} : { [c.variable]: c.raw };
+    const read = readers[c.variable];
+    if (c.result === "reject") {
+      expect(() => read(env)).toThrow(c.variable);
+    } else {
+      expect(read(env)).toBe(c.result);
+    }
   });
 });

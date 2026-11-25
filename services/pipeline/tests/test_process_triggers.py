@@ -1539,3 +1539,43 @@ async def test_a_run_over_the_credential_budget_dies_once_naming_the_budget():
     assert result.status == "dead" and repo.finished[0]["status"] == "dead"
     assert result.error.startswith("credential_budget_exceeded")
     assert executor.launched == []
+
+
+class _DurationRejectingSts:
+    """AWS STS when DurationSeconds exceeds the role's MaxSessionDuration."""
+
+    def assume_role(self, **kwargs):
+        from botocore.exceptions import ClientError
+
+        raise ClientError(
+            {
+                "Error": {
+                    "Code": "ValidationError",
+                    "Message": "The requested DurationSeconds exceeds the MaxSessionDuration "
+                    "set for this role.",
+                }
+            },
+            "AssumeRole",
+        )
+
+
+@pytest.mark.asyncio
+async def test_sts_refusing_the_duration_kills_the_run_instead_of_requeueing_it():
+    """#157: with no cap set (or one above the role's limit) the pipeline asks
+    STS for more than it grants. That is configuration: requeueing without
+    spending an attempt would retry it forever."""
+    repo, executor = FakeProcessRepo(), MemoryExecutor(results=[ExitStatus(0)])
+    result = await run_one(
+        queued(),
+        repo=repo,
+        executor=executor,
+        settings=Settings.from_env({}),
+        storage_client=FakeStore(),
+        resolve_secret=lambda ref: "x",
+        now=NOW,
+        sts_client=_DurationRejectingSts(),
+    )
+    assert result.status == "dead" and repo.finished[0]["status"] == "dead"
+    assert result.error.startswith("credential_budget_exceeded")
+    assert "PROCESS_MAX_CREDENTIAL_SECONDS" in result.error
+    assert executor.launched == []

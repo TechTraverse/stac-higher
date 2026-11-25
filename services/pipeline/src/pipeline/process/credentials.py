@@ -36,6 +36,7 @@ from typing import ClassVar
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 from pipeline.config import STS_MIN_DURATION_SECONDS, Settings
 from pipeline.storage.keys import run_staging_prefix
@@ -82,6 +83,62 @@ class CredentialBudgetExceeded(Exception):
             f"STS minimum {MIN_DURATION_SECONDS} s) but "
             f"PROCESS_MAX_CREDENTIAL_SECONDS is {max_seconds} s"
         )
+
+
+#: How much of STS's own text a duration rejection keeps: enough for "exceeds
+#: the MaxSessionDuration" vs "role chaining", never a whole echoed request.
+_STS_MESSAGE_LIMIT = 200
+
+
+class CredentialDurationRejected(CredentialBudgetExceeded):
+    """STS itself refused the requested ``DurationSeconds`` (#157).
+
+    The cap was unset, or set above what the role allows (its
+    ``MaxSessionDuration``; one hour under role chaining), so the mint got
+    past :class:`CredentialBudgetExceeded`'s own check and STS answered
+    ``ValidationError``. Same remedy, same outcome: a subclass so the runner
+    finishes the run dead instead of requeueing it forever as infrastructure.
+    """
+
+    def __init__(
+        self,
+        *,
+        requested_seconds: int,
+        max_seconds: int | None,
+        timeout_seconds: int,
+        grace_seconds: int,
+        sts_message: str,
+    ) -> None:
+        self.requested_seconds = requested_seconds
+        self.max_seconds = max_seconds
+        self.timeout_seconds = timeout_seconds
+        self.grace_seconds = grace_seconds
+        if len(sts_message) > _STS_MESSAGE_LIMIT:
+            sts_message = sts_message[:_STS_MESSAGE_LIMIT] + "..."
+        current = "unset" if max_seconds is None else f"{max_seconds} s"
+        Exception.__init__(
+            self,
+            f"{self.code}: STS refused run credentials of {requested_seconds} s "
+            f"(timeout {timeout_seconds} s + grace {grace_seconds} s): {sts_message} "
+            f"Set PROCESS_MAX_CREDENTIAL_SECONDS (now {current}) to at most the role's "
+            "maximum session duration (its MaxSessionDuration; 3600 s when the "
+            "pipeline's own credentials are an assumed role, i.e. role chaining) so "
+            "such revisions are refused at deploy, or raise the role's MaxSessionDuration.",
+        )
+
+
+def _sts_duration_rejection(err: Exception) -> str | None:
+    """STS's message when ``err`` is its ``ValidationError`` about
+    ``DurationSeconds``; None for every other failure, which stays
+    :class:`RunCredentialsError`. Matches both AWS phrasings: "The requested
+    DurationSeconds exceeds ..." and "Value '...' at 'durationSeconds' ..."."""
+    if not isinstance(err, ClientError):
+        return None
+    error = err.response.get("Error") or {}
+    message = str(error.get("Message") or "")
+    if error.get("Code") == "ValidationError" and "durationseconds" in message.lower():
+        return message
+    return None
 
 
 def _validate_scoped_prefix(prefix: str, *, what: str) -> None:
@@ -225,8 +282,10 @@ def mint_prefix_credentials(
     an image scan's is ``scans/{image_id}/{scan_id}/`` (C-2, spec §6.2).
 
     Raises :class:`CredentialBudgetExceeded` (before any STS call) when the
-    duration would exceed the deployment cap, and
-    :class:`RunCredentialsError` on any STS failure -- the caller must
+    duration would exceed the deployment cap,
+    :class:`CredentialDurationRejected` (a subclass) when STS refuses the
+    duration itself, and :class:`RunCredentialsError` on any other STS
+    failure -- the caller must
     fail the run rather than start it with wider access.
     """
     _validate_scoped_prefix(prefix, what="prefix")
@@ -274,6 +333,15 @@ def mint_prefix_credentials(
     # caller that expected RunCredentialsError would then handle it as
     # something else -- the one outcome this module exists to prevent.
     except Exception as err:
+        sts_message = _sts_duration_rejection(err)
+        if sts_message is not None:
+            raise CredentialDurationRejected(
+                requested_seconds=duration,
+                max_seconds=cap,
+                timeout_seconds=timeout_seconds,
+                grace_seconds=settings.process_credential_grace_seconds,
+                sts_message=sts_message,
+            ) from err
         raise RunCredentialsError(
             "could not mint run-scoped storage credentials via STS "
             f"({type(err).__name__}: {err}). The platform's own keys are NOT a "
