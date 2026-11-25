@@ -1,6 +1,6 @@
 apiVersion: v2
 name: stac-higher
-description: STAC Higher platform - app, pipeline worker and the database bootstrap/migrate hooks.
+description: STAC Higher platform - app, pipeline worker, catalog plane (stac-fastapi, auth-proxy, titiler, tipg), cube-server and the database bootstrap/migrate hooks.
 type: application
 # Placeholders: scripts/package-chart.sh stamps version and appVersion from the
 # release tag (without its v) when containers.yml packages the chart.
