@@ -5,7 +5,7 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "../styles/app.css";
 import { BRAND_NAME, BRAND_TAGLINE } from "../components/layout/StratusMark";
-import { buildRuntimeConfig, serializeRuntimeConfig } from "@/lib/runtime-config/server";
+import { serializeRuntimeConfig } from "@/lib/runtime-config/server";
 
 interface Props {
   title: string;
@@ -13,7 +13,10 @@ interface Props {
 
 const { title } = Astro.props;
 const description = `${BRAND_NAME} — ${BRAND_TAGLINE.toLowerCase()}. Ingest, catalog and process geospatial data with SpatioTemporal Asset Catalogs.`;
-const runtimeConfigScript = serializeRuntimeConfig(buildRuntimeConfig());
+// Resolved by src/middleware.ts before the response starts (#194): this
+// frontmatter runs after Astro has begun streaming, so nothing here may throw.
+const { runtimeConfig } = Astro.locals;
+const runtimeConfigScript = runtimeConfig ? serializeRuntimeConfig(runtimeConfig) : "";
 ---
 
 <!doctype html>
@@ -27,10 +30,13 @@ const runtimeConfigScript = serializeRuntimeConfig(buildRuntimeConfig());
     <meta property="og:type" content="website" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>{title} | {BRAND_NAME}</title>
-    {/* Runtime config (R-1, spec §8), built per request from the server env so
-        one image serves any deployment. It runs before the deferred module
-        scripts, so catalogStore's module-init seeding sees it. A bad URL value
-        fails the render loudly (500), naming the variable. */}
+    {/* Runtime config (R-1, spec §8), read per request from the server env by
+        the middleware so one image serves any deployment. It runs before the
+        deferred module scripts, so catalogStore's module-init seeding sees it.
+        A bad URL value never reaches this point: the middleware answers 500
+        and logs the variable's name (#194). Without the locals (a route the
+        middleware did not resolve) nothing is injected and islands use the
+        defaults. */}
     <script is:inline set:html={runtimeConfigScript}></script>
     <script is:inline>
       // Applied before first paint so the theme never flashes. Light is the

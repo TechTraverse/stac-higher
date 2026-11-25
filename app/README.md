@@ -86,6 +86,8 @@ what bringing third-party writes back would have to answer.
 
 The database is provided by the included docker-compose setup. For production, set `DATABASE_URL` to point at your PostgreSQL instance. The app runs schema migrations automatically on the first request.
 
+The browser-facing URLs (`BUILTIN_CATALOG_PUBLIC_URL`, `TITILER_URL`, `TIPG_URL`, `CUBE_SERVER_URL`, `PROCESS_NETWORK_MAX`, and their legacy `PUBLIC_*` fallbacks) are read by the server from `process.env` per request; the full list is in [`docs/backend.md`](../docs/backend.md#app-environment). **`astro dev` does not load `app/.env` into `process.env` for these names** — the `PUBLIC_*` spellings used to be Vite-inlined from it, and no longer are. Export them in the dev server's shell instead, as `docs/backend.md` describes (`set -a; source ../.env; set +a` before `npm run dev`). A value that is not an absolute http(s) URL makes every page route answer 500 (API routes are unaffected), with the variable named in the server log.
+
 ### Setup
 
 ```bash
