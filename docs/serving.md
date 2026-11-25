@@ -12,6 +12,10 @@ API itself:
 
 Version pins follow eoAPI's tested combination for pgstac 0.9.x.
 
+In a cluster, the Helm chart runs both (and the cube-server) with their own
+read-only database role, one public host each and the same image pins
+(`../infra/helm/stac-higher/README.md`, "Catalog plane and cube-server").
+
 ## The design pass, in short
 
 - **Toggle semantics — link-level only.** `collection_settings.serving_enabled`

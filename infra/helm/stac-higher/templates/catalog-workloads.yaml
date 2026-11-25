@@ -1,0 +1,48 @@
+{{- /*
+The catalog plane and the cube-server (R-7). Own templates, not the eoapi-k8s subchart: see the R-7 plan's
+fit check. Each workload logs in as its own role (spec 7.2) from a runtime Secret, never a hook copy (I-156).
+uids are the images' own users (verified on GHCR, R-7 plan); tipg's image runs as root, so it gets nobody.
+*/ -}}
+{{- $v := .Values -}}
+{{- $sn := dict -}}
+{{- range $n := list "platform" "dbStacApi" "dbStacReader" "dbProxyPolicy" "dbCubeServer" -}}
+{{- $_ := set $sn $n (include "stac-higher.secretName" (dict "root" $ "name" $n)) -}}
+{{- end -}}
+{{- $pg := list (list "PGUSER" "username") (list "PGPASSWORD" "password") -}}
+{{- $pgPlain := list (list "POSTGRES_USER" "username") (list "POSTGRES_PASS" "password") -}}
+{{- $uvicorn := list "--host" "0.0.0.0" "--proxy-headers" "--forwarded-allow-ips=*" -}}
+{{- /* Only the enforced proxy (auth.mode oidc) runs the write policy, which reads the policy role and the BFF secret. */ -}}
+{{- $proxyEnv := list -}}
+{{- if eq $v.auth.mode "oidc" -}}
+{{- $proxyEnv = concat (include "stac-higher.secretEnv" (dict "secret" $sn.dbProxyPolicy "pairs" $pg) | fromYamlArray) (include "stac-higher.secretEnv" (dict "secret" $sn.platform "pairs" (list (list "CATALOG_BFF_SHARED_SECRET" "CATALOG_BFF_SHARED_SECRET"))) | fromYamlArray) -}}
+{{- end -}}
+{{- $specs := list
+  (dict "component" "stac-api" "values" $v.catalog.stacApi "port" 8082 "uid" 1000 "gid" 1000 "serviceAccount" ""
+    "image" (include "stac-higher.mirrorRef" (dict "root" $ "ref" $v.catalog.stacApi.image))
+    "command" (concat (list "uvicorn" "stac_fastapi.pgstac.app:app" "--port" "8082") $uvicorn)
+    "readinessPath" "/_mgmt/ping" "tmpSize" "64Mi"
+    "env" (include "stac-higher.secretEnv" (dict "secret" $sn.dbStacApi "pairs" $pg) | fromYamlArray))
+  (dict "component" "auth-proxy" "values" $v.catalog.authProxy "port" 8000 "uid" 1001 "gid" 1001 "serviceAccount" ""
+    "image" (include "stac-higher.image" (dict "root" $ "key" "auth-proxy"))
+    "command" nil "readinessPath" "/healthz" "tmpSize" "64Mi" "env" $proxyEnv)
+  (dict "component" "titiler" "values" $v.catalog.titiler "port" 8084 "uid" 1001 "gid" 999
+    "serviceAccount" (include "stac-higher.serviceAccountName" (dict "root" $ "component" "titiler"))
+    "image" (include "stac-higher.image" (dict "root" $ "key" "titiler"))
+    "command" (concat (list "uvicorn" "stac_higher_titiler.main:app" "--port" "8084") $uvicorn)
+    "readinessPath" "/healthz" "tmpSize" "1Gi"
+    "env" (include "stac-higher.secretEnv" (dict "secret" $sn.dbStacReader "pairs" $pgPlain) | fromYamlArray))
+  (dict "component" "tipg" "values" $v.catalog.tipg "port" 8085 "uid" 65534 "gid" 65534 "serviceAccount" ""
+    "image" (include "stac-higher.mirrorRef" (dict "root" $ "ref" $v.catalog.tipg.image))
+    "command" (concat (list "uvicorn" "tipg.main:app" "--port" "8085") $uvicorn)
+    "readinessPath" "/healthz" "tmpSize" "64Mi"
+    "env" (include "stac-higher.secretEnv" (dict "secret" $sn.dbStacReader "pairs" $pgPlain) | fromYamlArray))
+  (dict "component" "cube-server" "values" $v.cubeServer "port" 8086 "uid" 999 "gid" 999
+    "serviceAccount" (include "stac-higher.serviceAccountName" (dict "root" $ "component" "cubeServer"))
+    "image" (include "stac-higher.image" (dict "root" $ "key" "cube-server"))
+    "command" nil "readinessPath" "/health" "tmpSize" "1Gi"
+    "env" (include "stac-higher.secretEnv" (dict "secret" $sn.dbCubeServer "pairs" $pg) | fromYamlArray))
+-}}
+{{- range $spec := $specs }}
+---
+{{ include "stac-higher.catalogDeployment" (merge (dict "root" $) $spec) }}
+{{- end }}

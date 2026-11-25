@@ -5,7 +5,9 @@ Tracking: epic #136. Spec:
 §6; ADR [0024](../../../docs/decisions/0024-deployment-artifacts.md).
 
 The Kubernetes side of a STAC Higher deployment: the app, the pipeline, the
-database hook Jobs, their configuration, Secrets wiring and NetworkPolicies.
+catalog plane (stac-fastapi behind the auth-proxy, titiler, tipg), the
+cube-server, the database hook Jobs, their configuration, Secrets wiring,
+Ingresses and NetworkPolicies.
 This repo publishes the chart only; it holds no cluster, account or values
 for one. The AWS side is [`../../terraform/README.md`](../../terraform/README.md),
 whose `helm_values` output this chart accepts as is. Chart `apiVersion: v2`;
@@ -67,7 +69,7 @@ Rendering fails with a message starting with the offending key path.
 | `publicUrls.catalog`, `publicUrls.titiler`, `publicUrls.tipg`, `publicUrls.cubeServer` | `null` | Public service URLs; deployment-supplied (R-5 does not emit them). |
 | `objectStore` | | S3 client behaviour. |
 | `objectStore.forcePathStyle` | `false` | Path-style addressing (MinIO). |
-| `objectStore.internalEndpoint` | `""` | `STAGING_S3_ENDPOINT` and `PROCESS_RUN_S3_ENDPOINT`. Blank on AWS (the STS client derives its endpoint from it); set for MinIO only. |
+| `objectStore.internalEndpoint` | `""` | `STAGING_S3_ENDPOINT` and `PROCESS_RUN_S3_ENDPOINT`; also the cube-server's `CUBE_S3_ENDPOINT` and titiler's `AWS_S3_ENDPOINT`. Blank on AWS (the STS client derives its endpoint from it); set for MinIO only. |
 | `database` | | The RDS instance. |
 | `database.host`, `database.name` | `null` | Required. |
 | `database.port` | `5432` | |
@@ -78,7 +80,7 @@ Rendering fails with a message starting with the offending key path.
 | `auth` | | Authentication. |
 | `auth.mode` | `oidc` | `oidc` or `bypass`. |
 | `auth.allowDevBypass` | `false` | `bypass` fails to render without it. |
-| `auth.issuer`, `auth.clientId` | `null` | Required with `oidc`. |
+| `auth.issuer`, `auth.clientId` | `null` | `clientId` is required with `oidc`. `issuer` is required in every mode: the catalog proxy's startup health-checks its discovery URL (upstream `WAIT_FOR_UPSTREAM`) and fails without it, even pass-through. |
 | `auth.issuerInternal` | `""` | `OIDC_ISSUER_INTERNAL`. |
 | `auth.audiences` | `[stac-higher]` | Comma-joined into `AUTH_BEARER_AUDIENCES`. |
 | `auth.audienceClaim` | `aud` | `aud` or `client_id`. |
@@ -106,22 +108,24 @@ Rendering fails with a message starting with the offending key path.
 | `config` | | Content for the config ConfigMap. |
 | `config.hardwareProfiles` | `null` | `null` uses the chart's `files/hardware-profiles/eks-cpu.json`. |
 | `config.imagePolicy` | `null` | `null` uses `files/image-policy/default.json`. |
-| `ingress` | | The app Ingress. |
-| `ingress.enabled` | `true` | |
+| `ingress` | | One Ingress per public host: the app, the catalog (auth-proxy), titiler, tipg, the cube-server. |
+| `ingress.enabled` | `true` | Renders all five. |
 | `ingress.className` | `""` | `ingressClassName`. |
-| `ingress.annotations` | `{}` | On every chart Ingress. |
-| `ingress.tlsSecretName` | `""` | Set: `spec.tls` (cert-manager). The ALB uses annotations. |
+| `ingress.annotations` | `{}` | On every chart Ingress. On the ALB, `alb.ingress.kubernetes.io/group.name` puts the five hosts on one load balancer. |
+| `ingress.tlsSecretName` | `""` | Set: `spec.tls` (cert-manager). The ALB uses annotations. The four catalog hosts fall back to it; a shared name suits a pre-made wildcard Secret, while cert-manager's ingress-shim wants one per host. |
 | `ingress.app` | | `annotations`, merged over `ingress.annotations`. |
+| `ingress.catalog`, `ingress.titiler`, `ingress.tipg`, `ingress.cubeServer` | | `annotations` (merged over `ingress.annotations`) and `tlsSecretName` (`""` uses `ingress.tlsSecretName`). Hosts come from `publicUrls.*`. |
 | `networkPolicy` | | |
 | `networkPolicy.enabled` | `true` | |
 | `networkPolicy.appIngressFrom` | `null` | `null` opens the app port to any source; otherwise a list of NetworkPolicy peers. |
+| `networkPolicy.publicIngressFrom` | `null` | Peers for the catalog proxy, titiler, tipg and cube-server ports; `null` or `[]` uses `appIngressFrom` (so an empty list never opens ports that `appIngressFrom` restricts); both empty: any source. The proxy also admits the app pods; stac-api admits only the proxy. |
 | `networkPolicy.metricsFrom` | `[]` | Peers allowed to reach pipeline `:8083`. |
 | `app` | | The app Deployment. |
 | `app.replicas` | `2` | Omitted when the HPA is on. |
 | `app.autoscaling` | off, 2 to 6, 70% CPU | `enabled`, `minReplicas`, `maxReplicas`, `targetCPUUtilizationPercentage`. |
 | `app.resources` | 250m / 512Mi, memory limit 1Gi | |
 | `app.readOnlyRootFilesystem` | `true` | Escape hatch (I-161). |
-| `app.builtinCatalogInternalUrl` | `""` | `BUILTIN_CATALOG_URL`; its host joins `SAFE_FETCH_ALLOW_HOSTS`. R-7 sets it. |
+| `app.builtinCatalogInternalUrl` | `""` | `BUILTIN_CATALOG_URL`, where BFF writes go; `""` means the in-cluster proxy, `http://<fullname>-auth-proxy:8000`. Its host joins `SAFE_FETCH_ALLOW_HOSTS`. |
 | `app.safeFetchAllowHosts` | `[]` | Extra allowed hosts. |
 | `app.env` | `{}` | Extra non-secret env. |
 | `app.podAnnotations`, `app.nodeSelector`, `app.tolerations`, `app.affinity` | empty | Standard scheduling and metadata. |
@@ -131,6 +135,16 @@ Rendering fails with a message starting with the offending key path.
 | `pipeline.egressAllowHosts` | `[]` | `EGRESS_ALLOW_HOSTS`. |
 | `pipeline.env`, `pipeline.podAnnotations`, `pipeline.nodeSelector`, `pipeline.tolerations`, `pipeline.affinity` | empty | As for `app`. |
 | `pipeline.metrics` | | `serviceMonitor.enabled` (`false`), `.interval` (`30s`), `.labels`. |
+| `catalog` | | The catalog plane (see Catalog plane). Each component takes `replicas`, `resources`, `env` (extra non-secret env, merged last; secret-looking keys fail the render), `podAnnotations`, `nodeSelector`, `tolerations`, `affinity`. |
+| `catalog.stacApi` | 2 replicas, 250m / 512Mi, limit 1Gi | stac-fastapi-pgstac. `image` is the third-party ref, pinned by digest (the render refuses one without); keep it equal to `docker-compose.yml`'s `api` (ADR 0015 pair). |
+| `catalog.authProxy` | 2 replicas, 100m / 256Mi, limit 512Mi | The derived auth-proxy. `rolesClaim` (`""`: `auth.claimsMapping.roles`, else `realm_access.roles`) and `writeRoles` (`[]`: derived from `auth.claimsMapping.roleMap`). |
+| `catalog.titiler` | 2 replicas, 500m / 1Gi, limit 2Gi | The derived titiler. `nodeSelector` defaults to `kubernetes.io/arch: amd64` (the image is amd64 only). |
+| `catalog.tipg` | 1 replica, 250m / 512Mi, limit 1Gi | tipg. `image` is the pinned third-party ref (= compose `tipg`). |
+| `cubeServer` | | The cube-server. |
+| `cubeServer.replicas` | `1` | |
+| `cubeServer.resources` | 500m / 1Gi, limit 4Gi | |
+| `cubeServer.env` | `{}` | Extra non-secret env, e.g. `CUBE_POLL_SECONDS`, `CUBE_CORS_ORIGINS`. |
+| `cubeServer.podAnnotations`, `cubeServer.nodeSelector`, `cubeServer.tolerations`, `cubeServer.affinity` | empty | |
 | `dbJobs` | | The database hook Jobs. |
 | `dbJobs.backoffLimit`, `dbJobs.activeDeadlineSeconds` | `2`, `900` | |
 | `dbJobs.resources` | 100m / 256Mi, memory limit 1Gi | |
@@ -138,7 +152,7 @@ Rendering fails with a message starting with the offending key path.
 | `demoSeed` | | The one-shot demo seed Job (see Demo seed). |
 | `demoSeed.enabled` | `false` | Render the Job. |
 | `demoSeed.seeds` | `[seed, goes-seed]` | Any of `seed`, `goes-seed`, `cube-seed`, `images-seed`; always run in that order. |
-| `demoSeed.stacUrl` | `""` | In-cluster stac-fastapi URL the seeds write collections to (the compose `:8082` equivalent). Required when enabled. |
+| `demoSeed.stacUrl` | `""` | stac-fastapi URL the seeds write collections to (the compose `:8082` equivalent). `""` means the chart's stac-api Service, `http://<fullname>-stac-api:8082`, the proxy's own upstream; an explicit `http(s)` URL overrides it. Never the auth-proxy: the seeds send no token. |
 | `demoSeed.deliver` | `false` | `goes-seed --deliver` to `demoDestination`. Needs `goes-seed`, `demoDestination.bucket` and the key source for the secrets mode. |
 | `demoSeed.existingDestinationSecret` | `""` | `existing` mode: Secret with `access_key_id`/`secret_access_key`. In `external-secrets` mode the chart renders `<fullname>-demo-destination` from `demoDestination.credentialsSecretArn`. |
 | `demoSeed.appBearer` | | `secretName` (required with `images-seed`) and `key` (`token`): an operator bearer token for the app API. |
@@ -159,7 +173,7 @@ output as remote keys:
 | Terraform key (`secrets.arns.*`) | Becomes |
 |---|---|
 | `db_stac_higher_owner` | `<fullname>-db-owner` (`username`, `password`) and a hook-scoped copy `<fullname>-hook-db-owner` |
-| `db_stac_api`, `db_stac_reader`, `db_stac_proxy_policy`, `db_cube_server` | hook-scoped copies `<fullname>-hook-db-stac-api`, `-hook-db-stac-reader`, `-hook-db-proxy-policy`, `-hook-db-cube-server` (with `-hook-db-owner` and `-hook-db-master`, the six hook Secrets) |
+| `db_stac_api`, `db_stac_reader`, `db_stac_proxy_policy`, `db_cube_server` | runtime `<fullname>-db-stac-api`, `-db-stac-reader`, `-db-proxy-policy`, `-db-cube-server` (`username`, `password`), read by the catalog plane and the cube-server; and hook-scoped copies `<fullname>-hook-db-stac-api`, `-hook-db-stac-reader`, `-hook-db-proxy-policy`, `-hook-db-cube-server` (with `-hook-db-owner` and `-hook-db-master`, the six hook Secrets), read only by the database Jobs |
 | `session_secret`, `catalog_bff_shared_secret`, `internal_api_token`, `credentials_master_key` | `<fullname>-platform` (`SESSION_SECRET`, `CATALOG_BFF_SHARED_SECRET`, `INTERNAL_API_TOKEN`, `CREDENTIALS_MASTER_KEY`) |
 | `proxy_auth_token` | accepted and ignored (I-159) |
 | `database.masterSecretArn` (the RDS master) | hook-scoped `<fullname>-hook-db-master` |
@@ -220,6 +234,68 @@ image's Python, not `psql`. Notes:
 - The chart's fullname is capped at 42 characters; longer fails the render.
 - Hook objects carry the label `app.kubernetes.io/component=db-hook`.
 
+## Catalog plane and cube-server
+
+The chart runs the catalog plane from its own templates. eoapi-k8s was fit-checked
+as a subchart and not adopted: its external database is one login for every
+service, its stac-auth-proxy subchart cannot read env from a Secret, and its
+images cannot follow `global.imageDigests` or the mirror rewrite (evidence:
+[`docs/superpowers/plans/2026-11-24-r7-chart-catalog-plane.md`](../../../docs/superpowers/plans/2026-11-24-r7-chart-catalog-plane.md)).
+
+| Workload | Image | Port | Runs as | Logs in as (runtime Secret) | Public host |
+|---|---|---|---|---|---|
+| `<fullname>-auth-proxy` | `auth-proxy` (derived, ADR 0015) | 8000 | 1001 | `dbProxyPolicy`, read-only; plus `CATALOG_BFF_SHARED_SECRET` from `platform` | `publicUrls.catalog` |
+| `<fullname>-stac-api` | `catalog.stacApi.image` | 8082 | 1000 | `dbStacApi` (member of `pgstac_ingest`) | none: only the proxy reaches it |
+| `<fullname>-titiler` | `titiler` (derived) | 8084 | 1001:999 | `dbStacReader` (member of `pgstac_read`) | `publicUrls.titiler` |
+| `<fullname>-tipg` | `catalog.tipg.image` | 8085 | 65534 | `dbStacReader` | `publicUrls.tipg` |
+| `<fullname>-cube-server` | `cube-server` | 8086 | 999 | `dbCubeServer` (member of `stac_higher_cube_reader`) | `publicUrls.cubeServer` |
+
+- Every public URL is a bare origin on its own host; the render fails otherwise.
+- Probes: a startup probe on the readiness path allows up to 5 minutes (the
+  proxy waits for stac-api and the IdP and checks conformance; the others open
+  database pools), then readiness on that path and liveness on the port. Not
+  values-tunable, like the app's and pipeline's.
+- Database URLs carry no credentials: logins arrive as `PGUSER`/`PGPASSWORD`
+  (or `POSTGRES_USER`/`POSTGRES_PASS` for titiler and tipg) from the runtime
+  Secrets, and TLS from `PGSSLMODE`/`PGSSLROOTCERT`. titiler, tipg and
+  stac-fastapi build their own connection URL from those values, so in
+  `existing` mode give these roles URL-safe passwords (the Terraform module
+  generates alphanumeric ones).
+- Only titiler and the cube-server have an AWS identity (their R-5
+  ServiceAccounts); no catalog pod mounts an API token. No static AWS key is set.
+- Object store: on AWS both use the regional S3 endpoint and the default
+  credential chain. With `objectStore.internalEndpoint` set (an S3-compatible
+  store), the cube-server gets it as `CUBE_S3_ENDPOINT` and titiler as GDAL's
+  `AWS_S3_ENDPOINT`/`AWS_HTTPS` (plus `AWS_VIRTUAL_HOSTING=FALSE` with
+  `objectStore.forcePathStyle`). The chart sets no static keys, so such a store
+  must accept the pods' ambient credentials.
+- With `auth.mode: bypass` the proxy runs pass-through, as `docker-compose.yml`'s
+  base file runs it (`PRIVATE_ENDPOINTS={}`, no write policy): the app's BFF
+  sends writes without a token in bypass, which an enforced proxy would refuse.
+  It still needs `auth.issuer`, because upstream stac-auth-proxy requires
+  `OIDC_DISCOVERY_URL` and health-checks it at startup. **A bypass deployment's
+  catalog host accepts unauthenticated writes** (and they skip the app's audit
+  log): keep it private, by restricting `networkPolicy.publicIngressFrom` or
+  leaving `ingress.catalog` off.
+- With `auth.mode: oidc` the proxy runs the auth-enforced write policy exactly as
+  `infra/compose.auth-enforced.yml` configures it: reads public, transactions
+  need a token with the `auth.audiences` audience, item writes need the BFF
+  secret or an operator/admin role on an externally writable collection.
+  `POLICY_ROLES_CLAIM` and `POLICY_WRITE_ROLES` are derived from
+  `auth.claimsMapping` (the raw values the app maps to `operator`/`admin`) unless
+  `catalog.authProxy.rolesClaim` / `writeRoles` are set. `auth.issuer` is
+  therefore required in every auth mode.
+- The proxy accepts tokens from one issuer only: `OIDC_ISSUER` is `auth.issuer`
+  exactly as given (a trailing `/` is kept). With `auth.issuerInternal` the
+  proxy fetches discovery and keys in-network but still requires the public
+  issuer in `iss`, so a token minted at the internal URL is refused
+  (`docs/auth.md`).
+- The app's BFF writes go to the proxy inside the cluster
+  (`BUILTIN_CATALOG_URL=http://<fullname>-auth-proxy:8000`).
+- The two third-party images are pinned by digest and take the GHCR mirror
+  prefix like the chart's own; bump stac-fastapi together with the auth-proxy
+  base (ADR 0015).
+
 ## Demo seed
 
 Off by default. With `demoSeed.enabled` the chart renders one Job that runs
@@ -263,8 +339,8 @@ what in-cluster mode changes:
   database as the owner role, not through the BFF, so no `audit_log` rows are
   written. Accepted for an operator-run demo Job (I-169).
 - **Network.** The pod only makes egress. It carries
-  `app.kubernetes.io/component=demo-seed`. The STAC API's ingress policy must
-  admit it (R-7). When `networkPolicy.appIngressFrom` restricts the app and
+  `app.kubernetes.io/component=demo-seed`. The stac-api ingress policy admits
+  it whenever `demoSeed.enabled`, beside the auth-proxy. When `networkPolicy.appIngressFrom` restricts the app and
   `images-seed` is chosen, the chart adds the seed pod as a peer on the app's
   policy.
 - **`images-seed` before the Kubernetes executor.** Process runs (the
@@ -370,9 +446,12 @@ the chart's `appVersion`) or, when `global.imageDigests` is set, by digest.
 Digests are validated: known keys only (`app`, `pipeline`, `titiler`,
 `cube-server`, `image-scanner`, `process-runtime`, `process-runtime-stactools`,
 `auth-proxy`), each `sha256:` plus 64 hex characters, and a non-empty set must
-cover every image the chart references.
+cover all eight (every one is referenced). The two third-party images
+(`catalog.stacApi.image`, `catalog.tipg.image`) are full refs that must carry
+their own `@sha256:` digest.
 
-The mirror rewrite applies to the images the chart pulls: `ghcr.io` becomes
+The mirror rewrite applies to every image the chart pulls, the third-party
+ones included: `ghcr.io` becomes
 `global.imageRegistry` (or `registry.mirrorPrefixes["ghcr.io"]`), and other
 hosts use their `registry.mirrorPrefixes` entry, with trailing slashes trimmed
 and digests unchanged. The runtime image refs in the environment
@@ -390,5 +469,4 @@ kubectl -n stac-higher delete configmap,externalsecret,job,secret -l app.kuberne
 
 ## What later slices add
 
-- R-7: the catalog plane (stac-api, titiler, tipg, cube-server), their Services and routes.
 - R-8: the process-run namespace, RBAC, Kueue and NodePool objects, and the runs NetworkPolicy.

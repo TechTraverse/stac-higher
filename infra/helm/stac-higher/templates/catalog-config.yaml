@@ -1,0 +1,108 @@
+{{- /*
+Non-secret env for the catalog plane and the cube-server (R-7), one ConfigMap per workload.
+No credential and no DSN userinfo here: logins come from runtime Secrets in the Deployments.
+*/ -}}
+{{- $v := .Values -}}
+{{- $full := include "stac-higher.fullname" . -}}
+{{- $d := $v.database -}}
+{{- $dsn := printf "postgresql://%s:%v/%s" $d.host $d.port $d.name -}}
+{{- $common := dict "HOME" "/tmp" "PYTHONDONTWRITEBYTECODE" "1" -}}
+{{- if eq $d.sslMode "verify-full" -}}
+{{- $_ := set $common "PGSSLMODE" "verify-full" -}}
+{{- $_ := set $common "PGSSLROOTCERT" "/etc/stac-higher/db-ca/ca-bundle.pem" -}}
+{{- end -}}
+
+{{- $stac := deepCopy $common -}}
+{{- $_ := set $stac "PGHOST" $d.host -}}
+{{- $_ := set $stac "PGPORT" (toString $d.port) -}}
+{{- $_ := set $stac "PGDATABASE" $d.name -}}
+{{- $_ := set $stac "ENABLE_TRANSACTIONS_EXTENSIONS" "TRUE" -}}
+{{- $_ := set $stac "WEB_CONCURRENCY" "1" -}}
+{{- $_ := set $stac "DB_MIN_CONN_SIZE" "1" -}}
+{{- $_ := set $stac "DB_MAX_CONN_SIZE" "5" -}}
+
+{{- /* The enforced proxy, as infra/compose.auth-enforced.yml configures it (ADR 0002, ADR 0015). */ -}}
+{{- $proxy := deepCopy $common -}}
+{{- $issuer := trimSuffix "/" (toString $v.auth.issuer) -}}
+{{- $issuerInternal := trimSuffix "/" ($v.auth.issuerInternal | default $issuer) -}}
+{{- $_ := set $proxy "UPSTREAM_URL" (include "stac-higher.stacApiUrl" .) -}}
+{{- $_ := set $proxy "OIDC_DISCOVERY_URL" (printf "%s/.well-known/openid-configuration" $issuer) -}}
+{{- $_ := set $proxy "OIDC_DISCOVERY_INTERNAL_URL" (printf "%s/.well-known/openid-configuration" $issuerInternal) -}}
+{{- /* Since upstream v1.4.0 the proxy checks every token's `iss` against OIDC_ISSUER, else against the issuer in the
+discovery document it fetched (the internal one when issuerInternal is set). Pin it to the public issuer exactly as
+given: the trailing-slash trim above is only for building discovery URLs, and some issuers end in "/". */ -}}
+{{- $_ := set $proxy "OIDC_ISSUER" (toString $v.auth.issuer) -}}
+{{- $_ := set $proxy "DEFAULT_PUBLIC" "true" -}}
+{{- if eq $v.auth.mode "oidc" -}}
+{{- /* Enforced: infra/compose.auth-enforced.yml. */ -}}
+{{- $_ := set $proxy "PRIVATE_ENDPOINTS" `{"^/collections$":["POST"],"^/collections/([^/]+)$":["PUT","PATCH","DELETE"],"^/collections/([^/]+)/items$":["POST"],"^/collections/([^/]+)/items/([^/]+)$":["PUT","PATCH","DELETE"],"^/collections/([^/]+)/bulk_items$":["POST"]}` -}}
+{{- $_ := set $proxy "ALLOWED_JWT_AUDIENCES" (join "," $v.auth.audiences) -}}
+{{- $_ := set $proxy "AUTH_BEARER_AUDIENCE_CLAIM" $v.auth.audienceClaim -}}
+{{- $_ := set $proxy "ITEMS_FILTER_CLS" "stac_higher_proxy_policy:ExternallyWritableItemsFilter" -}}
+{{- $_ := set $proxy "ITEMS_FILTER_PATH" `^(/collections/([^/]+)/(items|bulk_items)(/[^/]+)?$|/search$)` -}}
+{{- $_ := set $proxy "POLICY_DATABASE_URL" $dsn -}}
+{{- $_ := set $proxy "POLICY_ROLES_CLAIM" (include "stac-higher.proxyRolesClaim" .) -}}
+{{- $_ := set $proxy "POLICY_WRITE_ROLES" (include "stac-higher.proxyWriteRoles" .) -}}
+{{- else -}}
+{{- /* bypass: pass-through, as docker-compose.yml's base file runs it. The app's BFF sends writes without a token
+in bypass, so an enforced proxy would answer every UI write 401. No policy factory, so no policy role or BFF secret. */ -}}
+{{- $_ := set $proxy "PRIVATE_ENDPOINTS" "{}" -}}
+{{- end -}}
+
+{{- $titiler := deepCopy $common -}}
+{{- $_ := set $titiler "POSTGRES_HOST" $d.host -}}
+{{- $_ := set $titiler "POSTGRES_PORT" (toString $d.port) -}}
+{{- $_ := set $titiler "POSTGRES_DBNAME" $d.name -}}
+{{- $_ := set $titiler "DB_MIN_CONN_SIZE" "1" -}}
+{{- $_ := set $titiler "DB_MAX_CONN_SIZE" "4" -}}
+{{- $_ := set $titiler "CPL_TMPDIR" "/tmp" -}}
+{{- $_ := set $titiler "GDAL_CACHEMAX" "25%" -}}
+{{- $_ := set $titiler "GDAL_DISABLE_READDIR_ON_OPEN" "EMPTY_DIR" -}}
+{{- $_ := set $titiler "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES" "YES" -}}
+{{- $_ := set $titiler "VSI_CACHE" "TRUE" -}}
+{{- $_ := set $titiler "PLATFORM_ASSET_BUCKET" $v.aws.bucket -}}
+{{- $_ := set $titiler "ASSET_HREF_BASE" "/api/assets" -}}
+{{- $_ := set $titiler "AWS_REGION" $v.aws.region -}}
+{{- $_ := set $titiler "AWS_DEFAULT_REGION" $v.aws.region -}}
+{{- /* A non-AWS store (as cube-server's CUBE_S3_ENDPOINT): GDAL's own endpoint settings, the compose titiler's set. */ -}}
+{{- with $v.objectStore.internalEndpoint -}}
+{{- $u := urlParse . -}}
+{{- $_ := set $titiler "AWS_S3_ENDPOINT" $u.host -}}
+{{- $_ := set $titiler "AWS_HTTPS" (ternary "YES" "NO" (eq $u.scheme "https")) -}}
+{{- end -}}
+{{- if $v.objectStore.forcePathStyle -}}
+{{- $_ := set $titiler "AWS_VIRTUAL_HOSTING" "FALSE" -}}
+{{- end -}}
+
+{{- $tipg := deepCopy $common -}}
+{{- $_ := set $tipg "POSTGRES_HOST" $d.host -}}
+{{- $_ := set $tipg "POSTGRES_PORT" (toString $d.port) -}}
+{{- $_ := set $tipg "POSTGRES_DBNAME" $d.name -}}
+{{- $_ := set $tipg "DB_MIN_CONN_SIZE" "1" -}}
+{{- $_ := set $tipg "DB_MAX_CONN_SIZE" "4" -}}
+
+{{- $cube := deepCopy $common -}}
+{{- $_ := set $cube "CUBE_DB_DSN" $dsn -}}
+{{- $_ := set $cube "CUBE_S3_ENDPOINT" ($v.objectStore.internalEndpoint | default $v.publicUrls.objectStore) -}}
+{{- $_ := set $cube "CUBE_S3_REGION" $v.aws.region -}}
+{{- $_ := set $cube "PLATFORM_ASSET_BUCKET" $v.aws.bucket -}}
+{{- $_ := set $cube "PORT" "8086" -}}
+
+{{- range $entry := list (list "stac-api" $stac $v.catalog.stacApi.env) (list "auth-proxy" $proxy $v.catalog.authProxy.env) (list "titiler" $titiler $v.catalog.titiler.env) (list "tipg" $tipg $v.catalog.tipg.env) (list "cube-server" $cube $v.cubeServer.env) }}
+{{- $data := index $entry 1 -}}
+{{- range $k, $val := (index $entry 2 | default dict) -}}
+{{- $_ := set $data $k (toString $val) -}}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-env-{{ index $entry 0 }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" $ "component" (index $entry 0)) | nindent 4 }}
+data:
+  {{- range $k, $val := $data }}
+  {{ $k }}: {{ $val | quote }}
+  {{- end }}
+{{- end }}

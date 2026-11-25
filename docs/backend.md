@@ -21,6 +21,13 @@ Astro server route with its access rule. Per-area design docs are linked from
 | **tipg** | :8085 | OGC API Features/Tiles for vector tables in the shared PostGIS. |
 | **cube-server** (profile `cube`) | :8086 | Not started by plain `docker compose up -d`; bring it up with `docker compose --profile cube up -d` (also starts the two one-shots). XYZ tiles + OGC EDR for registered virtual Icechunk cubes (`infra/cube-server/`, Z-7; design in [`serving.md`](serving.md) "the cube-server"). Read-only: DB login `cube_server` (member of migration 033's `stac_higher_cube_reader`, created by the `cube-db-role` one-shot from `infra/cube-server/compose-db-role.sql`) and Silo user `cube-reader` (policy `cube-read`, created by the `cube-silo-user` one-shot, reads only `assets/*/_cube/*`). Env: `CUBE_DB_DSN`, `CUBE_S3_ENDPOINT`, `CUBE_S3_ACCESS_KEY_ID`, `CUBE_S3_SECRET_ACCESS_KEY` (both optional, set both or neither: unset = the default AWS credential chain), `CUBE_S3_REGION` (default `us-east-1`), `PLATFORM_ASSET_BUCKET`, `CUBE_POLL_SECONDS` (15), `CUBE_CORS_ORIGINS` (`*`); libpq's `PGSSLMODE` / `PGSSLROOTCERT` apply to `CUBE_DB_DSN`. |
 
+**In a cluster** the Helm chart runs stac-fastapi, the auth-proxy (enforced
+with `auth.mode: oidc`, pass-through with `bypass`), titiler, tipg and the
+cube-server, each with its own database role and public host, and creates the
+cube-server's login in its db-bootstrap hook instead of the `cube-db-role`
+one-shot: [`../infra/helm/stac-higher/README.md`](../infra/helm/stac-higher/README.md)
+"Catalog plane and cube-server".
+
 **The cube services are opt-in.** `cube-server`, `cube-db-role` and
 `cube-silo-user` sit behind the compose profile `cube`: `docker compose
 --profile cube up -d` starts them (add `--build` to rebuild the image); plain

@@ -33,7 +33,7 @@ publicUrls:
 
 objectStore:
   forcePathStyle: false # path-style S3 addressing (MinIO)
-  internalEndpoint: "" # STAGING_S3_ENDPOINT and PROCESS_RUN_S3_ENDPOINT; blank on AWS, set for MinIO only
+  internalEndpoint: "" # STAGING_S3_ENDPOINT, PROCESS_RUN_S3_ENDPOINT, CUBE_S3_ENDPOINT, titiler AWS_S3_ENDPOINT; blank on AWS, set for MinIO only
 
 database:
   host: null # R-5: database host (required)
@@ -50,7 +50,9 @@ database:
 auth:
   mode: oidc # R-5: oidc | bypass
   allowDevBypass: false # bypass without this fails to render
-  issuer: null # R-5: OIDC issuer URL -> OIDC_ISSUER (required when oidc)
+  # R-5: OIDC issuer URL -> the app's OIDC_ISSUER and the catalog proxy's discovery URL and OIDC_ISSUER.
+  # Required in every mode: the proxy cannot start without a reachable discovery URL, even pass-through (bypass).
+  issuer: null
   clientId: null # R-5: OIDC client id -> OIDC_CLIENT_ID (required when oidc)
   issuerInternal: "" # -> OIDC_ISSUER_INTERNAL
   audiences: [stac-higher] # R-5: comma-joined -> AUTH_BEARER_AUDIENCES
@@ -124,10 +126,23 @@ ingress:
   tlsSecretName: "" # set -> spec.tls (cert-manager); the ALB uses annotations instead
   app:
     annotations: {} # merged over ingress.annotations
+  catalog: # host of publicUrls.catalog -> the auth-proxy
+    annotations: {} # merged over ingress.annotations
+    tlsSecretName: "" # "" -> ingress.tlsSecretName
+  titiler: # host of publicUrls.titiler
+    annotations: {}
+    tlsSecretName: ""
+  tipg: # host of publicUrls.tipg
+    annotations: {}
+    tlsSecretName: ""
+  cubeServer: # host of publicUrls.cubeServer
+    annotations: {}
+    tlsSecretName: ""
 
 networkPolicy:
   enabled: true # render NetworkPolicies
   appIngressFrom: null # null -> app port open to any source; otherwise a list of NetworkPolicy peers
+  publicIngressFrom: null # peers for the catalog proxy, titiler, tipg, cube-server ports; null or [] -> appIngressFrom
   metricsFrom: [] # peers allowed to reach pipeline :8083
 
 app:
@@ -141,7 +156,7 @@ app:
     requests: { cpu: 250m, memory: 512Mi }
     limits: { memory: 1Gi }
   readOnlyRootFilesystem: true # escape hatch (I-161)
-  builtinCatalogInternalUrl: "" # -> BUILTIN_CATALOG_URL; its host joins SAFE_FETCH_ALLOW_HOSTS (R-7 sets it)
+  builtinCatalogInternalUrl: "" # -> BUILTIN_CATALOG_URL ("" -> http://<fullname>-auth-proxy:8000); its host joins SAFE_FETCH_ALLOW_HOSTS
   safeFetchAllowHosts: [] # extra SAFE_FETCH_ALLOW_HOSTS entries
   env: {} # extra non-secret env
   podAnnotations: {} # extra pod annotations
@@ -166,6 +181,66 @@ pipeline:
       interval: 30s # scrape interval
       labels: {} # extra ServiceMonitor labels
 
+# The catalog plane (R-7): our own templates, not the eoapi-k8s subchart (fit check in the R-7 plan).
+# Every component also takes podAnnotations {}, nodeSelector {}, tolerations [], affinity {}.
+catalog:
+  stacApi: # stac-fastapi-pgstac as stac_api; reachable only from the auth-proxy
+    # Third-party ref, digest-pinned. ADR 0015: bumped together with the auth-proxy base (docker-compose.yml `api`).
+    image: ghcr.io/stac-utils/stac-fastapi-pgstac:6.3.1@sha256:db117b91302f7983ce4e07658768a6e8d2f6716613252a15f5dcdbda8dae9883
+    replicas: 2
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { memory: 1Gi }
+    env: {} # extra non-secret env, merged over the chart's
+    podAnnotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  authProxy: # the derived auth-proxy (image key auth-proxy), ADR 0015 enforced mode, public at publicUrls.catalog
+    replicas: 2
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { memory: 512Mi }
+    rolesClaim: "" # POLICY_ROLES_CLAIM; "" -> auth.claimsMapping.roles, else realm_access.roles
+    writeRoles: [] # POLICY_WRITE_ROLES; [] -> the raw roles auth.claimsMapping maps to operator/admin
+    env: {}
+    podAnnotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  titiler: # the derived titiler (image key titiler) as stac_reader; linux/amd64 only
+    replicas: 2
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits: { memory: 2Gi }
+    env: {}
+    podAnnotations: {}
+    nodeSelector: { kubernetes.io/arch: amd64 }
+    tolerations: []
+    affinity: {}
+  tipg: # tipg as stac_reader
+    image: ghcr.io/developmentseed/tipg:1.0.1@sha256:70ae557c4fab6983a5f302b91aa772548518ab0c9b9b4a0ebcf1c85ec7daaf54 # = docker-compose.yml `tipg`
+    replicas: 1
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { memory: 1Gi }
+    env: {}
+    podAnnotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+cubeServer: # the cube-server (image key cube-server) as cube_server; S3 read on assets/*/_cube/* via its ServiceAccount
+  replicas: 1
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { memory: 4Gi }
+  env: {} # extra non-secret env (e.g. CUBE_POLL_SECONDS, CUBE_CORS_ORIGINS)
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 dbJobs:
   backoffLimit: 2 # hook Job retries
   activeDeadlineSeconds: 900 # hook Job deadline
@@ -179,7 +254,7 @@ dbJobs:
 demoSeed:
   enabled: false # render the one-shot demo seed Job (python -m pipeline.demo --in-cluster)
   seeds: [seed, goes-seed] # any of seed | goes-seed | cube-seed | images-seed; always run in that order
-  stacUrl: "" # in-cluster stac-fastapi URL the seeds write collections to; required when enabled
+  stacUrl: "" # stac-fastapi URL the seeds write to without a token; "" -> the chart's stac-api Service (never the proxy, which enforces auth with oidc)
   deliver: false # goes-seed --deliver to demoDestination (its key sealed into the connection)
   existingDestinationSecret: "" # secrets.mode=existing: Secret with access_key_id/secret_access_key
   appBearer:

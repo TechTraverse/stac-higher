@@ -100,20 +100,24 @@ describe.skipIf(!helmReady())("chart values contract", () => {
       { valuesFiles: scenario("irsa"), values: { identity: { roleArns: { app: "" } } } },
       "identity.roleArns.app",
     );
-    fails(
-      { valuesFiles: scenario("irsa"), values: { identity: { roleArns: { pipeline: "" } } } },
-      "identity.roleArns.pipeline",
-    );
+    for (const k of ["pipeline", "titiler", "cubeServer"]) {
+      fails(
+        { valuesFiles: scenario("irsa"), values: { identity: { roleArns: { [k]: "" } } } },
+        `identity.roleArns.${k}`,
+      );
+    }
   });
 
   it("pod-identity ServiceAccounts carry no role annotation; irsa ones do", () => {
     const pi = renderChart({ valuesFiles: scenario("base") }).docs as Doc[];
-    for (const n of ["stac-higher-app", "stac-higher-pipeline"]) {
+    for (const n of ["stac-higher-app", "stac-higher-pipeline", "stac-higher-titiler", "stac-higher-cube-server"]) {
       expect(sa(pi, n), n).toBeTruthy();
       expect(sa(pi, n)!.metadata.annotations?.[ROLE_ANN]).toBeUndefined();
     }
     expect(sa(pi, "stac-higher-app")!.automountServiceAccountToken).toBe(false);
     expect(sa(pi, "stac-higher-pipeline")!.automountServiceAccountToken).toBe(true);
+    expect(sa(pi, "stac-higher-titiler")!.automountServiceAccountToken).toBe(false);
+    expect(sa(pi, "stac-higher-cube-server")!.automountServiceAccountToken).toBe(false);
     const irsa = renderChart({ valuesFiles: scenario("irsa") }).docs as Doc[];
     expect(sa(irsa, "stac-higher-app")!.metadata.annotations?.[ROLE_ANN]).toBe(
       "arn:aws:iam::000000000000:role/stac-higher-example-app",
@@ -121,11 +125,22 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     expect(sa(irsa, "stac-higher-pipeline")!.metadata.annotations?.[ROLE_ANN]).toBe(
       "arn:aws:iam::000000000000:role/stac-higher-example-pipeline",
     );
+    expect(sa(irsa, "stac-higher-titiler")!.metadata.annotations?.[ROLE_ANN]).toBe(
+      "arn:aws:iam::000000000000:role/stac-higher-example-titiler",
+    );
+    expect(sa(irsa, "stac-higher-cube-server")!.metadata.annotations?.[ROLE_ANN]).toBe(
+      "arn:aws:iam::000000000000:role/stac-higher-example-cube-server",
+    );
   });
 
   it("ServiceAccounts take R-5's names, not the release name", () => {
     const docs = renderChart(base({}, { releaseName: "other" })).docs as Doc[];
-    expect(sas(docs).map((d) => d.metadata.name).sort()).toEqual(["stac-higher-app", "stac-higher-pipeline"]);
+    expect(sas(docs).map((d) => d.metadata.name).sort()).toEqual([
+      "stac-higher-app",
+      "stac-higher-cube-server",
+      "stac-higher-pipeline",
+      "stac-higher-titiler",
+    ]);
     const c = renderChart(base({ identity: { serviceAccounts: { app: "custom-app" } } })).docs as Doc[];
     expect(sa(c, "custom-app")).toBeTruthy();
   });
@@ -142,8 +157,8 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     });
     it("renders with the optional R-5 sections omitted", () => {
       // R-5 omits `auth` and `demoDestination` when off (never null). The chart
-      // defaults then apply; oidc without an issuer is refused, so the deployment
-      // supplies the dev-bypass override here.
+      // defaults then apply; a missing issuer is refused (R-7: in every mode, the
+      // catalog proxy needs it), so the deployment supplies its own IdP here.
       const tmp = mkdtempSync(join(tmpdir(), "r5-omit-"));
       try {
         const doc = parse(readFileSync(r5[0], "utf8"));
@@ -153,10 +168,11 @@ describe.skipIf(!helmReady())("chart values contract", () => {
         writeFileSync(f, stringify(doc));
         const r = renderChart({
           valuesFiles: [f, r5[1]],
-          values: { auth: { mode: "bypass", allowDevBypass: true } },
+          values: { auth: { issuer: "https://idp.example.com/realms/example", clientId: "stac-higher-example" } },
         });
         expect(r.ok, r.stderr).toBe(true);
         fails({ valuesFiles: [f, r5[1]] }, "auth.issuer");
+        fails({ valuesFiles: [f, r5[1]], values: { auth: { mode: "bypass", allowDevBypass: true } } }, "auth.issuer");
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }
@@ -184,11 +200,27 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     });
     it("refuses partial digests", () => {
       fails(base({ global: { imageDigests: { app: D("a") } } }), "global.imageDigests.pipeline");
+      // R-7: the catalog workloads reference titiler, cube-server and auth-proxy too.
+      const withoutTitiler = Object.fromEntries(IMAGE_KEYS.filter((k: string) => k !== "titiler").map((k: string) => [k, D("a")]));
+      fails(base({ global: { imageDigests: withoutTitiler } }), "global.imageDigests.titiler");
     });
   });
 
   it("refuses an app URL with a path", () => {
     fails(base({ publicUrls: { app: "https://example.com/stac" } }), "publicUrls.app");
+  });
+
+  it("refuses a service URL with a path, and two services on one host", () => {
+    for (const k of ["catalog", "titiler", "tipg", "cubeServer"]) {
+      fails(base({ publicUrls: { [k]: "https://svc.example.com/x" } }), `publicUrls.${k}`);
+    }
+    fails(base({ publicUrls: { tipg: "https://titiler.example.com/" } }), "publicUrls.tipg");
+    const ok = renderChart(base({ publicUrls: { tipg: "https://tipg.example.com/" } }));
+    expect(ok.ok, ok.stderr).toBe(true);
+  });
+
+  it("the catalog proxy needs auth.issuer in every auth mode", () => {
+    fails(base({ auth: { mode: "bypass", allowDevBypass: true, issuer: "" } }), "auth.issuer");
   });
 
   it("verify-full needs exactly one CA source", () => {

@@ -211,6 +211,10 @@ from a Secret, its own pgstac bootstrap **disabled** (ADR 0001 — our hook
 Job owns pgstac migrations), and its bundled Crunchy PGO off. If it fights
 any of these, the fallback is our own templates for those four services,
 recorded in the slice PR; no other part of this spec changes.
+*R-7 result (2026-11-24): fallback taken — one database login for every
+service, no Secret-sourced env in its auth-proxy subchart, images outside
+`global.imageDigests`; evidence in the
+[R-7 plan](../plans/2026-11-24-r7-chart-catalog-plane.md).*
 
 ### 6.2 Values contract
 

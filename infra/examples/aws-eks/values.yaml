@@ -74,8 +74,12 @@ secrets:
 #   annotations:
 #     alb.ingress.kubernetes.io/scheme: internet-facing
 #     alb.ingress.kubernetes.io/target-type: ip
+#     # one ALB for the five hosts (app, catalog, titiler, tipg, cube-server)
+#     alb.ingress.kubernetes.io/group.name: stac-higher
 # networkPolicy:
-#   # target-type ip sends ALB traffic from VPC addresses (I-161): allow the VPC CIDR
+#   # target-type ip sends ALB traffic from VPC addresses (I-161): allow the VPC CIDR.
+#   # The catalog proxy, titiler, tipg and cube-server ports use the same peers
+#   # unless publicIngressFrom is set.
 #   appIngressFrom:
 #     - ipBlock:
 #         cidr: 10.0.0.0/16

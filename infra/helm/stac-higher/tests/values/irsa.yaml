@@ -3,3 +3,5 @@ identity:
   roleArns:
     app: arn:aws:iam::000000000000:role/stac-higher-example-app
     pipeline: arn:aws:iam::000000000000:role/stac-higher-example-pipeline
+    titiler: arn:aws:iam::000000000000:role/stac-higher-example-titiler
+    cubeServer: arn:aws:iam::000000000000:role/stac-higher-example-cube-server
