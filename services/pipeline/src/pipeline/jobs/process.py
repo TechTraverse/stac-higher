@@ -21,14 +21,17 @@ centrally (M2-H) and the per-job run/duration/outcome metrics come for free.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any
 
 from pipeline.config import Settings
 from pipeline.connections.build import build_adapter
 from pipeline.connections.envelope import decrypt, load_master_key
+from pipeline.dispatcher.listener import run_dispatch_listener
 from pipeline.finalize.extract_run import finalize_extract_run
 from pipeline.finalize.process_run import build_process_request
 from pipeline.finalize.repo import PgFinalizeRepo
@@ -47,6 +50,7 @@ from pipeline.process.hardware import (
     docker_capacities,
     load_hardware_profiles,
 )
+from pipeline.process.ledger import CANCEL_CHANNEL
 from pipeline.process.reaper import process_reap_tick
 from pipeline.process.reconcile import RECONCILE_BATCH, Reconciler, RunBatch
 from pipeline.process.repo import PgProcessRepo, QueuedRun
@@ -54,6 +58,7 @@ from pipeline.process.runner import run_one
 from pipeline.process.staging import build_remote_fetcher
 from pipeline.process.sweep import process_sweep_tick
 from pipeline.process.trigger import trigger_run
+from pipeline.process.watcher import run_watcher
 from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client
@@ -94,6 +99,33 @@ def build_reconciler(
         enqueue_run_now=_run_now,
         on_dead=_on_dead,
     )
+
+
+def build_run_watcher(queue: QueueBackend, settings: Settings) -> Coroutine[Any, Any, None]:
+    """K-4: the run watcher main.py runs beside the worker — the executor's
+    event stream wakes one long-lived Reconciler. A backend without a
+    ``watch()`` gets a coroutine that idles until cancelled: the run tick is
+    then the only path (K-5's watch may land after its executor)."""
+    executor = _docker_executor(settings)
+    reconciler = build_reconciler(queue, settings, executor=executor)
+    if executor.supports_watch:
+        return run_watcher(executor.watch, reconciler.on_event)
+    return asyncio.Event().wait()
+
+
+def build_cancel_listener(
+    queue: QueueBackend, settings: Settings
+) -> Coroutine[Any, Any, None]:
+    """K-4 (R12): ``LISTEN process_run_cancel`` — the app's cancel statement
+    NOTIFYs in the same transaction, and each wake stops every running run
+    whose cancel was requested. The connect wake drains cancels requested
+    while the worker was down."""
+    reconciler = build_reconciler(queue, settings)
+
+    async def _on_wake() -> None:
+        await reconciler.sweep(limit=RECONCILE_BATCH, cancel_requested_only=True)
+
+    return run_dispatch_listener(settings.database_url, _on_wake, channel=CANCEL_CHANNEL)
 
 
 async def fail_extract_batch(

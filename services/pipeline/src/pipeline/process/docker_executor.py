@@ -1,9 +1,10 @@
 """Docker Engine API executor (ADR 0013 slice-1 backend, spec §4).
 
 Talks the Engine API over HTTP to a **least-privilege socket proxy**
-(`tecnativa/docker-socket-proxy` with ``CONTAINERS=1 IMAGES=1 INFO=1 POST=1``
-(IMAGES since C-2, for pull-by-digest; INFO since K-3, the read-only
-``GET /info`` that says whether the daemon has an NVIDIA runtime), everything
+(`tecnativa/docker-socket-proxy` with ``CONTAINERS=1 IMAGES=1 INFO=1 POST=1
+EVENTS=1`` (IMAGES since C-2, for pull-by-digest; INFO since K-3, the
+read-only ``GET /info`` that says whether the daemon has an NVIDIA runtime;
+EVENTS since K-4, the run watcher's read-only ``GET /events``), everything
 else off — P9-A verified `exec` and `volumes` return 403 there). The pipeline never
 holds the raw socket, so the proxy is the auditable seam, and
 :func:`assert_safe_docker_host` refuses to start against a raw socket at all.
@@ -25,13 +26,15 @@ residual risk ADR 0013 flagged (the proxy still permits arbitrary
    default bridge — full outbound internet — which is exactly the egress
    boundary this executor exists to hold.
 
-No docker SDK dependency: the Engine API calls used here are four plain HTTP
-requests, and adding a client library for them would widen the dependency
+No docker SDK dependency: the Engine API calls used here are a handful of
+plain HTTP requests plus one event stream (``process/http_stream.py``), and
+adding a client library for them would widen the dependency
 surface of a security-critical component for no benefit.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import datetime as dt
@@ -40,12 +43,13 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from pipeline.images.reference import is_image_digest, is_image_reference
 from pipeline.process.executor import (
+    RESYNC,
     Executor,
     ExecutorUnavailable,
     ExitStatus,
@@ -54,12 +58,19 @@ from pipeline.process.executor import (
     ImagePullFailed,
     LaunchedRun,
     RegistryAuth,
+    RunEvent,
     RunHandle,
     RunSpec,
     RunState,
     oom_error,
 )
 from pipeline.process.hardware import docker_backend
+from pipeline.process.http_stream import (
+    HttpStreamError,
+    is_chunked,
+    iter_body_lines,
+    read_http_head,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +99,13 @@ TIMEOUT_LABEL = "stac-higher.timeout-seconds"
 MEMORY_LABEL = "stac-higher.memory-mb"
 #: ``cancel`` = ``POST /stop?t=10``: SIGTERM, then SIGKILL after this.
 STOP_GRACE_SECONDS = 10
+#: K-4: the run watcher's ``GET /events`` filter — container events of OUR
+#: runs only (the run-id label), and only the ones that change a verdict.
+EVENT_FILTERS = {
+    "type": ["container"],
+    "label": [RUN_ID_LABEL],
+    "event": ["start", "die", "oom", "destroy"],
+}
 #: Spec §3.2 / §14 decision 1: every user image runs as the platform
 #: runtime's `runner` uid, whatever its own USER says.
 USER_IMAGE_USER = "10001:10001"
@@ -566,6 +584,50 @@ class DockerExecutor(Executor):
             if err.status not in (304, 404):
                 raise
 
+    async def watch(self) -> AsyncIterator[RunEvent]:
+        """K-4: the Engine's ``/events`` stream, filtered to our run-id label,
+        over a plain asyncio connection to the socket proxy (EVENTS=1).
+        Yields :data:`RESYNC` once the stream is open, then one wake-up per
+        event. No ``since`` bookkeeping: every (re)connect resyncs instead.
+        A refused or dropped stream raises :class:`ExecutorUnavailable`."""
+        parsed = urlparse(self.docker_host)
+        host, port = parsed.hostname or "localhost", parsed.port or 2375
+        path = (
+            f"/{API_VERSION}/events?filters="
+            f"{urllib.parse.quote(json.dumps(EVENT_FILTERS, separators=(',', ':')))}"
+        )
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+        except OSError as err:
+            raise ExecutorUnavailable(f"docker GET /events unreachable: {err}") from err
+        try:
+            writer.write(
+                f"GET {path} HTTP/1.1\r\nHost: docker\r\nAccept: application/json\r\n"
+                "Connection: close\r\n\r\n".encode("ascii")
+            )
+            await writer.drain()
+            try:
+                status, headers = await read_http_head(reader)
+            except (HttpStreamError, OSError) as err:
+                raise ExecutorUnavailable(f"docker GET /events failed: {err}") from err
+            if status != 200:
+                raise ExecutorUnavailable(f"docker GET /events failed: {status}")
+            yield RESYNC
+            try:
+                async for line in iter_body_lines(reader, chunked=is_chunked(headers)):
+                    try:
+                        event = _parse_event(json.loads(line))
+                    except ValueError:
+                        continue
+                    if event is not None:
+                        yield event
+            except (HttpStreamError, OSError, asyncio.IncompleteReadError) as err:
+                raise ExecutorUnavailable(f"docker /events stream broke: {err}") from err
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
     def logs(self, handle: RunHandle, max_bytes: int) -> bytes:
         query = "stdout=1&stderr=1&timestamps=0"
         try:
@@ -626,6 +688,28 @@ class DockerExecutor(Executor):
                 )
             )
         return entries
+
+
+def _parse_event(obj: object) -> RunEvent | None:
+    """One Engine event -> a wake-up for its run, or None for anything that
+    is not a container event of ours. Carries identity only (R1)."""
+    if not isinstance(obj, dict) or obj.get("Type") != "container":
+        return None
+    actor = obj.get("Actor")
+    if not isinstance(actor, dict):
+        return None
+    attributes = actor.get("Attributes")
+    if not isinstance(attributes, dict):
+        return None
+    run_id = attributes.get(RUN_ID_LABEL)
+    if not isinstance(run_id, str) or not run_id:
+        return None
+    kind = attributes.get(RUN_KIND_LABEL)
+    return RunEvent(
+        run_id=run_id,
+        handle_id=actor.get("ID") if isinstance(actor.get("ID"), str) else None,
+        kind=kind if isinstance(kind, str) and kind else "process",
+    )
 
 
 def _int_label(raw: object) -> int | None:

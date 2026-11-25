@@ -290,8 +290,8 @@ services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     environment:
-      # Least privilege: containers, images (C-2) and the read-only /info
-      # (K-3), and POST so create/start/kill work.
+      # Least privilege: containers, images (C-2), the read-only /info
+      # (K-3) and /events (K-4), and POST so create/start/stop/kill work.
       - CONTAINERS=1
       - POST=1
       # Everything else stays off explicitly. Listing them is deliberate —
@@ -325,6 +325,13 @@ services:
       - COMMIT=0
       - DISTRIBUTION=0
       - AUTH=0
+      # K-4: the run watcher's GET /events stream, filtered to our run-id
+      # label; read-only. Already on by the image default (0.3.0 ships
+      # EVENTS=1 PING=1 VERSION=1) -- written here so the boundary is visible.
+      - EVENTS=1
+      # On by the image default, used by nothing here (#202).
+      - PING=0
+      - VERSION=0
     volumes:
       # Read-only: the proxy needs the socket, and nothing needs to write to
       # the mount itself.

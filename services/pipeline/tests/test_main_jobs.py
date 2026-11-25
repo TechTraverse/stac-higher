@@ -243,3 +243,48 @@ async def test_run_until_first_exit_stops_the_workers_when_the_server_dies():
         )
     assert worker_cancelled.is_set()
     assert listener_cancelled.is_set()
+
+
+async def test_run_passes_the_watcher_and_the_cancel_listener(monkeypatch):
+    """K-4: the run watcher and the cancel listener run beside the worker and
+    the dispatch listener, stopped with them by run_until_first_exit."""
+    import pipeline.main as main_module
+    from pipeline.jobs import dispatch as dispatch_jobs
+    from pipeline.jobs import process as process_jobs
+    from pipeline.queue.memory import InMemoryQueue
+
+    async def watcher():
+        return None
+
+    async def cancel_listener():
+        return None
+
+    async def notify_listener():
+        return None
+
+    captured: list[str] = []
+
+    async def fake_run_until_first_exit(server, *coroutines):
+        for coro in coroutines:
+            captured.append(coro.__qualname__)
+            coro.close()
+
+    async def no_close() -> None:
+        return None
+
+    monkeypatch.setattr(main_module, "build_queue", lambda settings: InMemoryQueue())
+    monkeypatch.setattr(main_module, "run_until_first_exit", fake_run_until_first_exit)
+    monkeypatch.setattr(main_module, "close_pools", no_close)
+    monkeypatch.setattr(main_module, "close_writer_pools", lambda: None)
+    monkeypatch.setattr(main_module.FLOW_BATCHER, "flush", lambda repo: no_close())
+    monkeypatch.setattr(dispatch_jobs, "build_notify_listener", lambda q, s: notify_listener())
+    monkeypatch.setattr(process_jobs, "build_run_watcher", lambda q, s: watcher())
+    monkeypatch.setattr(process_jobs, "build_cancel_listener", lambda q, s: cancel_listener())
+
+    await main_module.run(Settings.from_env(env={}))
+
+    assert "test_run_passes_the_watcher_and_the_cancel_listener.<locals>.watcher" in captured
+    assert (
+        "test_run_passes_the_watcher_and_the_cancel_listener.<locals>.cancel_listener"
+        in captured
+    )
