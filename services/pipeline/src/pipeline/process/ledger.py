@@ -95,6 +95,16 @@ def infrastructure_transition(
     )
 
 
+#: How long a run waits before a retry the platform owes it: a `failed`
+#: run's retry spacing and every "no attempt spent" requeue (K-4 R13). The
+#: runtime's RetrySpec carries the attempt BUDGET; the spacing is ours.
+INFRA_RETRY_SECONDS = 60
+
+#: K-4: the conservative limits a Reconciler uses for a submitted run whose
+#: stored revision no longer parses (it parsed at claim time).
+DEFAULT_MAX_ATTEMPTS_ON_UNREADABLE_RUNTIME = 1
+DEFAULT_TIMEOUT_ON_UNREADABLE_RUNTIME = 900
+
 #: K-3 (spec §5.2): the sub-states of a queued/running row in
 #: ``process_runs.phase``, pinned by tests/contract-fixtures/process-run-phase.json
 #: and migration 029's CHECK. NULL on a plain queued row and on every terminal

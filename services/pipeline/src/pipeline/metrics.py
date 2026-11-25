@@ -153,9 +153,18 @@ PROCESS_RUNS = Counter(
     ["outcome"],  # succeeded | dead | failed | queued (infrastructure requeue)
     registry=REGISTRY,
 )
+PROCESS_RECONCILES = Counter(
+    "pipeline_process_reconciles_total",
+    "K-4: what one reconcile of a submitted process run did",
+    # unchanged | phase | succeeded | failed | dead | cancelled | requeued |
+    # merged | skipped | unavailable
+    ["outcome"],
+    registry=REGISTRY,
+)
+
 PROCESS_RUN_SECONDS = Histogram(
     "pipeline_process_run_seconds",
-    "Wall-clock duration of a process run, executor launch to exit",
+    "Wall-clock duration of a process run, submission to collection",
     registry=REGISTRY,
 )
 PROCESS_OUTPUT_ITEMS = Counter(

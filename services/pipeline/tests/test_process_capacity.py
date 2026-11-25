@@ -169,7 +169,7 @@ async def test_run_one_no_longer_counts_or_releases():
     repo = FakeProcessRepo()
     executor = MemoryExecutor(default_states=[exited(0)])
     result = await _run(repo, executor, capacity=1)
-    assert result.status == "succeeded"
+    assert result.status == "running"
     assert len(executor.submitted) == 1
 
 

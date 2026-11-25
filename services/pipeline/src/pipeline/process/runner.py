@@ -1,19 +1,18 @@
-"""Execute one claimed run and record its verdict (spec §6).
+"""Prepare and submit one claimed run (spec §6; K-4 spec §5.3).
 
-The join between M5-B's executor (which knows how to run a container) and the
-ledger (which knows what a run means). Kept separate from both so the
-execution boundary can be tested without a database and the ledger without
-Docker.
-
-Ordering is the load-bearing part, and it follows §9/I-62: the log OBJECT is
-written before the ledger row that references it. The retention leg deletes in
-the opposite order, so the only interleaving a crash can leave behind is an
-object with no row — which the staging TTL sweep ages out — never a row
-pointing at bytes that do not exist.
+The join between the executor (which knows how to run a container) and the
+ledger (which knows what a run means). Since K-4 this is the CLAIM half only:
+parse, check, stage, mint, submit, record the handle, return. A failure
+before submission is a verdict written here, fenced on the claim stamp (I3);
+everything after submission is the Reconciler's (``process/reconcile.py``),
+which keeps the §9/I-62 order: the log OBJECT is written before the ledger
+row that references it.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import datetime as dt
 import logging
 import uuid
@@ -34,6 +33,7 @@ from pipeline.process.executor import (
     HardwareUnavailable,
     ImageMissing,
     ImagePullFailed,
+    RunHandle,
 )
 from pipeline.process.hardware import (
     HardwareProfileError,
@@ -57,26 +57,34 @@ from pipeline.process.launch import (
     SecretResolutionError,
     check_hardware_bounds_for,
     check_network_cap,
-    execute_run,
     resolve_run_image,
+    submit_run,
 )
-from pipeline.process.ledger import infrastructure_transition, outcome_transition
+from pipeline.process.ledger import (
+    INFRA_RETRY_SECONDS,
+    infrastructure_transition,
+    outcome_transition,
+)
 from pipeline.process.repo import ProcessRepo, QueuedRun, capacity_exempt
 from pipeline.process.staging import InputStagingError, RemoteFetcher, stage_inputs
 
 logger = logging.getLogger(__name__)
 
-#: How long a failed run waits before the sweep re-drives it. The runtime's
-#: RetrySpec carries the attempt BUDGET; the spacing is a platform concern.
-DEFAULT_RETRY_WAIT_SECONDS = 60
+#: How long a failed run waits before the sweep re-drives it (ledger.py).
+DEFAULT_RETRY_WAIT_SECONDS = INFRA_RETRY_SECONDS
 
 
 @dataclass(frozen=True)
 class RunResult:
     run_id: str
+    #: The ledger status the claim path left: ``running`` once submitted (the
+    #: Reconciler writes the verdict), a pre-submit verdict, ``queued`` for an
+    #: infrastructure requeue, or ``skipped`` when the claim was lost.
     status: str
     log_ref: str | None = None
     error: str | None = None
+    #: K-4: an operator asked to cancel before the run was even submitted.
+    cancel_requested: bool = False
 
 
 async def run_one(
@@ -102,8 +110,12 @@ async def run_one(
     Order (GOES spec §3.2, C-2 spec §8.4): parse -> code rule -> network cap
     -> run image (alias, or the user image re-checked by digest) -> hardware
     bounds -> plan inputs (repo reads) -> stage remote inputs -> mint
-    credentials + launch (a user image is pulled by digest at launch). A
-    failure anywhere before launch means no container ever existed.
+    credentials + SUBMIT (a user image is pulled by digest at submit). A
+    failure anywhere before submit means no container ever existed.
+
+    K-4 (spec §5.3): a submitted run is recorded (``record_submission``) and
+    this RETURNS — the Procrastinate job holds no slot for the run's life.
+    The Reconciler (``process/reconcile.py``) writes its verdict.
     """
     at = now or dt.datetime.now(dt.UTC)
 
@@ -286,10 +298,10 @@ async def run_one(
         return RunResult(run.id, transition.status, error=transition.error)
 
     try:
-        outcome = execute_run(
+        submitted = await asyncio.to_thread(
+            submit_run,
             executor,
             settings,
-            storage_client,
             run_id=run.id,
             process_id=run.process_id,
             runtime=runtime,
@@ -304,6 +316,7 @@ async def run_one(
             image=resolved,
             # K-3 ruling: only an extractor on the default profile is uncapped.
             cpu_exempt=capacity_exempt(is_extract=is_extract, profile=profile.id),
+            now=at,
         )
     except (ImagePullFailed, ImageMissing) as err:
         # Spec §8.4: the registry refused the digest. A per-run outcome that
@@ -320,7 +333,7 @@ async def run_one(
             retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS,
             error=str(err),
         )
-        await _finish(
+        written = await _finish(
             repo,
             run,
             transition.status,
@@ -330,12 +343,11 @@ async def run_one(
             at,
             on_dead=on_dead,
         )
-        return RunResult(run.id, transition.status, error=transition.error)
+        return RunResult(run.id, written or "skipped", error=transition.error)
     except HardwareUnavailable as err:
         # K-3: the host cannot provide what the profile promises (no NVIDIA
         # runtime, too few CPUs) -- configuration, like an unknown profile:
-        # dead, naming it, no retry. Not an ExecutorUnavailable, so this
-        # ordering is for readability only.
+        # dead, naming it, no retry. K-5's submit-time refusals subclass it.
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
     except (ExecutorUnavailable, RunCredentialsError) as err:
@@ -352,8 +364,8 @@ async def run_one(
         )
         return RunResult(run.id, _requeue_status(outcome), error=str(err))
     except CredentialBudgetExceeded as err:
-        # The run's timeout + grace needs longer credentials than the
-        # deployment allows. Configuration, not infrastructure: dead, no retry.
+        # The run's queue wait + timeout + grace needs longer credentials than
+        # the deployment allows. Configuration, not infrastructure: dead.
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
     except SecretResolutionError as err:
@@ -362,26 +374,38 @@ async def run_one(
         await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
         return RunResult(run.id, "dead", error=str(err))
 
-    transition = outcome_transition(
-        exit_code=outcome.status.exit_code,
-        timed_out=outcome.status.timed_out,
-        attempts=run.attempts,
-        max_attempts=runtime.max_attempts,
-        now=at,
-        retry_wait_seconds=DEFAULT_RETRY_WAIT_SECONDS,
-        error=outcome.status.error,
+    # K-4 I5: the run is the backend's now. Record the handle once, fenced on
+    # the claim stamp; a lost claim means another worker owns the row, so
+    # what this worker just submitted must not survive.
+    record = await repo.record_submission(
+        run.id,
+        claimed_at=run.claimed_at,
+        handle=submitted.handle.id,
+        backend=executor.name,
+        phase=executor.submitted_phase,
+        submitted_at=at,
+        credentials_expire_at=submitted.credentials_expire_at,
     )
-    await _finish(
-        repo,
-        run,
-        transition.status,
-        outcome.log_ref,
-        transition.error,
-        transition.next_attempt_at,
-        at,
-        on_dead=on_dead,
+    if record is None:
+        await asyncio.to_thread(_discard, executor, submitted.handle)
+        logger.warning(
+            "submitted run lost its claim; container removed",
+            extra={"run_id": run.id, "process_id": run.process_id},
+        )
+        return RunResult(run.id, "skipped")
+    logger.info(
+        "process run submitted",
+        extra={"run_id": run.id, "process_id": run.process_id,
+               "backend": executor.name, "cancel_requested": record.cancel_requested},
     )
-    return RunResult(run.id, transition.status, log_ref=outcome.log_ref, error=transition.error)
+    return RunResult(run.id, "running", cancel_requested=record.cancel_requested)
+
+
+def _discard(executor: Executor, handle: RunHandle) -> None:
+    """Stop and remove a run nobody will reconcile (a lost claim)."""
+    with contextlib.suppress(ExecutorUnavailable):
+        executor.cancel(handle)
+    executor.reap(handle)
 
 
 async def _finish(

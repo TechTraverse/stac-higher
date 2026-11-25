@@ -59,10 +59,11 @@ from pipeline.process.launch import (
     SecretResolutionError,
     build_run_spec,
     check_network_cap,
-    execute_run,
+    collect_run_log,
     resolve_env,
     resolve_run_image,
     resolve_runtime_image,
+    submit_run,
 )
 from pipeline.process.logs import TRUNCATION_MARKER, cap, store_run_log
 from pipeline.process.memory_executor import MemoryExecutor, exited
@@ -741,40 +742,63 @@ def test_run_keys_reject_traversal(bad):
 # ---------------------------------------------------------------------------
 
 
-def test_execute_run_reaps_even_when_the_run_fails():
+def test_submit_run_submits_and_returns_without_waiting_or_reaping():
+    """K-4: the claim path submits and returns; the Reconciler collects."""
     executor = MemoryExecutor(default_states=[exited(exit_code=1)], log_output=b"traceback")
-    store = FakeStore()
-    sts = FakeSts(
-        {"Credentials": {"AccessKeyId": "A", "SecretAccessKey": "S", "SessionToken": "T"}}
-    )
-    outcome = execute_run(
+    t = dt.datetime(2026, 11, 25, 12, 0, tzinfo=dt.UTC)
+    submitted = submit_run(
         executor,
         settings(),
-        store,
         run_id=RUN,
         process_id=PROC,
         runtime=ProcessRuntime(kind="inline_python", timeout_seconds=60),
         code="raise SystemExit(1)",
         env_entries=(),
         resolve_secret=lambda ref: "",
-        sts_client=sts,
+        sts_client=FakeSts(_OK_STS),
+        now=t,
     )
-    assert outcome.status.exit_code == 1
-    assert outcome.log_ref == run_log_key(PROC, RUN)
-    assert outcome.credentials_prefix == run_staging_prefix(RUN)
-    # A crash between launch and reap would leak a container per run.
-    assert executor.reaped == [f"mem-{RUN}"]
+    assert submitted.handle.id == f"mem-{RUN}"
+    assert submitted.credentials_prefix == run_staging_prefix(RUN)
+    assert submitted.credentials_expire_at == t + dt.timedelta(seconds=900)
+    assert executor.status_calls == [] and executor.reaped == []
 
 
-def test_execute_run_never_launches_when_credentials_fail():
+def test_submit_run_mints_for_the_profiles_queue_wait():
+    from pipeline.process.hardware import load_hardware_profiles
+
+    profile = load_hardware_profiles().get("standard")
+    sts = FakeSts(_OK_STS)
+    submit_run(
+        MemoryExecutor(), settings(), run_id=RUN, process_id=PROC,
+        runtime=ProcessRuntime(kind="inline_python", timeout_seconds=600), code="pass",
+        env_entries=(), resolve_secret=lambda ref: "", sts_client=sts, profile=profile,
+    )
+    assert sts.kwargs["DurationSeconds"] == profile.max_queue_wait_seconds + 600 + 300
+
+
+def test_collect_run_log_stores_the_log_at_its_deterministic_key():
+    executor = MemoryExecutor(log_output=b"traceback")
+    store = FakeStore()
+    handle = executor.submit(RunSpec(run_id=RUN, process_id=PROC, image="img"))
+    key = collect_run_log(
+        executor, settings(), store, handle=handle, process_id=PROC, run_id=RUN
+    )
+    assert key == run_log_key(PROC, RUN)
+    # Twice is harmless: the same object, the same bytes (a crash replay).
+    assert collect_run_log(
+        executor, settings(), store, handle=handle, process_id=PROC, run_id=RUN
+    ) == key
+
+
+def test_submit_run_never_submits_when_credentials_fail():
     """There must be no window in which a container exists without a bounded
     credential."""
     executor = MemoryExecutor()
     with pytest.raises(RunCredentialsError):
-        execute_run(
+        submit_run(
             executor,
             settings(),
-            FakeStore(),
             run_id=RUN,
             process_id=PROC,
             runtime=ProcessRuntime(kind="inline_python"),
@@ -935,14 +959,13 @@ def test_run_env_includes_the_input_variables_and_platform_values_still_win():
     assert spec.env["MINE"] == "1"
 
 
-def test_execute_run_mints_with_read_prefixes():
+def test_submit_run_mints_with_read_prefixes():
     sts = FakeSts(
         {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}}
     )
-    execute_run(
+    submit_run(
         MemoryExecutor(),
         settings(),
-        FakeStore(),
         run_id=RUN,
         process_id=PROC,
         runtime=ProcessRuntime(kind="inline_python"),

@@ -403,11 +403,39 @@ async def _run(
     )
 
 
+async def _claim(repo, run):
+    """K-4: a scripted run claimed through the fake, so it carries the claim
+    stamp and a ledger row the Reconciler can collect."""
+    repo.due_runs = [run]
+    [claimed] = await repo.claim_due_runs(NOW, 1, backend="memory")
+    return claimed
+
+
+def _reconciler(repo, executor, *, on_dead=None, finalized=None):
+    from pipeline.process.reconcile import Reconciler
+
+    async def _finalize(run_id, process_id):
+        if finalized is not None:
+            finalized.append((run_id, process_id))
+
+    async def _run_now(run_id):
+        return None
+
+    return Reconciler(
+        repo=repo, executor=executor, settings=Settings.from_env({}),
+        storage_client=FakeStore(), enqueue_finalize=_finalize, enqueue_run_now=_run_now,
+        on_dead=on_dead, clock=lambda: NOW,
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_successful_run_records_success_on_its_source():
     repo = FakeProcessRepo()
-    result = await _run(queued(), MemoryExecutor(default_states=[exited(0)]), repo)
-    assert result.status == "succeeded"
+    executor = MemoryExecutor(default_states=[exited(0)])
+    result = await _run(await _claim(repo, queued()), executor, repo)
+    assert result.status == "running"
+    assert repo.source_runs == []  # nothing is known until it is collected
+    assert await _reconciler(repo, executor).reconcile_id(result.run_id) == "succeeded"
     assert repo.source_runs == [(SRC, True)]
 
 
@@ -489,7 +517,7 @@ async def test_a_kind_2_run_launches_its_pinned_digest_with_the_bootstrap():
         FakeProcessRepo(),
         images_repo=images_with(),
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
     spec = executor.submitted[0]
     assert spec.image == f"{IMG_REF}@{IMG_DIGEST}"
     assert spec.user_image is True
@@ -509,7 +537,7 @@ async def test_a_kind_3_run_carries_no_code_and_its_command_is_cmd():
         FakeProcessRepo(),
         images_repo=images_with(),
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
     spec = executor.submitted[0]
     assert spec.cmd == ("tool", "--run")
     assert spec.entrypoint == ()
@@ -527,7 +555,7 @@ async def test_a_flagged_image_still_launches():
         FakeProcessRepo(),
         images_repo=images_with(status="flagged"),
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
     assert len(executor.submitted) == 1
 
 
@@ -545,7 +573,7 @@ async def test_an_expired_exception_does_not_block_a_launch():
         FakeProcessRepo(),
         images_repo=images_with(exception_expires_at=NOW - dt.timedelta(days=1)),
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
     assert len(executor.submitted) == 1
 
 
@@ -595,7 +623,7 @@ async def test_the_staleness_boundary_is_inclusive():
         FakeProcessRepo(),
         images_repo=images_with(last_scanned_at=NOW - dt.timedelta(days=30)),
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
 
 
 @pytest.mark.asyncio
@@ -686,7 +714,7 @@ async def test_an_unreadable_policy_requeues_a_user_image_run_without_spending_a
 async def test_an_inline_run_never_reads_the_image_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("PROCESS_IMAGE_POLICY_FILE", str(tmp_path / "missing.json"))
     result = await _run(queued(), MemoryExecutor(), FakeProcessRepo())
-    assert result.status == "succeeded"
+    assert result.status == "running"
 
 
 @pytest.mark.asyncio
@@ -860,7 +888,7 @@ async def test_run_one_plans_stages_and_grants_before_launch():
     result = await _run(
         _remote_input_run(), executor, repo, storage_client=store, fetch_remote=fetch
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
     assert fetched == ["https://h/x.nc"]
     assert any(k.endswith("/manifest.json") for k in store.objects)
     spec = executor.submitted[-1]
@@ -923,11 +951,12 @@ async def test_a_dead_extractor_run_reports_its_batch():
         seen.append((run.id, error))
 
     # attempts at the budget, so the failing exit code is TERMINAL, not a retry.
-    run = _extract_run(attempts=3)
+    run = await _claim(repo, _extract_run(attempts=3))
+    executor = MemoryExecutor(default_states=[exited(1)])
     result = await run_one(
         run,
         repo=repo,
-        executor=MemoryExecutor(default_states=[exited(1)]),
+        executor=executor,
         settings=Settings.from_env({}),
         storage_client=FakeStore(),
         resolve_secret=lambda ref: "x",
@@ -935,7 +964,9 @@ async def test_a_dead_extractor_run_reports_its_batch():
         sts_client=FakeSts(),
         on_dead=on_dead,
     )
-    assert result.status == "dead"
+    assert result.status == "running" and seen == []
+    outcome = await _reconciler(repo, executor, on_dead=on_dead).reconcile_id(run.id)
+    assert outcome == "dead"
     assert seen and seen[0][0] == run.id
     assert seen[0][1]
 
@@ -949,10 +980,12 @@ async def test_a_retryable_extractor_failure_leaves_its_batch_alone():
     async def on_dead(run, error):
         seen.append(run.id)
 
+    run = await _claim(repo, _extract_run(attempts=1))
+    executor = MemoryExecutor(default_states=[exited(1)])
     result = await run_one(
-        _extract_run(attempts=1),
+        run,
         repo=repo,
-        executor=MemoryExecutor(default_states=[exited(1)]),
+        executor=executor,
         settings=Settings.from_env({}),
         storage_client=FakeStore(),
         resolve_secret=lambda ref: "x",
@@ -960,7 +993,9 @@ async def test_a_retryable_extractor_failure_leaves_its_batch_alone():
         sts_client=FakeSts(),
         on_dead=on_dead,
     )
-    assert result.status == "failed"
+    assert result.status == "running"
+    outcome = await _reconciler(repo, executor, on_dead=on_dead).reconcile_id(run.id)
+    assert outcome == "failed"
     assert seen == []
 
 
@@ -980,7 +1015,7 @@ async def test_an_extractor_run_reads_its_draft_and_grants_its_own_collection():
         now=NOW,
         sts_client=FakeSts(),
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
     manifest_key = next(k for k in store.objects if k.endswith("/manifest.json"))
     manifest = json.loads(store.objects[manifest_key])
     assert manifest["kind"] == "extract"
@@ -1035,7 +1070,7 @@ async def test_an_extractor_run_stages_a_reference_mode_asset_from_its_source():
         sts_client=FakeSts(),
         fetch_remote=fetch_remote,
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
     assert seen == ["https://src.example/a.nc"]
     manifest_key = next(k for k in store.objects if k.endswith("/manifest.json"))
     asset = json.loads(store.objects[manifest_key])["items"][0]["assets"]["d"]
@@ -1071,7 +1106,7 @@ async def test_run_one_launches_the_alias_image_when_configured():
     result = await _run(
         queued(runtime={"kind": "inline_python", "runtime_image": "stactools"}), executor, repo
     )
-    assert result.status == "succeeded"
+    assert result.status == "running"
     assert [spec.image for spec in executor.submitted] == [
         "stac-higher-process-runtime-stactools:local"
     ]
@@ -1157,7 +1192,7 @@ async def test_run_one_marks_a_test_run_interactive():
     repo = FakeProcessRepo()
     executor = MemoryExecutor(default_states=[exited(0)])
     result = await _run(queued(is_test=True), executor, repo)
-    assert result.status == "succeeded"
+    assert result.status == "running"
     spec = executor.submitted[-1]
     assert spec.priority == "interactive"
     assert spec.profile is not None and spec.profile.id == "standard"
@@ -1578,3 +1613,57 @@ async def test_sts_refusing_the_duration_kills_the_run_instead_of_requeueing_it(
     assert result.error.startswith("credential_budget_exceeded")
     assert "PROCESS_MAX_CREDENTIAL_SECONDS" in result.error
     assert executor.submitted == []
+
+
+# -- K-4: the claim path submits and returns -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_one_submits_and_returns():
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor(default_states=[exited(0)])
+    run = await _claim(repo, queued())
+    result = await _run(run, executor, repo)
+    assert result.status == "running" and result.cancel_requested is False
+    [submission] = repo.submissions
+    assert submission["handle"] == f"mem-{run.id}"
+    assert submission["backend"] == "memory"
+    assert submission["phase"] == executor.submitted_phase
+    assert submission["claimed_at"] == run.claimed_at
+    assert submission["credentials_expire_at"] is not None
+    # Nothing waited on the run: no status read, no reap, no log, no verdict.
+    assert executor.status_calls == [] and executor.reaped == []
+    assert repo.finished == [] and repo._row(run.id)["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_a_lost_claim_cancels_what_it_submitted():
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor()
+    run = await _claim(repo, queued())
+    # Requeued and re-claimed under this worker (a new claim stamp).
+    repo._row(run.id)["started_at"] = NOW + dt.timedelta(seconds=5)
+    result = await _run(run, executor, repo)
+    assert result.status == "skipped"
+    assert executor.cancelled == [f"mem-{run.id}"]
+    assert executor.reaped == [f"mem-{run.id}"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_requested_before_submission_is_reported():
+    repo = FakeProcessRepo()
+    run = await _claim(repo, queued())
+    repo._row(run.id)["cancel_requested_at"] = NOW
+    result = await _run(run, MemoryExecutor(), repo)
+    assert result.status == "running" and result.cancel_requested is True
+
+
+@pytest.mark.asyncio
+async def test_a_pre_submit_verdict_lands_cancelled_when_requested():
+    repo = FakeProcessRepo()
+    run = await _claim(repo, queued(code=None))
+    repo._row(run.id)["cancel_requested_at"] = NOW
+    result = await _run(run, MemoryExecutor(), repo)
+    assert result.status == "dead"  # what run_one decided...
+    assert repo._row(run.id)["status"] == "cancelled"  # ...cancel wins (I10)
+    assert repo.source_runs == []
