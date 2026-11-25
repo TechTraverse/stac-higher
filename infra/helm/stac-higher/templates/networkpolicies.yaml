@@ -40,7 +40,7 @@ spec:
         - protocol: TCP
           port: 4321
 {{- /* R-7: the catalog plane and cube-server. Public ports admit publicIngressFrom (null or [] -> appIngressFrom;
-both empty -> any source). The proxy also admits the app (BFF writes); stac-api admits only the proxy. */}}
+both empty -> any source). The proxy also admits the app (BFF writes); stac-api admits the proxy, and the demo seed when enabled. */}}
 {{- $np := .Values.networkPolicy -}}
 {{- $public := $np.publicIngressFrom | default $np.appIngressFrom -}}
 {{- $appPeer := dict "podSelector" (dict "matchLabels" (include "stac-higher.selectorLabels" (dict "root" . "component" "app") | fromYaml)) -}}
@@ -51,6 +51,10 @@ both empty -> any source). The proxy also admits the app (BFF writes); stac-api 
 {{- end -}}
 {{- /* stac-api peers: append further in-cluster callers here. */ -}}
 {{- $stacApiFrom := list $proxyPeer -}}
+{{- if .Values.demoSeed.enabled -}}
+{{- /* R-10's seeds write collections and items to stac-api directly, without a token (I-169). */ -}}
+{{- $stacApiFrom = append $stacApiFrom (dict "podSelector" (dict "matchLabels" (include "stac-higher.selectorLabels" (dict "root" . "component" "demo-seed") | fromYaml))) -}}
+{{- end -}}
 {{- range $p := list (list "auth-proxy" 8000 $proxyFrom) (list "stac-api" 8082 $stacApiFrom) (list "titiler" 8084 $public) (list "tipg" 8085 $public) (list "cube-server" 8086 $public) }}
 ---
 apiVersion: networking.k8s.io/v1

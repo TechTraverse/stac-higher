@@ -55,6 +55,19 @@ describe.skipIf(!helmReady())("chart network policies", () => {
     ]);
   });
 
+  it("stac-api admits the demo seed pod only when the seed is enabled (its writes go there directly, I-169)", () => {
+    const docs = render({}, "demo-seed");
+    const job = docs.find((d) => d.kind === "Job" && d.spec.template.metadata.labels?.["app.kubernetes.io/component"] === "demo-seed");
+    expect(job).toBeTruthy();
+    const from = find(docs, "stac-higher-stac-api").spec.ingress[0].from;
+    expect(from.map((p: any) => p.podSelector.matchLabels["app.kubernetes.io/component"])).toEqual(["auth-proxy", "demo-seed"]);
+    const seedPeer = from[1].podSelector.matchLabels;
+    expect(Object.keys(seedPeer).sort()).toEqual(["app.kubernetes.io/component", "app.kubernetes.io/instance", "app.kubernetes.io/name"]);
+    expect(job.spec.template.metadata.labels).toMatchObject(seedPeer);
+    const off = find(render({ demoSeed: { enabled: false } }, "demo-seed"), "stac-higher-stac-api").spec.ingress[0].from;
+    expect(off.map((p: any) => p.podSelector.matchLabels["app.kubernetes.io/component"])).toEqual(["auth-proxy"]);
+  });
+
   it("public catalog ports are open by default and follow publicIngressFrom, else appIngressFrom", () => {
     const open = render();
     for (const [c, port] of PORTS) expect(find(open, `stac-higher-${c}`).spec.ingress, c).toEqual([{ ports: [{ protocol: "TCP", port }] }]);
