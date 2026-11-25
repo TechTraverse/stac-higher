@@ -7,6 +7,9 @@ on:
       - infra/helm/**
       - infra/examples/aws-eks/values.yaml
       - infra/image-policy/**
+      - docker-compose.yml
+      - infra/compose.auth-enforced.yml
+      - infra/proxy-policy/Dockerfile
       - scripts/check-helm.sh
       - app/src/__tests__/helm/**
       - .github/workflows/helm.yml
@@ -15,6 +18,9 @@ on:
       - infra/helm/**
       - infra/examples/aws-eks/values.yaml
       - infra/image-policy/**
+      - docker-compose.yml
+      - infra/compose.auth-enforced.yml
+      - infra/proxy-policy/Dockerfile
       - scripts/check-helm.sh
       - app/src/__tests__/helm/**
       - .github/workflows/helm.yml
