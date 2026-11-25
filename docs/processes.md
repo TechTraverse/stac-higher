@@ -146,9 +146,16 @@ oversized run. The form runs the deploy check itself first and shows the
 bound under the fieldset, with **Deploy** disabled until the value fits — so
 a revision whose numbers its profile no longer admits shows up when you open
 it, though its runs keep dying at launch until you redeploy it. Every run row shows the hardware its
-pinned revision asked for. The Docker backend applies `cpu` and the
-profile's device requests from K-3 on; until then the numbers are recorded
-and enforced against the bounds only.
+pinned revision asked for.
+
+On the Docker backend the numbers are limits, not hints: `memory_mb` caps
+memory, `cpu` caps CPU time (fractional values work — `0.25` is a quarter
+of a core; extractor runs on `standard` are not CPU-capped), and a run with `gpu_count` above 0 gets that many GPUs through
+the profile's device requests. A GPU run needs a Docker host with the NVIDIA
+container runtime; on any other host (Docker Desktop on macOS never has one)
+it **dies at launch** naming the profile, because no amount of waiting
+provides the hardware. A run asking for more CPUs than the host has dies the
+same way.
 
 ## Bring your own image
 
@@ -682,14 +689,34 @@ silently receive an empty string where a credential was intended.
 Within seconds of the triggering item landing. The catalog write wakes the
 dispatcher over a Postgres `NOTIFY`, the dispatcher queues your run, and the
 run is handed straight to the executor — no clock in between. A one-minute
-sweep still exists, but only to recover a run whose immediate job was lost, to
-release one the rate ceiling deferred, and to retry a failed one.
+sweep (the run tick) still exists, but only to recover a run whose immediate
+job was lost, to release one the rate ceiling deferred or that waited for
+capacity, and to retry a failed one.
 
 Items that arrive for the same source while a run is still **queued** join
 that run's batch rather than starting another. Once a run is claimed it is
 out of reach, so anything arriving after that starts the next run — you never
 lose items to a batch already executing, and you never see the same item in
 two runs.
+
+A run can also wait for **capacity**: each hardware profile carries how many
+of its runs one Docker host runs at once (the deployment's profile file,
+`backend.docker.capacity`; the local set allows 2 `standard` and 1
+`cpu-large`). When that many are already running, the run is not started: it
+stays queued as *Waiting for capacity* (the tooltip names the profile and the
+limit), without spending an attempt, and the one-minute run tick tries it
+again from 15 s later. A slot that frees is therefore taken within about a
+minute and a quarter. Waiting runs have no queue order: the tick takes the
+oldest first, but a newly triggered run can take a freed slot before them. A
+full profile never holds back runs on other profiles. **Extractor** runs (see
+"Extractors") on the default `standard` profile, which includes every
+built-in extractor, are exempt: they never wait for capacity, never count
+toward it, and are not CPU-capped, so only the pipeline worker bounds them.
+An extractor whose revision picks any other profile is treated like any
+other run on that profile. A started run shows *Starting* for its whole run
+today; the *Running* phase and the queue position the spec puts in the
+tooltip come with the asynchronous executor (K-4). On a cluster (K-5 on)
+the same wait is Kueue holding the run for quota.
 
 ## Rate ceiling
 

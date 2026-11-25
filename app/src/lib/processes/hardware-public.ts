@@ -129,9 +129,23 @@ function fmt(n: number): string {
   return String(n);
 }
 
+/** A finite number that is not a boolean — what a stored revision's value
+ * must be before any bound is compared (K-3: K-1's deferred type guards).
+ * The pipeline's `_is_number` / `_is_whole` apply the same rule, and an
+ * integral float (`1.0`, which Python reads as a float) is whole on both. */
+function isNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isWhole(value: unknown): value is number {
+  return isNumber(value) && Number.isInteger(value);
+}
+
 /** The bounds check of the dual enforcement (spec §4), with the field it is
  * about. The message is the SAME text `check_hardware_bounds` raises in the
- * pipeline (the contract fixture's `bounds_cases[].reason` pins both). */
+ * pipeline (the contract fixture's `bounds_cases[].reason` pins both). Each
+ * number is type-checked before its bounds: a stored revision is untrusted
+ * input whatever its TypeScript type says. */
 export function hardwareBoundsIssue(
   hardware: ProcessHardware,
   memoryMb: number,
@@ -144,11 +158,17 @@ export function hardwareBoundsIssue(
       message: `hardware.profile '${hardware.profile}' is not a hardware profile of this deployment`,
     };
   }
+  if (!isNumber(hardware.cpu)) {
+    return { field: "cpu", message: "hardware.cpu must be a number" };
+  }
   if (hardware.cpu < profile.cpu.min || hardware.cpu > profile.cpu.max) {
     return {
       field: "cpu",
       message: `hardware.cpu ${fmt(hardware.cpu)} is outside profile '${profile.id}' bounds ${fmt(profile.cpu.min)}–${fmt(profile.cpu.max)}`,
     };
+  }
+  if (!isWhole(hardware.gpu_count)) {
+    return { field: "gpu_count", message: "hardware.gpu_count must be a whole number" };
   }
   if (profile.gpu_count === null) {
     if (hardware.gpu_count !== 0) {
@@ -165,6 +185,9 @@ export function hardwareBoundsIssue(
       field: "gpu_count",
       message: `hardware.gpu_count ${hardware.gpu_count} is outside profile '${profile.id}' bounds ${fmt(profile.gpu_count.min)}–${fmt(profile.gpu_count.max)}`,
     };
+  }
+  if (!isWhole(memoryMb)) {
+    return { field: "memory_mb", message: "memory_mb must be a whole number" };
   }
   if (memoryMb < profile.memory_mb.min || memoryMb > profile.memory_mb.max) {
     return {

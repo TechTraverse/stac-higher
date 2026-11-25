@@ -22,6 +22,7 @@ path's (``launch.resolve_run_image``, the C-2 digest check).
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -109,22 +110,47 @@ def _enum(raw: Any, allowed: Sequence[str], field_name: str, default: str | None
     return raw
 
 
+def _finite(raw: Any) -> bool:
+    """Finite as a float: never an OverflowError on a huge int (which
+    JavaScript reads as Infinity) or a ValueError on NaN downstream."""
+    try:
+        return math.isfinite(float(raw))
+    except OverflowError:
+        return False
+
+
 def _int_in_range(
-    raw: Any, field_name: str, *, default: int, minimum: int, maximum: int | None = None
+    raw: Any,
+    field_name: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int | None = None,
+    whole: bool = False,
 ) -> int:
     """Coerce a number to int (truncating, the lenient-reader direction) and
     bound it. Booleans are rejected outright — ``True`` is an ``int`` in Python
-    and would silently become ``1``."""
+    and would silently become ``1``. ``whole`` refuses a fractional value
+    instead of truncating it (K-3: a profile-bounded hardware number)."""
     if raw is None:
         return default
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        raise ProcessConfigError(f"{field_name} must be a number, got {raw!r}")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not _finite(raw):
+        raise ProcessConfigError(f"{field_name} must be a number, got {_short(raw)}")
+    if whole and not float(raw).is_integer():
+        raise ProcessConfigError(f"{field_name} must be a whole number, got {raw!r}")
     value = int(raw)
     if value < minimum:
-        raise ProcessConfigError(f"{field_name} must be >= {minimum}, got {raw!r}")
+        raise ProcessConfigError(f"{field_name} must be >= {minimum}, got {_short(raw)}")
     if maximum is not None and value > maximum:
-        raise ProcessConfigError(f"{field_name} must be <= {maximum}, got {raw!r}")
+        raise ProcessConfigError(f"{field_name} must be <= {maximum}, got {_short(raw)}")
     return value
+
+
+def _short(raw: Any) -> str:
+    """A bounded repr for error text (a 400-digit int must not fill the
+    ledger's error column)."""
+    text = repr(raw)
+    return text if len(text) <= 40 else f"{text[:37]}..."
 
 
 def _non_blank(raw: Any, field_name: str) -> str:
@@ -236,8 +262,15 @@ def _parse_hardware(raw: Any) -> tuple[str, float, int]:
     if not isinstance(profile, str) or not _PROFILE_ID_RE.match(profile):
         raise ProcessConfigError(f"runtime.hardware.profile must be a profile id, got {profile!r}")
     cpu_raw = doc.get("cpu")
-    if isinstance(cpu_raw, bool) or not isinstance(cpu_raw, (int, float)) or cpu_raw <= 0:
-        raise ProcessConfigError(f"runtime.hardware.cpu must be a positive number, got {cpu_raw!r}")
+    if (
+        isinstance(cpu_raw, bool)
+        or not isinstance(cpu_raw, (int, float))
+        or not _finite(cpu_raw)
+        or cpu_raw <= 0
+    ):
+        raise ProcessConfigError(
+            f"runtime.hardware.cpu must be a positive number, got {_short(cpu_raw)}"
+        )
     gpu_raw = doc.get("gpu_count")
     if gpu_raw is not None and isinstance(gpu_raw, float) and not gpu_raw.is_integer():
         raise ProcessConfigError(f"runtime.hardware.gpu_count must be an integer, got {gpu_raw!r}")
@@ -337,6 +370,8 @@ def parse_process_runtime(raw: Any) -> ProcessRuntime:
             "runtime.memory_mb",
             default=DEFAULT_MEMORY_MB,
             minimum=MIN_MEMORY_MB,
+            # K-3: profile-bounded, so a fraction is refused, not truncated.
+            whole=True,
         ),
         timeout_seconds=_int_in_range(
             doc.get("timeout_seconds"),

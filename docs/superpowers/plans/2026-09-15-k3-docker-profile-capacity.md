@@ -872,3 +872,60 @@ git commit -m "feat(processes): Waiting-for-capacity / Starting phase chips on r
 - Spec §5.2: the six columns (T1) + the ruled `next_attempt_at`; `cancelled` deferred to K-4 per the TODO slice text — noted in the constraints. §8: `NanoCpus`, `DeviceRequests` behind the runtime probe, capacity → `pending_capacity` + 15 s + no attempt (T2/T3). §3.4 docker block read (T2). §9 phase chip (T4); Cancel/`cancelled`/TestRunCard phases are K-4.
 - Type consistency: `DockerBackend.capacity: int | None` / `docker_backend(profile)` (T2) used by T3's launch; `count_running_on_profile(profile_id, *, exclude_run_id)` / `release_for_capacity(run_id, *, next_attempt_at, detail)` identical in ABC, Pg, fake and `run_one`; `capacity_detail` text equals the string T4's test asserts and T2's test expects; `PHASES` order equals the fixture and the migration CHECK (T1 test compares).
 - Placeholders: none — each step carries its code and command.
+
+## Addendum (2026-11-25): rulings from the implementation and its review
+
+These supersede the tasks above where they disagree.
+
+- **Migration placement.** `029_process_runs_executor_phase` sits between 028
+  and 030 in `MIGRATIONS`, not after 033. `runMigrations()` skips by recorded
+  name, so a database already at 033 applies just 029
+  (`migrate-ordering.test.ts`). K-4's `cancelled` status is migration 031,
+  not 030.
+- **Ruling: capacity is admitted in the claim, not checked in `run_one`.**
+  The review found that the Task 2 design (count the running runs after the
+  claim, then release) had two problems. It blocked the head of the tick's
+  `LIMIT`: released runs kept their `created_at` and were re-claimed every
+  tick. It also over-admitted, because ordering by `started_at` used the
+  workers' clocks, taken before the claim commits. Both claim statements now
+  admit under `pg_advisory_xact_lock(hashtext('process-capacity:' ||
+  profile))`. In the same transaction they count the admitted runs
+  (`status = 'running' AND executor_backend IS NOT NULL`, extractor runs
+  excluded) and stamp `executor_backend` on the claim. A run whose profile is
+  full is not claimed. It stays `queued` as `pending_capacity` with
+  `next_attempt_at` 15 s out. The tick skips a full profile for the rest of
+  its call, so the profile spends none of the batch. `count_running_on_profile`
+  and `release_for_capacity` are gone. Invariant: at no committed instant are
+  more than `capacity` runs admitted on a profile, regardless of clocks
+  (`tests/test_integration_process_capacity.py`, run against Postgres).
+  K-4's watcher reuses `executor_backend` as the admitted marker, together
+  with `next_attempt_at`.
+- **Ruling: extractor runs on the default profile are exempt from capacity
+  and from `NanoCpus`; extractors on any other profile are not.** Spec §8
+  does not say how extractor runs (G-6) relate to profile capacity. An
+  extractor run whose revision is on `DEFAULT_HARDWARE_PROFILE` (`standard`,
+  which includes every revision without a `hardware` block, so every
+  built-in extractor) is claimed without admission, never counts, and
+  launches without `NanoCpus` (`RunSpec.cpu_exempt`; one rule,
+  `repo.capacity_exempt`, used by the claim SQL, the fake and the launch
+  path). An extractor whose revision names any other profile is admitted
+  like a process run: it counts, waits when the profile is full, and gets
+  `NanoCpus` and the profile's `DeviceRequests`. Why: process runs block the
+  worker's event loop (`execute_run` waits synchronously), so a pipeline
+  process has executed one run at a time before and after K-3. Counting
+  default-profile extractors against `standard` (capacity 2) would hold back
+  tick batches, and capping them at `standard`'s 1 CPU would slow each
+  extraction, both regressions on ingest throughput. Narrowed after a
+  security review: a blanket exemption would let an operator's extractor
+  bypass a large or GPU profile's limits. Residual: extractor runs on
+  `standard` are bounded only by the worker (one run at a time per pipeline
+  process today, the worker's slot count after K-4). See ISSUES I-170.
+- **Ruling: the `backend.docker` block is validated with the document.** A
+  malformed block makes the profile file unusable. That is the
+  infrastructure path: requeue with no attempt spent. It is not a dead run
+  for every run on the profile. An integral float `capacity` is accepted.
+- **Socket proxy.** `INFO=1` (I-171). `GET /info` also gives `NCPU`, which is
+  checked against the run's `cpu` before create (best effort; the daemon's
+  "Range of CPUs" refusal is the fallback). A 403 from `/info` on a GPU run,
+  and "could not select device driver" on create or start, are
+  `HardwareUnavailable` (dead), not an outage.

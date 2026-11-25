@@ -12,8 +12,15 @@ ADR that decided it — read the ADR before arguing with the rule.
 ## Rules
 
 - **Schema ownership**: the app owns every `stac_higher.*` DDL (migrations
-  run on the first API request; append to `MIGRATIONS` in
-  `app/src/lib/db/migrate.ts`, next number, never reorder). The pipeline
+  run on the first API request, or `npm run migrate` from `app/`). An entry
+  in `MIGRATIONS` (`app/src/lib/db/migrate.ts`) sits at the position of its
+  RESERVED number, which may be before entries that already landed (029
+  after 030–033), and an entry is never renamed or renumbered once applied
+  anywhere. The runner is keyed by name: it skips every recorded name and
+  applies the rest in array order, so a late lower number still applies
+  (`migrate-ordering.test.ts`). All pending migrations share one
+  transaction; DDL on a hot table bounds its lock wait with a
+  `SET LOCAL lock_timeout` reset before the entry ends (029). The pipeline
   reads and writes rows, never DDL (ADR 0001). Partitioned tables are
   reconciled by `runMigrations()` (ADR 0012). Migration numbers are reserved
   on the GitHub issue (`migration` label) — check before taking one.

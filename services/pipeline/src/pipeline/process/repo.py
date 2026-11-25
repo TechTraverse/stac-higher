@@ -22,10 +22,12 @@ import abc
 import datetime as dt
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pipeline.process.hardware import DEFAULT_HARDWARE_PROFILE
+from pipeline.process.ledger import CAPACITY_RETRY_SECONDS, capacity_detail
 from pipeline.process.matcher import ProcessSource
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,31 @@ logger = logging.getLogger(__name__)
 #: between its check and its flip. Each retry finds that run and folds, so a
 #: second attempt is the most a single race needs.
 _REQUEUE_ATTEMPTS = 3
+
+#: K-3: per-profile capacity, profile id -> concurrent runs one host admits
+#: (None = unbounded; a profile missing from the map is unbounded too).
+Capacities = Mapping[str, "int | None"]
+
+#: The executor backend stamped on a run at admission (`executor_backend`,
+#: migration 029). K-5 passes "kubernetes".
+DEFAULT_EXECUTOR_BACKEND = "docker"
+
+#: The profile a revision's runs are admitted against (spec §4: an absent
+#: `hardware` block is the default profile).
+_PROFILE_SQL = f"coalesce(rev.runtime->'hardware'->>'profile', '{DEFAULT_HARDWARE_PROFILE}')"
+
+#: K-3 ruling (narrowed): an extractor run on the DEFAULT profile is exempt
+#: from capacity (it is ingest work; extraction throughput must not regress).
+#: An extractor whose revision names any other profile is admitted like a
+#: process run. Parameterised by %(default_profile)s.
+_EXEMPT_SQL = (
+    f"(r.association_id IS NOT NULL AND {_PROFILE_SQL} = %(default_profile)s)"
+)
+
+
+def capacity_exempt(*, is_extract: bool, profile: str) -> bool:
+    """The exemption rule in Python (the fake and the launch path use it)."""
+    return is_extract and profile == DEFAULT_HARDWARE_PROFILE
 
 
 @dataclass(frozen=True)
@@ -200,22 +227,50 @@ class ProcessRepo(abc.ABC):
         return run_id, False
 
     @abc.abstractmethod
-    async def claim_run(self, run_id: str, now: dt.datetime) -> QueuedRun | None:
+    async def claim_run(
+        self,
+        run_id: str,
+        now: dt.datetime,
+        *,
+        capacities: Capacities | None = None,
+        backend: str = DEFAULT_EXECUTOR_BACKEND,
+    ) -> QueuedRun | None:
         """Claim ONE run by id, or None when it is not claimable (already
-        running, still deferred, or gone).
+        running, still deferred, waiting for capacity, or gone).
 
-        The same atomic UPDATE as :meth:`claim_due_runs` with a different
+        The same admission as :meth:`claim_due_runs` with a different
         predicate, deliberately: the immediate-dispatch job (G-3) and the
         periodic tick race by design, and whichever claims first wins while
         the other simply finds nothing.
+
+        **Capacity (K-3, spec §8).** With ``capacities``, a process or test
+        run on a bounded profile is ADMITTED only when fewer than
+        ``capacity`` runs on that profile are admitted right now (``running``
+        with ``executor_backend`` set). Otherwise it is not claimed: it stays
+        ``queued`` as ``phase = pending_capacity`` with ``next_attempt_at``
+        15 s out, and no attempt is spent. An extractor run
+        (``association_id`` set) on the DEFAULT profile is exempt and never
+        counts (K-3 ruling: extraction throughput must not regress); an
+        extractor on any other profile is admitted like a process run.
+        ``capacities=None`` admits everything.
         """
 
     @abc.abstractmethod
-    async def claim_due_runs(self, now: dt.datetime, limit: int) -> list[QueuedRun]:
-        """Atomically claim runnable rows: `queued` with no deferral (or one
-        that has elapsed), plus `failed` rows whose retry is due. Stamps
-        `running` + `started_at` + attempts in the claiming statement so
-        overlapping workers cannot double-claim (the I-40 idiom)."""
+    async def claim_due_runs(
+        self,
+        now: dt.datetime,
+        limit: int,
+        *,
+        capacities: Capacities | None = None,
+        backend: str = DEFAULT_EXECUTOR_BACKEND,
+    ) -> list[QueuedRun]:
+        """Claim up to ``limit`` runnable rows, oldest first: `queued` with no
+        deferral and no pending ``next_attempt_at`` (or ones that have
+        elapsed), plus `failed` rows whose retry is due. Each claim is
+        admitted as :meth:`claim_run` describes. A profile found full is
+        skipped for the rest of the call (its due queued runs are marked
+        ``pending_capacity``), so it neither spends the ``limit`` nor holds
+        back newer work on other profiles."""
 
     @abc.abstractmethod
     async def get_run(self, run_id: str) -> RunRecord | None:
@@ -554,95 +609,203 @@ class PgProcessRepo(ProcessRepo):
             await conn.commit()
         return (str(row[0]) if row else None), False
 
-    async def claim_due_runs(  # pragma: no cover
-        self, now: dt.datetime, limit: int
-    ) -> list[QueuedRun]:
-        async with await self._connect() as conn:
-            cur = await conn.execute(
-                "WITH due AS ("
-                "  SELECT r.id FROM stac_higher.process_runs r"
-                "   WHERE (r.status = 'queued'"
-                "          AND (r.rate_deferred_until IS NULL"
-                "               OR r.rate_deferred_until <= %(now)s))"
-                "      OR (r.status = 'failed' AND r.finished_at <= %(now)s)"
-                "   ORDER BY r.created_at"
-                "   LIMIT %(limit)s"
-                "   FOR UPDATE SKIP LOCKED"
-                ")"
-                " UPDATE stac_higher.process_runs r"
-                "    SET status = 'running', started_at = %(now)s,"
-                "        attempts = r.attempts + 1,"
-                "        rate_deferred_until = NULL"
-                "   FROM due, stac_higher.process_revisions rev"
-                "  WHERE r.id = due.id AND rev.id = r.revision_id"
-                " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
-                "           r.association_id, r.attempts, r.input_items,"
-                "           rev.runtime, rev.code, rev.env, r.is_test",
-                {"now": now, "limit": limit},
-            )
-            rows = await cur.fetchall()
+    # -- claims + capacity admission (K-3) ------------------------------------
+    #
+    # THE INVARIANT: at no committed instant are more than `capacity` runs
+    # ADMITTED on a profile, whatever the workers' clocks say. Admitted means
+    # `status = 'running' AND executor_backend IS NOT NULL`, minus extractor
+    # runs on the default profile (exempt, `_EXEMPT_SQL`). Every admission happens in ONE
+    # transaction that takes `pg_advisory_xact_lock('process-capacity:' ||
+    # profile)`, counts the admitted runs in a statement that starts after
+    # the lock is held (so it sees every earlier admission, all of which
+    # committed before releasing the lock), and stamps `executor_backend` in
+    # the claiming UPDATE before committing. Runs leave the admitted set only
+    # by changing status (finish, requeue, stall sweep), which can only lower
+    # the count. Lock order is always advisory lock, then row lock: nothing
+    # else takes the advisory lock, so no cycle exists. K-4's watcher reuses
+    # `executor_backend` as the admitted marker and `next_attempt_at`.
+
+    _QUEUED_DUE = (
+        "(r.status = 'queued'"
+        " AND (r.rate_deferred_until IS NULL OR r.rate_deferred_until <= %(now)s)"
+        " AND (r.next_attempt_at IS NULL OR r.next_attempt_at <= %(now)s))"
+    )
+    _FAILED_DUE = "(r.status = 'failed' AND r.finished_at <= %(now)s)"
+    _RETURNING = (
+        " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
+        "           r.association_id, r.attempts, r.input_items,"
+        "           rev.runtime, rev.code, rev.env, r.is_test"
+    )
+
+    @staticmethod
+    def _queued_run(r: Any) -> QueuedRun:
+        return QueuedRun(
+            id=str(r[0]),
+            process_id=str(r[1]),
+            revision_id=str(r[2]),
+            source_id=str(r[3]) if r[3] else None,
+            association_id=str(r[4]) if r[4] else None,
+            attempts=int(r[5]),
+            input_items=list(r[6] or []),
+            runtime=dict(r[7] or {}),
+            code=r[8],
+            env=list(r[9] or []),
+            is_test=bool(r[10]),
+        )
+
+    async def _admit_and_claim(  # pragma: no cover
+        self,
+        conn: Any,
+        run_id: str,
+        *,
+        now: dt.datetime,
+        due_sql: str,
+        capacities: Capacities | None,
+        backend: str,
+        mark_profile: bool,
+    ) -> tuple[QueuedRun | None, str | None]:
+        """One transaction: admit and claim ``run_id``, or not. Returns
+        ``(run, None)`` on a claim, ``(None, profile)`` when its profile is
+        full, ``(None, None)`` when it is not claimable (someone else took
+        it, or it is no longer due)."""
+        cur = await conn.execute(
+            f"SELECT {_PROFILE_SQL}, r.association_id IS NOT NULL"
+            "  FROM stac_higher.process_runs r"
+            "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
+            " WHERE r.id = %(id)s",
+            {"id": run_id},
+        )
+        found = await cur.fetchone()
+        if found is None:
             await conn.commit()
-        return [
-            QueuedRun(
-                id=str(r[0]),
-                process_id=str(r[1]),
-                revision_id=str(r[2]),
-                source_id=str(r[3]) if r[3] else None,
-                association_id=str(r[4]) if r[4] else None,
-                attempts=int(r[5]),
-                input_items=list(r[6] or []),
-                runtime=dict(r[7] or {}),
-                code=r[8],
-                env=list(r[9] or []),
-                is_test=bool(r[10]),
+            return None, None
+        profile, is_extract = str(found[0]), bool(found[1])
+        exempt = capacity_exempt(is_extract=is_extract, profile=profile)
+        capacity = None if capacities is None or exempt else capacities.get(profile)
+        params = {
+            "id": run_id, "now": now, "backend": backend, "profile": profile,
+            "default_profile": DEFAULT_HARDWARE_PROFILE,
+        }
+        if capacity is not None:
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))", (f"process-capacity:{profile}",)
             )
-            for r in rows
-        ]
+            cur = await conn.execute(
+                "SELECT count(*) FROM stac_higher.process_runs r"
+                "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
+                " WHERE r.status = 'running' AND r.executor_backend IS NOT NULL"
+                f"  AND NOT {_EXEMPT_SQL} AND {_PROFILE_SQL} = %(profile)s",
+                params,
+            )
+            admitted = int((await cur.fetchone())[0])
+            if admitted >= capacity:
+                # Not claimed, no attempt spent: the queued run says why and
+                # when it may be tried again. The tick marks every due queued
+                # run on the profile at once (`mark_profile`).
+                target = (
+                    f"NOT {_EXEMPT_SQL} AND {_PROFILE_SQL} = %(profile)s"
+                    if mark_profile
+                    else "r.id = %(id)s"
+                )
+                await conn.execute(
+                    "UPDATE stac_higher.process_runs r"
+                    "   SET phase = 'pending_capacity', phase_detail = %(detail)s,"
+                    "       next_attempt_at = %(retry_at)s"
+                    "  FROM stac_higher.process_revisions rev"
+                    f" WHERE rev.id = r.revision_id AND {self._QUEUED_DUE} AND {target}",
+                    {
+                        **params,
+                        "detail": capacity_detail(profile, capacity),
+                        "retry_at": now + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS),
+                    },
+                )
+                await conn.commit()
+                return None, profile
+        cur = await conn.execute(
+            "UPDATE stac_higher.process_runs r"
+            "    SET status = 'running', started_at = %(now)s,"
+            "        attempts = r.attempts + 1,"
+            "        rate_deferred_until = NULL,"
+            "        phase = 'starting', phase_detail = NULL, next_attempt_at = NULL,"
+            "        executor_backend = %(backend)s"
+            "   FROM stac_higher.process_revisions rev"
+            f" WHERE r.id = %(id)s AND rev.id = r.revision_id AND {due_sql}"
+            + self._RETURNING,
+            params,
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+        return (self._queued_run(row) if row else None), None
+
+    async def claim_due_runs(  # pragma: no cover
+        self,
+        now: dt.datetime,
+        limit: int,
+        *,
+        capacities: Capacities | None = None,
+        backend: str = DEFAULT_EXECUTOR_BACKEND,
+    ) -> list[QueuedRun]:
+        # Candidates are read without locks, oldest first (ties by id), then
+        # admitted one transaction each. A full profile joins `full` and is
+        # excluded from every later page, so it costs one candidate per call,
+        # not a slice of the batch; a lost race just moves on. Each loop
+        # either claims, fills a profile, or retires a candidate, so it ends.
+        claimed: list[QueuedRun] = []
+        full: list[str] = []
+        tried: list[str] = []
+        due = f"({self._QUEUED_DUE} OR {self._FAILED_DUE})"
+        async with await self._connect() as conn:
+            while len(claimed) < limit:
+                cur = await conn.execute(
+                    "SELECT r.id::text FROM stac_higher.process_runs r"
+                    "  JOIN stac_higher.process_revisions rev ON rev.id = r.revision_id"
+                    f" WHERE {due}"
+                    "   AND NOT (r.id::text = ANY(%(tried)s::text[]))"
+                    f"   AND ({_EXEMPT_SQL}"
+                    f"        OR NOT ({_PROFILE_SQL} = ANY(%(full)s::text[])))"
+                    " ORDER BY r.created_at, r.id"
+                    " LIMIT %(page)s",
+                    {
+                        "now": now, "tried": tried, "full": full,
+                        "page": limit - len(claimed),
+                        "default_profile": DEFAULT_HARDWARE_PROFILE,
+                    },
+                )
+                candidates = [str(r[0]) for r in await cur.fetchall()]
+                await conn.commit()
+                if not candidates:
+                    break
+                for run_id in candidates:
+                    tried.append(run_id)
+                    run, full_profile = await self._admit_and_claim(
+                        conn, run_id, now=now, due_sql=due, capacities=capacities,
+                        backend=backend, mark_profile=True,
+                    )
+                    if run is not None:
+                        claimed.append(run)
+                    elif full_profile is not None:
+                        full.append(full_profile)
+                        break  # re-page without that profile
+        return claimed
 
     async def claim_run(  # pragma: no cover
-        self, run_id: str, now: dt.datetime
+        self,
+        run_id: str,
+        now: dt.datetime,
+        *,
+        capacities: Capacities | None = None,
+        backend: str = DEFAULT_EXECUTOR_BACKEND,
     ) -> QueuedRun | None:
-        """The claim_due_runs statement with an id predicate (G-3).
-
-        Deliberately the same UPDATE ... RETURNING shape: the immediate job and
-        the periodic tick race by design, so the claim must be the single
-        atomic act that decides the winner. Only a `queued` row whose deferral
-        (if any) has elapsed is claimable — a `failed` row's retry stays the
-        tick's job, since its wait is a schedule, not an event.
-        """
+        """The tick's admission with an id predicate (G-3). Only a `queued`
+        row whose deferral and ``next_attempt_at`` (if any) have elapsed is
+        claimable — a `failed` row's retry stays the tick's job, since its
+        wait is a schedule, not an event."""
         async with await self._connect() as conn:
-            cur = await conn.execute(
-                "UPDATE stac_higher.process_runs r"
-                "    SET status = 'running', started_at = %(now)s,"
-                "        attempts = r.attempts + 1,"
-                "        rate_deferred_until = NULL"
-                "   FROM stac_higher.process_revisions rev"
-                "  WHERE r.id = %(run_id)s AND rev.id = r.revision_id"
-                "    AND r.status = 'queued'"
-                "    AND (r.rate_deferred_until IS NULL"
-                "         OR r.rate_deferred_until <= %(now)s)"
-                " RETURNING r.id, r.process_id, r.revision_id, r.source_id,"
-                "           r.association_id, r.attempts, r.input_items,"
-                "           rev.runtime, rev.code, rev.env, r.is_test",
-                {"now": now, "run_id": run_id},
+            run, _full = await self._admit_and_claim(
+                conn, run_id, now=now, due_sql=self._QUEUED_DUE, capacities=capacities,
+                backend=backend, mark_profile=False,
             )
-            row = await cur.fetchone()
-            await conn.commit()
-        if not row:
-            return None
-        return QueuedRun(
-            id=str(row[0]),
-            process_id=str(row[1]),
-            revision_id=str(row[2]),
-            source_id=str(row[3]) if row[3] else None,
-            association_id=str(row[4]) if row[4] else None,
-            attempts=int(row[5]),
-            input_items=list(row[6] or []),
-            runtime=dict(row[7] or {}),
-            code=row[8],
-            env=list(row[9] or []),
-            is_test=bool(row[10]),
-        )
+        return run
 
     async def get_run(self, run_id: str) -> RunRecord | None:  # pragma: no cover
         async with await self._connect() as conn:
@@ -679,7 +842,8 @@ class PgProcessRepo(ProcessRepo):
                     run_id,
                     set_sql=(
                         "error = %(error)s, log_ref = coalesce(%(log_ref)s, log_ref),"
-                        " finished_at = coalesce(%(at)s, now())"
+                        " finished_at = coalesce(%(at)s, now()),"
+                        " phase = NULL, phase_detail = NULL, executor_backend = NULL"
                     ),
                     params={"error": error, "log_ref": log_ref, "at": next_attempt_at},
                 )
@@ -690,6 +854,8 @@ class PgProcessRepo(ProcessRepo):
                 "   SET status = %s, error = %s,"
                 "       log_ref = coalesce(%s, log_ref),"
                 "       output_items = coalesce(%s::jsonb, output_items),"
+                # K-3: phase is a sub-state of queued/running only.
+                "       phase = NULL, phase_detail = NULL,"
                 # `failed` rows carry their retry due-time in finished_at,
                 # which is what claim_due_runs compares against; terminal rows
                 # carry the actual finish time.
@@ -804,7 +970,8 @@ class PgProcessRepo(ProcessRepo):
                     conn,
                     run_id,
                     set_sql=(
-                        "started_at = NULL,"
+                        "started_at = NULL, phase = NULL, phase_detail = NULL,"
+                        " executor_backend = NULL,"
                         " error = 'run was stranded by a worker or executor crash'"
                     ),
                     params={},

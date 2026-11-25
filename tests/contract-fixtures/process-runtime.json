@@ -76,10 +76,28 @@
       "pipeline": "reject"
     },
     {
-      "name": "fractional memory (writer requires an int; reader truncates)",
+      "name": "fractional memory (K-3: memory is a profile-bounded hardware number; both sides refuse it)",
       "config": { "kind": "inline_python", "memory_mb": 512.5 },
       "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "an integral float memory is whole on both sides (JSON 512.0 is 512 in JavaScript)",
+      "config": { "kind": "inline_python", "memory_mb": 512.0 },
+      "app": "accept",
       "pipeline": "accept"
+    },
+    {
+      "name": "memory beyond any float (K-3: Infinity in JavaScript, a 401-digit int in Python)",
+      "config": { "kind": "inline_python", "memory_mb": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 },
+      "app": "reject",
+      "pipeline": "reject"
+    },
+    {
+      "name": "a hardware cpu beyond any float (K-3: never an OverflowError in the reader)",
+      "config": { "kind": "inline_python", "hardware": { "profile": "standard", "cpu": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000, "gpu_count": 0 } },
+      "app": "reject",
+      "pipeline": "reject"
     },
     {
       "name": "timeout at the one-second floor",

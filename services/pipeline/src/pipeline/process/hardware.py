@@ -5,8 +5,9 @@ a CPU/memory range, an optional accelerator with a GPU-count range, a
 queue-wait promise and a base image — in one JSON document both runtimes
 read. The app validates it strictly at its write gate and serves it to the
 UI; this reader is LENIENT in the established direction (an image built
-before a key was added must not brick), keeps ``backend`` opaque until the
-executors consume it (K-3 Docker, K-5 Kubernetes), and re-checks a run's
+before a key was added must not brick), keeps ``backend`` opaque at parse
+time (``docker_backend`` reads the Docker block, K-3; K-5 will read
+``kubernetes``), and re-checks a run's
 ``hardware`` block against the bounds at launch, independently of the app.
 
 **Packaging:** the deployment set reaches the image as ``COPY --from=hardware``
@@ -19,6 +20,7 @@ pytest) means the repo checkout's ``local.json``. One file, no vendored copy.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -60,6 +62,41 @@ class Bounds:
 
 
 @dataclass(frozen=True)
+class DockerBackend:
+    """A profile's ``backend.docker`` block (spec §3.4, K-3): the device
+    requests the Docker executor sends when a run asks for GPUs, and how many
+    runs on this profile one host admits at once (None = unbounded)."""
+
+    device_requests: tuple[dict[str, Any], ...] = ()
+    capacity: int | None = None
+
+
+def _docker_block(raw: Any, profile_id: str) -> DockerBackend:
+    """Parse ``backend.docker`` as part of the DOCUMENT (K-3 review): a bad
+    block makes the profile file unusable, which the runner treats as our
+    infrastructure (requeue, no attempt spent) rather than killing every run
+    on the profile over an operator typo. Absent or null is the defaults;
+    an integral float capacity (``2.0``) is accepted, as the bounds guards
+    accept integral floats."""
+    if raw is None:
+        return DockerBackend()
+    what = f"profile {profile_id!r}: backend.docker"
+    if not isinstance(raw, dict):
+        raise HardwareProfileError(f"{what} must be an object")
+    requests = raw.get("device_requests")
+    if requests is None:
+        requests = []
+    if not isinstance(requests, list) or not all(isinstance(r, dict) for r in requests):
+        raise HardwareProfileError(f"{what}.device_requests must be a list of objects")
+    capacity = raw.get("capacity")
+    if capacity is not None:
+        if not _is_whole(capacity) or capacity < 1:
+            raise HardwareProfileError(f"{what}.capacity must be a positive integer or null")
+        capacity = int(capacity)
+    return DockerBackend(device_requests=tuple(dict(r) for r in requests), capacity=capacity)
+
+
+@dataclass(frozen=True)
 class HardwareProfile:
     id: str
     label: str
@@ -71,8 +108,10 @@ class HardwareProfile:
     gpu_count: Bounds | None
     max_queue_wait_seconds: int
     image: str | None
-    #: Pipeline-only, opaque here: K-3 reads `backend["docker"]`, K-5 `backend["kubernetes"]`.
+    #: Pipeline-only. `backend["docker"]` is parsed into `docker` with the
+    #: document (K-3); K-5 will read `backend["kubernetes"]`.
     backend: dict[str, Any]
+    docker: DockerBackend = DockerBackend()
 
 
 @dataclass(frozen=True)
@@ -146,6 +185,7 @@ def _profile(raw: Any) -> HardwareProfile:
         max_queue_wait_seconds=wait,
         image=image,
         backend=dict(backend),
+        docker=_docker_block(backend.get("docker"), profile_id),
     )
 
 
@@ -192,22 +232,47 @@ def _fmt(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else str(value)
 
 
+def _is_number(value: Any) -> bool:
+    """A finite number that is not a bool — the app's `isNumber`. An int too
+    large for a float is NOT a number here: JavaScript reads the same JSON as
+    `Infinity` (and `math.isfinite` would raise OverflowError on it)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _is_whole(value: Any) -> bool:
+    """A whole number — the app's `isWhole`. An integral float (`1.0`, which
+    JavaScript reads as `1`) counts, so both sides agree on JSON input."""
+    return _is_number(value) and float(value).is_integer()
+
+
 def check_hardware_bounds(
     *, profiles: HardwareProfileSet, profile_id: str, cpu: float, gpu_count: int, memory_mb: int
 ) -> HardwareProfile:
     """The launch-time half of the dual enforcement (spec §4). Returns the
     resolved profile; raises with the SAME message text the app's write gate
-    produces (the fixture's `bounds_cases[].reason` pins both)."""
+    produces (the fixture's `bounds_cases[].reason` pins both). Each number is
+    type-checked before its bounds (K-3, K-1's deferred guards): a string
+    would otherwise raise TypeError, and a bool would pass as 0 or 1."""
     profile = profiles.get(profile_id)
     if profile is None:
         raise HardwareProfileError(
             f"hardware.profile {profile_id!r} is not a hardware profile of this deployment"
         )
+    if not _is_number(cpu):
+        raise HardwareProfileError("hardware.cpu must be a number")
     if not (profile.cpu.min <= cpu <= profile.cpu.max):
         raise HardwareProfileError(
             f"hardware.cpu {_fmt(cpu)} is outside profile {profile_id!r} bounds "
             f"{_fmt(profile.cpu.min)}–{_fmt(profile.cpu.max)}"  # noqa: RUF001 -- en dash, pinned by the fixture
         )
+    if not _is_whole(gpu_count):
+        raise HardwareProfileError("hardware.gpu_count must be a whole number")
+    gpu_count = int(gpu_count)  # `2.0` prints as `2`, as it does in the app
     if profile.gpu_count is None:
         if gpu_count != 0:
             raise HardwareProfileError(
@@ -218,9 +283,24 @@ def check_hardware_bounds(
             f"hardware.gpu_count {gpu_count} is outside profile {profile_id!r} bounds "
             f"{_fmt(profile.gpu_count.min)}–{_fmt(profile.gpu_count.max)}"  # noqa: RUF001
         )
+    if not _is_whole(memory_mb):
+        raise HardwareProfileError("memory_mb must be a whole number")
+    memory_mb = int(memory_mb)
     if not (profile.memory_mb.min <= memory_mb <= profile.memory_mb.max):
         raise HardwareProfileError(
             f"memory_mb {memory_mb} is outside profile {profile_id!r} bounds "
             f"{_fmt(profile.memory_mb.min)}–{_fmt(profile.memory_mb.max)}"  # noqa: RUF001
         )
     return profile
+
+
+
+def docker_backend(profile: HardwareProfile) -> DockerBackend:
+    """The profile's parsed docker block (validated with the document)."""
+    return profile.docker
+
+
+def docker_capacities(profiles: HardwareProfileSet) -> dict[str, int | None]:
+    """profile id -> its per-host capacity (None = unbounded): what the claim
+    statements admit against (K-3)."""
+    return {p.id: p.docker.capacity for p in profiles.profiles}

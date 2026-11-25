@@ -981,6 +981,24 @@ function RunRow({
             // run that silently sits in `queued` looking stuck.
             <Badge variant="outline">rate limited</Badge>
           )}
+          {run.status === "queued" && run.phase === "pending_capacity" && (
+            // K-3: released because its hardware profile is full on this
+            // host; the tooltip names the profile and the limit.
+            <Badge
+              variant="outline"
+              title={run.phase_detail ?? undefined}
+              data-testid="run-phase-pending_capacity"
+            >
+              Waiting for capacity
+            </Badge>
+          )}
+          {run.status === "running" && run.phase === "starting" && (
+            // Claimed and admitted. Until K-4's watcher writes `running`, this
+            // stays for the whole run.
+            <Badge variant="outline" data-testid="run-phase-starting">
+              Starting
+            </Badge>
+          )}
           <span className="text-sm text-muted-foreground">
             {new Date(run.created_at).toLocaleString()}
           </span>

@@ -1471,6 +1471,60 @@ const MIGRATIONS = [
     `,
   },
   {
+    // K-3 (process-compute spec §5.2): the executor's view of a run, filled
+    // by the submit-then-reconcile executor (K-4) — this slice writes only
+    // `phase` / `phase_detail` / `next_attempt_at`. `next_attempt_at` is the
+    // honest "claimable again at" for a QUEUED row (a capacity release now,
+    // K-4's credential-expiry requeue next); `rate_deferred_until` cannot
+    // carry it because 025's partial unique index allows one deferred row
+    // per source. The status CHECK is untouched: `cancelled` lands with the
+    // cancel verb (K-4, migration 031). The phase vocabulary is pinned by
+    // tests/contract-fixtures/process-run-phase.json.
+    //
+    // Placement: this entry merged AFTER 030/032/033 were applied on live
+    // databases. runMigrations() skips by recorded NAME, so it sits here in
+    // number order and a database already at 033 applies just this one
+    // (migrate-ordering.test.ts). It touches only process_runs, which none
+    // of 030–033 alter, so applying it after them is equivalent.
+    //
+    // Locking: process_runs is hot (every claim, finish and the UI poll), and
+    // ALTER TABLE takes ACCESS EXCLUSIVE. lock_timeout bounds how long this
+    // waits behind a long transaction (and so how long it queues every
+    // other reader behind itself); on timeout the whole migration
+    // transaction rolls back and the next request retries. It is reset
+    // before the entry ends because runMigrations() runs every pending
+    // migration in ONE transaction. The ADD COLUMNs carry no default, so they
+    // are catalog-only; the CHECK is NOT VALID (every existing row's phase is
+    // NULL, so there is nothing to scan for, and new writes are checked).
+    name: "029_process_runs_executor_phase",
+    sql: `
+      SET LOCAL lock_timeout = '10s';
+      ALTER TABLE stac_higher.process_runs
+        ADD COLUMN IF NOT EXISTS executor_backend text,
+        ADD COLUMN IF NOT EXISTS executor_handle text,
+        ADD COLUMN IF NOT EXISTS phase text,
+        ADD COLUMN IF NOT EXISTS phase_detail text,
+        ADD COLUMN IF NOT EXISTS submitted_at timestamptz,
+        ADD COLUMN IF NOT EXISTS cancel_requested_at timestamptz,
+        ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz;
+      DO $do$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'stac_higher.process_runs'::regclass
+            AND conname = 'process_runs_phase_check'
+        ) THEN
+          ALTER TABLE stac_higher.process_runs
+            ADD CONSTRAINT process_runs_phase_check
+            CHECK (phase IS NULL OR phase IN ('pending_capacity','starting','running'))
+            NOT VALID;
+        END IF;
+      END
+      $do$;
+      SET LOCAL lock_timeout TO DEFAULT;
+    `,
+  },
+  {
     // C-1 (container-images spec §4, ADR 0021): the platform-wide image
     // registry (metadata only, never bytes) and its ADR 0004 scan ledger.
     // The app INSERTs admission rows (C-3); the pipeline claims them FOR
@@ -1491,8 +1545,8 @@ const MIGRATIONS = [
     // Also: the connections protocol CHECK admits `registry` (spec §5), and
     // process_revisions gains an expression index on the snapshot's image id.
     //
-    // Numbering: 029 is K-3's (#11) and may merge after this. The two touch
-    // disjoint objects, so either apply order is safe; K-3 inserts its entry
+    // Numbering: 029 is K-3's (#11) and merged after this. The two touch
+    // disjoint objects, so either apply order is safe; K-3's entry sits
     // between 028 and this one (names, not positions, are what is recorded).
     name: "030_container_images",
     sql: `

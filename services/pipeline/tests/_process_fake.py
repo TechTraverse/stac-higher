@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pipeline.process.ledger import CAPACITY_RETRY_SECONDS, capacity_detail
 from pipeline.process.matcher import ProcessSource
 from pipeline.process.repo import (
     CronSource,
@@ -15,6 +16,7 @@ from pipeline.process.repo import (
     QueuedRun,
     RateWindow,
     RunRecord,
+    capacity_exempt,
 )
 
 
@@ -47,6 +49,10 @@ class FakeProcessRepo(ProcessRepo):
     finished: list[dict[str, Any]] = field(default_factory=list)
     source_runs: list[tuple[str, bool]] = field(default_factory=list)
     stalled_reset: int = 0
+    #: K-3: runs admitted on each profile OUTSIDE this fake's own rows (a
+    #: busy host). The fake's own admitted rows are counted too, the way the
+    #: Pg claim counts every `running` row with `executor_backend` set.
+    admitted_elsewhere: dict[str, int] = field(default_factory=dict)
     #: mirrors migration 025's/027's partial unique indexes: (process,
     #: ("src", source) | ("assoc", association)) → the QUEUED run id. A claim
     #: removes the entry, exactly as flipping the row to `running` drops it
@@ -141,14 +147,58 @@ class FakeProcessRepo(ProcessRepo):
             self._queued[(process_id, key)] = run_id
         return run_id, False
 
-    async def claim_run(self, run_id: str, now: dt.datetime) -> QueuedRun | None:
+    def _profile(self) -> str:
+        """Every fake row runs `self.runtime`, so they share its profile."""
+        hardware = self.runtime.get("hardware") or {}
+        return str(hardware.get("profile") or "standard")
+
+    def admitted(self, profile: str) -> int:
+        own = sum(
+            1
+            for row in self.enqueued
+            if row["status"] == "running"
+            and row.get("executor_backend")
+            and not capacity_exempt(
+                is_extract=row["association_id"] is not None, profile=self._profile()
+            )
+        )
+        return self.admitted_elsewhere.get(profile, 0) + (
+            own if profile == self._profile() else 0
+        )
+
+    async def claim_run(
+        self,
+        run_id: str,
+        now: dt.datetime,
+        *,
+        capacities: Mapping[str, int | None] | None = None,
+        backend: str = "docker",
+    ) -> QueuedRun | None:
         for row in self.enqueued:
             if row["run_id"] != run_id or row["status"] != "queued":
                 continue
             deferred = row["deferred_until"]
             if deferred is not None and deferred > now:
                 return None
+            retry_at = row.get("next_attempt_at")
+            if retry_at is not None and retry_at > now:
+                return None
+            # K-3: the Pg claim's admission (extractor runs exempt).
+            profile = self._profile()
+            exempt = capacity_exempt(
+                is_extract=row["association_id"] is not None, profile=profile
+            )
+            capacity = None if capacities is None or exempt else capacities.get(profile)
+            if capacity is not None and self.admitted(profile) >= capacity:
+                row["phase"] = "pending_capacity"
+                row["phase_detail"] = capacity_detail(profile, capacity)
+                row["next_attempt_at"] = now + dt.timedelta(seconds=CAPACITY_RETRY_SECONDS)
+                return None
             row["status"] = "running"
+            row["phase"] = "starting"
+            row["phase_detail"] = None
+            row["next_attempt_at"] = None
+            row["executor_backend"] = backend
             # Out of the partial index, so a later trigger starts a new run.
             if row["source_id"] is not None:
                 self._queued.pop((row["process_id"], ("src", row["source_id"])), None)
@@ -169,7 +219,16 @@ class FakeProcessRepo(ProcessRepo):
             )
         return None
 
-    async def claim_due_runs(self, now: dt.datetime, limit: int) -> list[QueuedRun]:
+    async def claim_due_runs(
+        self,
+        now: dt.datetime,
+        limit: int,
+        *,
+        capacities: Mapping[str, int | None] | None = None,
+        backend: str = "docker",
+    ) -> list[QueuedRun]:
+        # Scripted: the tick's admission and paging are Pg-only and covered by
+        # tests/test_integration_process_capacity.py.
         batch = self.due_runs[:limit]
         self.due_runs = self.due_runs[limit:]
         return batch
@@ -205,6 +264,13 @@ class FakeProcessRepo(ProcessRepo):
                 "next_attempt_at": next_attempt_at,
             }
         )
+        for row in self.enqueued:
+            if row["run_id"] == run_id:
+                row["status"] = status
+                row["phase"] = None
+                row["phase_detail"] = None
+                if status == "queued":
+                    row["executor_backend"] = None
 
     async def list_output_collections(self, process_id: str) -> tuple[str, ...]:
         return tuple(self.output_collections)

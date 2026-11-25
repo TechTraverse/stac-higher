@@ -1397,6 +1397,69 @@ assert-and-warn on the file (the M3-A `use_queue` pattern).
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/hardware.py`.
 - Found in: K-1 Task 4/5 reviews (2026-09-15).
 
+### I-170 · Docker capacity: a waiting run is retried by the minute tick, counted across every worker, and default-profile extractor runs are exempt 🟡
+K-3 admits a process or test run in the claim itself (per-profile advisory
+lock; `executor_backend` is the admitted marker). A run whose profile is full
+is not claimed: it stays `queued` as `pending_capacity` with
+`next_attempt_at = now + 15 s` (spec §8). Three limits, accepted:
+- **Latency.** Nothing re-dispatches a waiting run at 15 s. The run tick
+  (every minute) claims it, so the real wait after a slot frees is up to
+  about 75 s, and a newly triggered run's immediate claim can take a freed
+  slot before an older waiting run. There is no queue order among waiting
+  runs. Fix candidate: K-4's run watcher, or a delayed `process_run_now`
+  once the queue interface can schedule one.
+- **Scope.** The count is the whole database's admitted runs on the profile,
+  not one Docker host's: `capacity` means "per host" only while one host
+  runs process jobs (the local and single-host shape). A host id on the
+  claim would be needed for multi-host Docker. The cluster leg uses Kueue
+  quotas instead (K-5/K-6).
+- **Ruling: extractor runs on the default profile are exempt.** Spec §8 does
+  not say how extractor runs (G-6, association-triggered) relate to
+  capacity. The rule: an extractor run whose revision is on the default
+  profile (`standard`; a revision without a `hardware` block, which is every
+  built-in extractor, is `standard`) is not admitted against capacity, does
+  not count toward it, and launches without `NanoCpus`. An extractor whose
+  revision names ANY other profile is treated like a process run: it counts
+  against that profile's capacity, waits when it is full, and gets
+  `NanoCpus` (and `DeviceRequests` where the profile has them), so an
+  operator cannot use an extractor to bypass a large or GPU profile's
+  limits. The reason: before and after K-3 a pipeline process executes one
+  process run at a time (`execute_run` waits on the Docker daemon
+  synchronously and blocks the worker's event loop; WORKER_CONCURRENCY does
+  not apply to runs until K-4). Capping default-profile extractors at
+  `standard`'s 1 CPU, or counting them against its capacity of 2
+  (`infra/hardware-profiles/local.json`), would slow each extraction or hold
+  back tick-claimed batches. **Residual:** extractor runs on `standard` are
+  bounded by neither `standard`'s capacity nor its CPU cap. Only the worker
+  bounds them: one run at a time per pipeline process today, the worker's
+  slot count once K-4 makes runs asynchronous. Revisit with K-4.
+- A run already `running` when migration 029 lands has no admitted marker
+  and does not count, so a deploy can briefly admit past `capacity` until
+  those runs finish.
+- Tracked in: `services/pipeline/src/pipeline/process/repo.py` (`_admit_and_claim`), `services/pipeline/src/pipeline/jobs/process.py`.
+- Found in: K-3 and its review (2026-11-25).
+
+### I-171 · The socket proxy's `INFO=1` discloses daemon metadata to every service on the default network 🟡
+K-3 enables the proxy's read-only `INFO` section so the executor can ask
+`GET /info` whether the daemon has an NVIDIA runtime before it sends GPU
+`DeviceRequests`, and how many CPUs the daemon has (`NCPU`). The same answer
+carries the daemon's version, kernel, OS, CPU and memory totals, container
+counts and registry configuration. **Who can reach it:** the proxy is not
+published to the host, but it is on the default compose network, so every
+service there can call `tcp://docker-socket-proxy:2375`, not only the
+pipeline: database, api, auth-proxy, keycloak, minio, titiler, tipg,
+cube-server and the one-shot init jobs. The larger pre-existing exposure is
+that those same services can already list, create, start and remove
+containers and pull images through the proxy (`CONTAINERS`, `IMAGES`,
+`POST`). `INFO` adds read-only metadata on top of that. A compose test pins
+the proxy's whole KEY=VALUE map. Fix candidate (lead, needs Docker to
+verify): put the proxy on its own internal network shared only with the
+pipeline. Alternative to `INFO`: drop the probe and rely on the daemon's
+"could not select device driver" and "Range of CPUs" refusals, which the
+executor maps to `HardwareUnavailable` anyway.
+- Tracked in: `docker-compose.yml` (`docker-socket-proxy`), `services/pipeline/tests/test_compose_scanner.py`.
+- Found in: K-3 (2026-11-25).
+
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡
 Both need GitHub Advanced Security on a private repo, which this repo does not
 have (`gh api repos/TechTraverse/stac-higher` → `security_and_analysis: null`),

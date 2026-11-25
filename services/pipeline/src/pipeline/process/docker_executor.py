@@ -1,9 +1,10 @@
 """Docker Engine API executor (ADR 0013 slice-1 backend, spec §4).
 
 Talks the Engine API over HTTP to a **least-privilege socket proxy**
-(`tecnativa/docker-socket-proxy` with ``CONTAINERS=1 IMAGES=1 POST=1`` (IMAGES
-since C-2, for pull-by-digest), everything else off — P9-A verified `exec` and
-`volumes` return 403 there). The pipeline never
+(`tecnativa/docker-socket-proxy` with ``CONTAINERS=1 IMAGES=1 INFO=1 POST=1``
+(IMAGES since C-2, for pull-by-digest; INFO since K-3, the read-only
+``GET /info`` that says whether the daemon has an NVIDIA runtime), everything
+else off — P9-A verified `exec` and `volumes` return 403 there). The pipeline never
 holds the raw socket, so the proxy is the auditable seam, and
 :func:`assert_safe_docker_host` refuses to start against a raw socket at all.
 
@@ -39,7 +40,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from pipeline.images.reference import is_image_digest, is_image_reference
@@ -47,6 +48,7 @@ from pipeline.process.executor import (
     Executor,
     ExecutorUnavailable,
     ExitStatus,
+    HardwareUnavailable,
     ImageMissing,
     ImagePullFailed,
     LaunchedRun,
@@ -54,6 +56,7 @@ from pipeline.process.executor import (
     RunHandle,
     RunSpec,
 )
+from pipeline.process.hardware import docker_backend
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +91,16 @@ SIGKILL_EXIT_CODE = 137
 #: The daemon's wording for an absent image on create (lower-cased for the
 #: match): ``{"message":"No such image: <name>"}``.
 _NO_SUCH_IMAGE = "no such image"
+
+#: The daemon's wording when NanoCpus exceeds the host's CPUs (a 400 on
+#: create): "Range of CPUs is from 0.01 to N.00, as there are only N CPUs
+#: available". Lower-cased for the match.
+_CPU_RANGE = "range of cpus"
+
+#: The daemon's wording when DeviceRequests name a driver it lacks (on create
+#: or on start, by daemon version): 'could not select device driver "nvidia"
+#: with capabilities: [[gpu]]'. Lower-cased for the match.
+_NO_DEVICE_DRIVER = "could not select device driver"
 
 #: How a platform image is built (#108), named in the run's error.
 PLATFORM_IMAGE_BUILD_HINT = (
@@ -145,6 +158,15 @@ def _image_missing_message(spec: RunSpec) -> str:
     return f"image {spec.image!r} is not on the docker daemon; {PLATFORM_IMAGE_BUILD_HINT}"
 
 
+def _pinned(image: str) -> tuple[str, str]:
+    """Spec §8.4: a user image runs only by digest. Returns (reference,
+    digest) or raises :class:`ImagePullFailed` -- before any daemon call."""
+    reference, sep, digest = image.partition("@")
+    if not sep or not is_image_reference(reference) or not is_image_digest(digest):
+        raise ImagePullFailed(f"refusing to launch a user image not pinned by digest: {image!r}")
+    return reference, digest
+
+
 def assert_safe_docker_host(docker_host: str) -> None:
     """Startup self-check (spec §14 risk list): refuse a raw-socket
     ``DOCKER_HOST``.
@@ -183,6 +205,9 @@ class DockerExecutor(Executor):
     #: A pull streams progress, so this bounds each socket read, not the
     #: whole pull. Generous: a first pull of a large user image is slow.
     pull_timeout_seconds: int = 900
+    #: K-3: the daemon's `GET /info` answer (Runtimes, NCPU), cached for the
+    #: executor's life once it succeeds (None = not asked, or it failed).
+    _info: dict | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         assert_safe_docker_host(self.docker_host)
@@ -235,11 +260,7 @@ class DockerExecutor(Executor):
         The inspect is by the pinned name, so "present" means THIS digest is
         on the daemon; a tag of the same repository is irrelevant.
         """
-        reference, sep, digest = image.partition("@")
-        if not sep or not is_image_reference(reference) or not is_image_digest(digest):
-            raise ImagePullFailed(
-                f"refusing to launch a user image not pinned by digest: {image!r}"
-            )
+        reference, digest = _pinned(image)
         try:
             self._request("GET", f"/images/{urllib.parse.quote(image, safe='/:@')}/json")
             return
@@ -277,9 +298,102 @@ class DockerExecutor(Executor):
         if error:
             raise ImagePullFailed(f"pulling {reference}@{digest} failed: {error}")
 
+    def _daemon_info(self) -> dict:
+        """`GET /info` once per executor (the socket proxy allows it with
+        INFO=1, read-only). A failure raises :class:`ExecutorUnavailable`
+        (:class:`EngineHTTPError` when the proxy or daemon answered) and is not
+        cached, so the next launch asks again."""
+        if self._info is None:
+            info = self._request("GET", "/info")
+            self._info = info if isinstance(info, dict) else {}
+        return self._info
+
+    def gpu_runtime_available(self) -> bool:
+        """Does this daemon expose an NVIDIA container runtime? Docker Desktop
+        on macOS never does; a Linux host with the NVIDIA container toolkit
+        does."""
+        runtimes = self._daemon_info().get("Runtimes")
+        return isinstance(runtimes, dict) and "nvidia" in runtimes
+
+    @staticmethod
+    def _profile_id(spec: RunSpec) -> str:
+        return spec.profile.id if spec.profile is not None else "unknown"
+
+    def _device_requests(self, spec: RunSpec) -> list[dict]:
+        """K-3 (spec §8): the profile's GPU device requests with ``Count`` set
+        to the run's ``gpu_count``, or :class:`HardwareUnavailable` when this
+        host (or the profile's docker block) cannot honour them — before any
+        image is pulled or container created."""
+        profile_id = self._profile_id(spec)
+        requests = docker_backend(spec.profile).device_requests if spec.profile else ()
+        if not requests:
+            raise HardwareUnavailable(
+                f"profile {profile_id!r} asks for GPUs but has no "
+                "backend.docker.device_requests for this Docker host"
+            )
+        try:
+            available = self.gpu_runtime_available()
+        except EngineHTTPError as err:
+            if err.status != 403:
+                raise
+            # The proxy refuses /info: this deployment never enabled INFO=1,
+            # so it cannot check for (or, by design, run) GPU work. Waiting
+            # does not change a proxy setting.
+            raise HardwareUnavailable(
+                f"profile {profile_id!r} needs GPUs, and the Docker socket proxy "
+                "refuses GET /info (INFO=1), so this host cannot be checked for "
+                "an NVIDIA runtime"
+            ) from err
+        if not available:
+            raise HardwareUnavailable(
+                f"profile {profile_id!r} needs an NVIDIA container runtime "
+                "this Docker host does not expose"
+            )
+        return [{**request, "Count": spec.gpu_count} for request in requests]
+
+    def _check_cpus(self, spec: RunSpec) -> None:
+        """K-3: a run asking for more CPUs than the daemon has dies naming its
+        profile, before a pull or a container. Best effort: when /info cannot
+        be read the check is skipped, and the daemon's own "Range of CPUs"
+        refusal on create is the fallback."""
+        try:
+            ncpu = self._daemon_info().get("NCPU")
+        except ExecutorUnavailable:
+            return
+        if isinstance(ncpu, int) and not isinstance(ncpu, bool) and ncpu > 0 and spec.cpu > ncpu:
+            raise HardwareUnavailable(
+                f"profile {self._profile_id(spec)!r} asks for {spec.cpu:g} CPUs, "
+                f"more than this Docker host has ({ncpu})"
+            )
+
+    def _hardware_refusal(self, spec: RunSpec, err: EngineHTTPError) -> HardwareUnavailable | None:
+        """The daemon's own refusals of the profile's hardware, on create or
+        start: too many CPUs, or a device driver it does not have."""
+        detail = err.detail.lower()
+        if err.status == 400 and _CPU_RANGE in detail:
+            return HardwareUnavailable(
+                f"profile {self._profile_id(spec)!r} asks for {spec.cpu:g} CPUs, more than "
+                f"this Docker host has: {err.detail}"
+            )
+        if _NO_DEVICE_DRIVER in detail:
+            return HardwareUnavailable(
+                f"profile {self._profile_id(spec)!r} needs a device driver this Docker "
+                f"host does not have: {err.detail}"
+            )
+        return None
+
     # -- Executor -----------------------------------------------------------
 
     def launch(self, spec: RunSpec) -> RunHandle:
+        # K-3 (spec §8): GPUs are device requests, and only on a host that
+        # can honour them -- otherwise the run dies here, before a pull or a
+        # container, naming the profile. No GPU asked, no probe.
+        if spec.user_image:
+            _pinned(spec.image)  # an unpinned image is refused before any daemon call
+        cpu_capped = spec.kind == "process" and not spec.cpu_exempt
+        if cpu_capped:
+            self._check_cpus(spec)
+        device_requests = self._device_requests(spec) if spec.gpu_count > 0 else None
         if spec.user_image:
             self._ensure_image(spec.image, spec.registry_auth)
         labels = {RUN_ID_LABEL: spec.run_id, RUN_KIND_LABEL: spec.kind}
@@ -313,6 +427,14 @@ class DockerExecutor(Executor):
             # stray container was, and so the reap sweep can find orphans.
             "Labels": labels,
         }
+        if cpu_capped:
+            # K-3: the profile's cpu becomes a limit, like memory. A scan is
+            # sized by the image policy, not a profile, and an extractor run
+            # on the default profile is ingest work (K-3 ruling), so both stay
+            # uncapped.
+            config["HostConfig"]["NanoCpus"] = round(spec.cpu * 1_000_000_000)
+        if device_requests:
+            config["HostConfig"]["DeviceRequests"] = device_requests
         if spec.user_image:
             # Spec §3.2: the platform's hardening, not the image's. The forced
             # uid has no home, so /tmp is its one writable directory.
@@ -339,6 +461,11 @@ class DockerExecutor(Executor):
             # other 404 (a missing network) stays an outage.
             if err.status == 404 and _NO_SUCH_IMAGE in err.detail.lower():
                 raise ImageMissing(_image_missing_message(spec)) from err
+            # K-3: the host cannot provide what the profile promises (too
+            # many CPUs, a missing GPU driver); retrying will not change that.
+            refusal = self._hardware_refusal(spec, err)
+            if refusal is not None:
+                raise refusal from err
             raise
         container_id = created.get("Id") if isinstance(created, dict) else None
         if not container_id:
@@ -346,11 +473,18 @@ class DockerExecutor(Executor):
 
         try:
             self._request("POST", f"/containers/{container_id}/start")
-        except ExecutorUnavailable:
+        except ExecutorUnavailable as err:
             # A created-but-unstarted container is exactly the orphan `reap`
             # exists for; leaving it behind would leak a container per failed
             # start.
             self.reap(RunHandle(id=container_id, backend=self.name))
+            # Some daemons accept DeviceRequests on create and refuse the
+            # driver on start (K-3).
+            refusal = (
+                self._hardware_refusal(spec, err) if isinstance(err, EngineHTTPError) else None
+            )
+            if refusal is not None:
+                raise refusal from err
             raise
         return RunHandle(id=container_id, backend=self.name)
 

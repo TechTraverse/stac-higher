@@ -718,7 +718,7 @@ export async function deleteOutput(
 const RUN_COLUMNS = `
   id, process_id, revision_id, source_id, status, attempts,
   input_items, output_items, log_ref, error, rate_deferred_until,
-  is_test, created_at, started_at, finished_at
+  is_test, created_at, started_at, finished_at, phase, phase_detail
 `;
 
 interface RunRow {
@@ -737,7 +737,13 @@ interface RunRow {
   created_at: Date | string;
   started_at: Date | string | null;
   finished_at: Date | string | null;
+  phase: string | null;
+  phase_detail: string | null;
 }
+
+/** K-3 (process-compute spec §5.2): the sub-state of a queued/running run,
+ * pinned by tests/contract-fixtures/process-run-phase.json. */
+export type ProcessRunPhase = "pending_capacity" | "starting" | "running";
 
 export interface ApiProcessRun {
   id: string;
@@ -758,9 +764,15 @@ export interface ApiProcessRun {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** K-3: `pending_capacity` while a queued run waits for its profile's
+   * capacity on this host, `starting` once claimed; null on a plain queued
+   * row and on terminal rows. */
+  phase: ProcessRunPhase | null;
+  /** The reason for the phase (the UI's tooltip), when there is one. */
+  phase_detail: string | null;
 }
 
-function toApiRun(row: RunRow): ApiProcessRun {
+export function toApiRun(row: RunRow): ApiProcessRun {
   return {
     id: row.id,
     process_id: row.process_id,
@@ -777,6 +789,8 @@ function toApiRun(row: RunRow): ApiProcessRun {
     created_at: iso(row.created_at) as string,
     started_at: iso(row.started_at),
     finished_at: iso(row.finished_at),
+    phase: (row.phase as ProcessRunPhase | null) ?? null,
+    phase_detail: row.phase_detail ?? null,
   };
 }
 
@@ -845,7 +859,9 @@ export async function rerunRun(
       `UPDATE stac_higher.process_runs
           SET status = 'queued', attempts = 0, error = NULL,
               started_at = NULL, finished_at = NULL,
-              rate_deferred_until = NULL
+              rate_deferred_until = NULL,
+              phase = NULL, phase_detail = NULL, next_attempt_at = NULL,
+              executor_backend = NULL
         WHERE id = $1 AND process_id = $2 AND status = 'dead'
         RETURNING ${RUN_COLUMNS}`,
       [runId, processId],

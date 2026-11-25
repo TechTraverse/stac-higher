@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from pathlib import Path
 from typing import Any
 
 from pipeline.config import Settings
@@ -38,6 +39,12 @@ from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
 from pipeline.process.docker_executor import DockerExecutor
+from pipeline.process.hardware import (
+    HardwareProfileError,
+    HardwareProfileSet,
+    docker_capacities,
+    load_hardware_profiles,
+)
 from pipeline.process.reaper import process_reap_tick
 from pipeline.process.repo import PgProcessRepo, QueuedRun
 from pipeline.process.runner import run_one
@@ -109,6 +116,19 @@ TRIGGER_RETRY = RetrySpec(max_attempts=4, wait_seconds=30)
 #: backstop, so a job that keeps failing to claim should give up quietly rather
 #: than pile up behind a tick that will pick the row up anyway.
 RUN_NOW_RETRY = RetrySpec(max_attempts=3, wait_seconds=15)
+
+
+def load_run_profiles(settings: Settings) -> HardwareProfileSet | None:
+    """The deployment's hardware profiles for one claim + run batch (K-3):
+    the claim admits against their docker capacities and `run_one` reuses the
+    same set. None when the file is unusable — the claim then admits without
+    a capacity check and `run_one` requeues each run as infrastructure."""
+    try:
+        if settings.process_hardware_profiles_file:
+            return load_hardware_profiles(Path(settings.process_hardware_profiles_file))
+        return load_hardware_profiles()
+    except HardwareProfileError:
+        return None
 
 
 def build_secret_resolver(settings: Settings):
@@ -201,7 +221,10 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         )
 
     async def _execute_claimed(
-        runs: list[QueuedRun], repo: PgProcessRepo, now: dt.datetime
+        runs: list[QueuedRun],
+        repo: PgProcessRepo,
+        now: dt.datetime,
+        profiles: HardwareProfileSet | None,
     ) -> None:
         """Run an already-claimed batch and enqueue publishing for the ones
         that succeeded. Shared by the periodic tick and the immediate job so
@@ -239,6 +262,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     on_dead=_fail_extract_batch,
                     images_repo=images_repo,
                     master_key=master_key,
+                    profiles=profiles,
                 )
             except Exception:
                 logger.exception(
@@ -261,10 +285,13 @@ def register(queue: QueueBackend, settings: Settings) -> None:
     async def process_run_tick(timestamp: int) -> None:
         repo = _repo()
         now = dt.datetime.now(dt.UTC)
-        runs = await repo.claim_due_runs(now, RUN_BATCH)
+        profiles = load_run_profiles(settings)
+        runs = await repo.claim_due_runs(
+            now, RUN_BATCH, capacities=docker_capacities(profiles) if profiles else None
+        )
         if not runs:
             return
-        await _execute_claimed(runs, repo, now)
+        await _execute_claimed(runs, repo, now, profiles)
 
     async def process_run_now(run_id: str) -> None:
         """Execute one just-queued run without waiting for the tick (G-3).
@@ -276,14 +303,17 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         """
         repo = _repo()
         now = dt.datetime.now(dt.UTC)
-        run = await repo.claim_run(run_id, now)
+        profiles = load_run_profiles(settings)
+        run = await repo.claim_run(
+            run_id, now, capacities=docker_capacities(profiles) if profiles else None
+        )
         if run is None:
             logger.debug(
                 "process_run_now: run was not claimable",
                 extra={"run_id": run_id},
             )
             return
-        await _execute_claimed([run], repo, now)
+        await _execute_claimed([run], repo, now, profiles)
 
     async def _enqueue_now(run_id: str) -> None:
         await queue.enqueue(JOB_RUN_NOW, {"run_id": run_id})

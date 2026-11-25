@@ -31,6 +31,7 @@ from pipeline.process.credentials import CredentialBudgetExceeded, RunCredential
 from pipeline.process.executor import (
     Executor,
     ExecutorUnavailable,
+    HardwareUnavailable,
     ImageMissing,
     ImagePullFailed,
 )
@@ -60,7 +61,7 @@ from pipeline.process.launch import (
     resolve_run_image,
 )
 from pipeline.process.ledger import infrastructure_transition, outcome_transition
-from pipeline.process.repo import ProcessRepo, QueuedRun
+from pipeline.process.repo import ProcessRepo, QueuedRun, capacity_exempt
 from pipeline.process.staging import InputStagingError, RemoteFetcher, stage_inputs
 
 logger = logging.getLogger(__name__)
@@ -301,6 +302,8 @@ async def run_one(
             profile=profile,
             priority="interactive" if run.is_test else "triggered",
             image=resolved,
+            # K-3 ruling: only an extractor on the default profile is uncapped.
+            cpu_exempt=capacity_exempt(is_extract=is_extract, profile=profile.id),
         )
     except (ImagePullFailed, ImageMissing) as err:
         # Spec §8.4: the registry refused the digest. A per-run outcome that
@@ -328,6 +331,13 @@ async def run_one(
             on_dead=on_dead,
         )
         return RunResult(run.id, transition.status, error=transition.error)
+    except HardwareUnavailable as err:
+        # K-3: the host cannot provide what the profile promises (no NVIDIA
+        # runtime, too few CPUs) -- configuration, like an unknown profile:
+        # dead, naming it, no retry. Not an ExecutorUnavailable, so this
+        # ordering is for readability only.
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
+        return RunResult(run.id, "dead", error=str(err))
     except (ExecutorUnavailable, RunCredentialsError) as err:
         # OUR failure, not the process's: back to `queued` without spending an
         # attempt (see ledger.infrastructure_transition).
