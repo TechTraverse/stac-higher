@@ -143,7 +143,8 @@ Rendering fails with a message starting with the offending key path.
 | `demoSeed.existingDestinationSecret` | `""` | `existing` mode: Secret with `access_key_id`/`secret_access_key`. In `external-secrets` mode the chart renders `<fullname>-demo-destination` from `demoDestination.credentialsSecretArn`. |
 | `demoSeed.appBearer` | | `secretName` (required with `images-seed`) and `key` (`token`): an operator bearer token for the app API. |
 | `demoSeed.extraArgs` | `{}` | Extra CLI args per chosen seed, e.g. `{goes-seed: ["--window", "-2h"]}`. |
-| `demoSeed.backoffLimit`, `demoSeed.activeDeadlineSeconds` | `6`, `3600` | Pod retries while the stack comes up; the deadline covers `images-seed`'s scan wait. |
+| `demoSeed.waitReadySeconds` | `600` | Each seed waits up to this long for the STAC API (and, for `images-seed`, the app) to answer before it writes (`--wait-ready`). |
+| `demoSeed.backoffLimit`, `demoSeed.activeDeadlineSeconds` | `0`, `3600` | No pod retries by default: a retry would redo every seed that already succeeded. The deadline covers `images-seed`'s scan wait. |
 | `demoSeed.resources` | 100m / 512Mi, memory limit 1Gi | Per seed container. |
 
 ## Secrets modes
@@ -229,28 +230,44 @@ what in-cluster mode changes:
 [`../../../services/pipeline/src/pipeline/demo/README.md`](../../../services/pipeline/src/pipeline/demo/README.md).
 
 - **Not a hook.** It needs the migrated database and the running catalog
-  plane. A failed attempt (the stack still coming up) is retried up to
-  `demoSeed.backoffLimit` times.
+  plane. Each seed first waits up to `demoSeed.waitReadySeconds` for the
+  STAC API (and, for `images-seed`, the app) to answer, so the Job can start
+  beside a catalog plane that is still coming up.
+- **No retries by default** (`demoSeed.backoffLimit: 0`). A pod retry starts
+  from the first seed again, so it would redo every seed that already
+  succeeded, and each one replaces its processes' revisions and run history.
+  A failed Job stays failed with its logs; the seeds before the failing one
+  have completed.
 - **Runs once per pod spec.** The Job name ends in a hash of its pod
-  template: an upgrade or sync that changes nothing in it leaves the
-  completed Job alone, while a new image or new seed values creates a new
-  Job (the old one is pruned) and re-seeds. Re-seeding replaces the demo
+  template rendered without the chart-version labels: a chart-only release
+  (new chart version or appVersion, same image digests) leaves the completed
+  Job alone, while a new image, new seeds, or new args, env or Secret
+  references create a new Job (the old one is pruned) and re-seed. With tags
+  instead of digests the image tag defaults to the appVersion, so a new
+  appVersion is a new image and re-seeds. Re-seeding replaces the demo
   processes' revisions and their run history. To re-run by hand, delete the
   Job and upgrade or sync. The Job sets no `ttlSecondsAfterFinished`,
   because a GitOps controller would recreate a Job that vanished.
 - **Identity and Secrets.** The pod runs the pipeline image as the pipeline
   ServiceAccount (its workload identity writes `seed`'s scene to the platform
-  bucket), reads the pipeline's env ConfigMaps, the runtime `db-owner` and
-  `platform` Secrets (never hook copies), and the destination key only in the
-  `goes-seed` container, the bearer only in `images-seed`'s.
+  bucket), reads the pipeline's env ConfigMaps and the runtime `db-owner`
+  Secret (never hook copies). `CREDENTIALS_MASTER_KEY` reaches only
+  `goes-seed` and `cube-seed` (the two that seal connection credentials), the
+  destination key only `goes-seed`, the bearer only `images-seed`.
+- **Writes bypass the app.** Like the compose seeds, the Job writes catalog
+  documents straight to stac-fastapi and platform rows straight to the
+  database as the owner role, not through the BFF, so no `audit_log` rows are
+  written. Accepted for an operator-run demo Job (I-169).
 - **Network.** The pod only makes egress. It carries
-  `app.kubernetes.io/component=demo-seed`; the STAC API's ingress policy must
-  admit it, and so must `networkPolicy.appIngressFrom` when it is set and
-  `images-seed` is chosen.
-- **Not available yet:** process runs (the extractor, GeoColor, the scans
-  `images-seed` waits for) need the Kubernetes executor (I-160), so before
-  K-5 the seeds succeed but the runs they trigger fail at launch. See
-  `docs/ISSUES.md` I-164.
+  `app.kubernetes.io/component=demo-seed`. The STAC API's ingress policy must
+  admit it (R-7). When `networkPolicy.appIngressFrom` restricts the app and
+  `images-seed` is chosen, the chart adds the seed pod as a peer on the app's
+  policy.
+- **`images-seed` before the Kubernetes executor.** Process runs (the
+  extractor, GeoColor, image scans) need K-5 (I-160). Until then the other
+  seeds complete but the runs they trigger fail at launch, and `images-seed`
+  waits out its scan timeout and fails the Job. Leave it out of
+  `demoSeed.seeds` until K-5. See `docs/ISSUES.md` I-169.
 
 ## Install paths
 
@@ -269,6 +286,13 @@ helm upgrade --install stac-higher oci://ghcr.io/<owner>/charts/stac-higher \
   --version <v> -n stac-higher --create-namespace \
   -f values.yaml -f digests.values.yaml --timeout 15m
 ```
+
+With `demoSeed.enabled`, do not add `--wait-for-jobs` or `--atomic` (Helm 4:
+`--rollback-on-failure`). The demo seed Job can legitimately run for tens of
+minutes, or fail before K-5 (see Demo seed), and either flag would then hold
+the release or roll it back over a demo. Whether Helm 4's `--wait` alone
+waits for Jobs was not verified; treat it as a caution and check before
+relying on it.
 
 Argo CD (multi-source, so the value files come from your deployment repo
 rather than from inside the chart archive; `repoURL` for the chart must be

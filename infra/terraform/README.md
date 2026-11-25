@@ -142,7 +142,7 @@ differ, the chart wins.
 | `auth.audiences` (proxy side) | same | the auth proxy's `ALLOWED_JWT_AUDIENCES` | consumed by R-7 (catalog plane, not yet rendered) |
 | `auth.claimsMapping` | `cognito.claims_mapping` | `AUTH_CLAIMS_MAPPING` (compact JSON) | consumed today |
 | `auth.hostedDomain` | `cognito.hosted_domain` | nothing: no app env reads it | informational |
-| `demoDestination.bucket`, `.region`, `.credentialsSecretArn` | `demo_destination` outputs | the demo destination; `credentialsSecretArn` is not wired to an ExternalSecret yet | consumed by R-10 (not yet rendered) |
+| `demoDestination.bucket`, `.region`, `.credentialsSecretArn` | `demo_destination` outputs | the demo seed Job's `goes-seed --deliver` (`DEMO_DESTINATION_*`); `credentialsSecretArn` becomes the `<fullname>-demo-destination` ExternalSecret | consumed when `demoSeed.enabled` and `demoSeed.deliver` (R-10) |
 
 Rules:
 

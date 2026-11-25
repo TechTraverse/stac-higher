@@ -94,7 +94,7 @@ infra/helm/stac-higher/tests/values/demo-seed.yaml   # new scenario
 infra/helm/stac-higher/{values.yaml,values.schema.json,README.md}
 scripts/check-helm.sh                                # one run line
 app/src/__tests__/helm/demo-seed.test.ts             # new
-docs/FEATURES.md, docs/ISSUES.md (I-164)
+docs/FEATURES.md, docs/ISSUES.md (I-169)
 ```
 
 ### Task 1: CLI in-cluster mode (pytest first)
@@ -119,5 +119,13 @@ docs/FEATURES.md, docs/ISSUES.md (I-164)
 
 ### Task 4: Docs and gates
 
-- [ ] `demo/README.md` "In-cluster mode"; chart README section; `FEATURES.md` R-10 row; `ISSUES.md` I-164 (what in-cluster cannot do yet: STAC API policy wiring, images-seed bearer lifetime and scans behind K-5, teardown refused).
+- [ ] `demo/README.md` "In-cluster mode"; chart README section; `FEATURES.md` R-10 row; `ISSUES.md` I-169 (what in-cluster cannot do yet: STAC API policy wiring, images-seed bearer lifetime and scans behind K-5, teardown refused).
 - [ ] Full gates; commit.
+
+## Review changes (2026-11-25)
+
+- The Job name hashes the pod template rendered with selector labels only, so a chart-only release (new version or appVersion, same digests) keeps the name; a new image, seed list, args, env or Secret reference changes it.
+- `demoSeed.backoffLimit` defaults to `0` (a pod retry redoes every completed seed and wipes their run history); start-up ordering moves into the pod: `--wait-ready SECONDS` (`demoSeed.waitReadySeconds`, default 600) waits for the STAC API and, for `images-*`, the app.
+- `CREDENTIALS_MASTER_KEY` only in `goes-seed` and `cube-seed`.
+- The app NetworkPolicy adds the seed pod as a peer when `appIngressFrom` is set and `images-seed` is chosen.
+- `images-seed` is documented to fail the Job before K-5 (leave it out until then); direct catalog/DB writes without `audit_log` rows recorded as an accepted deviation (I-169, renumbered from I-164).
