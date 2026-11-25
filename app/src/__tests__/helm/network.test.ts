@@ -64,6 +64,8 @@ describe.skipIf(!helmReady())("chart network policies", () => {
       [{ networkPolicy: { publicIngressFrom: vpc } }, vpc],
       [{ networkPolicy: { appIngressFrom: other } }, other],
       [{ networkPolicy: { appIngressFrom: other, publicIngressFrom: vpc } }, vpc],
+      // An empty list is "unset", never "any source": it must not override a restricted appIngressFrom.
+      [{ networkPolicy: { appIngressFrom: other, publicIngressFrom: [] } }, other],
     ] as const) {
       const docs = render(values);
       for (const [c, port] of PORTS) {

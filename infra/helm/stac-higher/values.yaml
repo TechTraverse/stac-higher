@@ -142,7 +142,7 @@ ingress:
 networkPolicy:
   enabled: true # render NetworkPolicies
   appIngressFrom: null # null -> app port open to any source; otherwise a list of NetworkPolicy peers
-  publicIngressFrom: null # peers for the catalog proxy, titiler, tipg, cube-server ports; null -> appIngressFrom
+  publicIngressFrom: null # peers for the catalog proxy, titiler, tipg, cube-server ports; null or [] -> appIngressFrom
   metricsFrom: [] # peers allowed to reach pipeline :8083
 
 app:

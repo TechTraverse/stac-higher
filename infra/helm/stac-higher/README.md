@@ -118,7 +118,7 @@ Rendering fails with a message starting with the offending key path.
 | `networkPolicy` | | |
 | `networkPolicy.enabled` | `true` | |
 | `networkPolicy.appIngressFrom` | `null` | `null` opens the app port to any source; otherwise a list of NetworkPolicy peers. |
-| `networkPolicy.publicIngressFrom` | `null` | Peers for the catalog proxy, titiler, tipg and cube-server ports; `null` uses `appIngressFrom` (both `null`: any source). The proxy also admits the app pods; stac-api admits only the proxy. |
+| `networkPolicy.publicIngressFrom` | `null` | Peers for the catalog proxy, titiler, tipg and cube-server ports; `null` or `[]` uses `appIngressFrom` (so an empty list never opens ports that `appIngressFrom` restricts); both empty: any source. The proxy also admits the app pods; stac-api admits only the proxy. |
 | `networkPolicy.metricsFrom` | `[]` | Peers allowed to reach pipeline `:8083`. |
 | `app` | | The app Deployment. |
 | `app.replicas` | `2` | Omitted when the HPA is on. |
