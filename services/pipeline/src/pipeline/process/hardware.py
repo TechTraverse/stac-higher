@@ -233,12 +233,15 @@ def _fmt(value: float) -> str:
 
 
 def _is_number(value: Any) -> bool:
-    """A finite number that is not a bool — the app's `isNumber`."""
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and math.isfinite(value)
-    )
+    """A finite number that is not a bool — the app's `isNumber`. An int too
+    large for a float is NOT a number here: JavaScript reads the same JSON as
+    `Infinity` (and `math.isfinite` would raise OverflowError on it)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def _is_whole(value: Any) -> bool:
