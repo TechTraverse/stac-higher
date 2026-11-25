@@ -19,6 +19,7 @@ pytest) means the repo checkout's ``local.json``. One file, no vendored copy.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -192,22 +193,44 @@ def _fmt(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else str(value)
 
 
+def _is_number(value: Any) -> bool:
+    """A finite number that is not a bool — the app's `isNumber`."""
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+    )
+
+
+def _is_whole(value: Any) -> bool:
+    """A whole number — the app's `isWhole`. An integral float (`1.0`, which
+    JavaScript reads as `1`) counts, so both sides agree on JSON input."""
+    return _is_number(value) and float(value).is_integer()
+
+
 def check_hardware_bounds(
     *, profiles: HardwareProfileSet, profile_id: str, cpu: float, gpu_count: int, memory_mb: int
 ) -> HardwareProfile:
     """The launch-time half of the dual enforcement (spec §4). Returns the
     resolved profile; raises with the SAME message text the app's write gate
-    produces (the fixture's `bounds_cases[].reason` pins both)."""
+    produces (the fixture's `bounds_cases[].reason` pins both). Each number is
+    type-checked before its bounds (K-3, K-1's deferred guards): a string
+    would otherwise raise TypeError, and a bool would pass as 0 or 1."""
     profile = profiles.get(profile_id)
     if profile is None:
         raise HardwareProfileError(
             f"hardware.profile {profile_id!r} is not a hardware profile of this deployment"
         )
+    if not _is_number(cpu):
+        raise HardwareProfileError("hardware.cpu must be a number")
     if not (profile.cpu.min <= cpu <= profile.cpu.max):
         raise HardwareProfileError(
             f"hardware.cpu {_fmt(cpu)} is outside profile {profile_id!r} bounds "
             f"{_fmt(profile.cpu.min)}–{_fmt(profile.cpu.max)}"  # noqa: RUF001 -- en dash, pinned by the fixture
         )
+    if not _is_whole(gpu_count):
+        raise HardwareProfileError("hardware.gpu_count must be a whole number")
+    gpu_count = int(gpu_count)  # `2.0` prints as `2`, as it does in the app
     if profile.gpu_count is None:
         if gpu_count != 0:
             raise HardwareProfileError(
@@ -218,6 +241,9 @@ def check_hardware_bounds(
             f"hardware.gpu_count {gpu_count} is outside profile {profile_id!r} bounds "
             f"{_fmt(profile.gpu_count.min)}–{_fmt(profile.gpu_count.max)}"  # noqa: RUF001
         )
+    if not _is_whole(memory_mb):
+        raise HardwareProfileError("memory_mb must be a whole number")
+    memory_mb = int(memory_mb)
     if not (profile.memory_mb.min <= memory_mb <= profile.memory_mb.max):
         raise HardwareProfileError(
             f"memory_mb {memory_mb} is outside profile {profile_id!r} bounds "

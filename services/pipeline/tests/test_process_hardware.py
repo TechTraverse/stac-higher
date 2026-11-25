@@ -145,3 +145,14 @@ def test_checkout_fallback_is_lazy_and_survives_a_shallow_install(monkeypatch):
     assert path.name == "local.json"
     override = {hardware.PROFILES_ENV_VAR: "/x/p.json"}
     assert hardware.hardware_profiles_path(override) == Path("/x/p.json")
+
+
+def test_an_integral_float_is_reported_like_the_app_reports_it():
+    """JSON `2.0` is a float here and `2` in JavaScript; the refusal text must
+    not differ by runtime (the fixture pins the accept side)."""
+    profiles = parse_hardware_profiles(_fixture()["document"])
+    with pytest.raises(HardwareProfileError) as err:
+        check_hardware_bounds(
+            profiles=profiles, profile_id="gpu-l4", cpu=4, gpu_count=2.0, memory_mb=16384.0
+        )
+    assert str(err.value) == "hardware.gpu_count 2 is outside profile 'gpu-l4' bounds 1–1"  # noqa: RUF001
