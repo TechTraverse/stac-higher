@@ -161,3 +161,21 @@ async def test_a_released_run_is_claimable_again_with_its_phase():
 
 def test_release_phase_is_the_fixture_value():
     assert PHASE_PENDING_CAPACITY == "pending_capacity"
+
+
+@pytest.mark.asyncio
+async def test_hardware_unavailable_is_a_dead_run_not_a_requeue():
+    """The host cannot provide what the profile promises (no NVIDIA runtime,
+    fewer CPUs) — configuration, like an unknown profile: dead, naming it."""
+    from pipeline.process.executor import HardwareUnavailable
+
+    message = (
+        "profile 'gpu-l4' needs an NVIDIA container runtime this Docker host does not expose"
+    )
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor(launch_error=HardwareUnavailable(message))
+    result = await _run(repo, executor, capacity=None)
+    assert result.status == "dead"
+    assert repo.finished[-1]["status"] == "dead"
+    assert repo.finished[-1]["error"] == message
+    assert repo.finished[-1]["next_attempt_at"] is None

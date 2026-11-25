@@ -31,6 +31,7 @@ from pipeline.process.credentials import CredentialBudgetExceeded, RunCredential
 from pipeline.process.executor import (
     Executor,
     ExecutorUnavailable,
+    HardwareUnavailable,
     ImageMissing,
     ImagePullFailed,
 )
@@ -363,6 +364,13 @@ async def run_one(
             on_dead=on_dead,
         )
         return RunResult(run.id, transition.status, error=transition.error)
+    except HardwareUnavailable as err:
+        # K-3: the host cannot provide what the profile promises (no NVIDIA
+        # runtime, too few CPUs) -- configuration, like an unknown profile:
+        # dead, naming it, no retry. Not an ExecutorUnavailable, so this
+        # ordering is for readability only.
+        await _finish(repo, run, "dead", None, str(err), None, at, on_dead=on_dead)
+        return RunResult(run.id, "dead", error=str(err))
     except (ExecutorUnavailable, RunCredentialsError) as err:
         # OUR failure, not the process's: back to `queued` without spending an
         # attempt (see ledger.infrastructure_transition).

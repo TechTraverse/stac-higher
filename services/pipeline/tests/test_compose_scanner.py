@@ -43,3 +43,12 @@ def test_the_pipeline_names_the_scanner_network_and_the_hub_credential():
     # ends with `scanner-egress}` (the default value's suffix), so it cannot
     # false-match a `- scanner-egress` networks-list entry.
     assert "- scanner-egress" not in pipeline
+
+
+def test_the_socket_proxy_enables_exactly_the_known_sections():
+    """K-3 adds INFO (read-only GET /info, the NVIDIA-runtime probe). The
+    whole enabled set is pinned so any further widening is a visible diff."""
+    proxy = _service("docker-socket-proxy")
+    enabled = set(re.findall(r"^\s*- ([A-Z_]+)=1\s*$", proxy, re.M))
+    assert enabled == {"CONTAINERS", "POST", "IMAGES", "INFO"}
+    assert "INFO=0" not in proxy

@@ -1134,3 +1134,157 @@ def test_a_duration_rejection_carries_at_most_a_bounded_slice_of_sts_text():
 def test_other_sts_failures_keep_their_infrastructure_classification(error):
     with pytest.raises(RunCredentialsError):
         mint_run_credentials(settings(), RUN, 60, sts_client=FakeSts(error=error))
+
+
+# ---------------------------------------------------------------------------
+# K-3: the profile reaches the daemon — NanoCpus, DeviceRequests, the probe
+# ---------------------------------------------------------------------------
+
+_GPU_REQUEST = {"Driver": "nvidia", "Count": -1, "Capabilities": [["gpu"]]}
+
+
+def _k3_profiles():
+    from pipeline.process.hardware import parse_hardware_profiles
+
+    return parse_hardware_profiles(
+        {
+            "version": 1,
+            "profiles": [
+                {
+                    "id": "standard", "label": "S", "description": "", "tier": "cpu",
+                    "accelerator": None, "cpu": {"min": 0.25, "max": 4, "default": 1},
+                    "memory_mb": {"min": 128, "max": 16384, "default": 512}, "gpu_count": None,
+                    "max_queue_wait_seconds": 60, "image": None,
+                    "backend": {"docker": {"capacity": 2}},
+                },
+                {
+                    "id": "gpu-l4", "label": "L4", "description": "", "tier": "gpu",
+                    "accelerator": {"vendor": "nvidia", "model": "l4", "memory_gb": 24},
+                    "cpu": {"min": 2, "max": 8, "default": 4},
+                    "memory_mb": {"min": 8192, "max": 32768, "default": 16384},
+                    "gpu_count": {"min": 1, "max": 2, "default": 1},
+                    "max_queue_wait_seconds": 7200, "image": "cuda",
+                    "backend": {"docker": {"device_requests": [_GPU_REQUEST], "capacity": 1}},
+                },
+            ],
+        }
+    )
+
+
+def _spec(profile="standard", profile_obj=None, **overrides) -> RunSpec:
+    base = dict(
+        run_id=RUN, process_id=PROC, image="img", env={}, memory_mb=256, timeout_seconds=60,
+        cpu=1.0, gpu_count=0,
+        profile=profile_obj if profile_obj is not None else _k3_profiles().get(profile),
+    )
+    base.update(overrides)
+    return RunSpec(**base)
+
+
+def _info_calls(api) -> int:
+    return sum(1 for _, p, _ in api.calls if p == "/info")
+
+
+def test_launch_sets_nanocpus_from_cpu():
+    api = FakeApi({"create": {"Id": "c1"}})
+    executor_with(api).launch(_spec(cpu=1.5))
+    host = api.created_config()["HostConfig"]
+    assert host["NanoCpus"] == 1_500_000_000
+    assert "DeviceRequests" not in host
+    assert _info_calls(api) == 0  # no GPU asked, no probe
+
+
+def test_a_fractional_cpu_rounds_to_whole_nanocpus():
+    api = FakeApi({"create": {"Id": "c1"}})
+    executor_with(api).launch(_spec(cpu=0.25))
+    assert api.created_config()["HostConfig"]["NanoCpus"] == 250_000_000
+
+
+def test_an_image_scan_is_not_cpu_limited_by_a_profile():
+    import dataclasses
+
+    """A scan's sizing is the image policy's (memory + timeout), not a
+    hardware profile's: its RunSpec carries the default cpu, which must not
+    silently cap the scanner at one core."""
+    api = FakeApi({"create": {"Id": "c1"}})
+    spec = _spec(kind="image_scan")
+    executor_with(api).launch(dataclasses.replace(spec, profile=None))
+    assert "NanoCpus" not in api.created_config()["HostConfig"]
+
+
+def test_launch_sends_device_requests_when_the_host_has_an_nvidia_runtime():
+    api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"nvidia": {}, "runc": {}}}})
+    executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=2))
+    host = api.created_config()["HostConfig"]
+    assert host["DeviceRequests"] == [{"Driver": "nvidia", "Count": 2, "Capabilities": [["gpu"]]}]
+    assert host["NanoCpus"] == 4_000_000_000
+    # The profile document is not mutated by the Count override.
+    assert _k3_profiles().get("gpu-l4").backend["docker"]["device_requests"][0]["Count"] == -1
+
+
+def test_launch_refuses_gpus_on_a_host_without_the_runtime():
+    from pipeline.process.executor import HardwareUnavailable
+
+    api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"runc": {}}}})
+    with pytest.raises(
+        HardwareUnavailable, match="profile 'gpu-l4' needs an NVIDIA container runtime"
+    ):
+        executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    assert not any("create" in p for _, p, _ in api.calls)  # nothing was created
+
+
+def test_a_gpu_profile_without_device_requests_is_refused_not_launched_gpu_less():
+    import dataclasses
+
+    from pipeline.process.executor import HardwareUnavailable
+
+    gpu = _k3_profiles().get("gpu-l4")
+    bare = dataclasses.replace(gpu, backend={"docker": {"capacity": 1}})
+    api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"nvidia": {}}}})
+    with pytest.raises(HardwareUnavailable, match=r"no backend\.docker\.device_requests"):
+        executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1, profile_obj=bare))
+    assert not any("create" in p for _, p, _ in api.calls)
+
+
+def test_the_runtime_probe_is_cached_per_executor():
+    api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"nvidia": {}}}})
+    ex = executor_with(api)
+    ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    assert _info_calls(api) == 1
+
+
+def test_an_unreachable_info_endpoint_is_an_executor_fault_not_a_dead_run():
+    from pipeline.process.executor import HardwareUnavailable
+
+    api = FakeApi(
+        {"create": {"Id": "c1"}, "/info": ExecutorUnavailable("docker GET /info failed: 403")}
+    )
+    ex = executor_with(api)
+    with pytest.raises(ExecutorUnavailable) as err:
+        ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    assert not isinstance(err.value, HardwareUnavailable)
+    # A failed probe is not cached as "no GPU": the next launch asks again.
+    api.responses["/info"] = {"Runtimes": {"nvidia": {}}}
+    ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    assert _info_calls(api) == 2
+
+
+def test_more_cpus_than_the_host_has_is_hardware_unavailable():
+    """The daemon refuses NanoCpus above its CPU count with a 400 ("Range of
+    CPUs is from 0.01 to 4.00, as there are only 4 CPUs available"). That is
+    the host not providing what the profile promises — a dead run naming the
+    profile, never an endless requeue as an outage."""
+    from pipeline.process.executor import HardwareUnavailable
+
+    refusal = EngineHTTPError(
+        "docker POST /containers/create failed: 400",
+        status=400,
+        detail=(
+            '{"message":"Range of CPUs is from 0.01 to 4.00,'
+            ' as there are only 4 CPUs available"}'
+        ),
+    )
+    api = FakeApi({"create": refusal})
+    with pytest.raises(HardwareUnavailable, match="profile 'standard' asks for 4 CPUs"):
+        executor_with(api).launch(_spec(cpu=4))

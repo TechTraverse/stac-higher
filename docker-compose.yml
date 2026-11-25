@@ -290,7 +290,8 @@ services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     environment:
-      # Least privilege: containers only, and POST so create/start/kill work.
+      # Least privilege: containers, images (C-2) and the read-only /info
+      # (K-3), and POST so create/start/kill work.
       - CONTAINERS=1
       - POST=1
       # Everything else stays off explicitly. Listing them is deliberate —
@@ -311,7 +312,13 @@ services:
       - NODES=0
       - SWARM=0
       - SYSTEM=0
-      - INFO=0
+      # K-3: GET /info (read-only; the proxy has no write endpoint in this
+      # section) is how the executor learns whether the daemon exposes an
+      # NVIDIA runtime before it sends DeviceRequests for a GPU profile.
+      # Residual: /info also discloses daemon metadata (version, kernel, OS,
+      # container counts, registry mirrors) to the pipeline, which can
+      # already list and create containers.
+      - INFO=1
       - PLUGINS=0
       - BUILD=0
       - COMMIT=0

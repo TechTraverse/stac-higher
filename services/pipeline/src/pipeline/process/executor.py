@@ -57,6 +57,14 @@ class RunTimeout(ExecutorError):
     """The run exceeded its wall-clock budget and was killed."""
 
 
+class HardwareUnavailable(ExecutorError):
+    """The run asks for hardware this backend or host cannot provide (K-3):
+    GPUs on a Docker host without an NVIDIA container runtime, or more CPUs
+    than the host has. Configuration, not a fault: the run dies naming the
+    profile and never requeues. Deliberately NOT an
+    :class:`ExecutorUnavailable`, whose branch never spends an attempt."""
+
+
 class ImagePullFailed(ExecutorError):
     """The daemon refused or could not pull a user image by digest (C-2,
     spec §8.4). A per-run OUTCOME, not an outage: the registry may have
@@ -108,7 +116,8 @@ class RunSpec:
     network: str | None = None
     # K-1 (process-compute spec §4): the hardware the run asked for, resolved
     # against the deployment's profile set at launch. Defaults keep every
-    # existing construction valid; no executor reads them yet (K-3 does).
+    # existing construction valid. The Docker executor reads them for
+    # process runs since K-3 (`NanoCpus`, `DeviceRequests`).
     cpu: float = 1.0
     gpu_count: int = 0
     profile: HardwareProfile | None = None
