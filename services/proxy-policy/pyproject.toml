@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
-    # The upstream stac-auth-proxy 1.2.0 wheel ships no Postgres driver; the
+    # The upstream stac-auth-proxy wheel (through 1.4.0) ships no Postgres driver; the
     # derived image (infra/proxy-policy/Dockerfile) installs this package,
     # pulling psycopg with it.
     "psycopg[binary]>=3.2",
@@ -17,13 +17,19 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
-    # Test-only: validate emitted expressions with the same cql2 engine the
-    # proxy's Cql2BuildFilterMiddleware / Cql2ValidateTransactionMiddleware use.
-    "cql2>=0.3",
     # Test-only: the image gets stac-auth-proxy from its FROM. Keep this equal
     # to the Dockerfile FROM tag and the docker-compose.yml pin (ADR 0015
     # lockstep).
-    "stac-auth-proxy==1.2.0",
+    "stac-auth-proxy==1.4.0",
+    # Test-only: the versions upstream v1.4.0's uv.lock installs into the
+    # image, so the tests run what the image runs. They move with the tag
+    # above (UPSTREAM_LOCKED in tests/test_app.py enforces it; ADR 0015).
+    # cql2 also validates every emitted expression with the same engine the
+    # proxy's Cql2BuildFilterMiddleware / Cql2ValidateTransactionMiddleware use.
+    "starlette==1.7.0",
+    "fastapi==0.162.5",
+    "pyjwt==2.15.1",
+    "cql2==0.6.1",
 ]
 
 [build-system]

@@ -1795,7 +1795,7 @@ server reloads within one poll.
 
 ### I-148 · The proxy's client_id audience mode rides on upstream internals 🟡
 
-Upstream stac-auth-proxy (through v1.3.1) matches the `aud` claim only. To
+Upstream stac-auth-proxy (through v1.4.0) matches the `aud` claim only. To
 support `AUTH_BEARER_AUDIENCE_CLAIM=client_id` (Cognito access tokens), the
 derived image swaps `EnforceAuthMiddleware` in `app.user_middleware`. The swap
 is guarded by a startup `RuntimeError` when upstream no longer registers

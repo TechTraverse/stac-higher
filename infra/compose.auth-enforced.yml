@@ -73,11 +73,12 @@ services:
       # bulk_items constant-false without the BFF header.
       - ITEMS_FILTER_CLS=stac_higher_proxy_policy:ExternallyWritableItemsFilter
 
-      # Override the proxy's default items filter path to ALSO route
-      # bulk_items through the factory — the upstream default regex skips it,
-      # and the validate middleware passes requests through when no filter was
-      # built, which would let any valid-audience member token bulk-insert
-      # anywhere (source-verified against v1.2.0, ADR 0015).
+      # Route bulk_items through the factory too. Upstream's default regex
+      # skipped it through v1.3.x (v1.4.0's default includes it), and the
+      # validate middleware passes requests through when no filter was built,
+      # which would let any valid-audience member token bulk-insert anywhere
+      # (source-verified against v1.2.0 and v1.4.0, ADR 0015). Kept explicit
+      # so an upstream default change cannot reopen that.
       - ITEMS_FILTER_PATH=^(/collections/([^/]+)/(items|bulk_items)(/[^/]+)?$$|/search$$)
 
       # Read-only source of the externally-writable set (~15 s TTL cache in

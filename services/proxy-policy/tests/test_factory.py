@@ -163,6 +163,25 @@ async def test_all_write_methods_take_the_write_branch(method: str):
     assert result == CONSTANT_FALSE
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", ITEMS + "/"),
+        ("POST", "/collections/flagged/ITEMS"),
+        ("PUT", ITEM + "/"),
+        ("DELETE", "/Collections/flagged/Items/item-1"),
+        ("POST", BULK + "/"),
+        ("POST", "/collections/flagged/BULK_ITEMS"),
+    ],
+)
+async def test_widened_transaction_paths_take_the_write_branch(method: str, path: str):
+    # Upstream 1.4.0 routes a path to this factory (and to transaction
+    # validation) ignoring case and one trailing slash, for upstreams that
+    # route that way. A write it classifies as such must never be read as `true`.
+    result = await make_filter()(ctx(method, path, roles=["member"]))
+    assert result == CONSTANT_FALSE
+
+
 async def test_custom_roles_claim_path():
     f = make_filter(roles_claim="resource_access.stac.roles")
     granted = await f(

@@ -32,7 +32,7 @@ authorization data into catalog documents.
 **Option (b): a small in-repo custom items filter factory**
 (`services/proxy-policy/`, Python), shipped as a thin **derived image**
 (`infra/proxy-policy/Dockerfile`: `FROM` the pinned upstream image +
-`pip install psycopg` + the package — the upstream 1.2.0 wheel ships no
+`pip install psycopg` + the package — the upstream wheel ships no
 Postgres driver, so a bare volume mount cannot work) and configured **only in
 the auth-enforced overlay**. Adopting it also **pins the `auth-proxy` and
 `stac-fastapi-pgstac` images** (both `:latest` today): the factory builds
@@ -145,7 +145,23 @@ the app. Neither substitutes for the other.
   role for the proxy task (Phase 8 IaC note).
 - The `auth-proxy` and `stac-fastapi-pgstac` images move from `:latest` to
   pins; upstream bumps become deliberate, tested changes (the factory
-  consumes an internal, undocumented context shape).
+  consumes an internal, undocumented context shape). **Bump procedure** for
+  the `auth-proxy` base, all in one PR: move the tag + digest in
+  `infra/proxy-policy/Dockerfile` and `docker-compose.yml`; in
+  `services/proxy-policy/pyproject.toml`'s `dev` extra move
+  `stac-auth-proxy==<tag>` **and** the `starlette` / `fastapi` / `pyjwt` /
+  `cql2` `==` pins to the versions in upstream's `uv.lock` at that tag (the image is
+  built from it with `uv sync --frozen`); add the tag's row to
+  `UPSTREAM_LOCKED` in `tests/test_app.py`; re-lock; run the proxy-policy
+  suite (`test_dev_pin_matches_the_dockerfile_base` and
+  `test_dev_extra_runs_the_base_images_locked_version` fail on any half
+  bump); then re-run the P7-Z live confirm. Re-verified against v1.4.0
+  (#193): the filter context shape is unchanged; a refused PUT/PATCH/DELETE
+  now calls the factory a second time with `method: "GET"` (403 vs 404);
+  path rules match ignoring case and one trailing slash, which the factory
+  mirrors; tokens' `iss` is checked (compose sets `OIDC_ISSUER`); the
+  runtime image has no pip (the derived layer bootstraps it); the
+  stac-fastapi-pgstac pin need not move (same conformance requirements).
 - Role mapping now exists in two places (the app's claims mapper; the
   factory's claim-path env). Deployments with exotic claims configure both;
   convergence is an OPA-era concern. Logged in ISSUES at merge.

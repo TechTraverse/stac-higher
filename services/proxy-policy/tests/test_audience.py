@@ -1,8 +1,9 @@
 """Unit tests for the claim-aware auth middleware (AUTH_BEARER_AUDIENCE_CLAIM).
 
 Real RS256 tokens signed with generated keys; the OIDC discovery is faked so no
-network is touched. Upstream stac-auth-proxy 1.2.0 matches only the ``aud``
-claim; Cognito access tokens carry ``client_id`` instead.
+network is touched. Upstream stac-auth-proxy (through 1.4.0) matches only the
+``aud`` claim; Cognito access tokens carry ``client_id`` instead. Since 1.4.0
+upstream also checks ``iss`` against the discovery document's ``issuer``.
 """
 
 from __future__ import annotations
@@ -30,14 +31,18 @@ from stac_higher_proxy_policy.audience import (
 PRIVATE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 OTHER_PRIVATE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 PUBLIC = PRIVATE.public_key()
+ISSUER = "http://idp.invalid/realms/test"
 
 
 def sign(claims: dict[str, Any], key: Any = PRIVATE) -> str:
-    return jwt.encode({"exp": int(time.time()) + 3600, **claims}, key, algorithm="RS256")
+    return jwt.encode(
+        {"exp": int(time.time()) + 3600, "iss": ISSUER, **claims}, key, algorithm="RS256"
+    )
 
 
 class FakeOidcConfig:
-    metadata: dict[str, Any] = {}  # noqa: RUF012
+    metadata: dict[str, Any] = {"issuer": ISSUER}  # noqa: RUF012
+    issuer = ISSUER
 
     class jwks_client:
         @staticmethod
@@ -151,6 +156,15 @@ def test_bare_string_audience_is_a_one_element_list_not_a_substring_match():
 def test_unknown_audience_claim_field_fails_construction():
     with pytest.raises(ValueError, match=AUDIENCE_CLAIM_ENV):
         make_mw("sub", ["x"])
+
+
+def test_foreign_issuer_is_rejected_in_both_modes():
+    # Upstream 1.4.0's issuer check runs in the inherited validate_token.
+    for claim, claims in (("client_id", COGNITO), ("aud", {"sub": "u1", "aud": "stac-higher"})):
+        mw = make_mw(claim, ["app-client" if claim == "client_id" else "stac-higher"])
+        assert_rejected(
+            mw, sign({**claims, "iss": "http://other.invalid"}), detail="Invalid or expired token"
+        )
 
 
 def test_aud_mode_accepts_matching_aud():
