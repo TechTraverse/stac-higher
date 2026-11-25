@@ -23,6 +23,7 @@ import type {
   ProcessSourceUpdate,
   ProcessUpdate,
 } from "./schemas";
+import type { HardwareProfilesResponse } from "./hardware-public";
 
 export class ProcessApiError extends Error {
   code?: string;
@@ -188,6 +189,12 @@ export async function listRuns(id: string, limit = 50): Promise<ProcessRun[]> {
   return (
     await processFetch<{ runs: ProcessRun[] }>(`/${enc(id)}/runs?limit=${limit}`)
   ).runs;
+}
+
+/** The deployment's hardware profiles, minus their pipeline-only backend
+ * block (K-1 route, spec §3.3). */
+export async function listHardwareProfiles(): Promise<HardwareProfilesResponse> {
+  return processFetch<HardwareProfilesResponse>("/hardware-profiles");
 }
 
 /** Re-run a DEAD run (the `redeliver` analog). Returns the requeued row; the

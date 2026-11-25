@@ -16,6 +16,7 @@
 import { z } from "zod";
 import { nonBlank, retrySpecSchema } from "@/lib/schema-helpers";
 import { imageSnapshotSchema } from "@/lib/images/reference";
+import { DEFAULT_HARDWARE } from "@/lib/processes/hardware-public";
 
 // ---------------------------------------------------------------------------
 // trigger (process_sources.trigger — §5.6)
@@ -176,7 +177,7 @@ const runtimeLimits = {
   // Every stored revision predates this block: absent means `standard` at its
   // default cpu (1 — the shipped sets pin it), no GPU. The pipeline reader
   // defaults the same way.
-  hardware: hardwareSchema.default(() => ({ profile: "standard", cpu: 1, gpu_count: 0 })),
+  hardware: hardwareSchema.default(() => ({ ...DEFAULT_HARDWARE })),
 };
 
 const inlinePythonRuntimeSchema = z

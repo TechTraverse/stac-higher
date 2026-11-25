@@ -24,10 +24,18 @@ import { ImagePicker } from "@/components/images/ImagePicker";
 import { shortDigest } from "@/components/images/format";
 import {
   buildRuntimePayload,
+  resourcesFromRevision,
   revisionImageDigest,
   runtimeFormFromRevision,
+  type ResourceFormState,
   type RuntimeFormState,
 } from "@/components/processes/runtime-form";
+import { HardwareFieldset } from "@/components/processes/HardwareFieldset";
+import {
+  findPublicProfile,
+  hardwareFormIssue,
+  hardwareSummary,
+} from "@/lib/processes/hardware-public";
 import { useImages } from "@/lib/images/queries";
 import { parseCommand } from "@/lib/processes/command";
 import { FlowStrip } from "@/components/monitoring/FlowStrip";
@@ -46,6 +54,7 @@ import {
   useDeleteSource,
   useDeployBuiltinRevision,
   useDeployRevision,
+  useHardwareProfiles,
   useOutputs,
   useProcess,
   useRerunRun,
@@ -291,7 +300,8 @@ export function CodeCard({
   currentCode: string | null;
   currentEnv: ProcessEnv;
   currentRevision: string | null;
-  /** The current revision's stored runtime: the chooser starts from it (C-3). */
+  /** The current revision's stored runtime: the chooser (C-3) and the
+   * hardware, memory and timeout (K-2) start from it. */
   currentRuntime?: Record<string, unknown> | null;
   canMutate: boolean;
   kind: ProcessKind;
@@ -303,12 +313,12 @@ export function CodeCard({
     runtimeFormFromRevision(currentRuntime),
   );
   const [addingImage, setAddingImage] = useState(false);
-  const [memoryMb, setMemoryMb] = useState(512);
-  // GOES spec §6.5: an extractor runs against one ingested file rather than a
-  // batch, so it defaults to a much shorter timeout than a transform.
-  const [timeoutSeconds, setTimeoutSeconds] = useState(
-    kind === "extractor" ? 120 : 900,
+  // K-2: hardware profile + counts, memory and timeout (the extractor's
+  // shorter timeout default lives in `resourcesFromRevision`).
+  const [resources, setResources] = useState<ResourceFormState>(() =>
+    resourcesFromRevision(currentRuntime, kind),
   );
+  const { data: hardwareProfiles, error: hardwareProfilesError } = useHardwareProfiles();
   const [networkLevel, setNetworkLevel] = useState<NetworkLevel>("isolated");
   const networkMax = readUiNetworkMax();
   const deployMutation = useDeployRevision();
@@ -330,28 +340,43 @@ export function CodeCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRevision]);
 
-  // C-3: the same for the runtime (kind, image, command). Also re-synced when
-  // the revision's runtime first arrives, because the revisions query can
-  // land after the process query.
+  // C-3: the same for the runtime (kind, image, command), and K-2 for the
+  // hardware, memory and timeout — before K-2 every deploy form started at
+  // 512 MB / 900 s whatever the revision ran with. Also re-synced when the
+  // revision's runtime first arrives, because the revisions query can land
+  // after the process query.
   const runtimeLoaded = currentRuntime !== null;
   useEffect(() => {
     setRuntimeForm(runtimeFormFromRevision(currentRuntime));
+    setResources(resourcesFromRevision(currentRuntime, kind));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRevision, runtimeLoaded]);
 
   const payload = buildRuntimePayload(runtimeForm, {
-    memory_mb: memoryMb,
-    timeout_seconds: timeoutSeconds,
+    memory_mb: resources.memoryMb,
+    timeout_seconds: resources.timeoutSeconds,
+    hardware: resources.hardware,
     // Slice 1: `hosts` is only meaningful at the `hosts` level, which the
     // write gate does not accept yet.
     network: { level: networkLevel, hosts: [] },
   });
   const command =
     runtimeForm.kind === "container" ? parseCommand(runtimeForm.commandText) : null;
+  // K-2: the write gate's own hardware check, run before sending (the
+  // fieldset shows the same message inline). Without a loaded profile set
+  // there is nothing to check against; the gate still refuses at deploy.
+  const hardwareIssue = hardwareProfiles
+    ? hardwareFormIssue(resources.hardware, resources.memoryMb, hardwareProfiles.profiles)
+    : null;
+  const blockedBy = !payload.ok ? payload.error : (hardwareIssue?.message ?? null);
 
   const deploy = async () => {
     if (!payload.ok) {
       toast.error(payload.error);
+      return;
+    }
+    if (hardwareIssue) {
+      toast.error(hardwareIssue.message);
       return;
     }
     try {
@@ -487,30 +512,31 @@ export function CodeCard({
           groupId={groupId}
           disabled={!canMutate}
         />
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="grid gap-2">
-            <Label htmlFor="memory">Memory (MB)</Label>
-            <Input
-              id="memory"
-              type="number"
-              min={128}
-              value={memoryMb}
-              disabled={!canMutate}
-              onChange={(e) => setMemoryMb(Number(e.target.value))}
-            />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="timeout">Timeout (seconds)</Label>
-            <Input
-              id="timeout"
-              type="number"
-              min={1}
-              max={86400}
-              value={timeoutSeconds}
-              disabled={!canMutate}
-              onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
-            />
-          </div>
+        <HardwareFieldset
+          profiles={hardwareProfiles?.profiles}
+          profilesError={hardwareProfilesError ? hardwareProfilesError.message : null}
+          hardware={resources.hardware}
+          memoryMb={resources.memoryMb}
+          disabled={!canMutate}
+          onChange={(next) =>
+            setResources((r) => ({ ...r, hardware: next.hardware, memoryMb: next.memoryMb }))
+          }
+        />
+        {/* The timeout is not a profile bound (spec §4): its ceiling is the
+            write gate's TIMEOUT_SECONDS_MAX. */}
+        <div className="grid gap-2 sm:max-w-sm">
+          <Label htmlFor="timeout">Timeout (seconds)</Label>
+          <Input
+            id="timeout"
+            type="number"
+            min={1}
+            max={86400}
+            value={resources.timeoutSeconds}
+            disabled={!canMutate}
+            onChange={(e) =>
+              setResources((r) => ({ ...r, timeoutSeconds: Number(e.target.value) }))
+            }
+          />
         </div>
         <div className="grid gap-2">
           <Label htmlFor="network-level">Network access</Label>
@@ -545,7 +571,7 @@ export function CodeCard({
         </div>
         {canMutate && (
           <div className="flex flex-wrap items-center gap-3">
-            <Button onClick={deploy} disabled={deployMutation.isPending || !payload.ok}>
+            <Button onClick={deploy} disabled={deployMutation.isPending || blockedBy !== null}>
               {deployMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -553,8 +579,10 @@ export function CodeCard({
               )}
               Deploy revision
             </Button>
-            {!payload.ok && (
-              <span className="text-sm text-muted-foreground">{payload.error}</span>
+            {blockedBy && (
+              <span className="text-sm text-muted-foreground" data-testid="deploy-blocked">
+                {blockedBy}
+              </span>
             )}
             {currentRevision && (
               <span className="text-sm text-muted-foreground">
@@ -914,6 +942,7 @@ function RunRow({
   canMutate,
   isExtractor,
   imageDigest,
+  hardware,
 }: {
   run: ProcessRun;
   processId: string;
@@ -921,6 +950,9 @@ function RunRow({
   isExtractor: boolean;
   /** The user-image digest the run's revision pins (C-3), or null. */
   imageDigest: string | null;
+  /** The hardware summary of the run's revision (K-2), or null when the
+   * revision is not on the page. */
+  hardware: string | null;
 }) {
   const rerunMutation = useRerunRun();
 
@@ -958,6 +990,12 @@ function RunRow({
           {run.input_items.length === 1 ? "" : "s"} · attempt {run.attempts}
           {run.output_items.length > 0 &&
             ` · ${run.output_items.length} published`}
+          {hardware && (
+            <>
+              {" · "}
+              <span data-testid="run-hardware">{hardware}</span>
+            </>
+          )}
         </div>
         {run.error && (
           <p className="text-sm text-destructive break-words">{run.error}</p>
@@ -1001,7 +1039,7 @@ function RunRow({
   );
 }
 
-function RunsCard({
+export function RunsCard({
   id,
   canMutate,
   isExtractor,
@@ -1010,12 +1048,28 @@ function RunsCard({
   id: string;
   canMutate: boolean;
   isExtractor: boolean;
-  /** The process's revisions: each run pins one, and its image digest shows on the row. */
+  /** The process's revisions: each run pins one, and its image digest and
+   * hardware show on the row. */
   revisions: ProcessRevision[] | undefined;
 }) {
   const { data: runs, isLoading } = useRuns(id);
+  const { data: hardwareProfiles } = useHardwareProfiles();
   const digestByRevision = new Map(
     (revisions ?? []).map((revision) => [revision.id, revisionImageDigest(revision.runtime)]),
+  );
+  // K-2: the hardware the pinned revision asked for (spec §9).
+  const hardwareByRevision = new Map(
+    (revisions ?? []).map((revision) => {
+      const { hardware, memoryMb } = resourcesFromRevision(
+        revision.runtime,
+        isExtractor ? "extractor" : "transform",
+      );
+      const profile = findPublicProfile(hardwareProfiles?.profiles ?? [], hardware.profile);
+      return [
+        revision.id,
+        hardwareSummary(profile, hardware, memoryMb, { profilesLoaded: hardwareProfiles !== undefined }),
+      ];
+    }),
   );
 
   return (
@@ -1044,6 +1098,7 @@ function RunsCard({
             canMutate={canMutate}
             isExtractor={isExtractor}
             imageDigest={digestByRevision.get(run.revision_id) ?? null}
+            hardware={hardwareByRevision.get(run.revision_id) ?? null}
           />
         ))}
       </CardContent>
