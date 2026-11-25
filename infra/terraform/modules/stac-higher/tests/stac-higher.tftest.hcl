@@ -338,3 +338,23 @@ run "rejects_bad_name_prefix" {
   }
   expect_failures = [var.name_prefix]
 }
+
+run "db_major_version_upgrade_off_by_default" {
+  command = plan
+  assert {
+    condition     = module.database.allow_major_version_upgrade == false
+    error_message = "db_allow_major_version_upgrade defaults to false"
+  }
+}
+
+run "db_major_version_upgrade_passed_through" {
+  command = plan
+  variables {
+    db_engine_version              = "18"
+    db_allow_major_version_upgrade = true
+  }
+  assert {
+    condition     = module.database.allow_major_version_upgrade == true
+    error_message = "db_allow_major_version_upgrade reaches aws_db_instance next to engine_version"
+  }
+}

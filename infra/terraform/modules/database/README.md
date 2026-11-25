@@ -44,6 +44,7 @@ RDS PostgreSQL 17 for the platform catalog: a DB subnet group, a security group 
 | `instance_identifier` | `<name_prefix>-db`. |
 | `parameter_group_name` | pgstac parameter group name. |
 | `ca_cert_identifier` | CA identifier in use. |
+| `allow_major_version_upgrade` | Whether a major `engine_version` bump is permitted. |
 
 ## pgstac tuning
 
