@@ -283,8 +283,9 @@ describe.skipIf(!helmReady())("chart demo seed Job", () => {
   });
 
   it("images-seed needs no bearer when it is not chosen", () => {
-    // maps merge across values files, so the scenario's goes-seed extraArgs is nulled out
-    const docs = render({ demoSeed: { seeds: ["seed"], deliver: false, appBearer: { secretName: "" }, extraArgs: { "goes-seed": null } } });
-    expect(containersOf(podOf(docs)).map((c: any) => c.name)).toEqual(["seed"]);
+    // goes-seed stays chosen: the scenario gives it extraArgs, maps merge across
+    // values files, and a null override is refused by the schema on Helm 3.22 / 4.3.
+    const docs = render({ demoSeed: { seeds: ["seed", "goes-seed"], deliver: false, appBearer: { secretName: "" } } });
+    expect(containersOf(podOf(docs)).map((c: any) => c.name)).toEqual(["seed", "goes-seed"]);
   });
 });
