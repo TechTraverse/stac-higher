@@ -251,6 +251,10 @@ images cannot follow `global.imageDigests` or the mirror rewrite (evidence:
 | `<fullname>-cube-server` | `cube-server` | 8086 | 999 | `dbCubeServer` (member of `stac_higher_cube_reader`) | `publicUrls.cubeServer` |
 
 - Every public URL is a bare origin on its own host; the render fails otherwise.
+- Probes: a startup probe on the readiness path allows up to 5 minutes (the
+  proxy waits for stac-api and the IdP and checks conformance; the others open
+  database pools), then readiness on that path and liveness on the port. Not
+  values-tunable, like the app's and pipeline's.
 - Database URLs carry no credentials: logins arrive as `PGUSER`/`PGPASSWORD`
   (or `POSTGRES_USER`/`POSTGRES_PASS` for titiler and tipg) from the runtime
   Secrets, and TLS from `PGSSLMODE`/`PGSSLROOTCERT`. titiler, tipg and

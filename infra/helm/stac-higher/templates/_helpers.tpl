@@ -589,17 +589,24 @@ spec:
           env:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- /* Startup can be slow: the proxy waits for stac-api and the IdP and checks conformance; titiler, tipg and
+          stac-api open DB pools against a possibly cold RDS. Up to 5 minutes before liveness takes over. */}}
+          startupProbe:
+            httpGet:
+              path: {{ .readinessPath }}
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             httpGet:
               path: {{ .readinessPath }}
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5
           livenessProbe:
             tcpSocket:
               port: http
-            initialDelaySeconds: 20
             periodSeconds: 20
           resources:
             {{- toYaml $s.resources | nindent 12 }}

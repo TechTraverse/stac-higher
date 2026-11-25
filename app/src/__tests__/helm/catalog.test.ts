@@ -259,6 +259,9 @@ describe.skipIf(!helmReady())("chart catalog plane", () => {
         expect(k.ports, c).toEqual([{ name: "http", containerPort: port, protocol: "TCP" }]);
         expect(k.readinessProbe.httpGet, c).toEqual({ path: ready, port: "http" });
         expect(k.livenessProbe.tcpSocket, c).toEqual({ port: "http" });
+        // Liveness only starts once the startup probe passes; its budget covers a slow upstream or cold RDS.
+        expect(k.startupProbe.httpGet, c).toEqual({ path: ready, port: "http" });
+        expect(k.startupProbe.periodSeconds * k.startupProbe.failureThreshold, c).toBeGreaterThanOrEqual(300);
         if (cmd) expect(k.command, c).toEqual([...cmd, "--host", "0.0.0.0", "--proxy-headers", "--forwarded-allow-ips=*"]);
         else expect(k.command, c).toBeUndefined();
         const svc = docs.find((d) => d.kind === "Service" && d.metadata.name === `stac-higher-${c}`);
