@@ -80,6 +80,14 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `PGSSLMODE` / `PGSSLROOTCERT` | _(unset — no TLS requirement)_ | libpq's TLS settings for `DATABASE_URL` (all pipeline connections, pypgstac included); see `docs/backend.md` 'Deployment: S3 credentials and database TLS'. |
 | `PROCESS_CREDENTIAL_GRACE_SECONDS` | `300` | Run credentials live for the profile's `max_queue_wait_seconds` + `timeout_seconds` + this (K-4). |
 | `PROCESS_EXTRACT_MAX_RUNNING` | `4` | Whole number >= 1. How many extractor runs on the default profile (exempt from its capacity and CPU cap) may run at once, deployment-wide (K-4, I-170). |
+| `PROCESS_EXECUTOR` | `docker` | Which executor runs process runs and image scans: `docker` (the socket proxy) or `kubernetes` (one Job per run, admitted by Kueue; K-5). Anything else fails startup. The value is what `process_runs.executor_backend` records; switching with runs in flight strands them (drain first). |
+| `PROCESS_K8S_NAMESPACE` | `stac-higher-runs` | The namespace every run Job and Secret lives in (Kubernetes executor). |
+| `PROCESS_K8S_API_URL` | _(unset — `https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT`)_ | The API server. `https` always; `http` only to a loopback host (the tests). Unset outside a cluster: every tick that needs the executor logs a WARNING and does nothing, and `/health` reports it. |
+| `PROCESS_K8S_TOKEN_FILE` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | The pipeline's ServiceAccount token, re-read on every request (bound tokens rotate). |
+| `PROCESS_K8S_CA_FILE` | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | The cluster CA the API server's certificate is verified against. |
+| `PROCESS_K8S_RUN_SERVICE_ACCOUNT` | `stac-higher-run` | The token-less ServiceAccount run pods run as (`infra/kubernetes/`). |
+| `PROCESS_K8S_DEFAULT_QUEUE` | `process-runs` | The Kueue LocalQueue for a run whose profile names none, and for image scans. |
+| `PROCESS_K8S_REGISTRY_MIRRORS` | _(unset — no mirrors)_ | JSON object, registry host → pull-through mirror prefix (`{"ghcr.io": "<ecr>/ghcr"}`). Applied to platform images (runtime, stactools, scanner) at Job creation, path and digest kept; never to a user's own image. Helm fills it from `registry.mirrorPrefixes` / `global.imageRegistry`. |
 | `PROCESS_MAX_CREDENTIAL_SECONDS` | _(unset — no limit)_ | The longest run credential the pipeline will mint, as an integer ≥ 900 (anything else fails startup). Set `3600` on AWS, where STS role chaining caps a session at one hour. A run or scan needing more is refused with `credential_budget_exceeded` (deployment-artifacts spec §8). |
 | `DB_POOL_MIN` | `2` | Connections the process-wide async pool keeps warm (M3-B). The pool grows on demand and trims back after `max_idle` (600 s), so a mostly-idle deployment holds two backends, not `DB_POOL_MAX`. |
 | `DB_POOL_MAX` | `18` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 6`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC) plus K-4's run watcher and cancel listener. Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
@@ -482,7 +490,8 @@ reachable, `503` otherwise:
       "pool_available": 3, "requests_waiting": 0
     }
   },
-  "image_policy": { "file": "/app/share/image-policy/default.json", "ok": true, "version": 1, "error": null }
+  "image_policy": { "file": "/app/share/image-policy/default.json", "ok": true, "version": 1, "error": null },
+  "executor": { "name": "kubernetes", "reachable": true, "error": null }
 }
 ```
 
@@ -501,6 +510,12 @@ at most 8 across the `default` jobs and 4 across `ingest_fetch` /
 does **not** affect the 200/503 decision: inline processes do not need it,
 and a broken policy already fails closed where it matters (no scan runs, no
 user-image run launches).
+
+`executor` (K-5) names `PROCESS_EXECUTOR` and whether the executor answers:
+Docker lists its run containers; Kubernetes lists one Job (which also proves
+the Role) and checks the runs namespace's default-deny NetworkPolicy, so a
+missing policy shows here by name. Probed at most every 30 s, 5 s budget.
+Informational: it never affects the 200/503 decision.
 
 ## Connection pooling (M3-B)
 
@@ -771,7 +786,10 @@ leaves it `queued` as `pending_capacity` with `next_attempt_at = now + 15 s`.
 Extractor runs on the default profile are exempt from the profile's
 capacity and CPU cap and are admitted against their own deployment-wide
 pool instead (`PROCESS_EXTRACT_MAX_RUNNING`, default 4; K-4 addendum A3).
-`backend.kubernetes` stays opaque until K-5.
+`backend.kubernetes` is parsed with the document since K-5 (a malformed
+block makes the file unusable, as `backend.docker` does) and read by the
+Kubernetes executor only; on that backend the claim skips the profiles'
+Docker capacities (Kueue's quota is the bound).
 
 ## Submit, then reconcile (K-4)
 
@@ -795,6 +813,41 @@ on read, R10). A run leaving `running` wakes the oldest run waiting for its
 pool. The stall sweep touches only unsubmitted rows. Image scans submit and
 poll `status()` in their thread (`run_to_exit`) and are ignored by the
 watcher (I-124).
+
+## Kubernetes executor (K-5)
+
+`PROCESS_EXECUTOR=kubernetes` selects `process/kubernetes_executor.py`
+through `process/factory.py`'s `build_executor(settings)`, the one place an
+executor is built. It talks to the API server with the standard library
+(`process/kube_api.py`; no client library). One run is one Job
+`stac-run-{run_id}-{hex6}` (`stac-scan-…` for a scan; the suffix makes the
+handle unique per submission) plus a Secret of the same name holding its
+complete environment, owned by the Job; a private user image adds a
+`{job}-pull` Secret. The manifests are pure functions
+(`process/kubernetes_manifests.py`): Kueue labels, requests = limits, a
+locked-down `restricted` pod (uid 10001, read-only root, memory-backed
+`/tmp`, no token), the run's timeout as the POD's deadline so a timed-out
+pod keeps its log, and `podFailurePolicy` failing the Job on a disrupted pod.
+
+`status()` maps the Job, its Kueue Workload and its newest pod onto K-4's
+phases: Kueue holding the Job, a preemption or a pod waiting for a node is
+`pending_capacity` (no attempt spent); a pod starting or pulling is
+`starting`; a ready pod is `running`; the Job's `Complete`/`Failed` is
+`exited` (deadline → `timed_out`, OOM named, a pull failure after 5 minutes);
+a deleted Job or a disrupted pod is `lost` (requeued, no attempt). `watch()`
+merges a Job watch and a Workload watch into wake-ups and raises on a 410 or
+silence so the run watcher resyncs. `cancel()` lowers a started pod's
+deadline to 1 s (the pod and its log are kept until `reap`) or deletes a Job
+that never started. No run starts unless the runs namespace has the
+NetworkPolicy `stac-higher-runs-default-deny`; a run asking for network
+access no policy can express (`inputs`, `open`, `hosts`) is refused. Kueue
+owns admission, so the claim skips the profiles' Docker capacities on this
+backend (the extractor pool still applies).
+
+RBAC is `infra/kubernetes/pipeline-role.yaml`. The tests drive the executor
+against a fake API server (`tests/_fake_kube.py`) that enforces that Role,
+and `tests/test_kubernetes_rbac.py` fails if any grant goes unused. No real
+cluster has run it yet: K-6's kind leg is the first.
 
 ## Shutdown
 

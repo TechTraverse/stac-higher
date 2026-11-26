@@ -372,7 +372,7 @@ helm upgrade --install stac-higher oci://ghcr.io/<owner>/charts/stac-higher \
 
 With `demoSeed.enabled`, do not add `--wait-for-jobs` or `--atomic` (Helm 4:
 `--rollback-on-failure`). The demo seed Job can legitimately run for tens of
-minutes, or fail before K-5 (see Demo seed), and either flag would then hold
+minutes, or fail before R-8 and K-6 are deployed (see Demo seed), and either flag would then hold
 the release or roll it back over a demo. Whether Helm 4's `--wait` alone
 waits for Jobs was not verified; treat it as a caution and check before
 relying on it.

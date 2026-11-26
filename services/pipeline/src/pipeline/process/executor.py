@@ -14,8 +14,8 @@ is shaped to make the invariants enforceable rather than merely intended:
   platform's object-store keys" is a property of the type, not a habit.
 - Limits ride on the spec and are applied by the backend at create time, so a
   run cannot opt out of them.
-- The backend enforces the run's timeout: server-side (a Kubernetes Job's
-  ``activeDeadlineSeconds``) or on read (Docker: ``status()`` kills a run past
+- The backend enforces the run's timeout: server-side (the Kubernetes run
+  pod's ``activeDeadlineSeconds``, K-5) or on read (Docker: ``status()`` kills a run past
   ``StartedAt + timeout`` and reports ``timed_out``). A wedged run fails
   itself; it never degrades the worker.
 - ``reap`` is always called by the caller, and backends must not rely on
@@ -71,7 +71,8 @@ from typing import ClassVar
 
 from pipeline.process.hardware import HardwareProfile
 
-#: Kueue's two priority classes (K-5/K-6) — unread until then.
+#: Kueue's two priority classes (K-5/K-6): the Kubernetes executor labels each
+#: run Job with one; Docker does not read them.
 PRIORITIES = ("interactive", "triggered")
 
 #: What a run is (C-2): a process run, judged against ``process_runs``, or an
@@ -190,7 +191,7 @@ class RunSpec:
     gpu_count: int = 0
     profile: HardwareProfile | None = None
     #: "interactive" for a UI test run, "triggered" otherwise — Kueue's two
-    #: priority classes (K-5/K-6); unread until then.
+    #: priority classes (K-5/K-6); read by the Kubernetes executor only.
     priority: str = "triggered"
     #: One of RUN_KINDS. A scan's ``process_id`` carries the IMAGE id.
     kind: str = "process"

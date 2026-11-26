@@ -45,6 +45,34 @@ for an extractor, of the collection its association ingests into — nowhere
 else. Attempting anything outside that fails as a permissions error, not a
 silent no-op.
 
+### Running on Kubernetes
+
+A deployment on a cluster runs each run as a Kubernetes Job admitted by
+Kueue (`PROCESS_EXECUTOR=kubernetes`). What changes for your code:
+
+- ***Waiting for capacity*** means the deployment's quota is full **or** a
+  node is being started for your run (minutes for a GPU node). The tooltip
+  carries the cluster's own words.
+- **Preemption.** A test run (*interactive*) may preempt a triggered run when
+  the quota is full. The preempted run goes back to waiting, spends no
+  attempt, and later **restarts from the beginning** in a fresh pod; output
+  it printed before the preemption is not kept. A run whose node fails or is
+  reclaimed is requeued the same way.
+- **The root filesystem is read-only.** Write to `/tmp` (and, on the
+  platform image, the working directory `/home/runner`); both are in memory,
+  sized by `memory_mb` and counted against it, so filling them is an
+  out-of-memory kill. On your own image `HOME` is `/tmp`, and its own
+  `WORKDIR` is not writable.
+- **Network:** `isolated` only. A revision asking for more is refused on a
+  cluster, never run with different access (see "Network access").
+- **The timeout and Cancel behave as on Docker:** your process gets SIGTERM
+  and 10 s to exit. The log you see is what the run printed, up to the
+  first 10 MiB (the cluster rotates logs past that).
+- **Images.** A private image is pulled from its registry directly with the
+  credential you configured; the platform's images come through the
+  deployment's registry mirror. An image that cannot be pulled fails the
+  run about 5 minutes after it was scheduled.
+
 ## What your run receives
 
 Before your container starts, the platform stages the items that triggered
@@ -718,9 +746,11 @@ any other profile is treated like any other run on that profile. When a run
 finishes, the oldest run waiting for its slot is started straight away, not
 at the next tick. A claimed run shows *Starting* until the executor reports
 it running, then the `running` badge alone, then its verdict. The queue
-position the spec puts in the tooltip is not shown yet. On a cluster (K-5
-on) the same wait is Kueue holding the run for quota, and the run shows
-*Waiting for capacity* while `running`.
+position the spec puts in the tooltip is not shown yet. On a cluster the
+per-profile host limits do not apply: the wait is Kueue holding the run for
+quota (or a node starting), the run is already `running` with *Waiting for
+capacity*, and it then shows *Starting* while its pod pulls the image.
+Its duration includes that wait.
 
 ## Cancelling a run
 
