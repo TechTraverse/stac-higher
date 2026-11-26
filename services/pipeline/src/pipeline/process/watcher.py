@@ -58,8 +58,10 @@ async def run_watcher(
     delay = reconnect_delay
     while True:
         opened = False
-        stream = watch()
         try:
+            # Inside the try: a backend whose watch() raises on the call
+            # itself must reconnect, not end the worker.
+            stream = watch()
             async for event in _with_idle_timeout(stream, idle_timeout):
                 opened = True
                 try:
