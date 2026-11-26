@@ -122,8 +122,8 @@ The backend.kubernetes block every profile of a family carries (JSON object; K-5
 {{- end -}}
 
 {{/*
-Parse one CIDR. (string) -> JSON {ok, v6, octets: [a,b,c,d], bits}. IPv6 is recognised by a ':' and only its
-prefix length is read.
+Parse one CIDR. (string) -> JSON {ok, v6, octets: [a,b,c,d], bits, int}: int is the address as an integer. IPv6
+is recognised by a ':' and only its prefix length is read (IPv6 is refused for runs, I-191).
 */}}
 {{- define "stac-higher.runsCidr" -}}
 {{- $s := toString . -}}
@@ -134,36 +134,94 @@ prefix length is read.
 {{- $parts := splitList "/" $s -}}
 {{- $oct := list -}}
 {{- $ok := true -}}
+{{- $int := 0 -}}
 {{- range $o := splitList "." (index $parts 0) -}}
 {{- if gt (atoi $o) 255 -}}
 {{- $ok = false -}}
 {{- end -}}
 {{- $oct = append $oct (atoi $o) -}}
+{{- $int = add (mul $int 256) (atoi $o) -}}
 {{- end -}}
 {{- $bits := atoi (index $parts 1) -}}
-{{- dict "ok" (and $ok (le $bits 32)) "v6" false "octets" $oct "bits" $bits | toJson -}}
+{{- dict "ok" (and $ok (le $bits 32)) "v6" false "octets" $oct "bits" $bits "int" $int | toJson -}}
 {{- else -}}
 {{- dict "ok" false "v6" false | toJson -}}
 {{- end -}}
 {{- end -}}
 
+{{/* True ("true") when two parsed IPv4 CIDRs share any address, else "". (dict "a" <parsed> "b" <parsed>) */}}
+{{- define "stac-higher.runsCidrOverlap" -}}
+{{- $p := min (int .a.bits) (int .b.bits) -}}
+{{- $size := 1 -}}
+{{- range until (int (sub 32 $p)) -}}
+{{- $size = mul $size 2 -}}
+{{- end -}}
+{{- if eq (div (int64 .a.int) $size) (div (int64 .b.int) $size) -}}true{{- end -}}
+{{- end -}}
+
+{{/* IPv4 space no runs policy may reach unless named explicitly: [cidr, what] pairs (JSON). */}}
+{{- define "stac-higher.runsNeverCidrs" -}}
+{{- list (list "0.0.0.0/8" "this-network") (list "127.0.0.0/8" "loopback") (list "169.254.0.0/16" "link-local: IMDS and the Pod Identity agent") | toJson -}}
+{{- end -}}
+{{- define "stac-higher.runsPrivateCidrs" -}}
+{{- list (list "10.0.0.0/8" "RFC 1918") (list "172.16.0.0/12" "RFC 1918") (list "192.168.0.0/16" "RFC 1918") (list "100.64.0.0/10" "CGNAT") | toJson -}}
+{{- end -}}
+
 {{/*
-An object-store CIDR is narrow and never link-local: IPv4 only, prefix /8 or longer, first octet not 169
-(IMDS 169.254.169.254, the Pod Identity agent 169.254.170.23). (dict "key" <path> "cidr" <string>)
+The scanner's 443 rule always carves these out of 0.0.0.0/0 (lead ruling on R-8): link-local, RFC 1918 and
+CGNAT. Constants, not values: processRuns.network.scannerEgressExcept only adds to them, and a private
+destination a scan needs is named in processRuns.network.scannerPrivateCidrs. (JSON array)
 */}}
-{{- define "stac-higher.runsCheckObjectStoreCidr" -}}
+{{- define "stac-higher.runsScannerExcept" -}}
+{{- list "169.254.0.0/16" "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" | toJson -}}
+{{- end -}}
+
+{{/*
+One CIDR a runs allow policy will admit. IPv4 only (IPv6 fails closed, I-191); never this-network, loopback or
+link-local; a public range needs a prefix of at least .publicMin; a range overlapping RFC 1918 or CGNAT space is
+refused unless .privateMin is set, and then needs a prefix of at least .privateMin.
+(dict "key" <path> "cidr" <string> "publicMin" N "privateMin" N|0)
+*/}}
+{{- define "stac-higher.runsCheckCidr" -}}
 {{- $c := include "stac-higher.runsCidr" .cidr | fromJson -}}
 {{- if $c.v6 -}}
-{{- fail (printf "%s: %q is IPv6; IPv6 clusters are not supported for runs (docs/ISSUES.md I-191)" .key .cidr) -}}
+{{- fail (printf "%s: %q is IPv6; IPv6 clusters are not supported for runs (docs/ISSUES.md I-191)" .key (toString .cidr)) -}}
 {{- end -}}
 {{- if not $c.ok -}}
-{{- fail (printf "%s: %q is not an IPv4 CIDR (a.b.c.d/n)" .key .cidr) -}}
+{{- fail (printf "%s: %q is not an IPv4 CIDR (a.b.c.d/n)" .key (toString .cidr)) -}}
 {{- end -}}
-{{- if lt (int $c.bits) 8 -}}
-{{- fail (printf "%s: %q is wider than /8; the runs' object-store egress must be the object store's own ranges" .key .cidr) -}}
+{{- range $r := include "stac-higher.runsNeverCidrs" . | fromJsonArray -}}
+{{- if include "stac-higher.runsCidrOverlap" (dict "a" $c "b" (include "stac-higher.runsCidr" (index $r 0) | fromJson)) -}}
+{{- fail (printf "%s: %q overlaps %s (%s); no runs policy may allow it" $.key (toString $.cidr) (index $r 0) (index $r 1)) -}}
 {{- end -}}
-{{- if eq (int (index $c.octets 0)) 169 -}}
-{{- fail (printf "%s: %q may cover link-local (169.254.0.0/16: IMDS and the Pod Identity agent); no runs policy may allow it" .key .cidr) -}}
+{{- end -}}
+{{- $private := "" -}}
+{{- range $r := include "stac-higher.runsPrivateCidrs" . | fromJsonArray -}}
+{{- if include "stac-higher.runsCidrOverlap" (dict "a" $c "b" (include "stac-higher.runsCidr" (index $r 0) | fromJson)) -}}
+{{- $private = printf "%s (%s)" (index $r 0) (index $r 1) -}}
+{{- end -}}
+{{- end -}}
+{{- if $private -}}
+{{- if not .privateMin -}}
+{{- fail (printf "%s: %q overlaps %s; this list holds public ranges only" .key (toString .cidr) $private) -}}
+{{- end -}}
+{{- if lt (int $c.bits) (int .privateMin) -}}
+{{- fail (printf "%s: %q overlaps %s and is wider than /%d; name the private destinations themselves" .key (toString .cidr) $private (int .privateMin)) -}}
+{{- end -}}
+{{- else if lt (int $c.bits) (int .publicMin) -}}
+{{- fail (printf "%s: %q is wider than /%d; name the destination's own ranges" .key (toString .cidr) (int .publicMin)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* processRuns.defaultFamily names an enabled CPU family (checked before anything resolves a profile to it). */}}
+{{- define "stac-higher.runsCheckDefaultFamily" -}}
+{{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
+{{- $def := .Values.processRuns.defaultFamily -}}
+{{- if not (hasKey $fams $def) -}}
+{{- fail (printf "processRuns.defaultFamily %q must name an enabled entry of processRuns.families (enabled: %s)" $def (keys $fams | sortAlpha | join ", ")) -}}
+{{- end -}}
+{{- if (get $fams $def).gpuResource -}}
+{{- fail (printf "processRuns.defaultFamily %q is a GPU family (gpuResource %q); the default family takes CPU profiles and image scans" $def (get $fams $def).gpuResource) -}}
 {{- end -}}
 {{- end -}}
 
@@ -176,13 +234,7 @@ An object-store CIDR is narrow and never link-local: IPv4 only, prefix /8 or lon
 {{- end -}}
 {{- $all := include "stac-higher.runsAllFamilies" . | fromJson -}}
 {{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
-{{- $def := $pr.defaultFamily -}}
-{{- if not (hasKey $fams $def) -}}
-{{- fail (printf "processRuns.defaultFamily %q must name an enabled entry of processRuns.families (enabled: %s)" $def (keys $fams | sortAlpha | join ", ")) -}}
-{{- end -}}
-{{- if (get $fams $def).gpuResource -}}
-{{- fail (printf "processRuns.defaultFamily %q is a GPU family (gpuResource %q); the default family takes CPU profiles and image scans" $def (get $fams $def).gpuResource) -}}
-{{- end -}}
+{{- include "stac-higher.runsCheckDefaultFamily" . -}}
 {{- $nodes := and $pr.clusterObjects $pr.nodes.enabled -}}
 {{- $many := gt (len $fams) 1 -}}
 {{- range $name := keys $fams | sortAlpha -}}
@@ -236,26 +288,141 @@ An object-store CIDR is narrow and never link-local: IPv4 only, prefix /8 or lon
 {{- range $p := $net.dns -}}
 {{- if hasKey $p "ipBlock" -}}
 {{- $c := include "stac-higher.runsCidr" $p.ipBlock.cidr | fromJson -}}
-{{- if or (not $c.ok) (and $c.v6 (ne (int $c.bits) 128)) (and (not $c.v6) (ne (int $c.bits) 32)) -}}
-{{- fail (printf "processRuns.network.dns: ipBlock %q must be one address (/32, or /128 for IPv6): port 53 to a range is an exfiltration channel to any resolver in it" (toString $p.ipBlock.cidr)) -}}
+{{- if or (not $c.ok) $c.v6 (ne (int $c.bits) 32) (hasKey $p.ipBlock "except") -}}
+{{- fail (printf "processRuns.network.dns: ipBlock %q must be one IPv4 address (/32): port 53 to a range is an exfiltration channel to any resolver in it (IPv6 is not supported for runs, docs/ISSUES.md I-191)" (toString $p.ipBlock.cidr)) -}}
 {{- end -}}
+{{- include "stac-higher.runsCheckCidr" (dict "key" "processRuns.network.dns" "cidr" $p.ipBlock.cidr "publicMin" 32 "privateMin" 32) -}}
 {{- end -}}
 {{- end -}}
 {{- if and (not $v.aws.s3PrefixListCidrs) (not $net.objectStore) -}}
 {{- fail "aws.s3PrefixListCidrs and processRuns.network.objectStore are both empty: runs need at least one object-store peer (Terraform's helm_values carries the S3 prefix list; an in-cluster store goes in processRuns.network.objectStore)" -}}
 {{- end -}}
+{{- /* The S3 managed prefix list is public ranges (/15 to /22 today): /12 or narrower, never private space. */ -}}
 {{- range $cidr := $v.aws.s3PrefixListCidrs -}}
-{{- include "stac-higher.runsCheckObjectStoreCidr" (dict "key" "aws.s3PrefixListCidrs" "cidr" $cidr) -}}
+{{- include "stac-higher.runsCheckCidr" (dict "key" "aws.s3PrefixListCidrs" "cidr" $cidr "publicMin" 12 "privateMin" 0) -}}
 {{- end -}}
+{{- /* An explicit object-store ipBlock may be private (an interface endpoint, an in-VPC store), but /24 or narrower. */ -}}
 {{- range $p := $net.objectStore -}}
 {{- if hasKey $p "ipBlock" -}}
-{{- include "stac-higher.runsCheckObjectStoreCidr" (dict "key" "processRuns.network.objectStore" "cidr" $p.ipBlock.cidr) -}}
+{{- include "stac-higher.runsCheckCidr" (dict "key" "processRuns.network.objectStore" "cidr" $p.ipBlock.cidr "publicMin" 12 "privateMin" 24) -}}
 {{- end -}}
 {{- end -}}
+{{- /* A private destination a scan needs on 443 (ECR or S3 interface endpoints, an in-VPC mirror): /24 or narrower. */ -}}
+{{- range $cidr := $net.scannerPrivateCidrs -}}
+{{- include "stac-higher.runsCheckCidr" (dict "key" "processRuns.network.scannerPrivateCidrs" "cidr" $cidr "publicMin" 24 "privateMin" 24) -}}
+{{- end -}}
+{{- include "stac-higher.validateRunsProfiles" . -}}
 {{- range $cidr := $net.scannerEgressExcept -}}
 {{- $c := include "stac-higher.runsCidr" $cidr | fromJson -}}
 {{- if or (not $c.ok) $c.v6 -}}
 {{- fail (printf "processRuns.network.scannerEgressExcept: %q is not an IPv4 CIDR (a.b.c.d/n)" (toString $cidr)) -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The hardware-profile document as supplied: config.hardwareProfiles, else the chart's eks-cpu set (a dict). */}}
+{{- define "stac-higher.runsProfileSource" -}}
+{{- if .Values.config.hardwareProfiles -}}
+{{- .Values.config.hardwareProfiles | toJson -}}
+{{- else -}}
+{{- .Files.Get "files/hardware-profiles/eks-cpu.json" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The family of each profile (JSON object profile id -> family name): processRuns.profileFamilies, else
+defaultFamily for a CPU profile (gpu_count null). Fails naming processRuns.profileFamilies for an unmapped GPU
+profile, a mapping to a missing or disabled family, a GPU profile on a CPU family or the reverse, and a mapping
+whose profile is not in the document.
+*/}}
+{{- define "stac-higher.runsProfileFamilies" -}}
+{{- $pr := .Values.processRuns -}}
+{{- include "stac-higher.runsCheckDefaultFamily" . -}}
+{{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
+{{- $doc := include "stac-higher.runsProfileSource" . | fromJson -}}
+{{- $map := $pr.profileFamilies | default dict -}}
+{{- $out := dict -}}
+{{- range $p := $doc.profiles -}}
+{{- $gpu := not (kindIs "invalid" $p.gpu_count) -}}
+{{- $name := "" -}}
+{{- if hasKey $map $p.id -}}
+{{- $name = get $map $p.id -}}
+{{- if not (hasKey $fams $name) -}}
+{{- fail (printf "processRuns.profileFamilies.%s: %q is not an enabled entry of processRuns.families" $p.id $name) -}}
+{{- end -}}
+{{- else if $gpu -}}
+{{- fail (printf "processRuns.profileFamilies: GPU profile %q (config.hardwareProfiles) needs a family with a gpuResource; map it in processRuns.profileFamilies" $p.id) -}}
+{{- else -}}
+{{- $name = $pr.defaultFamily -}}
+{{- end -}}
+{{- $isGpuFamily := not (empty (get $fams $name).gpuResource) -}}
+{{- if and $gpu (not $isGpuFamily) -}}
+{{- fail (printf "processRuns.profileFamilies.%s: GPU profile %q is mapped to %q, which has no gpuResource" $p.id $p.id $name) -}}
+{{- end -}}
+{{- if and (not $gpu) $isGpuFamily -}}
+{{- fail (printf "processRuns.profileFamilies.%s: CPU profile %q (gpu_count null) is mapped to GPU family %q" $p.id $p.id $name) -}}
+{{- end -}}
+{{- $_ := set $out $p.id $name -}}
+{{- end -}}
+{{- range $id := keys $map | sortAlpha -}}
+{{- if not (hasKey $out $id) -}}
+{{- fail (printf "processRuns.profileFamilies.%s: no hardware profile %q in config.hardwareProfiles" $id $id) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{/*
+The profile document with every profile's backend.kubernetes derived from its family (JSON). A document that
+already carries backend.kubernetes must equal the derived block (compared as JSON), so nothing is overwritten
+silently; other backend keys are kept.
+*/}}
+{{- define "stac-higher.runsProfileDoc" -}}
+{{- $doc := include "stac-higher.runsProfileSource" . | fromJson -}}
+{{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
+{{- $of := include "stac-higher.runsProfileFamilies" . | fromJson -}}
+{{- $profiles := list -}}
+{{- range $p := $doc.profiles -}}
+{{- $name := get $of $p.id -}}
+{{- $block := include "stac-higher.runsBackendBlock" (dict "root" $ "name" $name "family" (get $fams $name)) | fromJson -}}
+{{- $backend := $p.backend | default dict -}}
+{{- if and (hasKey $backend "kubernetes") (ne (toJson $backend.kubernetes) (toJson $block)) -}}
+{{- fail (printf "config.hardwareProfiles: profile %q has backend.kubernetes %s, but processRuns.families.%s derives %s; remove the block (the chart derives it) or make them equal" $p.id (toJson $backend.kubernetes) $name (toJson $block)) -}}
+{{- end -}}
+{{- $_ := set $backend "kubernetes" $block -}}
+{{- $_ := set $p "backend" $backend -}}
+{{- $profiles = append $profiles $p -}}
+{{- end -}}
+{{- $_ := set $doc "profiles" $profiles -}}
+{{- toJson $doc -}}
+{{- end -}}
+
+{{/*
+R8-R5 / K6-R11: every profile's maxima fit its family's quota (a run whose maximum exceeds the quota pends
+forever), and an image scan (1 CPU, the image policy's scan_limits.memory_mb) fits the default family.
+*/}}
+{{- define "stac-higher.validateRunsProfiles" -}}
+{{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
+{{- $of := include "stac-higher.runsProfileFamilies" . | fromJson -}}
+{{- $doc := include "stac-higher.runsProfileSource" . | fromJson -}}
+{{- range $p := $doc.profiles -}}
+{{- $name := get $of $p.id -}}
+{{- $q := (get $fams $name).quota -}}
+{{- $key := printf "processRuns.families.%s.quota" $name -}}
+{{- if gt (float64 $p.cpu.max) (float64 $q.cpu) -}}
+{{- fail (printf "%s.cpu (%d) is below profile %q's cpu.max (%v): its largest run could never be admitted" $key (int $q.cpu) $p.id $p.cpu.max) -}}
+{{- end -}}
+{{- if gt (float64 $p.memory_mb.max) (float64 (mul (int $q.memoryGi) 1024)) -}}
+{{- fail (printf "%s.memoryGi (%d Gi) is below profile %q's memory_mb.max (%v MiB): its largest run could never be admitted" $key (int $q.memoryGi) $p.id $p.memory_mb.max) -}}
+{{- end -}}
+{{- if and (not (kindIs "invalid" $p.gpu_count)) (gt (float64 $p.gpu_count.max) (float64 $q.gpus)) -}}
+{{- fail (printf "%s.gpus (%d) is below profile %q's gpu_count.max (%v): its largest run could never be admitted" $key (int $q.gpus) $p.id $p.gpu_count.max) -}}
+{{- end -}}
+{{- end -}}
+{{- $def := .Values.processRuns.defaultFamily -}}
+{{- $policy := include "stac-higher.imagePolicyJson" . | fromJson -}}
+{{- $scanMb := (($policy.scan_limits | default dict).memory_mb | default 0) -}}
+{{- if gt (float64 $scanMb) (float64 (mul (int (get $fams $def).quota.memoryGi) 1024)) -}}
+{{- fail (printf "processRuns.families.%s.quota.memoryGi (%d Gi) is below config.imagePolicy scan_limits.memory_mb (%v MiB): image scans run on the default family and could never be admitted" $def (int (get $fams $def).quota.memoryGi) $scanMb) -}}
 {{- end -}}
 {{- end -}}

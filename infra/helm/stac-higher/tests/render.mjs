@@ -172,3 +172,27 @@ export function ipv4Contains(cidr, ip) {
   const size = 2 ** (32 - bits);
   return Math.floor(ipv4ToInt(net) / size) === Math.floor(ipv4ToInt(ip) / size);
 }
+
+/**
+ * True when every address of `inner` is in `outer` (both IPv4 CIDRs).
+ * @param {string} outer
+ * @param {string} inner
+ * @returns {boolean}
+ */
+export function ipv4Covers(outer, inner) {
+  const [net, bits] = inner.split("/");
+  return Number(outer.split("/")[1] ?? 32) <= Number(bits ?? 32) && ipv4Contains(outer, net);
+}
+
+/**
+ * True when an ipBlock peer admits any address of `range`: the CIDRs overlap and no `except` entry covers the
+ * overlap (the narrower of the two).
+ * @param {{ cidr: string, except?: string[] }} block
+ * @param {string} range
+ * @returns {boolean}
+ */
+export function ipBlockReaches(block, range) {
+  const overlap = ipv4Covers(block.cidr, range) ? range : ipv4Covers(range, block.cidr) ? block.cidr : null;
+  if (overlap === null) return false;
+  return !(block.except ?? []).some((e) => ipv4Covers(e, overlap));
+}

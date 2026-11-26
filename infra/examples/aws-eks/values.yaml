@@ -111,8 +111,10 @@ processRuns:
     # with one, use [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}},
     # podSelector: {matchLabels: {k8s-app: kube-dns}}}] instead.
     dns: [{ ipBlock: { cidr: 10.100.0.10/32 } }]
-    # The VPC CIDR, so image scans reach registries on 443 but nothing inside the VPC.
-    scannerEgressExcept: [10.0.0.0/16]
+    # Image scans reach public registries on 443, never private space (fixed by the
+    # chart). With ECR reached through VPC interface endpoints, name the endpoint
+    # subnets here; each entry widens what an untrusted scan can reach.
+    scannerPrivateCidrs: []
   nodes:
     nodeClass:
       role: stac-higher-example-runs-node # IAM role of the runs nodes; needs an EKS access entry

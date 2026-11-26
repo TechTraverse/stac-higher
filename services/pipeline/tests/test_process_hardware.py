@@ -306,15 +306,14 @@ def test_an_absent_kubernetes_block_is_the_defaults():
 
 
 def test_the_charts_eks_profiles_parse():
-    from pipeline.process.hardware import kubernetes_backend
+    from pipeline.process.hardware import KubernetesBackend, kubernetes_backend
 
     profiles = load_hardware_profiles(CHART_EKS_SET)
     assert {p.id for p in profiles.profiles} >= {"standard", "cpu-large"}
+    # R-8: the chart's file carries no backend.kubernetes; the chart derives it from
+    # processRuns.families when it renders the document (app/src/__tests__/helm/kueue.test.ts).
     for profile in profiles.profiles:
-        block = kubernetes_backend(profile)
-        assert block.queue == "process-runs"
-        assert dict(block.node_selector) == {} and block.tolerations == ()
-        assert dict(block.extended_resources) == {} and block.runtime_class is None
+        assert kubernetes_backend(profile) == KubernetesBackend()
 
 
 def test_a_gpu_block_parses():

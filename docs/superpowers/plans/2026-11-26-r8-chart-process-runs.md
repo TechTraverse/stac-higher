@@ -654,3 +654,39 @@ force are below. Where this addendum and the body disagree, the addendum wins.
   catalog.
 - **A-R8 · No GitHub writes from the implementer.** Task 0's
   `gh issue edit 144 …` is left to the lead.
+- **A-R9 · Security ruling (lead, on the Task 4 commit): no runs allow policy reaches private space unless it is named.**
+  - The scanner's 443 rule is `0.0.0.0/0` with an `except` that **always**
+    holds `169.254.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+    and `100.64.0.0/10`: constants in the template
+    (`stac-higher.runsScannerExcept`), not values. `scannerEgressExcept`
+    only adds to them.
+  - A private destination a scan legitimately needs (ECR or S3 through VPC
+    interface endpoints, an in-VPC registry mirror) goes in the new, closed
+    list `processRuns.network.scannerPrivateCidrs`: IPv4 CIDRs (schema
+    pattern; render fails on a bad octet), `/24` or narrower, never
+    this-network, loopback or link-local; each renders as its own peer on
+    the scanner's 443 rule. The README says when it is needed and that every
+    entry widens what an untrusted scan can reach.
+  - The isolated policy's peers: DNS is one IPv4 address (`/32`, no
+    `except`, never this-network, loopback or link-local) on UDP/TCP 53,
+    or a namespace + pod selector; the object store is
+    `aws.s3PrefixListCidrs` (public ranges only: `/12` or narrower, refused
+    when it overlaps RFC 1918, CGNAT, this-network, loopback or link-local;
+    the S3 prefix lists hold `/15`…`/22` ranges today) plus
+    `processRuns.network.objectStore` (an `ipBlock` there may be private,
+    but then `/24` or narrower; public `/12` or narrower; never
+    this-network, loopback or link-local). This replaces the plan's "`/8`
+    or narrower, first octet not 169" (R8-R3).
+  - **IPv6 fails closed.** Every IPv6 CIDR in a runs value is refused at
+    render (the DNS `/128` the plan allowed included), and no rule renders
+    an IPv6 `ipBlock`, so no rule admits `::/0` and a run's IPv6 egress
+    stays under the default-deny. (Facts table: on an IPv6 EKS cluster
+    IPv4 egress is not filtered at all; that is I-191's unsupported case.)
+  - Render tests: the scanner's `except` holds the five ranges with every
+    optional list empty; a named private CIDR renders as its own peer and
+    only on the scanner's 443 rule; over `base`, `r5` and the example, no
+    non-DNS rule of any runs policy reaches link-local, RFC 1918 or CGNAT
+    space and every DNS `ipBlock` is a `/32`; no `ipBlock` is IPv6.
+  - Residual (ISSUES): the scanner can still reach any public address on
+    443 (#68, the scanner egress proxy). R-11: from a scan pod, the API
+    server and a VPC-internal HTTPS endpoint must be unreachable.

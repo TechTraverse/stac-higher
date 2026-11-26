@@ -110,7 +110,7 @@ Rendering fails with a message starting with the offending key path.
 | `processRuns.defaultFamily` | `cpu-default` | The family of every CPU profile not in `profileFamilies`, and of image scans. Must be an enabled CPU family. |
 | `processRuns.profileFamilies` | `{}` | Hardware-profile id to family name. Required for every GPU profile. |
 | `processRuns.families` | `{cpu-default: …}` | The single source of ResourceFlavors, the ClusterQueue's quota, the NodePools and every profile's `backend.kubernetes`. Per family: `enabled`, `dedicatedNodes`, `extraTaints`, `gpuResource`, `runtimeClass`, `quota` (`cpu`, `memoryGi`, `gpus`), `nodePool` (`requirements`, `headroom`). |
-| `processRuns.network` | | The runs NetworkPolicies' peers: `dns` (required), `objectStore`, `objectStorePorts` (`[443]`), `scannerEgressExcept`. |
+| `processRuns.network` | | The runs NetworkPolicies' peers: `dns` (required; one IPv4 `/32`, or a namespace + pod selector), `objectStore` (extra peers; a private `ipBlock` must be `/24` or narrower), `objectStorePorts` (`[443]`), `scannerEgressExcept` (more IPv4 CIDRs carved out of the scanner's 443), `scannerPrivateCidrs` (private IPv4 CIDRs, `/24` or narrower, a scan may reach on 443; see Process runs). |
 | `processRuns.nodes` | | The EKS Auto Mode NodeClass and NodePools for runs: `enabled`, `consolidateAfter` (`5m`), `expireAfterHours` (`336`), `terminationGracePeriodHours` (`25`), `nodeClass` (`create`, `name`, `role`, `subnetSelectorTerms`, `securityGroupSelectorTerms`, `networkPolicy`, `networkPolicyEventLogs`, `podPidsLimit`, `ephemeralStorage`, `tags`). |
 | `config` | | Content for the config ConfigMap. |
 | `config.hardwareProfiles` | `null` | `null` uses the chart's `files/hardware-profiles/eks-cpu.json`. |

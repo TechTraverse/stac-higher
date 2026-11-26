@@ -141,7 +141,10 @@ processRuns:
     dns: [] # REQUIRED NetworkPolicy peers for DNS; Auto Mode: [{ipBlock: {cidr: <service CIDR .10>/32}}]
     objectStore: [] # extra object-store peers (an in-cluster MinIO's selectors); unioned with aws.s3PrefixListCidrs
     objectStorePorts: [443] # TCP ports of the object store
-    scannerEgressExcept: [] # IPv4 CIDRs carved out of the scanner's 0.0.0.0/0:443 besides 169.254.0.0/16 (e.g. the VPC CIDR)
+    # Image scans get TCP 443 to 0.0.0.0/0 minus 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 and
+    # 100.64.0.0/10 (fixed by the chart). These two lists only add to that:
+    scannerEgressExcept: [] # more IPv4 CIDRs carved out of the scanner's 443 (public ranges a scan must not reach)
+    scannerPrivateCidrs: [] # private IPv4 CIDRs (/24 or narrower) a scan may reach on 443, e.g. ECR/S3 interface endpoints; each widens what an untrusted scan reaches
   nodes:
     enabled: true # NodeClass + NodePools (EKS Auto Mode); false: the cluster provides the runs nodes (README example)
     consolidateAfter: 5m # an empty runs node waits this long for the next run

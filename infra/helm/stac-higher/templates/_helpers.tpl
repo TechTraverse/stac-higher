@@ -303,13 +303,10 @@ spec:
 {{- end -}}
 {{- end -}}
 
-{{/* Hardware-profile document: the deployment's, else the chart's eks-cpu set. Pretty JSON. */}}
+{{/* Hardware-profile document: the deployment's, else the chart's eks-cpu set, with every profile's
+backend.kubernetes derived from processRuns.families (R-8, templates/_runs.tpl). Pretty JSON, keys sorted. */}}
 {{- define "stac-higher.hardwareProfilesJson" -}}
-{{- if .Values.config.hardwareProfiles -}}
-{{- .Values.config.hardwareProfiles | toPrettyJson -}}
-{{- else -}}
-{{- .Files.Get "files/hardware-profiles/eks-cpu.json" | trim -}}
-{{- end -}}
+{{- include "stac-higher.runsProfileDoc" . | fromJson | toPrettyJson -}}
 {{- end -}}
 
 {{/* Image-policy document: the deployment's, else the chart's copy of infra/image-policy/default.json. */}}

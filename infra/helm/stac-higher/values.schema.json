@@ -617,7 +617,15 @@
             "scannerEgressExcept": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "string",
+                "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+              }
+            },
+            "scannerPrivateCidrs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
               }
             }
           },

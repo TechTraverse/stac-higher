@@ -38,10 +38,18 @@ const profileDoc = (wait: number) => ({
       gpu_count: null,
       max_queue_wait_seconds: wait,
       image: null,
-      backend: { kubernetes: { queue: "process-runs", node_selector: {}, tolerations: [], runtime_class: null, extended_resources: {} } },
+      backend: {},
     },
   ],
 });
+/** What the chart derives for a CPU profile on the default family (R-8, kueue.test.ts covers the rest). */
+const DERIVED_CPU = {
+  queue: "process-runs",
+  node_selector: { "stac-higher.io/flavor": "cpu-default" },
+  tolerations: [{ key: "stac-higher.io/runs", operator: "Equal", value: "true", effect: "NoSchedule" }],
+  runtime_class: null,
+  extended_resources: {},
+};
 
 describe.skipIf(!helmReady())("chart config layer", () => {
   it("the default hardware profiles are the eks-cpu set and the app accepts them", () => {
@@ -72,7 +80,9 @@ describe.skipIf(!helmReady())("chart config layer", () => {
   it("deployment-supplied documents replace the defaults", () => {
     const doc = profileDoc(900);
     const d = data(render({ config: { hardwareProfiles: doc } }), "config-files");
-    expect(JSON.parse(d["hardware-profiles.json"])).toEqual(doc);
+    const want = structuredClone(doc);
+    want.profiles[0].backend = { kubernetes: DERIVED_CPU };
+    expect(JSON.parse(d["hardware-profiles.json"])).toEqual(want);
   });
 
   it("refuses a profile whose queue wait leaves no time under the cap", () => {
