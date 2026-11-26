@@ -471,15 +471,15 @@ pod-update policy's match condition, replaced exactly once or the render fails).
 {{- end -}}
 
 {{/*
-The placements a run Job's pod template may carry (addendum A-R3): none (an image scan, K5-8), or exactly one
-enabled family's derived nodeSelector + tolerations + runtimeClassName. Tolerations spelt in full, absent fields as
-the API reads them (operator Equal, value and effect ""). JSON array, deduplicated, the default family first.
+The placements a process run's pod template may carry (addendum A-R3): exactly one enabled family's derived
+nodeSelector + tolerations + runtimeClassName. Tolerations spelt in full, absent fields as the API reads them
+(operator Equal, value and effect ""). A list of objects, deduplicated, the default family first (JSON array).
+An image scan may also carry no placement at all (stac-higher.runsPlacementCel).
 */}}
 {{- define "stac-higher.runsPlacements" -}}
 {{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
-{{- $none := dict "nodeSelector" dict "tolerations" list "runtimeClassName" "" -}}
-{{- $out := list $none -}}
-{{- $seen := dict (toJson $none) true -}}
+{{- $out := list -}}
+{{- $seen := dict -}}
 {{- range $name := include "stac-higher.runsFamiliesOrdered" . | fromJsonArray -}}
 {{- $b := include "stac-higher.runsBackendBlock" (dict "root" $ "name" $name "family" (get $fams $name)) | fromJson -}}
 {{- $tols := list -}}
@@ -495,8 +495,36 @@ the API reads them (operator Equal, value and effect ""). JSON array, deduplicat
 {{- toJson $out -}}
 {{- end -}}
 
-{{/* The placement rule's CEL (one validation). `a` is one allowed placement; `t`/`e` a pod / allowed toleration. */}}
+{{/*
+The same list as a CEL literal. Kubernetes' CEL environment enables HomogeneousAggregateLiterals (and validates
+them when the policy is created), so a map literal's values must share one type: each value is wrapped in
+dyn(...), making every entry map(string, dyn). Plain toJson would mix a map, a list and a string and the API
+server would refuse the policy. JSON is valid CEL literal syntax inside dyn().
+*/}}
+{{- define "stac-higher.runsPlacementsCel" -}}
+{{- $entries := list -}}
+{{- range $e := include "stac-higher.runsPlacements" . | fromJsonArray -}}
+{{- $entries = append $entries (printf "{\"nodeSelector\": dyn(%s), \"runtimeClassName\": dyn(%s), \"tolerations\": dyn(%s)}" (toJson $e.nodeSelector) (toJson $e.runtimeClassName) (toJson $e.tolerations)) -}}
+{{- end -}}
+{{- printf "[%s]" (join ", " $entries) -}}
+{{- end -}}
+
+{{/* Whether the Job's pod template says it is an image scan (the jobs policy ties that to a stac-scan- name). */}}
+{{- define "stac-higher.runsIsScanCel" -}}
+has(object.spec.template.metadata) && has(object.spec.template.metadata.labels) &&
+'stac-higher.run-kind' in object.spec.template.metadata.labels &&
+object.spec.template.metadata.labels['stac-higher.run-kind'] == 'image_scan'
+{{- end -}}
+
+{{/*
+The placement rule's CEL (one validation): an image scan may carry no placement at all; any run Job may carry
+exactly one family's placement. `a` is one allowed placement; `t`/`e` a pod / allowed toleration.
+*/}}
 {{- define "stac-higher.runsPlacementCel" -}}
+(variables.isScan &&
+  (!has(variables.pod.nodeSelector) || size(variables.pod.nodeSelector) == 0) &&
+  (!has(variables.pod.tolerations) || size(variables.pod.tolerations) == 0) &&
+  (!has(variables.pod.runtimeClassName) || variables.pod.runtimeClassName == '')) ||
 variables.allowed.exists(a,
   (has(variables.pod.nodeSelector) ? size(variables.pod.nodeSelector) : 0) == size(a.nodeSelector) &&
   a.nodeSelector.all(k, has(variables.pod.nodeSelector) && k in variables.pod.nodeSelector &&

@@ -6,7 +6,9 @@
 # Kueue release by server-side apply with infra/kueue/config/kind.yaml swapped
 # in, applies K-5's infra/kubernetes/ (namespace, run ServiceAccount, the
 # pipeline's Role and binding, the default-deny NetworkPolicy) and
-# infra/kueue/{common,kind}, waits until the queues are Active and the
+# infra/kueue/{common,kind}, then the Helm chart's own placement policy
+# (R-8: rendered with kind-equivalent values, so the kind leg runs the chart's
+# CEL on a real API server), waits until the queues are Active and the
 # admission policies enforce, and mints a 2 h token for the pipeline's
 # ServiceAccount. Writes into <out-dir>:
 #   admin.kubeconfig   kind's admin credentials (the test HARNESS only)
@@ -15,7 +17,7 @@
 #   kind.env           what the kind test modules read (`set -a; . kind.env`)
 # It does not build or load the run image (the workflow overlaps that with
 # cluster creation); it prints the commands a local user runs for it.
-# Needs: docker, kind, kubectl, curl, uv, sha256sum or shasum. Never prints
+# Needs: docker, kind, kubectl, helm, curl, uv, sha256sum or shasum. Never prints
 # the token.
 set -euo pipefail
 
@@ -85,11 +87,24 @@ for _ in $(seq 1 12); do
   sleep 5
 done
 $applied || die "the Kueue objects were not accepted after 12 tries (is Kueue's webhook up?)"
+# R-8 (#144, plan addendum A-R3): the chart's chart-only admission policy, rendered
+# with the kind-equivalent values its drift test uses (one family, not dedicated)
+# and applied as the chart would. A server-side dry run first, so a policy the
+# API server refuses at create (a CEL compile error) fails here with its message.
+helm template stac-higher infra/helm/stac-higher --namespace "$PIPELINE_NS" \
+  --kube-version 1.34.0 \
+  -f infra/helm/stac-higher/tests/values/base.yaml \
+  -f infra/helm/stac-higher/tests/values/kind-kueue.yaml \
+  --show-only templates/runs-placement-policy.yaml >"$out/placement-policy.yaml" \
+  || die "helm could not render the chart's placement policy"
+k apply --server-side --dry-run=server -f "$out/placement-policy.yaml" \
+  || die "the API server refused the chart's placement policy (above)"
+k apply --server-side -f "$out/placement-policy.yaml"
 k wait --for=condition=Active clusterqueue/process-runs --timeout=120s
 k -n "$RUNS_NS" wait --for=condition=Active localqueue/process-runs --timeout=120s
 
 step "admission policies: type-checked and enforcing (K6-R25)"
-for policy in stac-higher-runs-jobs stac-higher-runs-pod-updates; do
+for policy in stac-higher-runs-jobs stac-higher-runs-pod-updates stac-higher-runs-placement; do
   checked=false
   for _ in $(seq 1 30); do
     gen=$(k get validatingadmissionpolicy "$policy" -o jsonpath='{.metadata.generation}')

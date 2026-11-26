@@ -1,6 +1,7 @@
 {{- /* R-8: the cluster-scoped Kueue objects and the runs namespace's admission policies (processRuns.clusterObjects).
 WorkloadPriorityClasses and K-6's three admission policies come from infra/kueue/common (addendum A-R2); the
-placement policy, the ResourceFlavors and the ClusterQueue come from processRuns.families (R8-R5, R8-R6, R8-R10). */ -}}
+ResourceFlavors and the ClusterQueue come from processRuns.families (R8-R5, R8-R6, R8-R10). The placement policy
+is runs-placement-policy.yaml (its own file, so the kind leg can render exactly it). */ -}}
 {{- if .Values.processRuns.clusterObjects }}
 {{- $ns := .Values.processRuns.namespace -}}
 {{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
@@ -8,37 +9,6 @@ placement policy, the ResourceFlavors and the ClusterQueue come from processRuns
 {{- $labels := include "stac-higher.labels" (dict "root" . "component" "process-runs") | fromYaml -}}
 {{ include "stac-higher.runsCommonFile" (dict "root" . "file" "workloadpriorityclasses.yaml") }}
 {{ include "stac-higher.runsCommonFile" (dict "root" . "file" "admission-policy.yaml") }}
----
-# Chart-only (addendum A-R3; docs/ISSUES.md I-184): a run Job's pods carry the nodeSelector, tolerations and
-# runtimeClassName of exactly one processRuns family (as the hardware profiles derive them), or none (an image
-# scan). CREATE only: Kueue injects its flavor's labels and tolerations by an UPDATE at admission. The allowed
-# list is rendered from values as a CEL literal (no param resource: Kubernetes CEL cannot decode a ConfigMap's
-# JSON, and Helm renders both from the same values anyway).
-{{- $policy := dict
-  "apiVersion" "admissionregistration.k8s.io/v1"
-  "kind" "ValidatingAdmissionPolicy"
-  "metadata" (dict "name" "stac-higher-runs-placement" "labels" $labels)
-  "spec" (dict
-    "failurePolicy" "Fail"
-    "matchConstraints" (dict "resourceRules" (list (dict "apiGroups" (list "batch") "apiVersions" (list "v1") "operations" (list "CREATE") "resources" (list "jobs"))))
-    "variables" (list
-      (dict "name" "pod" "expression" "object.spec.template.spec")
-      (dict "name" "allowed" "expression" (include "stac-higher.runsPlacements" .)))
-    "validations" (list (dict
-      "expression" (include "stac-higher.runsPlacementCel" .)
-      "message" "[placement-profile] A run Job's pods may carry only the nodeSelector, tolerations and runtimeClassName of one processRuns family, or none."
-      "reason" "Invalid"))) }}
-{{ toYaml $policy }}
----
-{{- $binding := dict
-  "apiVersion" "admissionregistration.k8s.io/v1"
-  "kind" "ValidatingAdmissionPolicyBinding"
-  "metadata" (dict "name" "stac-higher-runs-placement" "labels" $labels)
-  "spec" (dict
-    "policyName" "stac-higher-runs-placement"
-    "validationActions" (list "Deny")
-    "matchResources" (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" $ns)))) }}
-{{ toYaml $binding }}
 {{- /* One ResourceFlavor per enabled family (R8-R6): a dedicated family's flavor carries its node label and
 TOLERATES the runs taint (Kueue injects both on admission, so a profile-less image scan lands on runs nodes); only
 extraTaints (GPU) are nodeTaints, which a workload must tolerate itself. */ -}}

@@ -280,11 +280,14 @@ describe.skipIf(!helmReady())("Kueue objects and admission policies", () => {
   });
 });
 
-/** The pod-template placement each allowed entry describes (the CEL literal), as the executor would build it. */
-const placementList = (docs: Doc[]) => {
-  const vap = docs.find((d) => d.kind === "ValidatingAdmissionPolicy" && d.metadata.name === PLACEMENT);
-  return JSON.parse(vap.spec.variables.find((v: any) => v.name === "allowed").expression);
-};
+const placementVap = (docs: Doc[]) => docs.find((d) => d.kind === "ValidatingAdmissionPolicy" && d.metadata.name === PLACEMENT);
+const placementVar = (docs: Doc[], name: string) => placementVap(docs).spec.variables.find((v: any) => v.name === name).expression;
+/**
+ * The `allowed` CEL literal as data. Every map value is wrapped in dyn(...) (Kubernetes' CEL enables
+ * HomogeneousAggregateLiterals; a mixed-type map literal is refused at policy create). No value contains a
+ * parenthesis (label keys and values, taint keys, runtime class names cannot), so unwrapping is textual.
+ */
+const placementList = (docs: Doc[]) => JSON.parse(placementVar(docs, "allowed").replace(/dyn\(/g, "").replace(/\)/g, ""));
 
 describe.skipIf(!helmReady())("the placement policy (addendum A-R3)", () => {
   it("binds the runs namespace, Job CREATE only, fails closed", () => {
@@ -306,7 +309,7 @@ describe.skipIf(!helmReady())("the placement policy (addendum A-R3)", () => {
     });
   });
 
-  it("allows exactly no placement and each family's derived placement", () => {
+  it("allows each family's derived placement, and no placement only for a scan (review M4)", () => {
     const toPlacement = (block: any) => ({
       nodeSelector: block.node_selector,
       tolerations: block.tolerations.map((t: any) => ({ key: t.key ?? "", operator: t.operator ?? "Equal", value: t.value ?? "", effect: t.effect ?? "" })),
@@ -316,10 +319,24 @@ describe.skipIf(!helmReady())("the placement policy (addendum A-R3)", () => {
     for (const values of [{}, gpuValues()]) {
       const docs = render(values);
       const blocks = profilesOf(docs).profiles.map((p: any) => JSON.stringify(toPlacement(p.backend.kubernetes)));
-      const want = [none, ...new Set(blocks)].map((x) => (typeof x === "string" ? JSON.parse(x) : x));
-      expect(placementList(docs)).toEqual(want);
+      expect(placementList(docs)).toEqual([...new Set(blocks)].map((x) => JSON.parse(x)));
+      expect(placementList(docs)).not.toContainEqual(none);
     }
+    // kind: the one family is not dedicated, so its placement is none (process runs there carry none).
     expect(placementList(render(KIND_VALUES))).toEqual([none]);
+    const rule = placementVap(render()).spec.validations[0].expression;
+    expect(rule.startsWith("(variables.isScan &&")).toBe(true);
+    expect(placementVar(render(), "isScan")).toContain("object.spec.template.metadata.labels['stac-higher.run-kind'] == 'image_scan'");
+  });
+
+  it("the allowed literal is homogeneous: every map value is dyn(...) (review C1)", () => {
+    for (const values of [{}, gpuValues(), KIND_VALUES]) {
+      const expr: string = placementVar(render(values), "allowed");
+      const entry = /\{"nodeSelector": dyn\(\{[^()]*\}\), "runtimeClassName": dyn\("[^"()]*"\), "tolerations": dyn\(\[[^()]*\]\)\}/g;
+      expect(expr.startsWith("[") && expr.endsWith("]")).toBe(true);
+      const body = expr.slice(1, -1).replace(entry, "").replace(/,\s*/g, "").trim();
+      expect(body, expr).toBe("");
+    }
   });
 });
 

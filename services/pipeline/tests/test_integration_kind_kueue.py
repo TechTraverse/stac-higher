@@ -17,6 +17,7 @@ raises, and each test's failure message names the outcome that occurred."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import datetime as dt
 import json
@@ -51,6 +52,12 @@ DRY_RUN_JOBS = f"{JOBS}?dryRun=All"
 PODS = f"/api/v1/namespaces/{NAMESPACE}/pods"
 DRY_RUN_SECRETS = f"/api/v1/namespaces/{NAMESPACE}/secrets?dryRun=All"
 NETPOL_NAMESPACE = "k6-netpol-probe"
+#: R-8 (#144, plan addendum A-R3): the Helm chart's own admission policy, which
+#: scripts/kind-up.sh renders with kind-equivalent values (one family, not
+#: dedicated: a process run's placement there is none) and applies. It binds a
+#: run Job's nodeSelector, tolerations and runtimeClassName to one family's.
+PLACEMENT_POLICY = "stac-higher-runs-placement"
+PLACEMENT_RULE = "[placement-profile]"
 
 
 @pytest.fixture(autouse=True)
@@ -292,10 +299,14 @@ def test_kueue_clears_evicted_on_readmission(preemption):
 def test_an_unschedulable_run_is_evicted_then_deactivated():
     """Kueue admits (the flavor has no labels) but no node matches the
     selector: row 15 while it waits, then waitForPodsReady (kind: 30 s, one
-    requeue) evicts, requeues and deactivates it, and the run dies (K5-R8)."""
+    requeue) evicts, requeues and deactivates it, and the run dies (K5-R8).
+    R-8: the chart's placement policy rightly refuses this foreign selector,
+    so it warns instead of denying for this test's submit only."""
     ex = _kind.executor()
     profile = _kind.profile_with(node_selector={"stac-higher.io/flavor": "nowhere"})
-    handle = ex.submit(code_spec("pass", profile=profile))
+    spec = code_spec("pass", profile=profile)
+    with _placement_policy_relaxed(_built_job(spec)):
+        handle = ex.submit(spec)
     with _kind.reaping(ex, handle):
         seen: list = []
         try:
@@ -395,6 +406,79 @@ def test_a_flavors_tolerations_reach_the_admitted_pods():
 
 
 # -- admission: Kueue's webhook and the runs namespace's policies ------------------
+
+
+def _placement_refusal(job: dict, *, timeout: float = 30) -> KubeApiError | None:
+    """The dry run's refusal once the placement policy answers (the binding
+    is applied by kind-up.sh just before the tests; give it a moment)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        err = _refusal(DRY_RUN_JOBS, job)
+        refused = err is not None and PLACEMENT_RULE in err.server_message
+        if refused or time.monotonic() > deadline:
+            return err
+        time.sleep(1)
+
+
+def _set_placement_action(action: str, probe: dict, *, refused: bool) -> None:
+    kubectl("patch", "validatingadmissionpolicybinding", PLACEMENT_POLICY, "--type=merge",
+            "-p", json.dumps({"spec": {"validationActions": [action]}}))
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        err = _refusal(DRY_RUN_JOBS, probe)
+        if (err is not None and PLACEMENT_RULE in err.server_message) == refused:
+            return
+        time.sleep(1)
+    pytest.fail(f"the placement policy binding did not take validationActions [{action}] in 60 s")
+
+
+@contextlib.contextmanager
+def _placement_policy_relaxed(probe: dict):
+    """The chart's placement binding warns instead of denying, then denies again."""
+    _set_placement_action("Warn", probe, refused=False)
+    try:
+        yield
+    finally:
+        _set_placement_action("Deny", probe, refused=True)
+
+
+def _foreign_selector(pod: dict) -> None:
+    pod["nodeSelector"] = {"stac-higher.io/flavor": "nowhere"}
+
+
+def _tolerate_everything(pod: dict) -> None:
+    pod.setdefault("tolerations", []).append({"operator": "Exists"})
+
+
+def _duplicated_toleration(pod: dict) -> None:
+    runs = {"key": "stac-higher.io/runs", "operator": "Equal", "value": "true",
+            "effect": "NoSchedule"}
+    pod["tolerations"] = [dict(runs), dict(runs)]
+
+
+def _unknown_runtime_class(pod: dict) -> None:
+    pod["runtimeClassName"] = "stac-higher-nowhere"
+
+
+@pytest.mark.parametrize("mutate", [_foreign_selector, _tolerate_everything,
+                                    _duplicated_toleration, _unknown_runtime_class],
+                         ids=lambda f: f.__name__.lstrip("_"))
+def test_the_charts_placement_policy_refuses_a_foreign_placement(mutate):
+    """R-8 (addendum A-R3; docs/ISSUES.md I-184): a run Job may carry only one
+    processRuns family's node selector, tolerations and runtime class (here:
+    none), whatever the jobs policy admits. The CEL is the chart's, rendered
+    and applied by kind-up.sh; test_every_job_the_executor_builds_is_admitted
+    shows it admits what the executor builds (a scan with no placement
+    included)."""
+    job = _built_job()
+    assert _refusal(DRY_RUN_JOBS, job) is None, "the unmutated Job must be admitted"
+    mutate(job["spec"]["template"]["spec"])
+    err = _placement_refusal(job)
+    assert err is not None, "the server admitted a foreign placement"
+    observe("placement-rule", case=mutate.__name__, status=err.status, message=err.server_message)
+    assert err.status == 422 and PLACEMENT_RULE in err.server_message, (
+        err.status, err.server_message)
+    assert PLACEMENT_POLICY in err.server_message, err.server_message
 
 
 def test_a_kueue_webhook_denial_kills_the_run():

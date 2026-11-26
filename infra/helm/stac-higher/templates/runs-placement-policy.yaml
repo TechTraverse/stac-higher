@@ -1,0 +1,36 @@
+{{- /* Chart-only (addendum A-R3; docs/ISSUES.md I-184), with processRuns.clusterObjects: a run Job's pods carry the
+nodeSelector, tolerations and runtimeClassName of exactly one processRuns family (as the hardware profiles derive
+them), or, for an image scan only, none. CREATE only: Kueue injects its flavor's labels and tolerations by an
+UPDATE at admission. The allowed list is rendered from values as a CEL literal (no param resource: Kubernetes CEL
+cannot decode a ConfigMap's JSON, and Helm renders both from the same values anyway). The kind leg renders this
+file alone (scripts/kind-up.sh) and applies it to a real API server. */ -}}
+{{- if .Values.processRuns.clusterObjects }}
+{{- $labels := include "stac-higher.labels" (dict "root" . "component" "process-runs") | fromYaml -}}
+{{- $policy := dict
+  "apiVersion" "admissionregistration.k8s.io/v1"
+  "kind" "ValidatingAdmissionPolicy"
+  "metadata" (dict "name" "stac-higher-runs-placement" "labels" $labels)
+  "spec" (dict
+    "failurePolicy" "Fail"
+    "matchConstraints" (dict "resourceRules" (list (dict "apiGroups" (list "batch") "apiVersions" (list "v1") "operations" (list "CREATE") "resources" (list "jobs"))))
+    "variables" (list
+      (dict "name" "pod" "expression" "object.spec.template.spec")
+      (dict "name" "isScan" "expression" (include "stac-higher.runsIsScanCel" .))
+      (dict "name" "allowed" "expression" (include "stac-higher.runsPlacementsCel" .)))
+    "validations" (list (dict
+      "expression" (include "stac-higher.runsPlacementCel" .)
+      "message" "[placement-profile] A run Job's pods may carry only the nodeSelector, tolerations and runtimeClassName of one processRuns family (an image scan may also carry none)."
+      "reason" "Invalid"))) }}
+---
+{{ toYaml $policy }}
+{{- $binding := dict
+  "apiVersion" "admissionregistration.k8s.io/v1"
+  "kind" "ValidatingAdmissionPolicyBinding"
+  "metadata" (dict "name" "stac-higher-runs-placement" "labels" $labels)
+  "spec" (dict
+    "policyName" "stac-higher-runs-placement"
+    "validationActions" (list "Deny")
+    "matchResources" (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" .Values.processRuns.namespace)))) }}
+---
+{{ toYaml $binding }}
+{{- end }}
