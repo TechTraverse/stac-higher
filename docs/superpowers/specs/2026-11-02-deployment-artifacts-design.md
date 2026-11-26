@@ -155,8 +155,13 @@ username/password registry auth, not ECR's 12-hour tokens. So:
   keep the **public upstream reference** (`ghcr.io/techtraverse/…@sha256:…`).
   The scanner and drift checker read GHCR anonymously, as today.
 - The Kubernetes executor rewrites the registry host at launch through a new
-  **registry mirror map** setting (`ghcr.io` → `<ecr>/ghcr`, …). The digest is
-  unchanged, so approval-by-digest (ADR 0021) is unaffected. (§8, R-8.)
+  **registry mirror map** setting (`ghcr.io` → `<ecr>/ghcr`, …) for the
+  **platform images only** (the process runtime, its stactools variant and
+  the image scanner). The digest is unchanged, so approval-by-digest
+  (ADR 0021) is unaffected. A user's own image is never pulled through the
+  mirror: the pull-through cache authenticates upstream with the
+  deployment's own credential, and a user-supplied reference must not use
+  it. (§8, R-8; `docs/ISSUES.md` I-183.)
 - **Untested: an uncached pull by digest through the pull-through cache.**
   The first pull of a never-cached image is by digest; no AWS statement says
   it resolves through the cache. R-8 tests it before anything relies on it: a
@@ -164,6 +169,9 @@ username/password registry auth, not ECR's 12-hour tokens. So:
 - Consequence, accepted for the first environment: **user images in a private
   ECR repository are not supported** (they would need an ECR token path from
   the pipeline's workload identity). Recorded as a follow-up.
+- Consequence of pulling user images from their own registry: the nodes
+  need egress to that registry. On a cluster whose nodes reach only the ECR
+  mirror, user images are not supported (`docs/ISSUES.md` I-183).
 
 **Added in this work:** build provenance and SBOM attestations on release
 builds (`docker/build-push-action` `provenance`/`sbom`). Cosign signing is
@@ -569,8 +577,12 @@ module (with the SQS backend); per-group Kueue queues (I-96).
 - A minimal new DB role model (§7.2): app and pipeline share an owner role;
   the master is used only by the bootstrap Job.
 - RDS TLS stays enforced; the deployment supplies the CA bundle.
-- Image rows keep upstream references; the executor maps the pull to the ECR
-  mirror. User images in a private ECR repository are not supported yet.
+- Image rows keep upstream references; the executor maps the pull of the
+  platform images to the ECR mirror. User images in a private ECR repository
+  are not supported yet.
+- User images are pulled from their own registry, so the nodes need egress
+  to it; on a cluster whose nodes reach only the mirror, user images are not
+  supported (`docs/ISSUES.md` I-183).
 - The chart must work with both `helm upgrade --install` and Argo CD/Flux.
 
 ## 15. Risks

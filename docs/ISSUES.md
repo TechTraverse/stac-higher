@@ -1521,7 +1521,9 @@ The M3-W-1 reaper removes any run container or Job older than its age
 ceiling, even one whose row is `running`. Since K-5 the ceiling is
 `MAX_TIMEOUT_SECONDS + 600 (the Job's deadline slack) +
 max(max_queue_wait_seconds) + 3600` over the deployment's profiles
-(`reap_max_age_seconds`), on both backends; an unreadable profile file falls
+(`reap_max_age_seconds`), on both backends, and a `running` row's launched
+run under a handle other than the recorded one is reaped as a superseded
+submission (a failed or crashed submit; K-5 review); an unreadable profile file falls
 back to `MAX_TIMEOUT_SECONDS + 3600` and logs a WARNING. Residual: a Job
 that waits in Kueue longer than every profile promises (a quota drought) can
 be reaped while its row is still `running`; the reconciler then reads the
@@ -1572,8 +1574,19 @@ not built.
   against `memory_mb`. `HOME` is `/tmp` on a user image.
 - **The API address is visible.** The kubelet injects
   `KUBERNETES_SERVICE_HOST/PORT` into every container (service links are off,
-  so nothing else); the run has no token, so it can reach the API server's
-  address but not authenticate.
+  so nothing else). The run can see the address; under the namespace's
+  default-deny egress it cannot reach it unless a policy allows it, and it has
+  no token to authenticate with.
+- **No per-run PID limit** on either backend. A fork bomb is bounded only by
+  the node's kubelet `podPidsLimit` (Docker: the daemon's defaults); R-8's
+  node configuration should set one.
+- **The timeout counts the image pull.** A pod's `activeDeadlineSeconds`
+  runs from the pod's `startTime`, which precedes the pull, so a large image
+  eats into the run's timeout; Docker counts from container start.
+- **An orphan-deleted Job leaves its Secret.** A Job deleted with
+  `propagationPolicy=Orphan` (by hand) keeps its env Secret, holding live
+  run credentials until they expire; the executor always deletes in the
+  foreground and deletes the Secrets explicitly on reap.
 - **The scanner's Grype DB update cannot write** (`/opt/grype-db` is on the
   read-only root) and falls back to the baked database; #68 owns the
   scanner pod's update path.
@@ -1587,6 +1600,13 @@ not built.
   whose config cannot be created is failed 5 minutes after the pod started
   (found by the run tick, so up to a minute later), spending an attempt per
   try; Docker fails it at submit. `InvalidImageName` fails at once.
+- **A credential requeue goes to the back of the queue.** Each one cancels
+  the pending Job and submits a new one, which Kueue queues behind every
+  Workload created since (BestEffortFIFO). Under a deep backlog a run can
+  requeue once per promised wait, each time an STS mint plus a Job create and
+  delete, losing its position each time. The requeue fires only after the
+  run has waited the queue wait its credentials were minted for, and at
+  least 60 s, so a profile promising no wait cannot loop.
 - **The credential requeue sees only waiting for capacity.** A pod that is
   scheduled but waits for its image is `starting`, so K-4's row 3 does not
   requeue it as its credentials run short; it spends the credential grace
@@ -1604,7 +1624,10 @@ not built.
 A Reconciler only reconciles runs its own backend submitted
 (`executor_backend`), so runs submitted on Docker are never collected by a
 pipeline restarted with `PROCESS_EXECUTOR=kubernetes`, and vice versa. Drain
-first: stop triggers and wait until no run is `running`. Not built.
+first: stop triggers and wait until no run is `running`. Not built. Related:
+when the selected executor cannot be built (no API URL), the run tick returns
+before its sweep, so already-submitted runs freeze where they are; the tick
+logs one WARNING a minute and `/health` reports `executor.reachable: false`.
 - Tracked in: `services/pipeline/src/pipeline/process/reconcile.py`, `docs/processes.md`, the chart README.
 - Found in: K-5 (2026-11-26).
 
@@ -1613,7 +1636,14 @@ first: stop triggers and wait until no run is `running`. Not built.
   namespace has the NetworkPolicy `stac-higher-runs-default-deny` (deny all
   ingress and egress to every run pod); R-8 renders it and the allow
   policies, selected by `stac-higher.run-kind` and
-  `stac-higher.network-level`. It enforces only the `isolated` level: a run
+  `stac-higher.network-level`. The check proves the policy OBJECT exists
+  with `podSelector: {}`, both policy types and no rules; it cannot prove
+  the CNI enforces it (on EKS the VPC CNI / Auto Mode network policy
+  enforcement is off unless enabled), and it cannot see a second, additive
+  policy that allows more. Deleting or widening the policies opens egress
+  for pods already running, whatever the executor's 60 s cache holds. R-8's
+  drift test and the live checks (K-6's kind leg, R-11) carry those. It
+  enforces only the `isolated` level: a run
   whose revision asks for `inputs`, `open` or a `hosts` list is refused
   (`dead`, naming the reason) rather than run with wider or narrower access,
   because NetworkPolicy has no FQDN egress (spec §6.2). Today
@@ -1626,6 +1656,26 @@ first: stop triggers and wait until no run is `running`. Not built.
   deployment spec §5's "the executor rewrites … every `container_images`
   row".
 - Tracked in: `services/pipeline/src/pipeline/process/kubernetes_manifests.py`; GitHub #144.
+- Found in: K-5 review (2026-11-26).
+
+### I-184 · What a compromised pipeline identity can do in the runs namespace 🟡
+The pipeline's Role has no direct read of a Secret, but `jobs create`,
+`pods patch` and `secrets create` in the runs namespace are enough, for an
+attacker holding the pipeline's token, to: run a Job under another
+ServiceAccount in the namespace, mount or `envFrom` another run's Secret,
+create ServiceAccount-token Secrets, relabel a pod into the `scanner`
+egress policy, change a running pod's image (`pods patch`), or create a
+Job without the Kueue queue label (bypassing quota). Bounds: the runs
+namespace holds no Secrets but runs' own and no ServiceAccount with RBAC
+(`infra/kubernetes/README.md`), and K-6's ValidatingAdmissionPolicy (#14)
+admits on Job CREATE only `serviceAccountName: stac-higher-run`,
+`automountServiceAccountToken: false`, `emptyDir` volumes, `envFrom` naming
+only the Job's own Secret, image pull Secrets named `{job}-pull`, the queue
+label and a known priority class; and on Pod UPDATE by the pipeline's
+ServiceAccount only a lowered `spec.activeDeadlineSeconds`. Every Job the
+executor builds is checked against those rules in
+`tests/test_kubernetes_rbac.py`. Until K-6 lands, the residual stands.
+- Tracked in: `infra/kubernetes/pipeline-role.yaml`; GitHub #14.
 - Found in: K-5 review (2026-11-26).
 
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡

@@ -66,8 +66,11 @@ Kueue (`PROCESS_EXECUTOR=kubernetes`). What changes for your code:
 - **Network:** `isolated` only. A revision asking for more is refused on a
   cluster, never run with different access (see "Network access").
 - **The timeout and Cancel behave as on Docker:** your process gets SIGTERM
-  and 10 s to exit. The log you see is what the run printed, up to the
-  first 10 MiB (the cluster rotates logs past that).
+  and 10 s to exit. The timeout counts from when the pod starts, which is
+  before your image is pulled, so a large image uses some of it.
+- **Long logs lose their beginning.** The cluster rotates a container's log
+  at 10 MiB and serves only the newest file, so a run that prints more than
+  that keeps the later output, not the start (Docker keeps the start).
 - **Images.** A private image is pulled from its registry directly with the
   credential you configured; the platform's images come through the
   deployment's registry mirror. An image that cannot be pulled fails the

@@ -9,7 +9,10 @@
 #   No get, no watch.
 # - pods/log: get (logs).
 # - secrets: create (submit), delete (reap). No get, list or watch: the
-#   pipeline can never read a run's environment back.
+#   pipeline has no DIRECT read of a run's environment. A compromised pipeline
+#   identity could still reach one indirectly through `jobs create` (a Job
+#   mounting another run's Secret, under another ServiceAccount); K-6's
+#   ValidatingAdmissionPolicy closes that (docs/ISSUES.md I-184).
 # - workloads (Kueue): list (status finds a Job's Workload by its job-uid
 #   label; the watch's starting resourceVersion), watch (watch). No get.
 # - networkpolicies: get, read-only (the executor refuses to start runs

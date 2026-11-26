@@ -142,8 +142,10 @@ On a cluster there is no socket proxy. `PROCESS_EXECUTOR=kubernetes` (set by
 the chart) makes the pipeline run every process run and image scan as a
 Kubernetes Job in `stac-higher-runs`, admitted by Kueue, using its own
 ServiceAccount's token against the API server. What it may do there is
-exactly `infra/kubernetes/pipeline-role.yaml` (namespaced; no read of a
-Secret). It starts nothing until the runs namespace has the NetworkPolicy
+exactly `infra/kubernetes/pipeline-role.yaml` (namespaced; no direct read
+of a Secret: a compromised pipeline identity could still reach one through a
+Job it creates until K-6's admission policy bounds what that Job may be,
+I-184). It starts nothing until the runs namespace has the NetworkPolicy
 `stac-higher-runs-default-deny`; `/health`'s `executor` key says which
 executor runs and whether it is reachable. Details: `services/pipeline/README.md`
 "Kubernetes executor (K-5)"; the objects a cluster needs: `infra/kubernetes/README.md`
