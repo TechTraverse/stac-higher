@@ -690,3 +690,31 @@ force are below. Where this addendum and the body disagree, the addendum wins.
   - Residual (ISSUES): the scanner can still reach any public address on
     443 (#68, the scanner egress proxy). R-11: from a scan pod, the API
     server and a VPC-internal HTTPS endpoint must be unreachable.
+- **A-R10 · Review fixes (lead review of the implementation).**
+  - **C1:** Kubernetes' CEL environment enables `HomogeneousAggregateLiterals`
+    (k8s.io/apiserver `pkg/cel/environment/base.go`), so the placement
+    policy's `allowed` literal wraps every map value in `dyn(...)`; the plain
+    `toJson` form was refused at policy create. The policy lives in its own
+    template, `runs-placement-policy.yaml`, which `scripts/kind-up.sh`
+    renders with the `kind-kueue` values and applies (server dry run first);
+    four kind cases refuse foreign placements with `[placement-profile]`.
+    K-6's unschedulable-run test submits a foreign selector on purpose and
+    relaxes the binding to `Warn` for that submit only. The flavor-tolerations
+    test needs nothing: its Job carries no placement at CREATE (allowed: the
+    kind family's placement is none) and Kueue adds the toleration by an
+    UPDATE the policy does not match.
+  - **M4:** the no-placement case is admitted only for a pod template
+    labelled `stac-higher.run-kind: image_scan` (production process runs
+    always carry a profile).
+  - **I1:** a DNS or object-store peer is `{ipBlock: {cidr}}`, or a
+    `namespaceSelector` and a `podSelector`, both with non-empty
+    `matchLabels` (closed schema). **M1:** `scannerEgressExcept` entries are
+    `/1` or longer, not one of the five fixed ranges, not repeated. **M2:**
+    the runs namespace is never `kube-*`, `default`, `kueue-system` or the
+    release namespace. **M3:** schema patterns for taint keys and values,
+    requirement keys and family references.
+  - **Docs (I2, I3, I4, M5–M8):** the runs node role's policies and access
+    entry, the `isolated` level's residuals (I-196), the EKS public endpoint
+    for scans, the narrowing script's `--namespace`, DaemonSets under
+    `DefaultDeny`, the cluster security group, adopting hand-applied objects;
+    the R-11 text gains each.

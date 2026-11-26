@@ -115,8 +115,16 @@ processRuns:
     # chart). With ECR reached through VPC interface endpoints, name the endpoint
     # subnets here; each entry widens what an untrusted scan can reach.
     scannerPrivateCidrs: []
+    # Public ranges a scan must not reach: the EKS public endpoint's addresses
+    # (when it is enabled) and any VPC CIDR outside RFC 1918 / CGNAT space.
+    scannerEgressExcept: []
   nodes:
     nodeClass:
-      role: stac-higher-example-runs-node # IAM role of the runs nodes; needs an EKS access entry
+      # IAM role of the runs nodes: AmazonEKSWorkerNodeMinimalPolicy,
+      # AmazonEC2ContainerRegistryPullOnly, ecr:BatchImportUpstreamImage and
+      # ecr:CreateRepository (first pull through the cache), and an EKS access
+      # entry of type EC2 with AmazonEKSAutoNodePolicy at cluster scope.
+      role: stac-higher-example-runs-node
       subnetSelectorTerms: [{ tags: { kubernetes.io/role/internal-elb: "1" } }]
-      securityGroupSelectorTerms: [{ tags: { Name: stac-higher-example-runs-nodes } }]
+      # Include the cluster security group, so the nodes reach the control plane.
+      securityGroupSelectorTerms: [{ id: sg-00000000000000000 }, { tags: { Name: stac-higher-example-runs-nodes } }]

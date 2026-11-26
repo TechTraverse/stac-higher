@@ -70,8 +70,9 @@ priority-class labels (on the Job or its pod template).
 An UPDATE that leaves a Job's labels unchanged is always
 admitted (a Job that predates the policy can still be deleted).
 `nodeSelector`, `tolerations` and `runtimeClassName` come from the hardware
-profile and are not bounded (R-8: a param resource from the chart's
-profiles). `stac-higher-runs-secrets`: only `Opaque` and
+profile and are not bounded here; the chart's own policy
+`stac-higher-runs-placement` binds them to its profile set (R-8; the kind leg
+renders and applies it, `scripts/kind-up.sh`). `stac-higher-runs-secrets`: only `Opaque` and
 `kubernetes.io/dockerconfigjson` Secrets. `stac-higher-runs-pod-updates` (Pod UPDATE by the pipeline only):
 `activeDeadlineSeconds` set or lowered, never raised or removed; labels,
 annotations, owners, finalizers and every mutable spec field unchanged.

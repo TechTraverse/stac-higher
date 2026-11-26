@@ -2469,12 +2469,17 @@ Tracked in: GitHub #147 (R-11 runs it live).
 
 R-8's objects are proven by render tests, drift tests against
 `infra/kubernetes/` and `infra/kueue/`, kubeconform (Kueue v0.20.8's own
-schemas) and the contract fixture; no cluster has applied them. The kind leg
-applies `infra/kubernetes/` and `infra/kueue/common/`, not the chart, so the
-chart-only placement policy (`stac-higher-runs-placement`) has run only under
-cel-go against sample pods, and the NodeClass and NodePools only through
-render tests (kubeconform skips the NodeClass, I-194). R-11 must prove, on
-EKS: Helm refuses the install before creating anything when the Kueue CRDs
+schemas) and the contract fixture; no EKS cluster has applied them. The kind
+leg applies `infra/kubernetes/` and `infra/kueue/common/` as files and, of
+the chart, only the chart-only placement policy (`stac-higher-runs-placement`,
+rendered with kind-equivalent values): kind proves that policy compiles on a
+real API server, admits every Job the executor builds and refuses foreign
+placements. A plain cel-go run proves nothing about compilation: Kubernetes'
+CEL environment adds options (homogeneous aggregate literals among them)
+that refuse expressions plain cel-go accepts, which is how an earlier render
+of this policy passed cel-go and would have failed `helm install`. The
+NodeClass and NodePools are proven only by render tests (kubeconform skips
+the NodeClass, I-194). R-11 must prove, on EKS: Helm refuses the install before creating anything when the Kueue CRDs
 are absent; the NodeClass, NodePools, ClusterQueue and LocalQueue become
 ready; the allow policies are enforced (a run pod reaches DNS and the object
 store and nothing else; a scan pod reaches a public registry on 443 but not
@@ -2526,8 +2531,11 @@ compromised pipeline identity can create, I-184) may open TCP 443 to any
 address outside link-local, RFC 1918 and CGNAT space (those five ranges
 are template constants), plus the private CIDRs named in
 `processRuns.network.scannerPrivateCidrs`. It can therefore reach any
-public HTTPS endpoint. Closing that needs an egress proxy with a registry
-allow-list for scans.
+public HTTPS endpoint, including the EKS API server's public endpoint when
+it is enabled (the scan has no token) and any VPC range outside RFC 1918 and
+CGNAT space, unless the deployment lists those in
+`processRuns.network.scannerEgressExcept` (chart README "Process runs").
+Closing that needs an egress proxy with a registry allow-list for scans.
 
 Tracked in: GitHub #68.
 
@@ -2548,6 +2556,24 @@ admits the Job (proven on kind by K-6). If that injection ever stops, scans
 cannot schedule on the tainted runs nodes and `images-seed` fails; the
 fallback is a pipeline change that gives profile-less specs the default
 profile's `backend.kubernetes`.
+
+### I-196 · What the `isolated` level still allows 🟡
+
+An `isolated` run may reach DNS and the object store, and both are wider
+than they look:
+- **All of S3 in the region.** `aws.s3PrefixListCidrs` is the region's S3
+  managed prefix list, so the policy cannot tell the platform bucket from any
+  other. A run that brings its own credentials (in its code or input data)
+  can write to any bucket it can authenticate to. The run's own STS
+  credential is bucket-scoped (ADR 0013); egress is not. Mitigations, not
+  built: reach S3 through a VPC gateway endpoint whose endpoint policy allows
+  only the platform's buckets, or bucket-scoped egress through a proxy.
+- **DNS recurses.** The cluster resolver forwards to the VPC resolver and on
+  to the internet, so a run can tunnel data out through DNS queries.
+  Mitigations, not built: a DNS policy (Route 53 Resolver DNS Firewall on the
+  VPC, or a CoreDNS policy for the runs namespace) that answers only the
+  names a run needs.
+- Tracked in: `infra/helm/stac-higher/templates/runs-networkpolicies.yaml`.
 
 ## Resolved — archived
 

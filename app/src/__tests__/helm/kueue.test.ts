@@ -318,7 +318,7 @@ describe.skipIf(!helmReady())("the placement policy (addendum A-R3)", () => {
     const none = { nodeSelector: {}, tolerations: [], runtimeClassName: "" };
     for (const values of [{}, gpuValues()]) {
       const docs = render(values);
-      const blocks = profilesOf(docs).profiles.map((p: any) => JSON.stringify(toPlacement(p.backend.kubernetes)));
+      const blocks: string[] = profilesOf(docs).profiles.map((p: any) => JSON.stringify(toPlacement(p.backend.kubernetes)));
       expect(placementList(docs)).toEqual([...new Set(blocks)].map((x) => JSON.parse(x)));
       expect(placementList(docs)).not.toContainEqual(none);
     }

@@ -37,12 +37,32 @@ it works on Helm 3 and 4 and needs Kubernetes 1.34 or later.
   with `infra/kueue/config/production.yaml` (`waitForPodsReady`,
   `manageJobsWithoutQueueName: false`). The chart does not install Kueue; it
   renders Kueue's objects for the runs plane (see Process runs).
+  **The narrowing script's `--namespace` must equal `processRuns.namespace`**
+  (both default to `stac-higher-runs`). If they differ, Kueue's webhooks never
+  see the run Jobs, nothing suspends them, and the jobs policy's `[suspended]`
+  rule refuses every run. The chart cannot detect this.
 - The runs plane's cluster inputs, which Terraform's `helm_values` does not
   carry (the cluster repo knows them): the cluster's CoreDNS address for
   `processRuns.network.dns` (Auto Mode has no `kube-dns` Service: the `.10`
-  of the service CIDR, `/32`); the runs nodes' IAM role (with an EKS access
-  entry), subnet and security-group selectors for
-  `processRuns.nodes.nodeClass`.
+  of the service CIDR, `/32`); the runs nodes' IAM role, subnet and
+  security-group selectors for `processRuns.nodes.nodeClass`.
+- The runs nodes' IAM role (`processRuns.nodes.nodeClass.role`, with
+  `nodeClass.create`). It needs:
+  - a trust policy for `ec2.amazonaws.com`, and the managed policies
+    `AmazonEKSWorkerNodeMinimalPolicy` and
+    `AmazonEC2ContainerRegistryPullOnly` (EKS User Guide, "Amazon EKS Auto
+    Mode node IAM role");
+  - `ecr:BatchImportUpstreamImage` and `ecr:CreateRepository` on the
+    pull-through cache's repositories, for the first, uncached pull of an
+    image through the cache (`infra/terraform/modules/registry/README.md`,
+    "Cluster prerequisite");
+  - an EKS access entry of type `EC2` for the role, associated with the
+    access policy `AmazonEKSAutoNodePolicy` at cluster scope. EKS creates one
+    only for its built-in node class (EKS User Guide, "Create a Node Class
+    for Amazon EKS", "Create node class access entry").
+  The security-group selector must include the cluster security group
+  (`aws eks describe-cluster --query cluster.resourcesVpcConfig.clusterSecurityGroupId`)
+  so the nodes reach the control plane.
 - Node egress to ECR (API, `dkr`, and S3 for layers) and to every registry a
   user image is pulled from. Pulls are the kubelet's, outside pod
   NetworkPolicy; user images skip the mirror (`docs/ISSUES.md` I-183).
@@ -545,7 +565,13 @@ addresses, or an in-VPC registry mirror. Every entry widens what an
 untrusted scan can reach. The render refuses any runs CIDR that could cover
 link-local, loopback, or private space not named as such, and every IPv6
 CIDR. A scan can still reach any public address on 443 (`docs/ISSUES.md`
-I-193).
+I-193). Two public destinations a deployment should carve out with
+`scannerEgressExcept`: the EKS API server's **public endpoint** addresses,
+when the cluster's public endpoint is enabled (a scan has no token, but
+should not reach it), and any VPC CIDR outside RFC 1918 and CGNAT space.
+The `isolated` level has residuals of its own: the S3 prefix list is all of
+S3 in the region, and the cluster resolver recurses to the internet
+(`docs/ISSUES.md` I-196).
 
 **Families: one source for profiles, Kueue and nodes.** A family in
 `processRuns.families` is one ResourceFlavor, its ClusterQueue quota, one
@@ -591,7 +617,11 @@ profile is never assigned a GPU flavor (`docs/ISSUES.md` I-195).
 I-180) and `networkPolicy: DefaultDeny` (pods no policy selects are denied,
 and the I-188 start-window setting on Auto Mode; `DefaultAllow` forfeits
 both). Auto Mode fixes IMDSv2 with a hop limit of 1, so the chart sets no
-metadata option. NodePools never consolidate a node under a run
+metadata option. Under `DefaultDeny`, every pod on a runs node that no NetworkPolicy
+selects has no network at all: a DaemonSet that tolerates the runs taint
+(log or metrics agents with a blanket `operator: Exists` toleration) needs
+allow policies in its own namespace, or it is cut off on runs nodes.
+NodePools never consolidate a node under a run
 (`WhenEmpty`, `consolidateAfter: 5m`, `terminationGracePeriod: 25h`;
 run pods carry `karpenter.sh/do-not-disrupt`). With
 `nodes.nodeClass.create: false` the NodePools use the NodeClass named in
@@ -641,6 +671,16 @@ spec:
   disruption: { consolidationPolicy: WhenEmpty, consolidateAfter: 5m }
   limits: { cpu: "20", memory: 80Gi }   # quota + headroom
 ```
+
+**Objects applied by hand before the chart.** If `infra/kubernetes/` or
+`infra/kueue/common/` was applied to the cluster with `kubectl` (as K-6's
+kind setup does), `helm install` refuses to take over the existing objects
+("invalid ownership metadata"). Either delete them first (drain runs; the
+namespace's deletion removes its Jobs and Secrets), or let the release adopt
+them: on each object set the annotations
+`meta.helm.sh/release-name: <release>` and
+`meta.helm.sh/release-namespace: <release namespace>` and the label
+`app.kubernetes.io/managed-by: Helm`, then install.
 
 **Uninstall and executor switches.** `helm uninstall` deletes the runs
 namespace with every run Job and run Secret in it, so runs in flight die:

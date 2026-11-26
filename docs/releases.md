@@ -189,7 +189,13 @@ cluster-scoped kinds (`ClusterQueue`, `ResourceFlavor`,
 values file adds what `helm_values` does not carry, from the cluster repo:
 `processRuns.network.dns` (the CoreDNS address) and
 `processRuns.nodes.nodeClass.role`, `subnetSelectorTerms` and
-`securityGroupSelectorTerms` (`infra/examples/aws-eks/values.yaml`).
+`securityGroupSelectorTerms` (`infra/examples/aws-eks/values.yaml`). The
+runs node role needs `AmazonEKSWorkerNodeMinimalPolicy`,
+`AmazonEC2ContainerRegistryPullOnly`, `ecr:BatchImportUpstreamImage` and
+`ecr:CreateRepository` (first pull through the cache), and an EKS access
+entry of type `EC2` with `AmazonEKSAutoNodePolicy` at cluster scope (chart
+README "Cluster prerequisites"); the security-group selector includes the
+cluster security group.
 
 A chart version tag can be pushed again: re-running a tag's Containers
 workflow overwrites it (I-164). A deployment that needs immutability records
