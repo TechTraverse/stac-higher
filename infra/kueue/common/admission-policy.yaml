@@ -53,6 +53,35 @@ spec:
         object.metadata.labels['kueue.x-k8s.io/priority-class'] in ['interactive', 'triggered']
       message: "[priority-class] Jobs in this namespace must carry kueue.x-k8s.io/priority-class 'interactive' or 'triggered'."
       reason: Invalid
+    # The NetworkPolicies select run pods on stac-higher.run-kind and
+    # stac-higher.network-level, so the pod template's pair is closed and tied
+    # to the Job's name as the executor builds it: `stac-scan-…` is
+    # (image_scan, scanner), anything else (process, isolated). This narrows
+    # the shape; it cannot tell a real scan from a scan-shaped Job (I-184).
+    - expression: >-
+        !variables.create ||
+        (has(object.spec.template.metadata) &&
+         has(object.spec.template.metadata.labels) &&
+         'stac-higher.run-kind' in object.spec.template.metadata.labels &&
+         'stac-higher.network-level' in object.spec.template.metadata.labels &&
+         (object.metadata.name.startsWith('stac-scan-')
+           ? (object.spec.template.metadata.labels['stac-higher.run-kind'] == 'image_scan' &&
+              object.spec.template.metadata.labels['stac-higher.network-level'] == 'scanner')
+           : (object.spec.template.metadata.labels['stac-higher.run-kind'] == 'process' &&
+              object.spec.template.metadata.labels['stac-higher.network-level'] == 'isolated')))
+      message: "[run-labels] A run Job's pods must be labelled stac-higher.run-kind/network-level (process, isolated), or (image_scan, scanner) for a stac-scan- Job."
+      reason: Invalid
+    - expression: >-
+        !variables.create ||
+        (has(object.metadata.labels) &&
+         has(object.spec.template.metadata) &&
+         has(object.spec.template.metadata.labels) &&
+         ['stac-higher.run-kind', 'stac-higher.network-level', 'stac-higher.run-id'].all(k,
+           k in object.metadata.labels &&
+           k in object.spec.template.metadata.labels &&
+           object.metadata.labels[k] == object.spec.template.metadata.labels[k]))
+      message: "[template-labels] A run Job's pod template must repeat the Job's stac-higher.run-kind, network-level and run-id labels."
+      reason: Invalid
     - expression: >-
         !variables.create ||
         (has(variables.pod.serviceAccountName) &&

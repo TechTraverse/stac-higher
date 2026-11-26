@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import json
 import re
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from pipeline.config import (
 )
 from pipeline.process import kubernetes_executor as kx
 from pipeline.process import kubernetes_manifests as km
-from pipeline.process.executor import PRIORITIES
+from pipeline.process.executor import PRIORITIES, RUN_ID_LABEL, RUN_KIND_LABEL
 from pipeline.process.hardware import kubernetes_backend, load_hardware_profiles
 from test_kubernetes_rbac import vap_job_violations, vap_pod_update_violations
 
@@ -234,6 +235,16 @@ def test_the_admission_policy_names_the_executors_values():
     [literal] = re.findall(r"in \[([^\]]*)\]", by_id["priority-class"])
     assert tuple(re.findall(r"'([^']*)'", literal)) == PRIORITIES
     assert f"'{DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT}'" in by_id["service-account"]
+    # Lead ruling: the (run-kind, network-level) pairs, keyed on the
+    # executor's scan-name prefix, and the labels the template must repeat.
+    pairs = by_id["run-labels"]
+    for literal in (km.NAME_PREFIX["image_scan"], RUN_KIND_LABEL, km.NETWORK_LEVEL_LABEL,
+                    "image_scan", km.SCANNER_NETWORK_LEVEL, "process",
+                    *km.ENFORCEABLE_NETWORK_LEVELS):
+        assert f"'{literal}'" in pairs, literal
+    [keys] = re.findall(r"\[('[^\]]*')\]\.all", by_id["template-labels"])
+    assert set(re.findall(r"'([^']*)'", keys)) == {RUN_KIND_LABEL, km.NETWORK_LEVEL_LABEL,
+                                                    RUN_ID_LABEL}
     [condition] = _one(docs, "ValidatingAdmissionPolicy", rules.POD_UPDATE_POLICY)["spec"][
         "matchConditions"]
     [subject] = _one(_load(K8S / "pipeline-rolebinding.yaml"), "RoleBinding")["subjects"]
@@ -345,3 +356,35 @@ def test_kind_profiles_name_the_local_queue_and_existing_flavors():
         assert block.queue == queue, profile.id
         # spec §3.4: the selector must equal its flavor's labels.
         assert dict(block.node_selector) in flavor_labels, profile.id
+
+
+# -- Task 4: the kind cluster's pins -------------------------------------------
+
+KIND_DIR = REPO / "infra" / "kind"
+
+
+def _minor(version: str) -> str:
+    match = re.match(r"v?(\d+\.\d+)", version)
+    assert match, version
+    return match.group(1)
+
+
+def test_kind_runs_the_charts_kubernetes_minor():
+    env = _env_file(KIND_DIR / "versions.env")
+    assert set(env) == {"KIND_VERSION", "KIND_SHA256", "KIND_NODE_IMAGE",
+                        "KUBECTL_VERSION", "KUBECTL_SHA256"}
+    # kind's release notes: a node image MUST be pinned by digest.
+    image = re.fullmatch(r"kindest/node:v(\d+\.\d+)\.\d+@sha256:[0-9a-f]{64}",
+                         env["KIND_NODE_IMAGE"])
+    assert image, env["KIND_NODE_IMAGE"]
+    [helm_kube] = re.findall(r"^kube=(\S+)$", (REPO / "scripts" / "check-helm.sh").read_text(),
+                             re.MULTILINE)
+    assert image.group(1) == _minor(helm_kube) == _minor(env["KUBECTL_VERSION"])
+    # K6-R20: kindnet enforces NetworkPolicy from kind v0.24.0.
+    major, minor = (int(x) for x in _minor(env["KIND_VERSION"]).split("."))
+    assert (major, minor) >= (0, 24)
+    for key in ("KIND_SHA256", "KUBECTL_SHA256"):
+        assert re.fullmatch(r"[0-9a-f]{64}", env[key]), key
+    [cluster] = _load(KIND_DIR / "cluster.yaml")
+    assert "image" not in json.dumps(cluster)  # the digest lives once
+    assert cluster["networking"]["apiServerAddress"] == "127.0.0.1"

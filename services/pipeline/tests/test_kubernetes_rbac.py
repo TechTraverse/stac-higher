@@ -186,6 +186,14 @@ def test_the_readme_names_every_manifest():
 PRIORITIES = {"interactive", "triggered"}
 
 
+#: K-6 lead ruling: the only (run-kind, network-level) pairs a pod template
+#: may carry, by the Job's name prefix (the NetworkPolicies select on both).
+SCAN_PAIR = ("image_scan", km.SCANNER_NETWORK_LEVEL)
+PROCESS_PAIR = ("process", km.ENFORCEABLE_NETWORK_LEVELS[0])
+#: The run labels a pod template must repeat from its Job.
+TEMPLATE_RUN_LABELS = (km.RUN_KIND_LABEL, km.NETWORK_LEVEL_LABEL, km.RUN_ID_LABEL)
+
+
 def vap_job_violations(job: dict) -> list[str]:
     """Job CREATE in the runs namespace."""
     problems = []
@@ -195,6 +203,14 @@ def vap_job_violations(job: dict) -> list[str]:
         problems.append("queue label")
     if labels.get("kueue.x-k8s.io/priority-class") not in PRIORITIES:
         problems.append("priority class")
+    template_labels = (job["spec"]["template"].get("metadata") or {}).get("labels") or {}
+    expected = SCAN_PAIR if name.startswith(km.NAME_PREFIX["image_scan"]) else PROCESS_PAIR
+    pair = (template_labels.get(km.RUN_KIND_LABEL), template_labels.get(km.NETWORK_LEVEL_LABEL))
+    if pair != expected:
+        problems.append("run labels")
+    if any(key not in labels or labels.get(key) != template_labels.get(key)
+           for key in TEMPLATE_RUN_LABELS):
+        problems.append("template labels")
     pod = job["spec"]["template"]["spec"]
     if pod.get("serviceAccountName") != DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT:
         problems.append("serviceAccountName")
@@ -245,8 +261,9 @@ def vap_pod_update_violations(old: dict, new: dict) -> list[str]:
 def test_every_built_job_passes_the_admission_policy(overrides):
     ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
     run = spec(**overrides)
-    pull = f"{NAME}-pull" if run.registry_auth else None
-    job = km.build_job(run, name=NAME, ctx=ctx, pull_secret=pull)
+    name = km.job_name(run.kind, run.run_id, "a1b2c3")  # the executor's own naming
+    pull = f"{name}-pull" if run.registry_auth else None
+    job = km.build_job(run, name=name, ctx=ctx, pull_secret=pull)
     assert vap_job_violations(job) == []
 
 

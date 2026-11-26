@@ -1679,8 +1679,22 @@ only the Job's own Secret, image pull Secrets named `{job}-pull`, the queue
 label and a known priority class; and on Pod UPDATE by the pipeline's
 ServiceAccount only a lowered `spec.activeDeadlineSeconds`. Every Job the
 executor builds is checked against those rules in
-`tests/test_kubernetes_rbac.py`. Until K-6 lands, the residual stands.
-- Tracked in: `infra/kubernetes/pipeline-role.yaml`; GitHub #14.
+`tests/test_kubernetes_rbac.py`.
+
+K-6 ships those rules as `infra/kueue/common/admission-policy.yaml` (two
+ValidatingAdmissionPolicies on the runs namespace) and adds two on Job
+CREATE: the pod template's `stac-higher.run-kind` / `stac-higher.network-level`
+pair must be `(process, isolated)`, or `(image_scan, scanner)` for a
+`stac-scan-` Job; and the template must repeat the Job's run-kind,
+network-level and run-id labels. A pod's labels cannot be changed by the
+pipeline afterwards (the pod-update rule). **Residual:** the policy narrows
+the shape, it does not authenticate intent. A compromised pipeline identity
+can still create a scan-shaped Job (`stac-scan-…`, `image_scan`, `scanner`)
+running any image under the run ServiceAccount and get the scanner policy's
+egress (DNS, the object store, 443). Closing that needs the scan's image
+and arguments pinned at admission (the scanner image's digest) or scans in
+a namespace of their own with their own identity; not built.
+- Tracked in: `infra/kubernetes/pipeline-role.yaml`, `infra/kueue/common/admission-policy.yaml`; GitHub #14.
 - Found in: K-5 review (2026-11-26).
 
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡

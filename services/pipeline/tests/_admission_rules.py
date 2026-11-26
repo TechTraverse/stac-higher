@@ -23,7 +23,13 @@ import copy
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pipeline.process.kubernetes_manifests import PRIORITY_LABEL, QUEUE_LABEL
+from pipeline.process.executor import RUN_ID_LABEL, RUN_KIND_LABEL
+from pipeline.process.kubernetes_manifests import (
+    NETWORK_LEVEL_LABEL,
+    PRIORITY_LABEL,
+    QUEUE_LABEL,
+    SCANNER_NETWORK_LEVEL,
+)
 
 #: The policies (and their bindings, same names) in admission-policy.yaml.
 JOB_POLICY = "stac-higher-runs-jobs"
@@ -61,6 +67,27 @@ def _drop_queue_label(job: dict) -> None:
 
 def _unknown_priority(job: dict) -> None:
     job["metadata"]["labels"][PRIORITY_LABEL] = "urgent"
+
+
+def _scanner_process_run(job: dict) -> None:
+    # A process Job (stac-run-…) whose pods would get the scanner's egress;
+    # the Job's own labels say the same, so only the pair rule is broken.
+    for labels in (job["metadata"]["labels"], job["spec"]["template"]["metadata"]["labels"]):
+        labels[NETWORK_LEVEL_LABEL] = SCANNER_NETWORK_LEVEL
+
+
+def _scan_shaped_process_job(job: dict) -> None:
+    # A stac-run-… Job dressed as a scan: the pair is allowed, the name is not.
+    for labels in (job["metadata"]["labels"], job["spec"]["template"]["metadata"]["labels"]):
+        labels[RUN_KIND_LABEL] = "image_scan"
+        labels[NETWORK_LEVEL_LABEL] = SCANNER_NETWORK_LEVEL
+
+
+def _template_says_otherwise(job: dict) -> None:
+    # The Job's metadata names one run, its pods another.
+    job["spec"]["template"]["metadata"]["labels"][RUN_ID_LABEL] = (
+        "00000000-0000-4000-8000-000000000000"
+    )
 
 
 def _default_service_account(job: dict) -> None:
@@ -104,6 +131,9 @@ def _foreign_env_from(job: dict) -> None:
 JOB_RULES: tuple[JobRule, ...] = (
     JobRule("queue-label", "queue label", _drop_queue_label),
     JobRule("priority-class", "priority class", _unknown_priority),
+    JobRule("run-labels", "run labels", _scanner_process_run),
+    JobRule("run-labels", "run labels", _scan_shaped_process_job),
+    JobRule("template-labels", "template labels", _template_says_otherwise),
     JobRule("service-account", "serviceAccountName", _default_service_account),
     JobRule("no-token", "automountServiceAccountToken", _automount_token),
     JobRule("volumes", "volumes", _secret_volume),
