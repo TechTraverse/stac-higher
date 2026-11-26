@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Validate infra/kueue and infra/kubernetes against Kueue's OWN CRD schemas
-# (K-6, plan K6-R15). Usage: scripts/check-kueue.sh [work-dir]  (repo root)
+# (K-6, plan K6-R15). Usage: scripts/check-kueue.sh [--schemas-only] [work-dir]
+# (run from the repo root)
 #
 # Downloads the pinned Kueue manifests.yaml (sha256-checked against
 # infra/kueue/kueue.env), turns its CRDs into JSON schemas with kubeconform's
@@ -10,6 +11,12 @@
 # policy, RBAC) validate against Kubernetes 1.34's own schemas. CEL inside the
 # admission policy cannot be checked statically: the kind leg is its test.
 #
+# --schemas-only: stop after writing the schemas to <work-dir>/schemas
+# ({kind}_{version}.json, v1beta2 only), for another kubeconform run to use
+# (R-8: the chart's rendered Kueue objects) as
+#   -schema-location '<work-dir>/schemas/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+# That mode needs no kubeconform.
+#
 # Needs: curl, uv, and kubeconform v0.8.0 on PATH (CI installs it as
 # .github/workflows/helm.yml does; locally download kubeconform-<os>-<arch>
 # v0.8.0 from github.com/yannh/kubeconform/releases, check its sha256 --
@@ -17,12 +24,17 @@
 # -- and put the binary on PATH).
 set -euo pipefail
 
+schemas_only=false
+if [ "${1:-}" = "--schemas-only" ]; then
+  schemas_only=true
+  shift
+fi
 work=${1:-$(mktemp -d)}
 O2J_URL=https://raw.githubusercontent.com/yannh/kubeconform/v0.8.0/scripts/openapi2jsonschema.py
 O2J_SHA256=d145babfbb765004030764e1b4e518bfb7a4bd7f111691a08fa57983b81881f3
 KUBE_VERSION=1.34.0
 
-if ! command -v kubeconform >/dev/null 2>&1; then
+if ! $schemas_only && ! command -v kubeconform >/dev/null 2>&1; then
   echo "check-kueue: kubeconform v0.8.0 is not on PATH (see this script's header)" >&2
   exit 2
 fi
@@ -51,6 +63,10 @@ rm -f "$work"/schemas/*_v1beta1.json
 if ! ls "$work"/schemas/clusterqueue_v1beta2.json >/dev/null 2>&1; then
   echo "check-kueue: no ClusterQueue v1beta2 schema was generated" >&2
   exit 1
+fi
+if $schemas_only; then
+  echo "check-kueue: Kueue ${KUEUE_VERSION} v1beta2 schemas in $work/schemas"
+  exit 0
 fi
 
 kubeconform -strict -summary -kubernetes-version "$KUBE_VERSION" \
