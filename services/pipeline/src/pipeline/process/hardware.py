@@ -6,8 +6,8 @@ queue-wait promise and a base image — in one JSON document both runtimes
 read. The app validates it strictly at its write gate and serves it to the
 UI; this reader is LENIENT in the established direction (an image built
 before a key was added must not brick), keeps ``backend`` opaque at parse
-time (``docker_backend`` reads the Docker block, K-3; K-5 will read
-``kubernetes``), and re-checks a run's
+time (``docker_backend`` reads the Docker block, K-3; ``kubernetes_backend``
+the Kubernetes block, K-5), and re-checks a run's
 ``hardware`` block against the bounds at launch, independently of the app.
 
 **Packaging:** the deployment set reaches the image as ``COPY --from=hardware``
@@ -23,7 +23,8 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,95 @@ def _docker_block(raw: Any, profile_id: str) -> DockerBackend:
     return DockerBackend(device_requests=tuple(dict(r) for r in requests), capacity=capacity)
 
 
+#: K-5: the toleration keys the Kubernetes API accepts, and the values of
+#: the two that are enumerations.
+_TOLERATION_KEYS = frozenset({"key", "operator", "value", "effect", "tolerationSeconds"})
+_TOLERATION_OPERATORS = ("Exists", "Equal")
+_TOLERATION_EFFECTS = ("", "NoSchedule", "PreferNoSchedule", "NoExecute")
+#: K-5 (K5-R24): what an ``extended_resources`` entry may carry. Only the GPU
+#: count maps onto an extended resource today.
+_EXTENDED_RESOURCE_SOURCES = ("gpu_count",)
+
+
+@dataclass(frozen=True)
+class KubernetesBackend:
+    """A profile's ``backend.kubernetes`` block (spec §3.4, K-5): the Kueue
+    LocalQueue its runs go to (None = the deployment default), the pod's
+    placement, and which extended resource carries the GPU count."""
+
+    queue: str | None = None
+    node_selector: Mapping[str, str] = field(default_factory=dict)
+    tolerations: tuple[Mapping[str, Any], ...] = ()
+    runtime_class: str | None = None
+    #: resource name -> "gpu_count", e.g. {"nvidia.com/gpu": "gpu_count"}
+    extended_resources: Mapping[str, str] = field(default_factory=dict)
+
+
+def _toleration(raw: Any, what: str) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise HardwareProfileError(f"{what} must be an object")
+    unknown = sorted(set(raw) - _TOLERATION_KEYS)
+    if unknown:
+        raise HardwareProfileError(f"{what} has unknown keys {unknown}")
+    for key in ("key", "value"):
+        if key in raw and raw[key] is not None and not isinstance(raw[key], str):
+            raise HardwareProfileError(f"{what}.{key} must be a string")
+    if raw.get("operator", "Equal") not in _TOLERATION_OPERATORS:
+        raise HardwareProfileError(f"{what}.operator must be one of {_TOLERATION_OPERATORS}")
+    if raw.get("effect", "") not in _TOLERATION_EFFECTS:
+        raise HardwareProfileError(f"{what}.effect must be one of {_TOLERATION_EFFECTS}")
+    seconds = raw.get("tolerationSeconds")
+    if seconds is not None and not _is_whole(seconds):
+        raise HardwareProfileError(f"{what}.tolerationSeconds must be a whole number")
+    return dict(raw)
+
+
+def _kubernetes_block(raw: Any, profile_id: str) -> KubernetesBackend:
+    """Parse ``backend.kubernetes`` with the document, as ``backend.docker``
+    is (K-3 review, K-5 addendum A8): absent or null is the defaults; a block
+    present but unusable makes the file unusable (the runner requeues as
+    infrastructure) and names the profile."""
+    if raw is None:
+        return KubernetesBackend()
+    what = f"profile {profile_id!r}: backend.kubernetes"
+    if not isinstance(raw, dict):
+        raise HardwareProfileError(f"{what} must be an object")
+    queue = raw.get("queue")
+    if queue is not None and (not isinstance(queue, str) or not queue.strip()):
+        raise HardwareProfileError(f"{what}.queue must be a non-empty string or null")
+    selector = raw.get("node_selector") or {}
+    if not isinstance(selector, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in selector.items()
+    ):
+        raise HardwareProfileError(f"{what}.node_selector must map strings to strings")
+    tolerations = raw.get("tolerations") or []
+    if not isinstance(tolerations, list):
+        raise HardwareProfileError(f"{what}.tolerations must be a list")
+    runtime_class = raw.get("runtime_class")
+    if runtime_class is not None and (
+        not isinstance(runtime_class, str) or not runtime_class.strip()
+    ):
+        raise HardwareProfileError(f"{what}.runtime_class must be a non-empty string or null")
+    extended = raw.get("extended_resources") or {}
+    if not isinstance(extended, dict) or not all(
+        isinstance(k, str) and k and v in _EXTENDED_RESOURCE_SOURCES
+        for k, v in extended.items()
+    ):
+        raise HardwareProfileError(
+            f"{what}.extended_resources must map resource names to "
+            f"one of {_EXTENDED_RESOURCE_SOURCES}"
+        )
+    return KubernetesBackend(
+        queue=queue,
+        node_selector=dict(selector),
+        tolerations=tuple(
+            _toleration(t, f"{what}.tolerations[{i}]") for i, t in enumerate(tolerations)
+        ),
+        runtime_class=runtime_class,
+        extended_resources=dict(extended),
+    )
+
+
 @dataclass(frozen=True)
 class HardwareProfile:
     id: str
@@ -109,9 +199,10 @@ class HardwareProfile:
     max_queue_wait_seconds: int
     image: str | None
     #: Pipeline-only. `backend["docker"]` is parsed into `docker` with the
-    #: document (K-3); K-5 will read `backend["kubernetes"]`.
+    #: document (K-3), `backend["kubernetes"]` into `kubernetes` (K-5).
     backend: dict[str, Any]
     docker: DockerBackend = DockerBackend()
+    kubernetes: KubernetesBackend = field(default_factory=KubernetesBackend)
 
 
 @dataclass(frozen=True)
@@ -186,6 +277,7 @@ def _profile(raw: Any) -> HardwareProfile:
         image=image,
         backend=dict(backend),
         docker=_docker_block(backend.get("docker"), profile_id),
+        kubernetes=_kubernetes_block(backend.get("kubernetes"), profile_id),
     )
 
 
@@ -298,6 +390,11 @@ def check_hardware_bounds(
 def docker_backend(profile: HardwareProfile) -> DockerBackend:
     """The profile's parsed docker block (validated with the document)."""
     return profile.docker
+
+
+def kubernetes_backend(profile: HardwareProfile) -> KubernetesBackend:
+    """The profile's parsed kubernetes block (validated with the document)."""
+    return profile.kubernetes
 
 
 def docker_capacities(profiles: HardwareProfileSet) -> dict[str, int | None]:
