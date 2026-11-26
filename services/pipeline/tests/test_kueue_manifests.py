@@ -156,7 +156,7 @@ def _cluster_queue() -> dict:
 
 def test_every_kueue_object_is_v1beta2():
     kueue_docs = [d for d in _docs(COMMON, KIND)
-                  if d["apiVersion"].startswith("kueue.x-k8s.io/")]
+                  if d["apiVersion"].split("/")[0] == "kueue.x-k8s.io"]
     assert kueue_docs
     for doc in kueue_docs:
         assert doc["apiVersion"] == f"kueue.x-k8s.io/{km.KUEUE_API_VERSION}" == (

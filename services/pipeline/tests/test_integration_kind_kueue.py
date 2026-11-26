@@ -726,8 +726,16 @@ def test_kueues_webhooks_reach_only_the_runs_namespace():
         for config in (kget(kind, namespace=None) or {}).get("items") or []:
             if not config["metadata"]["name"].startswith("kueue-"):
                 continue
-            wide += [h["name"] for h in config["webhooks"]
-                     if "namespaceSelector" in h and h["namespaceSelector"] != narrowed]
+            for h in config["webhooks"]:
+                selector = h.get("namespaceSelector") or {}
+                groups = {g for rule in h.get("rules") or [] for g in rule.get("apiGroups") or []}
+                # The API server defaults an absent selector to {}. Those are the
+                # webhooks on Kueue's own API, which the narrowing script leaves
+                # as released; anything else must be narrowed.
+                own_api_only = selector == {} and groups and all(
+                    g == "kueue.x-k8s.io" for g in groups)
+                if selector != narrowed and not own_api_only:
+                    wide.append(h["name"])
     assert wide == [], f"Kueue webhooks still matching other namespaces: {wide}"
 
     deployment = {
