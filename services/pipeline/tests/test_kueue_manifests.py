@@ -27,7 +27,14 @@ from pipeline.process import kubernetes_executor as kx
 from pipeline.process import kubernetes_manifests as km
 from pipeline.process.executor import PRIORITIES, RUN_ID_LABEL, RUN_KIND_LABEL
 from pipeline.process.hardware import kubernetes_backend, load_hardware_profiles
-from test_kubernetes_rbac import vap_job_violations, vap_pod_update_violations
+from test_kubernetes_rbac import (
+    HOST_FIELDS,
+    PLACEMENT_FIELDS,
+    SECRET_TYPES,
+    vap_job_violations,
+    vap_pod_update_violations,
+    vap_secret_violations,
+)
 
 REPO = Path(__file__).resolve().parents[3]
 KUEUE = REPO / "infra" / "kueue"
@@ -201,7 +208,8 @@ def _policies() -> list[dict]:
 
 def test_the_admission_policies_cover_the_runs_namespace():
     docs = _policies()
-    for name in (rules.JOB_POLICY, rules.POD_UPDATE_POLICY):
+    assert {d["metadata"]["name"] for d in docs} == set(rules.POLICIES)
+    for name in rules.POLICIES:
         policy = _one(docs, "ValidatingAdmissionPolicy", name)
         binding = _one(docs, "ValidatingAdmissionPolicyBinding", name)
         assert binding["spec"]["policyName"] == name
@@ -222,6 +230,13 @@ def test_the_admission_policies_cover_the_runs_namespace():
         "apiGroups": [""], "apiVersions": ["v1"], "operations": ["UPDATE"],
         "resources": ["pods"],
     }]
+    secrets = _one(docs, "ValidatingAdmissionPolicy", rules.SECRET_POLICY)["spec"]
+    assert secrets["matchConstraints"]["resourceRules"] == [{
+        "apiGroups": [""], "apiVersions": ["v1"], "operations": ["CREATE", "UPDATE"],
+        "resources": ["secrets"],
+    }]
+    [types] = re.findall(r"in \[([^\]]*)\]", secrets["validations"][0]["expression"])
+    assert tuple(re.findall(r"'([^']*)'", types)) == SECRET_TYPES
 
 
 def test_the_admission_policy_names_the_executors_values():
@@ -281,7 +296,7 @@ def test_the_cel_and_k5s_pure_rules_are_the_same_rules():
     docs = _policies()
     yaml_ids = {
         rules.rule_id_of(v["message"])
-        for name in (rules.JOB_POLICY, rules.POD_UPDATE_POLICY)
+        for name in rules.POLICIES
         for v in _one(docs, "ValidatingAdmissionPolicy", name)["spec"]["validations"]
     }
     assert None not in yaml_ids, "every validation message must start with [rule-id]"
@@ -292,12 +307,36 @@ def test_the_cel_and_k5s_pure_rules_are_the_same_rules():
     assert _pure_problems("vap_job_violations") == {r.problem for r in rules.JOB_RULES}
     assert _pure_problems("vap_pod_update_violations") == {
         r.problem for r in rules.POD_UPDATE_RULES}
+    assert _pure_problems("vap_secret_violations") == {r.problem for r in rules.SECRET_RULES}
+
+
+def test_the_placement_and_host_rules_name_every_field_the_twin_forbids():
+    """The CEL's has() list and the twin's field tables are the same fields."""
+    jobs = _one(_policies(), "ValidatingAdmissionPolicy", rules.JOB_POLICY)
+    by_id = {rules.rule_id_of(v["message"]): v["expression"]
+             for v in jobs["spec"]["validations"]}
+    for rule_id, fields in (("placement", PLACEMENT_FIELDS), ("host", HOST_FIELDS)):
+        named = set(re.findall(r"variables\.pod\.(\w+)", by_id[rule_id]))
+        assert named == set(fields), rule_id
+        for field, default in fields.items():
+            if isinstance(default, str):
+                assert f"'{default}'" in by_id[rule_id], field
 
 
 def _built_job() -> dict:
     ctx = km.JobContext(DEFAULT_PROCESS_K8S_NAMESPACE, DEFAULT_PROCESS_K8S_DEFAULT_QUEUE,
                         DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT, {})
     return km.build_job(spec(), name=NAME, ctx=ctx, pull_secret=None)
+
+
+@pytest.mark.parametrize("rule", rules.SECRET_RULES, ids=lambda r: r.rule_id)
+def test_each_secret_mutation_breaks_exactly_its_rule(rule):
+    ctx = km.JobContext(DEFAULT_PROCESS_K8S_NAMESPACE, DEFAULT_PROCESS_K8S_DEFAULT_QUEUE,
+                        DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT, {})
+    secret = km.build_env_secret(spec(), name=NAME, owner_uid="uid", ctx=ctx)
+    assert vap_secret_violations(secret) == []
+    rule.mutate(secret)
+    assert vap_secret_violations(secret) == [rule.problem]
 
 
 @pytest.mark.parametrize("rule", rules.JOB_RULES, ids=lambda r: r.rule_id)

@@ -49,6 +49,7 @@ JOBS = f"/apis/batch/v1/namespaces/{NAMESPACE}/jobs"
 #: A server-side dry run: admission (policies and webhooks) runs, nothing persists.
 DRY_RUN_JOBS = f"{JOBS}?dryRun=All"
 PODS = f"/api/v1/namespaces/{NAMESPACE}/pods"
+DRY_RUN_SECRETS = f"/api/v1/namespaces/{NAMESPACE}/secrets?dryRun=All"
 NETPOL_NAMESPACE = "k6-netpol-probe"
 
 
@@ -450,12 +451,40 @@ def _variants() -> list[tuple[str, dict]]:
     ]
 
 
+def _built_secrets() -> list[tuple[str, dict]]:
+    """The env and pull Secrets the executor builds for a private user image."""
+    digest = "sha256:" + "b" * 64
+    run = dataclasses.replace(
+        code_spec("pass"), image=f"registry.example/acme/tool@{digest}", user_image=True,
+        registry_auth=RegistryAuth(username="u", password="p", server="registry.example"))
+    name = km.job_name(run.kind, run.run_id, "c0ffee")
+    owner = "00000000-0000-4000-8000-000000000001"
+    return [("env", km.build_env_secret(run, name=name, owner_uid=owner, ctx=_ctx())),
+            ("pull", km.build_pull_secret(run, name=name, owner_uid=owner, ctx=_ctx()))]
+
+
 def test_every_job_the_executor_builds_is_admitted():
     """Item 10: the policies, PSA restricted and Kueue's webhooks admit every
-    shape build_job makes (a server dry run, as the pipeline)."""
+    shape build_job makes, and both Secret types (a server dry run, as the
+    pipeline)."""
     refused = {name: f"{err.status} {err.server_message}"
                for name, job in _variants() if (err := _refusal(DRY_RUN_JOBS, job))}
+    refused.update({f"secret-{name}": f"{err.status} {err.server_message}"
+                    for name, secret in _built_secrets()
+                    if (err := _refusal(DRY_RUN_SECRETS, secret))})
     assert refused == {}, refused
+
+
+@pytest.mark.parametrize("rule", rules.SECRET_RULES, ids=lambda r: r.rule_id)
+def test_each_secret_rule_refuses_its_violation(rule):
+    """K-6 review R5: no Secret the cluster would fill with a token."""
+    _name, secret = _built_secrets()[0]
+    rule.mutate(secret)
+    err = _refusal(DRY_RUN_SECRETS, secret)
+    assert err is not None, f"[{rule.rule_id}] the server admitted the violating Secret"
+    observe("secret-rule", rule=rule.rule_id, status=err.status, message=err.server_message)
+    assert err.status == 422 and f"[{rule.rule_id}]" in err.server_message, (
+        err.status, err.server_message)
 
 
 @pytest.mark.parametrize("rule", rules.JOB_RULES,

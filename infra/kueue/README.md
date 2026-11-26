@@ -13,7 +13,7 @@ in `infra/kubernetes/`.
 | `config/kind.yaml` | The kind CI variant: identical except `waitForPodsReady` timing (30 s, one requeue, 5–10 s backoff). Never install it elsewhere. |
 | `common/workloadpriorityclasses.yaml` | `interactive` (1000) and `triggered` (100). |
 | `common/localqueue.yaml` | LocalQueue `process-runs` in `stac-higher-runs`, feeding ClusterQueue `process-runs`. |
-| `common/admission-policy.yaml` | Two ValidatingAdmissionPolicies (and bindings) on the runs namespace: what a Job must look like, and that the pipeline may change a pod only by lowering its deadline (below). |
+| `common/admission-policy.yaml` | Three ValidatingAdmissionPolicies (and bindings) on the runs namespace: what a Job must look like, that the pipeline may change a pod only by lowering its deadline, and which Secret types may exist (below). |
 | `kind/resourceflavors.yaml` | The kind cluster's one flavor, `cpu-default` (no node labels). |
 | `kind/clusterqueue.yaml` | The kind cluster's ClusterQueue: 1 CPU, 4 Gi, only the runs namespace, `LowerPriority` preemption, `BestEffortFIFO`. |
 
@@ -52,7 +52,15 @@ or `(image_scan, scanner)` for a `stac-scan-` Job, repeated from the Job's
 own labels with its run id; ServiceAccount `stac-higher-run` without a token;
 `emptyDir` volumes only; pull Secrets named `<job>-pull` only; no init or
 ephemeral containers; no `env`; `envFrom` only the Secret named after the
-Job. `stac-higher-runs-pod-updates` (Pod UPDATE by the pipeline only):
+Job; no placement or host setting the executor never makes (`nodeName`, pod
+priority, affinity, spread, gates, host namespaces, host aliases, DNS, …);
+requests equal to limits for cpu and memory; `activeDeadlineSeconds` on the
+Job and its pods. An UPDATE that leaves a Job's labels unchanged is always
+admitted (a Job that predates the policy can still be deleted).
+`nodeSelector`, `tolerations` and `runtimeClassName` come from the hardware
+profile and are not bounded (R-8: a param resource from the chart's
+profiles). `stac-higher-runs-secrets`: only `Opaque` and
+`kubernetes.io/dockerconfigjson` Secrets. `stac-higher-runs-pod-updates` (Pod UPDATE by the pipeline only):
 `activeDeadlineSeconds` set or lowered, never raised or removed; labels,
 annotations, owners, finalizers and every mutable spec field unchanged.
 

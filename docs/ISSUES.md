@@ -1691,8 +1691,19 @@ CREATE: the pod template's `stac-higher.run-kind` / `stac-higher.network-level`
 pair must be `(process, isolated)`, or `(image_scan, scanner)` for a
 `stac-scan-` Job; and the template must repeat the Job's run-kind,
 network-level and run-id labels. A pod's labels cannot be changed by the
-pipeline afterwards (the pod-update rule). **Residual:** the policy narrows
-the shape, it does not authenticate intent. A compromised pipeline identity
+pipeline afterwards (the pod-update rule). After review it also refuses, on
+Job CREATE, any placement or host setting the executor never makes (a pinned
+`nodeName`, a pod priority class, affinity, spread constraints, scheduling
+gates, host namespaces, host aliases, DNS settings, …), containers whose
+requests differ from their limits (Kueue counts requests), and a Job or pod
+without `activeDeadlineSeconds`; and a third policy admits only `Opaque` and
+`kubernetes.io/dockerconfigjson` Secrets (no ServiceAccount-token Secret).
+**Not bounded:** `nodeSelector`, `tolerations` and `runtimeClassName`, which
+the executor copies from the hardware profile and Kueue mutates at admission;
+a compromised pipeline can place a run on any node those can reach. R-8 can
+bound them to the profile set with a param resource rendered from the chart's
+profiles. **Residual:** the policy narrows the shape, it does not
+authenticate intent. A compromised pipeline identity
 can still create a scan-shaped Job (`stac-scan-…`, `image_scan`, `scanner`)
 running any image under the run ServiceAccount and get the scanner policy's
 egress (DNS, the object store, 443). Closing that needs the scan's image

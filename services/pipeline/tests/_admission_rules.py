@@ -34,6 +34,8 @@ from pipeline.process.kubernetes_manifests import (
 #: The policies (and their bindings, same names) in admission-policy.yaml.
 JOB_POLICY = "stac-higher-runs-jobs"
 POD_UPDATE_POLICY = "stac-higher-runs-pod-updates"
+SECRET_POLICY = "stac-higher-runs-secrets"
+POLICIES = (JOB_POLICY, POD_UPDATE_POLICY, SECRET_POLICY)
 
 
 def _pod(job: dict) -> dict:
@@ -90,6 +92,42 @@ def _template_says_otherwise(job: dict) -> None:
     )
 
 
+def _projected_token_volume(job: dict) -> None:
+    # A ServiceAccount token mounted by hand, automount or not.
+    _pod(job)["volumes"].append({"name": "token", "projected": {"sources": [
+        {"serviceAccountToken": {"path": "token", "expirationSeconds": 3600}}]}})
+
+
+def _config_map_env_from(job: dict) -> None:
+    _pod(job)["containers"][0]["envFrom"].append({"configMapRef": {"name": "any-config"}})
+
+
+def _prefixed_env_from(job: dict) -> None:
+    _pod(job)["containers"][0]["envFrom"][0]["prefix"] = "OTHER_"
+
+
+def _secret_key_env(job: dict) -> None:
+    _pod(job)["containers"][0]["env"] = [{"name": "K6_STOLEN", "valueFrom": {
+        "secretKeyRef": {"name": "another-run", "key": "API_TOKEN"}}}]
+
+
+def _pinned_node(job: dict) -> None:
+    _pod(job)["nodeName"] = "any-node"  # skips the scheduler, Kueue and taints
+
+
+def _host_aliases(job: dict) -> None:
+    _pod(job)["hostAliases"] = [{"ip": "10.0.0.1", "hostnames": ["object-store"]}]
+
+
+def _under_declared_cpu(job: dict) -> None:
+    resources = _pod(job)["containers"][0]["resources"]
+    resources["requests"] = {**resources["requests"], "cpu": "10m"}  # Kueue counts requests
+
+
+def _no_job_deadline(job: dict) -> None:
+    del job["spec"]["activeDeadlineSeconds"]
+
+
 def _default_service_account(job: dict) -> None:
     _pod(job)["serviceAccountName"] = "default"
 
@@ -143,8 +181,16 @@ JOB_RULES: tuple[JobRule, ...] = (
     # defence in depth behind the API server's own validation.
     JobRule("no-ephemeral-containers", "ephemeralContainers", _ephemeral_container,
             api_may_answer_first=True),
+    JobRule("volumes", "volumes", _projected_token_volume),
     JobRule("no-env", "env", _plain_env),
+    JobRule("no-env", "env", _secret_key_env),
     JobRule("env-from", "envFrom", _foreign_env_from),
+    JobRule("env-from", "envFrom", _config_map_env_from),
+    JobRule("env-from", "envFrom", _prefixed_env_from),
+    JobRule("placement", "placement", _pinned_node),
+    JobRule("host", "host", _host_aliases),
+    JobRule("resources", "resources", _under_declared_cpu),
+    JobRule("deadlines", "deadlines", _no_job_deadline),
 )
 
 
@@ -209,8 +255,29 @@ POD_UPDATE_RULES: tuple[PodUpdateRule, ...] = (
                   _apply_merge_patch(_extra_toleration), _extra_toleration),
 )
 
+@dataclass(frozen=True)
+class SecretRule:
+    """A rule on Secret CREATE. ``mutate`` takes a Secret the executor built."""
+
+    rule_id: str
+    problem: str
+    mutate: Callable[[dict], None]
+
+
+def _token_secret(secret: dict) -> None:
+    secret["type"] = "kubernetes.io/service-account-token"
+    secret["metadata"]["annotations"] = {"kubernetes.io/service-account.name": "stac-higher-run"}
+    secret.pop("data", None)
+    secret.pop("immutable", None)
+
+
+SECRET_RULES: tuple[SecretRule, ...] = (
+    SecretRule("secret-type", "secret type", _token_secret),
+)
+
 RULE_IDS: frozenset[str] = frozenset(
     [r.rule_id for r in JOB_RULES] + [r.rule_id for r in POD_UPDATE_RULES]
+    + [r.rule_id for r in SECRET_RULES]
 )
 
 

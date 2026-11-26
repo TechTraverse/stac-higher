@@ -194,6 +194,37 @@ PROCESS_PAIR = ("process", km.ENFORCEABLE_NETWORK_LEVELS[0])
 TEMPLATE_RUN_LABELS = (km.RUN_KIND_LABEL, km.NETWORK_LEVEL_LABEL, km.RUN_ID_LABEL)
 
 
+#: K-6 review R2: pod-template fields build_job never sets, mapped to the
+#: value the API server defaults them to (None: no default, must be absent).
+#: Placement and priority (scheduler, Kueue flavor and taint bypass) ...
+PLACEMENT_FIELDS = {
+    "nodeName": None, "priorityClassName": None, "priority": None,
+    "preemptionPolicy": "PreemptLowerPriority", "affinity": None,
+    "topologySpreadConstraints": None, "schedulingGates": None, "overhead": None,
+    "readinessGates": None, "resourceClaims": None, "resources": None,
+    "schedulerName": "default-scheduler",
+}
+#: ... and the host's network, names and DNS.
+HOST_FIELDS = {
+    "hostNetwork": False, "hostPID": False, "hostIPC": False, "hostAliases": None,
+    "hostname": None, "hostnameOverride": None, "subdomain": None, "setHostnameAsFQDN": False,
+    "shareProcessNamespace": False, "dnsPolicy": "ClusterFirst", "dnsConfig": None,
+}
+
+
+def _set_beyond_default(pod: dict, fields: dict) -> bool:
+    return any(key in pod and pod[key] not in (None, default) for key, default in fields.items())
+
+
+def _requests_equal_limits(container: dict) -> bool:
+    """Kueue counts requests: every container must state cpu and memory
+    limits and request exactly them (absent requests default to the limits)."""
+    resources = container.get("resources") or {}
+    limits = resources.get("limits") or {}
+    requests = resources.get("requests", limits)
+    return {"cpu", "memory"} <= set(limits) and requests == limits
+
+
 def vap_job_violations(job: dict) -> list[str]:
     """Job CREATE in the runs namespace."""
     problems = []
@@ -230,6 +261,27 @@ def vap_job_violations(job: dict) -> list[str]:
         for source in container.get("envFrom") or []:
             if set(source) != {"secretRef"} or source["secretRef"].get("name") != name:
                 problems.append("envFrom")
+    if _set_beyond_default(pod, PLACEMENT_FIELDS):
+        problems.append("placement")
+    if _set_beyond_default(pod, HOST_FIELDS):
+        problems.append("host")
+    if not all(_requests_equal_limits(c) for c in pod["containers"]):
+        problems.append("resources")
+    if "activeDeadlineSeconds" not in job["spec"] or "activeDeadlineSeconds" not in pod:
+        problems.append("deadlines")
+    return problems
+
+
+#: K-6 review R5: the Secret types the executor creates.
+SECRET_TYPES = ("Opaque", "kubernetes.io/dockerconfigjson")
+
+
+def vap_secret_violations(secret: dict) -> list[str]:
+    """Secret CREATE in the runs namespace: no service-account-token (or any
+    other) type the cluster would fill in."""
+    problems = []
+    if secret.get("type", "Opaque") not in SECRET_TYPES:
+        problems.append("secret type")
     return problems
 
 
@@ -289,3 +341,13 @@ def test_the_executors_only_pod_update_passes_the_admission_policy():
     assert vap_pod_update_violations(old, patched) == []
     swapped = {"metadata": {"name": "p"}, "spec": {**pod_spec["spec"], "containers": []}}
     assert vap_pod_update_violations(old, swapped)
+
+
+def test_every_secret_the_executor_builds_passes_the_admission_policy():
+    ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
+    run = spec(image=f"ghcr.io/acme/private@{DIGEST}", user_image=True,
+               registry_auth=RegistryAuth(username="u", password="p", server="ghcr.io"))
+    secrets = [km.build_env_secret(run, name=NAME, owner_uid="u", ctx=ctx),
+               km.build_pull_secret(run, name=NAME, owner_uid="u", ctx=ctx)]
+    assert [vap_secret_violations(s) for s in secrets] == [[], []]
+    assert vap_secret_violations({"type": "kubernetes.io/service-account-token"})
