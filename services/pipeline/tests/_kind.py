@@ -266,9 +266,17 @@ def diagnose_log_loss(handle: RunHandle) -> str:
                 "not the read-before-stop fallback")
     status = pod.get("status") or {}
     container = next(iter(status.get("containerStatuses") or []), {})
+    state = container.get("state") or {}
+    started = bool((state.get("terminated") or {}).get("startedAt")
+                   or "running" in state or container.get("started"))
+    if not started:
+        return (f"the container never started (pod phase={status.get('phase')}, "
+                f"reason={status.get('reason')}, container={state}): the deadline fired "
+                "before the run could print anything — a test-timing problem, not log loss")
     return (f"pod present (phase={status.get('phase')}, reason={status.get('reason')}, "
-            f"container={container.get('state')}) — log lost by the kubelet: take the "
-            "read-before-stop fallback (KubernetesExecutor._stop_keeping_the_log, I-178)")
+            f"container={state}) — the container ran and its log was lost by the kubelet: "
+            "take the read-before-stop fallback (KubernetesExecutor._stop_keeping_the_log, "
+            "I-178)")
 
 
 # -- cleanup -------------------------------------------------------------------

@@ -3,12 +3,15 @@
 Usage: python3 -I kind-junit-gate.py <junit.xml> <min-tests> [<summary.md>]
 
 Fails unless at least <min-tests> tests ran, none failed or errored, and
-nothing was skipped (an xfail is not a skip: the lead may mark a test
-`xfail(strict=True)` while its fix/ PR lands). Prints every failure's first
+nothing was skipped. An xfail is allowed only for a test named in
+KIND_ALLOWED_XFAIL (comma-separated test function names, empty by default):
+the lead may mark a test `xfail(strict=True)` while its fix/ PR lands, and
+must list it, so an all-xfail suite cannot pass. Prints every failure's first
 lines, and appends a table to <summary.md> (the job summary) when given."""
 
 from __future__ import annotations
 
+import os
 import sys
 import xml.etree.ElementTree as ET
 
@@ -16,6 +19,9 @@ import xml.etree.ElementTree as ET
 def main(argv: list[str]) -> int:
     path, minimum = argv[1], int(argv[2])
     summary = argv[3] if len(argv) > 3 else None
+    allowed_xfail = {n.strip() for n in os.environ.get("KIND_ALLOWED_XFAIL", "").split(",")
+                     if n.strip()}
+    unlisted_xfail: list[str] = []
     root = ET.parse(path).getroot()
     cases = list(root.iter("testcase"))
     rows: list[tuple[str, str, str]] = []
@@ -33,6 +39,8 @@ def main(argv: list[str]) -> int:
         elif skipped is not None and skipped.get("type") == "pytest.xfail":
             counts["xfail"] += 1
             rows.append(("xfail", name, (skipped.get("message") or "")[:400]))
+            if (case.get("name") or "").split("[")[0] not in allowed_xfail:
+                unlisted_xfail.append(name)
         elif skipped is not None:
             counts["skipped"] += 1
             rows.append(("SKIPPED", name, (skipped.get("message") or "")[:400]))
@@ -43,6 +51,8 @@ def main(argv: list[str]) -> int:
         problems.append(f"{len(cases)} tests ran; expected at least {minimum} (KIND_MIN_TESTS)")
     if counts["skipped"]:
         problems.append(f"{counts['skipped']} skipped: the kind suite must never skip")
+    if unlisted_xfail:
+        problems.append(f"xfail not listed in KIND_ALLOWED_XFAIL: {unlisted_xfail}")
     if counts["failed"]:
         problems.append(f"{counts['failed']} failed")
     line = (f"kind suite: {len(cases)} tests — {counts['passed']} passed, "

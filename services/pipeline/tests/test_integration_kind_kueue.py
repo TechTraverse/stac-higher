@@ -103,7 +103,12 @@ def test_a_second_run_waits_for_capacity_then_runs():
         _kind.wait_state(ex, a, {"running"})
         b = ex.submit(code_spec("pass"))
         with _kind.reaping(ex, b):
-            waiting = _kind.wait_state(ex, b, {"pending_capacity"}, timeout=30)
+            # Right after submit B reads pending_capacity with no detail (no
+            # Workload yet, or no QuotaReserved condition yet): wait for Kueue's words.
+            waiting = _kind.wait_for(lambda: ex.status(b),
+                                     lambda s: s.phase == "pending_capacity" and bool(s.detail),
+                                     what="B waiting for capacity with Kueue's message",
+                                     timeout=30)
             quota = _kind.conditions(_kind.workload_of(b)).get("QuotaReserved") or {}
             observe("capacity-wait", detail=waiting.detail, reason=quota.get("reason"),
                     message=quota.get("message"))

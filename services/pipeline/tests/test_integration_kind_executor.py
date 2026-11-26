@@ -269,10 +269,12 @@ def _stop_record(ex, handle: RunHandle, scenario: str, **extra) -> dict:
 
 @pytest.fixture(scope="module")
 def timeout_run() -> dict:
-    """A run past its 5 s timeout, killed by the pod's activeDeadlineSeconds."""
+    """A run past its 20 s timeout, killed by the pod's activeDeadlineSeconds.
+    The deadline counts from the pod's startTime (before the container starts,
+    I-180), so 20 s leaves the container time to print its marker first."""
     _kind.clean_namespace()
     ex = _kind.executor()
-    handle = ex.submit(code_spec(printing(120), timeout_seconds=5))
+    handle = ex.submit(code_spec(printing(120), timeout_seconds=20))
     try:
         return _stop_record(ex, handle, "timeout")
     finally:
@@ -388,15 +390,33 @@ def test_a_job_deleted_behind_the_executors_back_is_lost():
         _kind.wait_state(ex, handle, {"running"})
         kubectl("delete", "job", handle.id, "-n", NAMESPACE, "--cascade=foreground",
                 "--wait=false")
-        seen = []
-        _kind.wait_for(lambda: ex.status(handle), lambda s: (
-            seen.append((s.phase, s.detail)) or s.detail == kx.JOB_GONE_DETAIL),
-            what="the deleted Job gone", timeout=90)
-        observe("foreground-delete", seen=sorted(set(seen)),
+        seen: list = []
+        job_conditions: list = []
+
+        def look():
+            job = _kind.job_of(handle)
+            summary = (_kind.condition_summary(job), bool(job and job["metadata"].get(
+                "deletionTimestamp"))) if job else None
+            if summary is not None and (not job_conditions or job_conditions[-1] != summary):
+                job_conditions.append(summary)
+            state = ex.status(handle)
+            if (state.phase, state.detail) not in seen:
+                seen.append((state.phase, state.detail))
+            return state
+
+        _kind.wait_for(look, lambda s: s.detail == kx.JOB_GONE_DETAIL,
+                       what="the deleted Job gone", timeout=90)
+        observe("foreground-delete", seen=seen, job_conditions=job_conditions,
                 deleting_seen=(("lost", kx.JOB_DELETING_DETAIL) in seen))
+        failed = [c for c, _deleting in job_conditions if c.get("Failed", "").startswith("True")]
         assert set(seen) <= {("lost", kx.JOB_DELETING_DETAIL), ("lost", kx.JOB_GONE_DETAIL)}, (
-            f"after the delete request returned, status() read something other than lost: "
-            f"{seen}")
+            "OUTCOME: after the delete request returned, status() read something other than "
+            f"lost: {seen}. "
+            + (f"The Job controller marked the Job Failed during foreground deletion "
+               f"({failed[0]['Failed']}), and status() reads Failed before deletionTimestamp: "
+               "a deleted Job spends an attempt. A fix/ PR should read deletionTimestamp "
+               "first (row 8 before rows 3-7)." if failed else "")
+            + f" Job conditions seen: {job_conditions}")
         assert handle.id not in {r.handle.id for r in ex.list_launched()}
 
 

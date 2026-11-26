@@ -20,16 +20,13 @@ on:
       - infra/kind/**
       - infra/kubernetes/**
       - infra/hardware-profiles/kind.json
+      - services/pipeline/pyproject.toml
       - services/pipeline/src/pipeline/config.py
-      - services/pipeline/src/pipeline/process/executor.py
-      - services/pipeline/src/pipeline/process/factory.py
-      - services/pipeline/src/pipeline/process/hardware.py
-      - services/pipeline/src/pipeline/process/http_stream.py
-      - services/pipeline/src/pipeline/process/kube_api.py
-      - services/pipeline/src/pipeline/process/kubernetes_*.py
-      - services/pipeline/src/pipeline/process/launch.py
-      - services/pipeline/src/pipeline/process/reconcile.py
-      - services/pipeline/src/pipeline/process/watcher.py
+      - services/pipeline/src/pipeline/metrics.py
+      - services/pipeline/src/pipeline/images/**
+      - services/pipeline/src/pipeline/process/**
+      - services/pipeline/tests/conftest.py
+      - services/pipeline/tests/_kube_executor_fixtures.py
       - services/pipeline/tests/_admission_rules.py
       - services/pipeline/tests/_kind.py
       - services/pipeline/tests/_process_fake.py
@@ -50,16 +47,13 @@ on:
       - infra/kind/**
       - infra/kubernetes/**
       - infra/hardware-profiles/kind.json
+      - services/pipeline/pyproject.toml
       - services/pipeline/src/pipeline/config.py
-      - services/pipeline/src/pipeline/process/executor.py
-      - services/pipeline/src/pipeline/process/factory.py
-      - services/pipeline/src/pipeline/process/hardware.py
-      - services/pipeline/src/pipeline/process/http_stream.py
-      - services/pipeline/src/pipeline/process/kube_api.py
-      - services/pipeline/src/pipeline/process/kubernetes_*.py
-      - services/pipeline/src/pipeline/process/launch.py
-      - services/pipeline/src/pipeline/process/reconcile.py
-      - services/pipeline/src/pipeline/process/watcher.py
+      - services/pipeline/src/pipeline/metrics.py
+      - services/pipeline/src/pipeline/images/**
+      - services/pipeline/src/pipeline/process/**
+      - services/pipeline/tests/conftest.py
+      - services/pipeline/tests/_kube_executor_fixtures.py
       - services/pipeline/tests/_admission_rules.py
       - services/pipeline/tests/_kind.py
       - services/pipeline/tests/_process_fake.py
@@ -155,6 +149,8 @@ jobs:
           # K6-R16: the number of tests the two kind modules collect; raise it
           # with every test added (a parametrized case counts once per case).
           KIND_MIN_TESTS: "51"
+          # K6-R16: test functions allowed to xfail (comma-separated); empty.
+          KIND_ALLOWED_XFAIL: ""
         run: |
           set +e -uo pipefail  # the shell is -e by default: collect both results
           set -a; source "$RUNNER_TEMP/kind/kind.env"; set +a
@@ -180,10 +176,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Diagnostics
-        if: failure()
+        if: failure() || cancelled()
         run: scripts/kind-diagnostics.sh "$RUNNER_TEMP/kind-diagnostics" "$RUNNER_TEMP/kind/admin.kubeconfig"
       - name: Upload diagnostics
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
           name: kind-diagnostics
