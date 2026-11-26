@@ -1,0 +1,41 @@
+{
+  "style": "pinned-constants",
+  "$comment": "R-8 (#144): names, labels and the mirror rewrite the Kubernetes executor (services/pipeline/src/pipeline/process/) and the Helm chart (infra/helm/stac-higher) must agree on. Readers: services/pipeline/tests/test_contract_fixtures.py (the executor's constants, rewrite_image, infra/kubernetes and the admission-policy names) and app/src/__tests__/helm/{runs,kueue,config}.test.ts (the rendered chart).",
+  "namespace": "stac-higher-runs",
+  "runServiceAccount": "stac-higher-run",
+  "pipelineRole": "stac-higher-pipeline",
+  "localQueue": "process-runs",
+  "clusterQueue": "process-runs",
+  "kueueApiVersion": "kueue.x-k8s.io/v1beta2",
+  "priorityClasses": { "interactive": 1000, "triggered": 100 },
+  "admissionPolicies": ["stac-higher-runs-jobs", "stac-higher-runs-pod-updates", "stac-higher-runs-secrets"],
+  "defaultDenyPolicy": "stac-higher-runs-default-deny",
+  "runKindLabel": "stac-higher.run-kind",
+  "networkLevelLabel": "stac-higher.network-level",
+  "allowPolicies": {
+    "stac-higher-runs-process-isolated": { "stac-higher.run-kind": "process", "stac-higher.network-level": "isolated" },
+    "stac-higher-runs-image-scan": { "stac-higher.run-kind": "image_scan", "stac-higher.network-level": "scanner" }
+  },
+  "mirrors": {
+    "ghcr.io": "000000000000.dkr.ecr.us-east-1.amazonaws.com/ghcr",
+    "docker.io": "000000000000.dkr.ecr.us-east-1.amazonaws.com/docker-hub"
+  },
+  "mirrorCases": [
+    {
+      "ref": "ghcr.io/techtraverse/stac-higher-process-runtime@sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "pulled": "000000000000.dkr.ecr.us-east-1.amazonaws.com/ghcr/techtraverse/stac-higher-process-runtime@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    {
+      "ref": "ghcr.io/stac-utils/stac-fastapi-pgstac:6.3.1@sha256:db117b91302f7983ce4e07658768a6e8d2f6716613252a15f5dcdbda8dae9883",
+      "pulled": "000000000000.dkr.ecr.us-east-1.amazonaws.com/ghcr/stac-utils/stac-fastapi-pgstac:6.3.1@sha256:db117b91302f7983ce4e07658768a6e8d2f6716613252a15f5dcdbda8dae9883"
+    },
+    {
+      "ref": "docker.io/library/python@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "pulled": "000000000000.dkr.ecr.us-east-1.amazonaws.com/docker-hub/library/python@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "ref": "quay.io/example/tool@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "pulled": "quay.io/example/tool@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ]
+}
