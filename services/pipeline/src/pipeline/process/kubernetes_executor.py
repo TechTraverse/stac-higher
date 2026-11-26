@@ -55,6 +55,7 @@ from pipeline.process.executor import (
     RUN_KIND_LABEL,
     Executor,
     ExecutorUnavailable,
+    ExitStatus,
     ImagePullFailed,
     LaunchedRun,
     RunEvent,
@@ -62,12 +63,14 @@ from pipeline.process.executor import (
     RunRejected,
     RunSpec,
     RunState,
+    oom_error,
 )
 from pipeline.process.kube_api import KubeApi, KubeApiError, KubeNotFound
 from pipeline.process.kubernetes_manifests import (
     CONTAINER,
     DEFAULT_DENY_POLICY,
     KUEUE_API_VERSION,
+    KUEUE_JOB_UID_LABEL,
     POD_JOB_LABEL,
     JobContext,
     build_env_secret,
@@ -87,6 +90,32 @@ logger = logging.getLogger(__name__)
 SECRET_MAX_BYTES = 1024 * 1024
 #: K5-R5: what ``cancel`` lowers a started pod's deadline to.
 CANCEL_POD_DEADLINE_SECONDS = 1
+#: K5-R7: how long a pod may wait on an image pull or its config before the
+#: run is failed (an attempt spent).
+START_FAILURE_GRACE_SECONDS = 300
+#: Waiting reasons that will never resolve on their own: fail at once.
+IMMEDIATE_START_FAILURES = frozenset({"InvalidImageName", "ErrImageNeverPull"})
+#: Waiting reasons that may be transient (a registry blip, a Secret racing
+#: the pod): fail only after the grace.
+GRACED_START_FAILURES = frozenset({
+    "ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError", "CreateContainerError",
+})
+#: How much of the backend's words a detail or an error carries.
+DETAIL_MAX_CHARS = 500
+#: The status texts (K-6 A5: exported so the kind leg asserts on them).
+JOB_GONE_DETAIL = "the run's Job no longer exists"
+JOB_DELETING_DETAIL = "the run's Job is being deleted outside the platform"
+DISRUPTION_EXIT = "the run's pod was disrupted"
+PREEMPTED_PREFIX = "preempted: "
+WAITING_FOR_NODE_PREFIX = "waiting for a node: "
+DEACTIVATED_PREFIX = "Kueue deactivated the run: "
+START_FAILURE_PREFIX = "the run could not start"
+#: The Job controller's reason when our podFailurePolicy rule (FailJob on a
+#: DisruptionTarget pod condition) failed the Job (K-6 A6).
+POD_FAILURE_POLICY_REASON = "PodFailurePolicy"
+#: A container killed without an exit code reads as SIGKILL.
+SIGKILL_EXIT_CODE = 137
+
 #: How long a passed isolation check is trusted (addendum A18): one API read
 #: per minute per namespace, not one per run. A failed check is never cached.
 ISOLATION_CHECK_TTL_SECONDS = 60.0
@@ -147,6 +176,154 @@ def _newest(items: list[dict]) -> dict | None:
             str((o.get("metadata") or {}).get("name") or ""),
         ),
         default=None,
+    )
+
+
+def _clip(text: object) -> str:
+    return str(text or "")[:DETAIL_MAX_CHARS]
+
+
+def _words(reason: object, message: object) -> str:
+    """``reason: message`` (or whichever is present), clipped."""
+    parts = [str(p) for p in (reason, message) if p]
+    return _clip(": ".join(parts))
+
+
+def _container_status(pod: Mapping) -> dict:
+    for status in (pod.get("status") or {}).get("containerStatuses") or []:
+        if isinstance(status, dict) and status.get("name", CONTAINER) == CONTAINER:
+            return status
+    return {}
+
+
+def _memory_mb(pod: Mapping) -> int | None:
+    """The run container's memory limit in MB (``<n>Mi`` / ``<n>Gi``)."""
+    for container in (pod.get("spec") or {}).get("containers") or []:
+        if isinstance(container, dict) and container.get("name") == CONTAINER:
+            raw = str(((container.get("resources") or {}).get("limits") or {}).get("memory") or "")
+            for suffix, factor in (("Mi", 1), ("Gi", 1024)):
+                if raw.endswith(suffix) and raw[: -len(suffix)].isdigit():
+                    return int(raw[: -len(suffix)]) * factor
+    return None
+
+
+def _job_state(job: Mapping, workload: Mapping | None, pod: Mapping | None, *,
+               now: dt.datetime) -> RunState:
+    """The Job, its Workload (while suspended) and its newest pod onto K-4's
+    phases — the plan's Task 6 table, first matching row wins. Kueue owns
+    ``pending_capacity``, the kubelet ``starting``/``running``, the Job
+    controller ``exited``; only an affirmed absence or a disruption is
+    ``lost``. Pure, so the table is testable on hand-built dicts."""
+    meta = job.get("metadata") or {}
+    spec = job.get("spec") or {}
+    status = job.get("status") or {}
+    conditions = _conditions(job)
+    pod = pod or {}
+    pod_status = pod.get("status") or {}
+    pod_conditions = _conditions(pod)
+    container = _container_status(pod)
+    state = container.get("state") or {}
+    terminated = state.get("terminated") if isinstance(state.get("terminated"), dict) else None
+    waiting = state.get("waiting") if isinstance(state.get("waiting"), dict) else None
+
+    if _is_true(conditions, "Complete"):  # row 2
+        finished = (k8s_time((terminated or {}).get("finishedAt"))
+                    or k8s_time(conditions["Complete"].get("lastTransitionTime"))
+                    or k8s_time(status.get("completionTime")))
+        return RunState("exited", exit=ExitStatus(0), finished_at=finished)
+
+    if _is_true(conditions, "Failed"):
+        failed = conditions["Failed"]
+        job_reason = str(failed.get("reason") or "")
+        finished = (k8s_time((terminated or {}).get("finishedAt"))
+                    or k8s_time(failed.get("lastTransitionTime")))
+        disruption = pod_conditions.get("DisruptionTarget")
+        if job_reason == POD_FAILURE_POLICY_REASON:  # row 3 (K-6 A6)
+            return RunState("lost", detail=_clip(
+                f"{DISRUPTION_EXIT} ({job_reason}): {failed.get('message') or ''}"))
+        if disruption is not None and disruption.get("status") == "True":  # row 3
+            return RunState("lost", detail=_clip(
+                f"{DISRUPTION_EXIT} ({disruption.get('reason') or 'DisruptionTarget'}): "
+                f"{disruption.get('message') or ''}"))
+        if pod_status.get("reason") == "Evicted":  # row 3
+            return RunState("lost", detail=_clip(
+                f"{DISRUPTION_EXIT} (Evicted): {pod_status.get('message') or ''}"))
+        code = terminated.get("exitCode") if terminated else None
+        code = code if isinstance(code, int) else None
+        if pod_status.get("reason") == "DeadlineExceeded" or job_reason == "DeadlineExceeded":
+            return RunState(  # row 4
+                "exited", exit=ExitStatus(code or SIGKILL_EXIT_CODE, timed_out=True),
+                finished_at=finished,
+            )
+        if terminated is not None:
+            reason = terminated.get("reason")
+            if reason == "OOMKilled":  # row 5
+                return RunState("exited", exit=ExitStatus(
+                    code or SIGKILL_EXIT_CODE, error=oom_error(_memory_mb(pod))),
+                    finished_at=finished)
+            error = None if reason in (None, "Error", "Completed") else _words(
+                reason, terminated.get("message"))
+            return RunState(  # row 6
+                "exited", exit=ExitStatus(code if code is not None else -1, error=error),
+                finished_at=finished,
+            )
+        return RunState("exited", exit=ExitStatus(-1, error=_clip(  # row 7
+            f"the run's Job failed ({job_reason or 'Failed'}): {failed.get('message') or ''}"
+        )), finished_at=finished)
+
+    if meta.get("deletionTimestamp"):  # row 8
+        return RunState("lost", detail=JOB_DELETING_DETAIL)
+
+    if spec.get("suspend"):
+        if workload is None:  # row 9
+            return RunState("pending_capacity")
+        wl_conditions = _conditions(workload)
+        if (workload.get("spec") or {}).get("active") is False:  # row 10
+            words = next((c.get("message") for c in (wl_conditions.get("Evicted"),
+                                                     wl_conditions.get("QuotaReserved"))
+                          if c and c.get("message")), "")
+            return RunState("exited", exit=ExitStatus(
+                -1, error=_clip(f"{DEACTIVATED_PREFIX}{words}")))
+        quota_reserved = _is_true(wl_conditions, "QuotaReserved")
+        if _is_true(wl_conditions, "Evicted") and not quota_reserved:  # row 11
+            evicted = wl_conditions["Evicted"]
+            reason = str(evicted.get("reason") or "")
+            message = evicted.get("message") or ""
+            detail = (f"{PREEMPTED_PREFIX}{message}" if reason == "Preempted"
+                      else f"evicted ({reason}): {message}")
+            return RunState("pending_capacity", detail=_clip(detail))
+        if quota_reserved:  # row 13: Kueue is unsuspending it
+            return RunState("starting")
+        # row 12: by the condition's STATUS; the reason is never read (K-6 A1)
+        message = (wl_conditions.get("QuotaReserved") or {}).get("message")
+        return RunState("pending_capacity", detail=_clip(message) if message else None)
+
+    if not pod:  # row 14
+        return RunState("starting")
+    scheduled = pod_conditions.get("PodScheduled") or {}
+    if scheduled.get("status") == "False" and scheduled.get("reason") == "Unschedulable":
+        return RunState("pending_capacity", detail=_clip(  # row 15 (K5-R9)
+            f"{WAITING_FOR_NODE_PREFIX}{scheduled.get('message') or ''}"))
+    if waiting is not None:
+        reason = str(waiting.get("reason") or "")
+        failure = _clip(f"{START_FAILURE_PREFIX} ({reason}): {waiting.get('message') or ''}")
+        if reason in IMMEDIATE_START_FAILURES:  # row 16
+            return RunState("exited", exit=ExitStatus(-1, error=failure))
+        if reason in GRACED_START_FAILURES:  # row 17 (K5-R7)
+            since = (k8s_time(pod_status.get("startTime"))
+                     or k8s_time((pod.get("metadata") or {}).get("creationTimestamp")))
+            if since is not None and (now - since).total_seconds() >= START_FAILURE_GRACE_SECONDS:
+                return RunState("exited", exit=ExitStatus(-1, error=failure))
+            return RunState("starting", detail=_words(reason, waiting.get("message")))
+    ready = status.get("ready")
+    if (isinstance(ready, int) and ready >= 1) or "running" in state or terminated is not None:
+        # row 18; a container that already terminated while the Job
+        # controller has not yet noticed stays `running` (never back to
+        # `starting` once it ran).
+        return RunState("running")
+    return RunState(  # row 19
+        "starting", detail=_clip(waiting.get("reason")) if waiting and waiting.get("reason")
+        else None,
     )
 
 
@@ -309,8 +486,40 @@ class KubernetesExecutor(Executor):
                 extra={"run_id": run_id, "run": name, "error": str(err)},
             )
 
-    def status(self, handle: RunHandle) -> RunState:  # Task 6
-        raise NotImplementedError
+    def status(self, handle: RunHandle) -> RunState:
+        """One read: the Job, then only what its state needs — the newest
+        pod for a running or failed Job, the Workload for a suspended one.
+        A Job the API affirms is gone is ``lost``; any other error raises
+        :class:`ExecutorUnavailable` (K-4: an outage is not an absence)."""
+        try:
+            job = self.api.get(self._item(self._jobs, handle.id))
+        except KubeNotFound:
+            return RunState("lost", detail=JOB_GONE_DETAIL)
+        conditions = _conditions(job)
+        workload = pod = None
+        if not _is_true(conditions, "Complete"):
+            failed = _is_true(conditions, "Failed")
+            deleting = bool((job.get("metadata") or {}).get("deletionTimestamp"))
+            suspended = bool((job.get("spec") or {}).get("suspend"))
+            if failed or not (suspended or deleting):
+                pod = _newest(self._job_pods(handle.id))
+            elif suspended and not deleting:
+                workload = self._workload(job)
+        return _job_state(job, workload, pod, now=self._clock())
+
+    def _workload(self, job: Mapping) -> dict | None:
+        """The Job's Kueue Workload, by its job-uid label; None when there is
+        none yet or Kueue is not installed (its API answers 404)."""
+        uid = str((job.get("metadata") or {}).get("uid") or "")
+        if not uid:
+            return None
+        try:
+            workloads, _rv = self.api.list(
+                self._workloads, label_selector=f"{KUEUE_JOB_UID_LABEL}={uid}"
+            )
+        except KubeNotFound:
+            return None
+        return _newest(workloads)
 
     def cancel(self, handle: RunHandle) -> None:
         """K-4's contract: stop the run idempotently and KEEP it, so the
