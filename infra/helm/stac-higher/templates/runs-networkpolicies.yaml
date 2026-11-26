@@ -1,0 +1,16 @@
+{{- /* R-8: the runs namespace's NetworkPolicies. Rendered whatever networkPolicy.enabled says: that toggle is the
+release namespace's, and must not be able to switch run isolation off. */ -}}
+{{- $ns := .Values.processRuns.namespace -}}
+# infra/kubernetes/runs-default-deny.yaml (K-6; drift-tested by runs.test.ts — edit both): every run pod, no
+# ingress, no egress. The executor refuses to start runs unless this object exists exactly so
+# (kubernetes_manifests.isolation_problem). The allow policies below are additive.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stac-higher-runs-default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "process-runs") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

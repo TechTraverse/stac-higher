@@ -1,0 +1,13 @@
+{{- /* R-8: the runs namespace (infra/kubernetes/namespace.yaml, K-5; drift-tested by runs.test.ts — edit both).
+Every process run and image scan runs here as a Job. Pod Security restricted is enforced as a backstop. No
+helm.sh/resource-policy: keep: uninstall deletes the namespace with every run Job and run Secret in it. */ -}}
+{{- if .Values.processRuns.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.processRuns.namespace }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "process-runs") | nindent 4 }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+{{- end }}

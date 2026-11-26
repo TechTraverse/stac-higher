@@ -16,8 +16,9 @@ import {
 const ROLE_ANN = "eks.amazonaws.com/role-arn";
 const D = (c: string) => "sha256:" + c.repeat(64);
 
-type Doc = { kind: string; metadata: { name: string; annotations?: Record<string, string> }; automountServiceAccountToken?: boolean };
-const sas = (docs: Doc[]) => docs.filter((d) => d.kind === "ServiceAccount");
+type Doc = { kind: string; metadata: { name: string; namespace?: string; annotations?: Record<string, string> }; automountServiceAccountToken?: boolean };
+/** The release namespace's ServiceAccounts (the runs namespace's run ServiceAccount is runs.test.ts's). */
+const sas = (docs: Doc[]) => docs.filter((d) => d.kind === "ServiceAccount" && d.metadata.namespace === "stac-higher");
 const sa = (docs: Doc[], name: string) => sas(docs).find((d) => d.metadata.name === name);
 
 function fails(opts: Parameters<typeof renderChart>[0], needle: string) {

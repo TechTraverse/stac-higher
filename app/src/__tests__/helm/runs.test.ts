@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 import {
   REPO_DIR,
   helmReady,
+  loadYamlDir,
   renderChart,
   scenario,
+  stripChartMetadata,
 } from "../../../../infra/helm/stac-higher/tests/render.mjs";
 
 export const FIXTURE = JSON.parse(
@@ -115,5 +117,76 @@ describe.skipIf(!helmReady())("runs plane: values contract", () => {
       const r = renderChart(base({ processRuns: { network: { dns } } }));
       expect(r.ok, r.stderr).toBe(true);
     }
+  });
+});
+
+type Doc = { apiVersion: string; kind: string; metadata: { name: string; namespace?: string; labels?: Record<string, string>; annotations?: Record<string, string> }; [k: string]: any };
+const render = (values: object = {}, name = "base"): Doc[] => {
+  const r = renderChart({ valuesFiles: scenario(name), values });
+  expect(r.ok, r.stderr).toBe(true);
+  return r.docs as Doc[];
+};
+const inRuns = (docs: Doc[], ns = FIXTURE.namespace) => docs.filter((d) => d.metadata.namespace === ns);
+const key = (d: Doc) => `${d.kind}/${d.metadata.namespace ?? ""}/${d.metadata.name}`;
+/** The rendered counterparts of infra/kubernetes/*.yaml (A-R1). */
+const K8S_KINDS = ["Namespace", "ServiceAccount", "Role", "RoleBinding", "NetworkPolicy"];
+const isRunsK8sObject = (d: Doc) =>
+  (d.kind === "Namespace" && d.metadata.name === FIXTURE.namespace) ||
+  (K8S_KINDS.includes(d.kind) && d.metadata.namespace === FIXTURE.namespace &&
+    (d.kind !== "NetworkPolicy" || d.metadata.name === FIXTURE.defaultDenyPolicy));
+
+describe.skipIf(!helmReady())("runs plane: namespace and RBAC", () => {
+  it("RBAC and isolation equal infra/kubernetes", () => {
+    const want = loadYamlDir(join(REPO_DIR, "infra/kubernetes")) as Doc[];
+    const got = render().filter(isRunsK8sObject).map(stripChartMetadata) as Doc[];
+    const byKey = (docs: Doc[]) => Object.fromEntries(docs.map((d) => [key(d), d]));
+    expect(byKey(got)).toEqual(byKey(want));
+    expect(got).toHaveLength(want.length);
+  });
+
+  it("the runs namespace carries K-5's Pod Security labels and the chart's", () => {
+    const ns = render().find((d) => d.kind === "Namespace")!;
+    expect(ns.metadata.labels).toMatchObject({
+      "pod-security.kubernetes.io/enforce": "restricted",
+      "pod-security.kubernetes.io/enforce-version": "latest",
+      "app.kubernetes.io/component": "process-runs",
+    });
+    expect(ns.metadata.annotations).toBeUndefined();
+  });
+
+  it.each(["base", "irsa"])("the run ServiceAccount never gets a cloud identity (%s)", (name) => {
+    const sas = inRuns(render({}, name)).filter((d) => d.kind === "ServiceAccount");
+    expect(sas.map((d) => d.metadata.name)).toEqual([FIXTURE.runServiceAccount]);
+    expect(sas[0].metadata.annotations).toBeUndefined();
+    expect(sas[0].automountServiceAccountToken).toBe(false);
+  });
+
+  it("the Role is namespaced and grants nothing cluster-wide", () => {
+    const docs = render();
+    expect(docs.filter((d) => d.kind === "ClusterRole" || d.kind === "ClusterRoleBinding")).toEqual([]);
+    const roles = docs.filter((d) => d.kind === "Role" || d.kind === "RoleBinding");
+    expect(roles.map((d) => [d.kind, d.metadata.name, d.metadata.namespace])).toEqual([
+      ["Role", FIXTURE.pipelineRole, FIXTURE.namespace],
+      ["RoleBinding", FIXTURE.pipelineRole, FIXTURE.namespace],
+    ]);
+  });
+
+  it("names follow the fixture and the values", () => {
+    const docs = render({ processRuns: { namespace: "other-runs" }, identity: { serviceAccounts: { pipeline: "p2" } } });
+    expect(docs.find((d) => d.kind === "Namespace")!.metadata.name).toBe("other-runs");
+    for (const kind of ["ServiceAccount", "Role", "RoleBinding"]) {
+      const runs = docs.filter((d) => d.kind === kind && d.metadata.namespace === "other-runs");
+      expect(runs.length, kind).toBeGreaterThan(0);
+    }
+    expect(docs.some((d) => d.metadata.namespace === FIXTURE.namespace)).toBe(false);
+    const rb = docs.find((d) => d.kind === "RoleBinding")!;
+    expect(rb.subjects).toEqual([{ kind: "ServiceAccount", name: "p2", namespace: "stac-higher" }]);
+    expect(rb.roleRef).toEqual({ apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: FIXTURE.pipelineRole });
+  });
+
+  it("createNamespace: false renders no Namespace", () => {
+    const docs = render({ processRuns: { createNamespace: false } });
+    expect(docs.filter((d) => d.kind === "Namespace")).toEqual([]);
+    expect(inRuns(docs).some((d) => d.kind === "Role")).toBe(true);
   });
 });

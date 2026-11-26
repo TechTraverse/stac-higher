@@ -8,7 +8,8 @@ function render(values: object = {}, scen = "base") {
   expect(r.ok, r.stderr).toBe(true);
   return r.docs;
 }
-const policies = (docs: Doc[]) => docs.filter((d) => d.kind === "NetworkPolicy");
+/** The release namespace's policies; the runs namespace's (R-8) are runs.test.ts's and ignore networkPolicy.enabled. */
+const policies = (docs: Doc[]) => docs.filter((d) => d.kind === "NetworkPolicy" && d.metadata.namespace === "stac-higher");
 const find = (docs: Doc[], name: string) => policies(docs).find((d) => d.metadata.name === name);
 const podLabels = (docs: Doc[], name: string) =>
   docs.find((d) => d.kind === "Deployment" && d.metadata.name === name).spec.template.metadata.labels;
