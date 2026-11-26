@@ -453,10 +453,17 @@ class ProcessRepo(abc.ABC):
 
     @abc.abstractmethod
     async def list_submitted_runs(
-        self, *, backend: str, limit: int, cancel_requested_only: bool = False
+        self,
+        *,
+        backend: str,
+        limit: int,
+        cancel_requested_only: bool = False,
+        exclude_cancel_requested: bool = False,
+        after_id: str | None = None,
     ) -> list[SubmittedRun]:
-        """``running`` rows with a handle on ``backend``, cancel requests
-        first, then oldest submission."""
+        """One page of ``running`` rows with a handle on ``backend``, ordered
+        by id, after ``after_id`` (keyset paging); optionally only, or only
+        not, the rows whose cancel was requested."""
 
     @abc.abstractmethod
     async def get_submitted_run(self, run_id: str, *, backend: str) -> SubmittedRun | None:
@@ -1231,16 +1238,27 @@ class PgProcessRepo(ProcessRepo):
         )
 
     async def list_submitted_runs(  # pragma: no cover
-        self, *, backend: str, limit: int, cancel_requested_only: bool = False
+        self,
+        *,
+        backend: str,
+        limit: int,
+        cancel_requested_only: bool = False,
+        exclude_cancel_requested: bool = False,
+        after_id: str | None = None,
     ) -> list[SubmittedRun]:
-        only = " AND r.cancel_requested_at IS NOT NULL" if cancel_requested_only else ""
+        where = ""
+        if cancel_requested_only:
+            where += " AND r.cancel_requested_at IS NOT NULL"
+        if exclude_cancel_requested:
+            where += " AND r.cancel_requested_at IS NULL"
+        if after_id is not None:
+            where += " AND r.id > %(after)s::uuid"
         async with await self._connect() as conn:
             cur = await conn.execute(
                 self._SUBMITTED_SELECT
-                + f" AND r.executor_backend = %(backend)s{only}"
-                " ORDER BY r.cancel_requested_at NULLS LAST, r.submitted_at, r.id"
-                " LIMIT %(limit)s",
-                {"backend": backend, "limit": limit},
+                + f" AND r.executor_backend = %(backend)s{where}"
+                " ORDER BY r.id LIMIT %(limit)s",
+                {"backend": backend, "limit": limit, "after": after_id},
             )
             rows = await cur.fetchall()
         return [self._submitted_run(r) for r in rows]

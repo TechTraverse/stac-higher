@@ -136,7 +136,9 @@ async def test_a_failing_exit_on_the_last_attempt_is_dead_and_fails_an_extract_b
 
 
 async def test_cancel_wins_over_a_concurrent_exit():
-    h = Harness(MemoryExecutor(default_states=[exited(0)], log_output=b"partial"))
+    finished = NOW - dt.timedelta(seconds=1)  # exited just before the click
+    h = Harness(MemoryExecutor(default_states=[exited(0, finished_at=finished)],
+                               log_output=b"partial"))
     run = await h.submitted(cancel=True)
     assert await h.reconciler().reconcile(run) == "cancelled"
     row = h.row(run.id)
@@ -334,3 +336,53 @@ async def test_a_still_running_run_wakes_nobody():
     h.row(waiter).update(phase="pending_capacity", next_attempt_at=NOW)
     await h.reconciler().reconcile(run)
     assert h.run_now == []
+
+
+# -- review round 1 --------------------------------------------------------------
+
+
+async def test_a_sweep_visits_every_submitted_run_past_one_page():
+    """P1: more submitted runs than one page are all reconciled."""
+    h = Harness(MemoryExecutor(default_states=[RunState("running")]))
+    runs = [await h.submitted() for _ in range(5)]
+    cancelled = await h.submitted(cancel=True)
+    swept = await h.reconciler().sweep(limit=2)
+    assert swept == 6
+    assert {r.handle for r in runs} <= set(h.executor.status_calls)
+    assert h.executor.cancelled == [cancelled.handle]
+
+
+async def test_a_sweep_stops_at_its_safety_cap(caplog, monkeypatch):
+    import pipeline.process.reconcile as reconcile_module
+
+    monkeypatch.setattr(reconcile_module, "SWEEP_MAX_ROWS", 3)
+    h = Harness(MemoryExecutor(default_states=[RunState("running")]))
+    for _ in range(5):
+        await h.submitted()
+    assert await h.reconciler().sweep(limit=2) == 3
+    assert any(r.getMessage() == "run sweep stopped at its safety cap" for r in caplog.records)
+
+
+async def test_a_stop_we_caused_is_not_reported_as_an_earlier_exit():
+    """P2: the cancel's own stop (or the on-read deadline kill) exits the run
+    AFTER the request — no "had already exited" suffix."""
+    after = NOW + dt.timedelta(seconds=5)
+    h = Harness(MemoryExecutor(default_states=[exited(143, finished_at=after)]))
+    run = await h.submitted(cancel=True)
+    assert await h.reconciler().reconcile(run) == "cancelled"
+    assert h.row(run.id)["error"] == "cancelled by an operator"
+
+
+async def test_an_exit_before_the_request_is_reported():
+    before = NOW - dt.timedelta(seconds=5)
+    h = Harness(MemoryExecutor(default_states=[exited(0, finished_at=before)]))
+    run = await h.submitted(cancel=True)
+    assert await h.reconciler().reconcile(run) == "cancelled"
+    assert h.row(run.id)["error"] == "cancelled by an operator; the run had already exited 0"
+
+
+async def test_an_exit_with_no_finish_time_gets_no_suffix():
+    h = Harness(MemoryExecutor(default_states=[exited(1)]))
+    run = await h.submitted(cancel=True)
+    await h.reconciler().reconcile(run)
+    assert h.row(run.id)["error"] == "cancelled by an operator"

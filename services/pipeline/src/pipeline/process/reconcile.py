@@ -60,8 +60,12 @@ from pipeline.process.repo import ProcessRepo, SubmittedRun, capacity_exempt
 
 logger = logging.getLogger(__name__)
 
-#: Rows one sweep reconciles (the tick, a RESYNC, the cancel listener).
+#: Rows per page of a sweep (the tick, a RESYNC, the cancel listener); a
+#: sweep pages through every submitted run.
 RECONCILE_BATCH = 50
+#: A sweep's safety cap: far above any real number of in-flight runs, so
+#: hitting it means something is wrong (it logs a warning).
+SWEEP_MAX_ROWS = 10_000
 
 #: What a run requeued for its credentials' sake shows (spec §5.4).
 CREDENTIAL_REQUEUE_DETAIL = (
@@ -115,22 +119,42 @@ class Reconciler:
 
     async def sweep(self, *, limit: int = RECONCILE_BATCH,
                     cancel_requested_only: bool = False) -> int:
-        """Reconcile up to ``limit`` submitted runs, cancel requests first.
-        One row's failure never stops the rest (the `_execute_claimed`
-        precedent)."""
-        runs = await self.repo.list_submitted_runs(
-            backend=self.executor.name, limit=limit,
-            cancel_requested_only=cancel_requested_only,
-        )
-        for run in runs:
-            try:
-                await self.reconcile(run)
-            except Exception:
-                logger.exception(
-                    "process run could not be reconciled",
-                    extra={"run_id": run.id, "process_id": run.process_id},
+        """Reconcile EVERY submitted run of this backend, cancel requests
+        first, ``limit`` rows per page (keyset on id) until a short page —
+        so the tick and a RESYNC never leave a run unvisited (the timeout on
+        read, a missed exit, a credential requeue). Stops at
+        ``SWEEP_MAX_ROWS`` with a warning. One row's failure never stops the
+        rest (the `_execute_claimed` precedent). Returns rows visited."""
+        visited = 0
+        passes = [True] if cancel_requested_only else [True, False]
+        for cancel_requested in passes:
+            after: str | None = None
+            while True:
+                page = await self.repo.list_submitted_runs(
+                    backend=self.executor.name, limit=limit,
+                    cancel_requested_only=cancel_requested,
+                    exclude_cancel_requested=not cancel_requested,
+                    after_id=after,
                 )
-        return len(runs)
+                for run in page:
+                    if visited >= SWEEP_MAX_ROWS:
+                        logger.warning(
+                            "run sweep stopped at its safety cap",
+                            extra={"cap": SWEEP_MAX_ROWS, "backend": self.executor.name},
+                        )
+                        return visited
+                    visited += 1
+                    try:
+                        await self.reconcile(run)
+                    except Exception:
+                        logger.exception(
+                            "process run could not be reconciled",
+                            extra={"run_id": run.id, "process_id": run.process_id},
+                        )
+                if len(page) < limit:
+                    break
+                after = page[-1].id
+        return visited
 
     async def on_event(self, event: RunEvent) -> None:
         """The watcher's handler: RESYNC sweeps, a scan's event is not ours
@@ -187,8 +211,14 @@ class Reconciler:
             await asyncio.to_thread(self.executor.cancel, handle)
         except ExecutorUnavailable:
             return "unavailable"  # it may still be running: do not collect
+        # R3: name the exit only when it PREDATES the request. A stop this
+        # cancel (or the on-read deadline kill) caused exits after it.
         error = None
-        if before is not None and before.phase == "exited" and before.exit is not None:
+        if (
+            before is not None and before.phase == "exited" and before.exit is not None
+            and before.finished_at is not None and run.cancel_requested_at is not None
+            and before.finished_at < run.cancel_requested_at
+        ):
             error = f"the run had already exited {before.exit.exit_code}"
         now = self.clock()
         async with self.repo.collecting(run.id, handle=run.handle) as collecting:

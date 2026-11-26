@@ -41,9 +41,15 @@ contract every backend keeps — K-5's pre-flight checklist:
   (an outage is not an absence — the reaper's rule).
 - ``RunState.detail`` is the backend's own words for ``pending_capacity``
   (the UI's tooltip) and for ``lost`` (the run's error), never trusted as
-  content.
+  content. ``RunState.finished_at`` on an ``exited`` state is when the run
+  exited (None when the backend cannot say).
 - ``cancel()`` stops the run and KEEPS it, so ``logs()`` and ``reap()`` still
   work; removal is ``reap``, called only after the verdict commits.
+  ``cancel()`` returning does NOT mean the run has stopped: the stop may be
+  asynchronous, so the caller re-reads ``status()`` rather than assuming.
+- A handle is unique per submission: a resubmitted run gets a new one. The
+  ledger's compare-and-set fences (``set_phase``, ``collecting``) key on it,
+  so a reused handle would let a stale observer write onto a newer attempt.
 - ``submitted_phase`` is what a just-submitted run is on this backend
   (``pending_capacity`` by default, for backends where a submitted run can sit
   queued). Submissions are recorded per backend (``executor_backend``), and a
@@ -236,6 +242,11 @@ class RunState:
     detail: str | None = None
     #: Set iff ``phase == "exited"``.
     exit: ExitStatus | None = None
+    #: When the run exited, as the backend recorded it (or, for an exit the
+    #: backend just caused — Docker's on-read deadline kill — the time of the
+    #: kill); None when unknown. The Reconciler reports "had already exited"
+    #: on a cancel only for an exit that predates the cancel request (R3).
+    finished_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True)

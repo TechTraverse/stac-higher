@@ -13,6 +13,7 @@ failure path.
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 
 from pipeline.process.executor import (
@@ -25,9 +26,18 @@ from pipeline.process.executor import (
 )
 
 
-def exited(exit_code: int = 0, *, timed_out: bool = False, error: str | None = None) -> RunState:
+def exited(
+    exit_code: int = 0,
+    *,
+    timed_out: bool = False,
+    error: str | None = None,
+    finished_at: dt.datetime | None = None,
+) -> RunState:
     """A scripted ``exited`` state."""
-    return RunState("exited", exit=ExitStatus(exit_code, timed_out=timed_out, error=error))
+    return RunState(
+        "exited", exit=ExitStatus(exit_code, timed_out=timed_out, error=error),
+        finished_at=finished_at,
+    )
 
 
 @dataclass

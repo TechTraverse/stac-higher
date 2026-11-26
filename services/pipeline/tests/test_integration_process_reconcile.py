@@ -397,3 +397,17 @@ async def test_wake_capacity_waiters_clears_the_oldest_on_the_profile(slot):
     assert (await _state(older))[6] is None
     assert (await _state(newer))[6] is not None
     assert (await _state(other))[6] is not None
+
+
+async def test_list_submitted_runs_pages_by_id(slot):
+    """Review P1: keyset paging visits every submitted run exactly once."""
+    ids = sorted([await _submitted(slot, handle=f"h-page-{i}") for i in range(5)])
+    repo = _repo()
+    seen, after = [], None
+    while True:
+        page = await repo.list_submitted_runs(backend="docker", limit=2, after_id=after)
+        seen += [r.id for r in page if r.id in ids]
+        if len(page) < 2:
+            break
+        after = page[-1].id
+    assert seen == ids

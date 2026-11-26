@@ -1528,3 +1528,13 @@ def test_a_scan_mints_without_a_queue_wait():
         kind="admission", registry_auth=None, sts_client=sts,
     )
     assert sts.kwargs["DurationSeconds"] == max(900, POLICY.scan_timeout_seconds + 300)
+
+
+def test_status_reports_when_the_run_exited():
+    """Review P2: finished_at is FinishedAt, or the on-read kill's own time."""
+    done = _inspect("exited", exit_code=1, finished=T0 + dt.timedelta(seconds=3))
+    state = _at(FakeApi({"/json": done}), T0).status(RunHandle(id="c1"))
+    assert state.finished_at == T0 + dt.timedelta(seconds=3)
+    late = T0 + dt.timedelta(seconds=61)
+    killed = _at(FakeApi({"/json": _inspect("running", timeout=60)}), late)
+    assert killed.status(RunHandle(id="c1")).finished_at == late

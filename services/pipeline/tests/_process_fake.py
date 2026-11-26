@@ -519,14 +519,22 @@ class FakeProcessRepo(ProcessRepo):
         )
 
     async def list_submitted_runs(
-        self, *, backend: str, limit: int, cancel_requested_only: bool = False
+        self,
+        *,
+        backend: str,
+        limit: int,
+        cancel_requested_only: bool = False,
+        exclude_cancel_requested: bool = False,
+        after_id: str | None = None,
     ) -> list[SubmittedRun]:
         rows = [
             row for row in self.enqueued
             if self._is_submitted(row, backend)
             and (not cancel_requested_only or row.get("cancel_requested_at"))
+            and (not exclude_cancel_requested or not row.get("cancel_requested_at"))
+            and (after_id is None or row["run_id"] > after_id)
         ]
-        rows.sort(key=lambda r: (r.get("cancel_requested_at") is None,))
+        rows.sort(key=lambda r: r["run_id"])
         return [self._submitted(row) for row in rows[:limit]]
 
     async def get_submitted_run(self, run_id: str, *, backend: str) -> SubmittedRun | None:

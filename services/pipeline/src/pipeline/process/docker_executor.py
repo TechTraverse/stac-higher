@@ -555,7 +555,10 @@ class DockerExecutor(Executor):
                 # The deadline, enforced on read: kill, then report the verdict.
                 with contextlib.suppress(EngineHTTPError):
                     self._request("POST", f"/containers/{handle.id}/kill")
-                return RunState("exited", exit=ExitStatus(SIGKILL_EXIT_CODE, timed_out=True))
+                return RunState(
+                    "exited", exit=ExitStatus(SIGKILL_EXIT_CODE, timed_out=True),
+                    finished_at=self.clock(),
+                )
             return RunState("running")
         # exited / dead / removing: a verdict.
         code = int(state.get("ExitCode") or 0)
@@ -569,7 +572,10 @@ class DockerExecutor(Executor):
             error = oom_error(_int_label(labels.get(MEMORY_LABEL)))
         elif state.get("Error"):
             error = str(state["Error"])[:500]
-        return RunState("exited", exit=ExitStatus(code, timed_out=timed_out, error=error))
+        return RunState(
+            "exited", exit=ExitStatus(code, timed_out=timed_out, error=error),
+            finished_at=finished,
+        )
 
     def cancel(self, handle: RunHandle) -> None:
         """K-4: SIGTERM, SIGKILL after the grace; the container is kept for
