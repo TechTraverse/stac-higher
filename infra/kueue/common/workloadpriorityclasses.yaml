@@ -1,0 +1,19 @@
+# K-6 (process-compute spec §7.1): Kueue's two priority classes, the values
+# the executor writes as the Job's kueue.x-k8s.io/priority-class label
+# (pipeline.process.executor.PRIORITIES). interactive > triggered, so an
+# operator's test run may preempt a triggered run in the same ClusterQueue.
+# Deployment-independent. R-8 renders this from the chart with a drift test —
+# edit both.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: interactive
+value: 1000
+description: "Operator test runs from the UI; may preempt triggered runs in the same ClusterQueue."
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: triggered
+value: 100
+description: "Runs started by a source, a schedule or an association."

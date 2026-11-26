@@ -11,10 +11,14 @@ spec §6.3; tracking issue #13.
 | `run-serviceaccount.yaml` | ServiceAccount `stac-higher-run`: every run pod's identity; no token, no permissions |
 | `pipeline-role.yaml` | Role `stac-higher-pipeline`: exactly the verbs the executor calls (the file's comment lists why each exists) |
 | `pipeline-rolebinding.yaml` | Binds the Role to the chart's pipeline ServiceAccount `stac-higher-pipeline` in `stac-higher` |
+| `runs-default-deny.yaml` | NetworkPolicy `stac-higher-runs-default-deny`: every run pod, no ingress, no egress (K-6; the executor's isolation precondition) |
 
-`kubectl apply -f infra/kubernetes/` creates those four objects and nothing
-else: no NetworkPolicy, LocalQueue, Kueue object or admission policy. Those
-are R-8's (#144) and K-6's (#14); what each must provide is below.
+`kubectl apply -f infra/kubernetes/` creates those five objects and nothing
+else: no allow policy, LocalQueue, Kueue object or admission policy. The
+Kueue objects and the admission policy are K-6's (`infra/kueue/`); the allow
+policies are R-8's (#144); what each must provide is below. K-6's kind leg
+(`.github/workflows/kind.yml`) applies this directory to a kind cluster
+as-is.
 
 ## Rules
 
@@ -43,20 +47,11 @@ are R-8's (#144) and K-6's (#14); what each must provide is below.
 
 ## What R-8 (#144) renders
 
-- **These four objects**, from the chart's templates (Helm cannot read files
+- **These five objects**, from the chart's templates (Helm cannot read files
   outside the chart), with a drift test against these files.
-- **The default-deny policy, exactly:**
-
-  ```yaml
-  apiVersion: networking.k8s.io/v1
-  kind: NetworkPolicy
-  metadata:
-    name: stac-higher-runs-default-deny
-    namespace: stac-higher-runs
-  spec:
-    podSelector: {}
-    policyTypes: [Ingress, Egress]
-  ```
+- **The default-deny policy**, `runs-default-deny.yaml`, exactly (K-6
+  ships the file; `test_kueue_manifests.py` proves it passes the executor's
+  own check).
 
 - **The label contract.** Every run pod carries
   `stac-higher.run-kind` ∈ {`process`, `image_scan`} and
