@@ -1,0 +1,21 @@
+# K-5 (process-compute spec §6.3; plan K5-R10): binds the pipeline's
+# ServiceAccount to its Role in the runs namespace. The subject is the
+# chart's default pipeline ServiceAccount (values.yaml
+# identity.serviceAccounts.pipeline in identity.namespace); edit it for a
+# release in another namespace.
+#
+# R-8 (#144) renders the same object from the chart's templates with a drift
+# test against this file; K-6 (#14) applies this directory to kind as-is.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stac-higher-pipeline
+  namespace: stac-higher-runs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: stac-higher-pipeline
+subjects:
+  - kind: ServiceAccount
+    name: stac-higher-pipeline
+    namespace: stac-higher
