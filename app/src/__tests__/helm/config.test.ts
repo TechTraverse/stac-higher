@@ -38,10 +38,18 @@ const profileDoc = (wait: number) => ({
       gpu_count: null,
       max_queue_wait_seconds: wait,
       image: null,
-      backend: { kubernetes: { queue: "process-runs", node_selector: {}, tolerations: [], runtime_class: null, extended_resources: {} } },
+      backend: {},
     },
   ],
 });
+/** What the chart derives for a CPU profile on the default family (R-8, kueue.test.ts covers the rest). */
+const DERIVED_CPU = {
+  queue: "process-runs",
+  node_selector: { "stac-higher.io/flavor": "cpu-default" },
+  tolerations: [{ key: "stac-higher.io/runs", operator: "Equal", value: "true", effect: "NoSchedule" }],
+  runtime_class: null,
+  extended_resources: {},
+};
 
 describe.skipIf(!helmReady())("chart config layer", () => {
   it("the default hardware profiles are the eks-cpu set and the app accepts them", () => {
@@ -72,7 +80,9 @@ describe.skipIf(!helmReady())("chart config layer", () => {
   it("deployment-supplied documents replace the defaults", () => {
     const doc = profileDoc(900);
     const d = data(render({ config: { hardwareProfiles: doc } }), "config-files");
-    expect(JSON.parse(d["hardware-profiles.json"])).toEqual(doc);
+    const want = structuredClone(doc);
+    want.profiles[0].backend = { kubernetes: DERIVED_CPU };
+    expect(JSON.parse(d["hardware-profiles.json"])).toEqual(want);
   });
 
   it("refuses a profile whose queue wait leaves no time under the cap", () => {
@@ -221,6 +231,25 @@ describe.skipIf(!helmReady())("chart config layer", () => {
     });
     expect(d.PROCESS_RUNTIME_IMAGE).toMatch(/^ghcr\.io\//);
     expect(data(render(), "env-shared").PROCESS_EXECUTOR).toBe("kubernetes");
+  });
+
+  it("the chart's pull rewrite and the executor's rewrite agree (R-8 contract fixture)", () => {
+    const fixture = JSON.parse(readFileSync(join(REPO, "tests/contract-fixtures/process-k8s-cluster.json"), "utf8"));
+    const stacApiImage = (docs: Doc[]) =>
+      docs.find((d) => d.kind === "Deployment" && d.metadata.name === "stac-higher-stac-api").spec.template.spec.containers[0].image;
+    let checked = 0;
+    for (const c of fixture.mirrorCases) {
+      if (!/@sha256:[0-9a-f]{64}$/.test(c.ref)) continue;
+      const docs = render({ registry: { mirrorPrefixes: fixture.mirrors }, catalog: { stacApi: { image: c.ref } } });
+      expect(stacApiImage(docs), c.ref).toBe(c.pulled);
+      expect(JSON.parse(data(docs, "env-pipeline").PROCESS_K8S_REGISTRY_MIRRORS)).toEqual(fixture.mirrors);
+      checked++;
+    }
+    expect(checked).toBe(fixture.mirrorCases.length);
+    const d = data(render({}, "digests-mirror"), "env-pipeline");
+    for (const k of ["PROCESS_RUNTIME_IMAGE", "PROCESS_RUNTIME_IMAGE_STACTOOLS", "IMAGE_SCANNER_IMAGE"]) {
+      expect(d[k], k).toMatch(/^ghcr\.io\/techtraverse\/stac-higher-/);
+    }
   });
 
   it("refuses secret-looking extra env", () => {

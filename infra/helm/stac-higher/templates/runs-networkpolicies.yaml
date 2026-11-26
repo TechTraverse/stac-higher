@@ -1,0 +1,59 @@
+{{- /* R-8: the runs namespace's NetworkPolicies. Rendered whatever networkPolicy.enabled says: that toggle is the
+release namespace's, and must not be able to switch run isolation off. */ -}}
+{{- $ns := .Values.processRuns.namespace -}}
+# infra/kubernetes/runs-default-deny.yaml (K-6; drift-tested by runs.test.ts — edit both): every run pod, no
+# ingress, no egress. The executor refuses to start runs unless this object exists exactly so
+# (kubernetes_manifests.isolation_problem). The allow policies below are additive.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stac-higher-runs-default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "process-runs") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+{{- /* The allow policies: egress only, each selecting on BOTH run labels with matchLabels (K-5's label contract,
+infra/kubernetes/README.md; names and labels pinned by tests/contract-fixtures/process-k8s-cluster.json).
+DNS goes only to processRuns.network.dns (one address each, validateRuns); the object store to
+aws.s3PrefixListCidrs (public ranges only) and processRuns.network.objectStore. Scans also get 443 to 0.0.0.0/0
+minus link-local, RFC 1918 and CGNAT (constants, stac-higher.runsScannerExcept; lead ruling) and minus
+scannerEgressExcept, plus each processRuns.network.scannerPrivateCidrs entry as its own peer. validateRuns refuses
+any CIDR here that could reach link-local, loopback or (unless named as private) RFC 1918 / CGNAT space, and
+every IPv6 one: no rule admits ::/0, so IPv6 egress stays denied. */ -}}
+{{- $net := .Values.processRuns.network -}}
+{{- $dnsRule := dict "to" $net.dns "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53)) -}}
+{{- $storePeers := list -}}
+{{- range $cidr := .Values.aws.s3PrefixListCidrs -}}
+{{- $storePeers = append $storePeers (dict "ipBlock" (dict "cidr" $cidr)) -}}
+{{- end -}}
+{{- $storePeers = concat $storePeers $net.objectStore -}}
+{{- $storePorts := list -}}
+{{- range $p := $net.objectStorePorts -}}
+{{- $storePorts = append $storePorts (dict "protocol" "TCP" "port" (int $p)) -}}
+{{- end -}}
+{{- $storeRule := dict "to" $storePeers "ports" $storePorts -}}
+{{- $scanPeers := list (dict "ipBlock" (dict "cidr" "0.0.0.0/0" "except" (concat (include "stac-higher.runsScannerExcept" . | fromJsonArray) $net.scannerEgressExcept))) -}}
+{{- range $cidr := $net.scannerPrivateCidrs -}}
+{{- $scanPeers = append $scanPeers (dict "ipBlock" (dict "cidr" $cidr)) -}}
+{{- end -}}
+{{- $scanRule := dict "to" $scanPeers "ports" (list (dict "protocol" "TCP" "port" 443)) -}}
+{{- range $p := list (list "stac-higher-runs-process-isolated" "process" "isolated" (list $dnsRule $storeRule)) (list "stac-higher-runs-image-scan" "image_scan" "scanner" (list $dnsRule $storeRule $scanRule)) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ index $p 0 }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" $ "component" "process-runs") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      stac-higher.run-kind: {{ index $p 1 }}
+      stac-higher.network-level: {{ index $p 2 }}
+  policyTypes: [Egress]
+  egress:
+    {{- toYaml (index $p 3) | nindent 4 }}
+{{- end }}

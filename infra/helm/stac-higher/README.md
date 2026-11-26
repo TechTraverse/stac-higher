@@ -7,7 +7,8 @@ Tracking: epic #136. Spec:
 The Kubernetes side of a STAC Higher deployment: the app, the pipeline, the
 catalog plane (stac-fastapi behind the auth-proxy, titiler, tipg), the
 cube-server, the database hook Jobs, their configuration, Secrets wiring,
-Ingresses and NetworkPolicies.
+Ingresses and NetworkPolicies, and the process-runs plane (the runs namespace,
+its RBAC and NetworkPolicies, Kueue's objects and the runs NodePools).
 This repo publishes the chart only; it holds no cluster, account or values
 for one. The AWS side is [`../../terraform/README.md`](../../terraform/README.md),
 whose `helm_values` output this chart accepts as is. Chart `apiVersion: v2`;
@@ -17,11 +18,65 @@ it works on Helm 3 and 4 and needs Kubernetes 1.34 or later.
 
 - EKS 1.34+ with Auto Mode (managed Karpenter, built-in load balancing, the
   Pod Identity agent).
-- NetworkPolicy enforcement enabled. The chart renders NetworkPolicies; without
-  an enforcing CNI they are inert.
-- Kueue v0.20.8 with `waitForPodsReady` on and `managedJobsWithoutQueueName: false`.
-  Both live in Kueue's own install configuration, which the chart cannot set.
-  (R-6 renders no Kueue objects; later slices rely on this.)
+- NetworkPolicy enforcement enabled, from a pod's first packet. The chart
+  renders NetworkPolicies; without an enforcing CNI they are inert. EKS Auto
+  Mode: ConfigMap `amazon-vpc-cni` in `kube-system` with
+  `enable-network-policy-controller: "true"`, and the runs NodeClass's
+  `networkPolicy: DefaultDeny` (the chart's default). VPC CNI on managed
+  nodes: the add-on's `enableNetworkPolicy: "true"` and
+  `NETWORK_POLICY_ENFORCING_MODE=strict` in the `aws-node` container. In the
+  standard mode a new run pod has open egress until the CNI has learned it
+  (measured ~0.5 s on kind; `docs/ISSUES.md` I-188, #207). Strict mode denies
+  every pod no policy allows, CoreDNS included, so the platform's own allow
+  policies must exist first.
+- Kueue at the version pinned in `infra/kueue/kueue.env` (v0.20.8), installed
+  as `infra/kueue/README.md` "Installing on a cluster" says: its
+  `manifests.yaml` passed through `scripts/kueue-narrow-webhooks.py` (as
+  released, Kueue's webhooks would make every pod, Deployment and StatefulSet
+  write in the cluster depend on Kueue; `docs/ISSUES.md` I-186) and configured
+  with `infra/kueue/config/production.yaml` (`waitForPodsReady`,
+  `manageJobsWithoutQueueName: false`). The chart does not install Kueue; it
+  renders Kueue's objects for the runs plane (see Process runs).
+  **The narrowing script's `--namespace` must equal `processRuns.namespace`**
+  (both default to `stac-higher-runs`). If they differ, Kueue's webhooks never
+  see the run Jobs, nothing suspends them, and the jobs policy's `[suspended]`
+  rule refuses every run. The chart cannot detect this.
+- The runs plane's cluster inputs, which Terraform's `helm_values` does not
+  carry (the cluster repo knows them): the cluster's CoreDNS address for
+  `processRuns.network.dns` (Auto Mode has no `kube-dns` Service: the `.10`
+  of the service CIDR, `/32`); the runs nodes' IAM role, subnet and
+  security-group selectors for `processRuns.nodes.nodeClass`.
+- The runs nodes' IAM role (`processRuns.nodes.nodeClass.role`, with
+  `nodeClass.create`). It needs:
+  - a trust policy for `ec2.amazonaws.com`, and the managed policies
+    `AmazonEKSWorkerNodeMinimalPolicy` and
+    `AmazonEC2ContainerRegistryPullOnly` (EKS User Guide, "Amazon EKS Auto
+    Mode node IAM role");
+  - `ecr:BatchImportUpstreamImage` and `ecr:CreateRepository` on the
+    pull-through cache's repositories, for the first, uncached pull of an
+    image through the cache (`infra/terraform/modules/registry/README.md`,
+    "Cluster prerequisite");
+  - an EKS access entry of type `EC2` for the role, associated with the
+    access policy `AmazonEKSAutoNodePolicy` at cluster scope. EKS creates one
+    only for its built-in node class (EKS User Guide, "Create a Node Class
+    for Amazon EKS", "Create node class access entry").
+  The security-group selector must include the cluster security group
+  (`aws eks describe-cluster --query cluster.resourcesVpcConfig.clusterSecurityGroupId`)
+  so the nodes reach the control plane.
+- Node egress to ECR (API, `dkr`, and S3 for layers) and to every registry a
+  user image is pulled from. Pulls are the kubelet's, outside pod
+  NetworkPolicy; user images skip the mirror (`docs/ISSUES.md` I-183).
+- Install RBAC for the cluster-scoped kinds the chart renders with
+  `processRuns.clusterObjects`: `ClusterQueue`, `ResourceFlavor`,
+  `WorkloadPriorityClass` (`kueue.x-k8s.io`),
+  `ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding`
+  (`admissionregistration.k8s.io`), `NodePool` (`karpenter.sh`) and
+  `NodeClass` (`eks.amazonaws.com`), plus the runs `Namespace`.
+- IPv4. Runs are not supported on an IPv6 cluster (policies there do not
+  filter a pod's IPv4 egress; the chart refuses IPv6 CIDRs in the runs
+  values, `docs/ISSUES.md` I-191).
+- One stac-higher release per cluster: the runs plane's names are fixed
+  (`docs/ISSUES.md` I-190).
 - External Secrets Operator with a `ClusterSecretStore` for Secrets Manager,
   or Secrets the deployment creates itself (see Secrets modes).
 - An IngressClass and TLS: an ACM ARN in annotations on the ALB, or cert-manager
@@ -41,7 +96,7 @@ Every key at depth 2 or less. `null` means required. Section rows list the
 section's own keys; the schema (`values.schema.json`) rejects unknown keys in
 the closed sections (`aws`, `registry`, `publicUrls`, `objectStore`,
 `database`, `identity`, `secrets.arns`, `secrets.existing`, `demoDestination`,
-`demoSeed`).
+`demoSeed`, `processRuns` and every block inside it).
 Rendering fails with a message starting with the offending key path.
 
 | Key | Default | Meaning |
@@ -62,7 +117,7 @@ Rendering fails with a message starting with the offending key path.
 | `aws.kmsKeyArn` | `""` | Informational; the bucket's default SSE-KMS applies. |
 | `aws.processRunRoleArn` | `null` | `PROCESS_STS_ROLE_ARN`; its partition is also the run session policy's. |
 | `aws.processMaxCredentialSeconds` | `3600` | Integer >= 900; `PROCESS_MAX_CREDENTIAL_SECONDS`. An explicit `null` removes the cap. Hardware profiles whose queue wait plus grace cannot fit under it fail the render. |
-| `aws.s3PrefixListCidrs` | `[]` | Consumed by R-8. |
+| `aws.s3PrefixListCidrs` | `[]` | The object-store peers of the runs NetworkPolicies (IPv4, each /8 or narrower, never link-local). With `processRuns.network.objectStore`, at least one is required. |
 | `publicUrls` | | Browser-facing URLs. |
 | `publicUrls.app` | `null` | `http(s)://host` with no path. Derives the Ingress host and the OIDC redirect. |
 | `publicUrls.objectStore` | `null` | `https://s3.<region>.<suffix>`; the app's `S3_ENDPOINT` only. |
@@ -100,12 +155,18 @@ Rendering fails with a message starting with the offending key path.
 | `secrets.existing` | all `""` | Secret names for `existing` mode. |
 | `demoDestination` | | The demo's destination bucket (R-5's `demo-destination` module); read only by the demo seed Job with `demoSeed.deliver`. |
 | `demoDestination.bucket`, `demoDestination.region`, `demoDestination.credentialsSecretArn` | `""` | Bucket, its region (blank: `aws.region`), and the Secrets Manager entry holding the write-only user's key (JSON `access_key_id`/`secret_access_key`). |
-| `processRuns` | | Process-run settings. |
-| `processRuns.namespace` | `stac-higher-runs` | R-8 creates it. The pipeline's `PROCESS_K8S_NAMESPACE`: where the Kubernetes executor creates every run Job and Secret. |
+| `processRuns` | | The process-runs plane (see Process runs). |
+| `processRuns.namespace` | `stac-higher-runs` | The runs namespace: the pipeline's `PROCESS_K8S_NAMESPACE`, where the Kubernetes executor creates every run Job and Secret. Must differ from the release namespace. |
+| `processRuns.createNamespace` | `true` | Render the Namespace with Pod Security `restricted`. `false`: the cluster team creates it with K-5's two labels (`pod-security.kubernetes.io/enforce: restricted`, `enforce-version: latest`). |
 | `processRuns.networkMax` | `isolated` | `PROCESS_NETWORK_MAX` (app and pipeline). |
 | `processRuns.credentialGraceSeconds` | `300` | `PROCESS_CREDENTIAL_GRACE_SECONDS` (app and pipeline). |
 | `processRuns.extractMaxRunning` | `4` | Integer >= 1; `PROCESS_EXTRACT_MAX_RUNNING` (pipeline): how many extractor runs on the default profile, which are exempt from its capacity, may run at once (K-4). |
-| `processRuns.clusterObjects` | `true` | Consumed by R-8. |
+| `processRuns.clusterObjects` | `true` | Render the cluster-scoped objects: WorkloadPriorityClasses, the four admission policies and bindings, ResourceFlavors, the ClusterQueue and (with `nodes.enabled`) the NodeClass and NodePools. `false`: a cluster team owns them. |
+| `processRuns.defaultFamily` | `cpu-default` | The family of every CPU profile not in `profileFamilies`, and of image scans. Must be an enabled CPU family. |
+| `processRuns.profileFamilies` | `{}` | Hardware-profile id to family name. Required for every GPU profile. |
+| `processRuns.families` | `{cpu-default: …}` | The single source of ResourceFlavors, the ClusterQueue's quota, the NodePools and every profile's `backend.kubernetes`. Per family: `enabled`, `dedicatedNodes`, `extraTaints`, `gpuResource`, `runtimeClass`, `quota` (`cpu`, `memoryGi`, `gpus`), `nodePool` (`requirements`, `headroom`). |
+| `processRuns.network` | | The runs NetworkPolicies' peers: `dns` (required; one IPv4 `/32`, or a namespace + pod selector), `objectStore` (extra peers; a private `ipBlock` must be `/24` or narrower), `objectStorePorts` (`[443]`), `scannerEgressExcept` (more IPv4 CIDRs carved out of the scanner's 443), `scannerPrivateCidrs` (private IPv4 CIDRs, `/24` or narrower, a scan may reach on 443; see Process runs). |
+| `processRuns.nodes` | | The EKS Auto Mode NodeClass and NodePools for runs: `enabled`, `consolidateAfter` (`5m`), `expireAfterHours` (`336`), `terminationGracePeriodHours` (`25`), `nodeClass` (`create`, `name`, `role`, `subnetSelectorTerms`, `securityGroupSelectorTerms`, `networkPolicy`, `networkPolicyEventLogs`, `podPidsLimit`, `ephemeralStorage`, `tags`). |
 | `config` | | Content for the config ConfigMap. |
 | `config.hardwareProfiles` | `null` | `null` uses the chart's `files/hardware-profiles/eks-cpu.json`. |
 | `config.imagePolicy` | `null` | `null` uses `files/image-policy/default.json`. |
@@ -344,13 +405,12 @@ what in-cluster mode changes:
   it whenever `demoSeed.enabled`, beside the auth-proxy. When `networkPolicy.appIngressFrom` restricts the app and
   `images-seed` is chosen, the chart adds the seed pod as a peer on the app's
   policy.
-- **`images-seed` before R-8 and K-6 are deployed.** Process runs (the
-  extractor, GeoColor, image scans) run on the Kubernetes executor (K-5),
-  which starts nothing until the runs namespace, its RBAC and its default-deny
-  NetworkPolicy exist (R-8) and Kueue's objects are applied (K-6). Until then
-  the runs wait as requeued and `images-seed` waits out its scan timeout and
-  fails the Job. Leave it out of `demoSeed.seeds` until then. See
-  `docs/ISSUES.md` I-169.
+- **`images-seed` needs a working runs plane.** Process runs (the extractor,
+  GeoColor, image scans) run on the Kubernetes executor (K-5) in the runs
+  namespace the chart renders (see Process runs). Until the cluster meets the
+  prerequisites above (Kueue installed and configured, NetworkPolicy
+  enforced, the runs nodes' inputs), scans wait and `images-seed` fails the
+  Job after `--scan-timeout`. See `docs/ISSUES.md` I-169.
 
 ## Install paths
 
@@ -372,7 +432,7 @@ helm upgrade --install stac-higher oci://ghcr.io/<owner>/charts/stac-higher \
 
 With `demoSeed.enabled`, do not add `--wait-for-jobs` or `--atomic` (Helm 4:
 `--rollback-on-failure`). The demo seed Job can legitimately run for tens of
-minutes, or fail before R-8 and K-6 are deployed (see Demo seed), and either flag would then hold
+minutes, or fail on a cluster that does not meet the runs-plane prerequisites (see Demo seed), and either flag would then hold
 the release or roll it back over a demo. Whether Helm 4's `--wait` alone
 waits for Jobs was not verified; treat it as a caution and check before
 relying on it.
@@ -469,13 +529,164 @@ pull-through cache (which holds the deployment's upstream credentials).
 
 The pipeline runs every process run and image scan as a Kubernetes Job in
 `processRuns.namespace` (`PROCESS_EXECUTOR=kubernetes`, K-5): one Job and one
-Secret per submission, admitted by Kueue. Prerequisites, all outside this
-chart today: the namespace, the run ServiceAccount and the pipeline's
-Role/RoleBinding (`infra/kubernetes/`, rendered by R-8), the runs
-NetworkPolicies including `stac-higher-runs-default-deny` (R-8; the executor
-refuses to start runs without it), and Kueue's LocalQueue and cluster objects
-(K-6). Switching `PROCESS_EXECUTOR` with runs in flight strands them: drain
-the runs first.
+Secret per submission, admitted by Kueue. The chart renders everything the
+executor needs there (R-8). The names are fixed (the executor's defaults and
+Kueue's cluster-scoped objects), so one cluster holds one release.
+
+| Rendered | When | Objects |
+|---|---|---|
+| Runs namespace | `processRuns.createNamespace` | Namespace with Pod Security `restricted` (`enforce`, `enforce-version: latest`) |
+| Runs RBAC | always | ServiceAccount `stac-higher-run` (no token, never an annotation); Role and RoleBinding `stac-higher-pipeline` for the pipeline ServiceAccount |
+| Runs NetworkPolicies | always (`networkPolicy.enabled` is the release namespace's toggle and does not apply) | `stac-higher-runs-default-deny`, `stac-higher-runs-process-isolated`, `stac-higher-runs-image-scan` |
+| Kueue, namespaced | always | LocalQueue `process-runs` |
+| Cluster objects | `processRuns.clusterObjects` | WorkloadPriorityClasses `interactive` and `triggered`; ValidatingAdmissionPolicies and bindings `stac-higher-runs-jobs`, `-pod-updates`, `-secrets` and `-placement`; one ResourceFlavor per family; ClusterQueue `process-runs` |
+| Runs nodes | `clusterObjects` and `processRuns.nodes.enabled` | NodeClass `stac-higher-runs` (`nodes.nodeClass.create`); NodePool `stac-higher-runs-<family>` per family |
+
+The namespace's objects, the LocalQueue, the priority classes and K-6's
+three admission policies are reproductions of `infra/kubernetes/` and
+`infra/kueue/common/`, which the chart cannot read: drift tests
+(`app/src/__tests__/helm/runs.test.ts`, `kueue.test.ts`) fail when either
+side changes alone. K-6's policy files are carried byte for byte in
+`files/kueue/common/`; only the runs namespace and the pipeline's identity
+are substituted.
+
+**Network.** Every run pod starts from the default-deny the executor checks.
+An `isolated` process run may reach DNS (`processRuns.network.dns`, UDP and
+TCP 53, one address) and the object store (`aws.s3PrefixListCidrs`, public
+ranges only, plus `processRuns.network.objectStore` on
+`objectStorePorts`). An image scan may reach the same, plus TCP 443 to any
+address except `169.254.0.0/16` (IMDS, the Pod Identity agent),
+`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and `100.64.0.0/10`. Those
+five are fixed by the chart; `scannerEgressExcept` only adds to them. When a
+scan must reach a private address, name it in
+`processRuns.network.scannerPrivateCidrs` (IPv4, `/24` or narrower): for
+example the subnets of ECR or S3 interface endpoints, which resolve to VPC
+addresses, or an in-VPC registry mirror. Every entry widens what an
+untrusted scan can reach. The render refuses any runs CIDR that could cover
+link-local, loopback, or private space not named as such, and every IPv6
+CIDR. A scan can still reach any public address on 443 (`docs/ISSUES.md`
+I-193). Two public destinations a deployment should carve out with
+`scannerEgressExcept`: the EKS API server's **public endpoint** addresses,
+when the cluster's public endpoint is enabled (a scan has no token, but
+should not reach it), and any VPC CIDR outside RFC 1918 and CGNAT space.
+The `isolated` level has residuals of its own: the S3 prefix list is all of
+S3 in the region, and the cluster resolver recurses to the internet
+(`docs/ISSUES.md` I-196).
+
+**Families: one source for profiles, Kueue and nodes.** A family in
+`processRuns.families` is one ResourceFlavor, its ClusterQueue quota, one
+NodePool and the `backend.kubernetes` block of every hardware profile
+mapped to it. Profiles take `processRuns.defaultFamily` unless
+`processRuns.profileFamilies` maps them; a GPU profile must be mapped to a
+family with a `gpuResource`. The chart derives each profile's block, for
+example for `cpu-default`:
+
+```json
+{
+  "queue": "process-runs",
+  "node_selector": { "stac-higher.io/flavor": "cpu-default" },
+  "tolerations": [{ "key": "stac-higher.io/runs", "operator": "Equal", "value": "true", "effect": "NoSchedule" }],
+  "runtime_class": null,
+  "extended_resources": {}
+}
+```
+
+A profile document that carries its own `backend.kubernetes` must equal the
+derived block, or the render fails. Every profile's `cpu.max`,
+`memory_mb.max` and `gpu_count.max` must fit its family's quota, and an
+image scan (1 CPU, the image policy's `scan_limits.memory_mb`) must fit the
+default family's. The `stac-higher-runs-placement` policy admits a run Job
+only when its pods carry exactly one family's node selector, tolerations and
+runtime class, or none (an image scan).
+
+**Quota and node limits.** A NodePool's `limits` are the family's quota
+plus `nodePool.headroom`: Karpenter counts the capacity of the nodes it
+launches, system reservations included, while Kueue counts pod requests.
+Too little headroom leaves admitted runs `Pending`; too much leaves capacity
+idle.
+
+**Image scans.** A scan carries no hardware profile, so its pod has no node
+selector and no toleration. Each dedicated family's ResourceFlavor
+therefore tolerates the runs taint (`stac-higher.io/runs=true:NoSchedule`)
+and Kueue injects the flavor's label and toleration when it admits the
+scan; the default family is the ClusterQueue's first flavor. Only
+`extraTaints` (a GPU taint) are flavor `nodeTaints`, so a scan or a CPU
+profile is never assigned a GPU flavor (`docs/ISSUES.md` I-195).
+
+**Runs nodes (EKS Auto Mode).** The NodeClass sets `podPidsLimit` (4096;
+I-180) and `networkPolicy: DefaultDeny` (pods no policy selects are denied,
+and the I-188 start-window setting on Auto Mode; `DefaultAllow` forfeits
+both). Auto Mode fixes IMDSv2 with a hop limit of 1, so the chart sets no
+metadata option. Under `DefaultDeny`, every pod on a runs node that no NetworkPolicy
+selects has no network at all: a DaemonSet that tolerates the runs taint
+(log or metrics agents with a blanket `operator: Exists` toleration) needs
+allow policies in its own namespace, or it is cut off on runs nodes.
+NodePools never consolidate a node under a run
+(`WhenEmpty`, `consolidateAfter: 5m`, `terminationGracePeriod: 25h`;
+run pods carry `karpenter.sh/do-not-disrupt`). With
+`nodes.nodeClass.create: false` the NodePools use the NodeClass named in
+`nodes.nodeClass.name`, which then owns `podPidsLimit` and `networkPolicy`.
+
+**A cluster team that owns the cluster-scoped objects** sets
+`processRuns.clusterObjects: false` (and, if it creates the namespace,
+`createNamespace: false`); it can take
+`helm template … --set processRuns.clusterObjects=true` output as its
+reference.
+
+**Self-managed Karpenter** (no Auto Mode): set `processRuns.nodes.enabled:
+false` and apply a NodeClass and NodePool per family yourself, keeping the
+chart's label, taint and limits rule. For example:
+
+```yaml
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: stac-higher-runs
+spec:
+  role: <runs node role>
+  amiSelectorTerms: [{ alias: al2023@latest }]
+  subnetSelectorTerms: [{ tags: { karpenter.sh/discovery: <cluster> } }]
+  securityGroupSelectorTerms: [{ tags: { karpenter.sh/discovery: <cluster> } }]
+  # metadataOptions left at Karpenter's defaults: httpTokens required, hop limit 1.
+  kubelet:
+    podPidsLimit: 4096   # AL2023 only
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: stac-higher-runs-cpu-default
+spec:
+  template:
+    metadata:
+      labels: { stac-higher.io/flavor: cpu-default }
+    spec:
+      nodeClassRef: { group: karpenter.k8s.aws, kind: EC2NodeClass, name: stac-higher-runs }
+      taints: [{ key: stac-higher.io/runs, value: "true", effect: NoSchedule }]
+      requirements:
+        - { key: karpenter.k8s.aws/instance-category, operator: In, values: [c, m, r] }
+        - { key: kubernetes.io/arch, operator: In, values: [amd64] }
+        - { key: karpenter.sh/capacity-type, operator: In, values: [on-demand] }
+      expireAfter: 336h
+      terminationGracePeriod: 25h
+  disruption: { consolidationPolicy: WhenEmpty, consolidateAfter: 5m }
+  limits: { cpu: "20", memory: 80Gi }   # quota + headroom
+```
+
+**Objects applied by hand before the chart.** If `infra/kubernetes/` or
+`infra/kueue/common/` was applied to the cluster with `kubectl` (as K-6's
+kind setup does), `helm install` refuses to take over the existing objects
+("invalid ownership metadata"). Either delete them first (drain runs; the
+namespace's deletion removes its Jobs and Secrets), or let the release adopt
+them: on each object set the annotations
+`meta.helm.sh/release-name: <release>` and
+`meta.helm.sh/release-namespace: <release namespace>` and the label
+`app.kubernetes.io/managed-by: Helm`, then install.
+
+**Uninstall and executor switches.** `helm uninstall` deletes the runs
+namespace with every run Job and run Secret in it, so runs in flight die:
+drain first (stop triggers, wait until no run is `running`). Switching
+`PROCESS_EXECUTOR` with runs in flight strands them for the same reason
+(`docs/ISSUES.md` I-182).
 
 ## Uninstall
 
@@ -484,7 +695,3 @@ the runs first.
 ```sh
 kubectl -n stac-higher delete configmap,externalsecret,job,secret -l app.kubernetes.io/component=db-hook
 ```
-
-## What later slices add
-
-- R-8: the process-run namespace, RBAC, Kueue and NodePool objects, and the runs NetworkPolicy.

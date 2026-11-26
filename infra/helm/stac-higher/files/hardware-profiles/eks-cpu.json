@@ -20,15 +20,7 @@
       "gpu_count": null,
       "max_queue_wait_seconds": 900,
       "image": null,
-      "backend": {
-        "kubernetes": {
-          "queue": "process-runs",
-          "node_selector": {},
-          "tolerations": [],
-          "runtime_class": null,
-          "extended_resources": {}
-        }
-      }
+      "backend": {}
     },
     {
       "id": "cpu-large",
@@ -49,15 +41,7 @@
       "gpu_count": null,
       "max_queue_wait_seconds": 900,
       "image": null,
-      "backend": {
-        "kubernetes": {
-          "queue": "process-runs",
-          "node_selector": {},
-          "tolerations": [],
-          "runtime_class": null,
-          "extended_resources": {}
-        }
-      }
+      "backend": {}
     }
   ]
 }

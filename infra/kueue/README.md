@@ -70,8 +70,9 @@ priority-class labels (on the Job or its pod template).
 An UPDATE that leaves a Job's labels unchanged is always
 admitted (a Job that predates the policy can still be deleted).
 `nodeSelector`, `tolerations` and `runtimeClassName` come from the hardware
-profile and are not bounded (R-8: a param resource from the chart's
-profiles). `stac-higher-runs-secrets`: only `Opaque` and
+profile and are not bounded here; the chart's own policy
+`stac-higher-runs-placement` binds them to its profile set (R-8; the kind leg
+renders and applies it, `scripts/kind-up.sh`). `stac-higher-runs-secrets`: only `Opaque` and
 `kubernetes.io/dockerconfigjson` Secrets. `stac-higher-runs-pod-updates` (Pod UPDATE by the pipeline only):
 `activeDeadlineSeconds` set or lowered, never raised or removed; labels,
 annotations, owners, finalizers and every mutable spec field unchanged.
@@ -94,7 +95,10 @@ ResourceFlavors and the ClusterQueue from values (quota = NodePool limits),
 with a drift test that kind-equivalent values reproduce `kind/`. Kueue
 itself is a cluster prerequisite pinned by `kueue.env` and
 `config/production.yaml`. `scripts/check-kueue.sh --schemas-only <dir>`
-writes the pinned release's v1beta2 JSON schemas for kubeconform.
+writes the pinned release's v1beta2 JSON schemas for kubeconform. The chart
+carries `common/` byte for byte in `infra/helm/stac-higher/files/kueue/common/`
+and renders it with drift tests (`app/src/__tests__/helm/kueue.test.ts`);
+edit both.
 
 ## Kueue's webhooks
 

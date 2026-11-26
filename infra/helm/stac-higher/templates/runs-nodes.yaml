@@ -1,0 +1,84 @@
+{{- /* R-8: the runs nodes on EKS Auto Mode (R8-R8, R8-R13): one NodeClass (nodes.nodeClass.create) and one NodePool
+per enabled family, only with processRuns.clusterObjects and processRuns.nodes.enabled. A self-managed Karpenter
+cluster sets nodes.enabled: false and applies the README's EC2NodeClass example. */ -}}
+{{- $pr := .Values.processRuns -}}
+{{- if and $pr.clusterObjects $pr.nodes.enabled }}
+{{- $n := $pr.nodes -}}
+{{- $nc := $n.nodeClass -}}
+{{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
+{{- $labels := include "stac-higher.labels" (dict "root" . "component" "process-runs") | fromYaml -}}
+{{- if $nc.create }}
+---
+# Auto Mode fixes IMDSv2 with a hop limit of 1 (a pod without hostNetwork gets no token); the NodeClass has no
+# metadata-options field, so none is set here. networkPolicy: DefaultDeny denies any pod no policy selects (the
+# start-window setting of I-188 on Auto Mode, to be proven live in R-11); podPidsLimit bounds a fork bomb (I-180).
+apiVersion: eks.amazonaws.com/v1
+kind: NodeClass
+metadata:
+  name: {{ $nc.name }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  role: {{ $nc.role | quote }}
+  subnetSelectorTerms:
+    {{- toYaml $nc.subnetSelectorTerms | nindent 4 }}
+  securityGroupSelectorTerms:
+    {{- toYaml $nc.securityGroupSelectorTerms | nindent 4 }}
+  networkPolicy: {{ $nc.networkPolicy }}
+  networkPolicyEventLogs: {{ $nc.networkPolicyEventLogs }}
+  advancedCompute:
+    kubelet:
+      podPidsLimit: {{ int $nc.podPidsLimit }}
+  {{- with $nc.ephemeralStorage }}
+  ephemeralStorage:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $nc.tags }}
+  tags:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- range $name := include "stac-higher.runsFamiliesOrdered" . | fromJsonArray }}
+{{- $f := get $fams $name }}
+---
+# Family {{ $name }}: label stac-higher.io/flavor (= its ResourceFlavor's nodeLabels), the runs taint plus
+# extraTaints, limits = Kueue quota + headroom for node overhead (R8-R7). Never consolidated under a run: run pods
+# carry karpenter.sh/do-not-disrupt, WhenEmpty only, and a termination grace above the longest run.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: stac-higher-runs-{{ $name }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels:
+        {{ include "stac-higher.runsFlavorLabel" $ }}: {{ $name }}
+    spec:
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: {{ $nc.name }}
+      taints:
+        - key: {{ include "stac-higher.runsTaintKey" $ }}
+          value: "true"
+          effect: NoSchedule
+        {{- range $t := include "stac-higher.runsExtraTaints" $f | fromJsonArray }}
+        - {{- toYaml $t | nindent 10 }}
+        {{- end }}
+      requirements:
+        {{- toYaml $f.nodePool.requirements | nindent 8 }}
+      expireAfter: {{ printf "%dh" (int $n.expireAfterHours) }}
+      terminationGracePeriod: {{ printf "%dh" (int $n.terminationGracePeriodHours) }}
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: {{ $n.consolidateAfter }}
+  limits:
+    cpu: {{ add $f.quota.cpu $f.nodePool.headroom.cpu | toString | quote }}
+    memory: {{ printf "%dGi" (int (add $f.quota.memoryGi $f.nodePool.headroom.memoryGi)) }}
+    {{- if $f.gpuResource }}
+    {{ $f.gpuResource }}: {{ int $f.quota.gpus | toString | quote }}
+    {{- end }}
+{{- end }}
+{{- end }}

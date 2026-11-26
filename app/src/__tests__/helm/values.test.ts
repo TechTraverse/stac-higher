@@ -16,8 +16,9 @@ import {
 const ROLE_ANN = "eks.amazonaws.com/role-arn";
 const D = (c: string) => "sha256:" + c.repeat(64);
 
-type Doc = { kind: string; metadata: { name: string; annotations?: Record<string, string> }; automountServiceAccountToken?: boolean };
-const sas = (docs: Doc[]) => docs.filter((d) => d.kind === "ServiceAccount");
+type Doc = { kind: string; metadata: { name: string; namespace?: string; annotations?: Record<string, string> }; automountServiceAccountToken?: boolean };
+/** The release namespace's ServiceAccounts (the runs namespace's run ServiceAccount is runs.test.ts's). */
+const sas = (docs: Doc[]) => docs.filter((d) => d.kind === "ServiceAccount" && d.metadata.namespace === "stac-higher");
 const sa = (docs: Doc[], name: string) => sas(docs).find((d) => d.metadata.name === name);
 
 function fails(opts: Parameters<typeof renderChart>[0], needle: string) {
@@ -42,6 +43,30 @@ describe.skipIf(!helmReady())("chart values contract", () => {
   it("refuses an exempt extractor pool below 1 (K-4)", () => {
     fails(base({ processRuns: { extractMaxRunning: 0 } }), "extractMaxRunning");
     expect(renderChart(base({ processRuns: { extractMaxRunning: 1 } })).ok).toBe(true);
+  });
+
+  it("processRuns is a closed block (R-8)", () => {
+    const fam = (extra: object) => ({ processRuns: { families: { "cpu-default": extra } } });
+    for (const values of [
+      { processRuns: { nope: 1 } },
+      { processRuns: { network: { nope: 1 } } },
+      { processRuns: { nodes: { nope: 1 } } },
+      { processRuns: { nodes: { nodeClass: { nope: 1 } } } },
+      fam({ nope: 1 }),
+      fam({ nodePool: { nope: 1 } }),
+      fam({ quota: { cpu: 1, memoryGi: 1, nope: 1 } }),
+    ]) {
+      fails(base(values), "nope");
+    }
+    fails(base({ processRuns: { nodes: { nodeClass: { podPidsLimit: 50 } } } }), "podPidsLimit");
+    for (const n of [-1, 100]) {
+      const r = renderChart(base({ processRuns: { nodes: { nodeClass: { podPidsLimit: n } } } }));
+      expect(r.ok, r.stderr).toBe(true);
+    }
+    fails(base({ processRuns: { families: { Bad_Name: { quota: { cpu: 1, memoryGi: 1 } } } } }), "Bad_Name");
+    fails(base({ processRuns: { nodes: { nodeClass: { networkPolicy: "Open" } } } }), "networkPolicy");
+    fails(base({ processRuns: { network: { objectStorePorts: [0] } } }), "objectStorePorts");
+    fails(base(fam({ extraTaints: [{ key: "k", effect: "PreferNoSchedule" }] })), "effect");
   });
 
   it("renders the base scenario", () => {

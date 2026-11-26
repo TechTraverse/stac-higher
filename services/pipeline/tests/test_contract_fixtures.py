@@ -691,3 +691,68 @@ def test_process_executor_vocabulary_matches_golden():
     fixture = _load("process-executor.json")
     assert tuple(fixture["backends"]) == PROCESS_EXECUTORS
     assert fixture["default"] == DEFAULT_PROCESS_EXECUTOR
+
+
+# R-8 (#144): the names, labels and mirror rewrite the Kubernetes executor and
+# the Helm chart must agree on (tests/contract-fixtures/process-k8s-cluster.json;
+# the chart side is app/src/__tests__/helm/{runs,kueue}.test.ts).
+def _k8s_cluster() -> dict[str, Any]:
+    return _load("process-k8s-cluster.json")
+
+
+def test_process_k8s_cluster_names_match_the_executor():
+    from pipeline import config
+    from pipeline.process import executor
+    from pipeline.process import kubernetes_manifests as km
+
+    fixture = _k8s_cluster()
+    assert fixture["namespace"] == config.DEFAULT_PROCESS_K8S_NAMESPACE
+    assert fixture["runServiceAccount"] == config.DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT
+    assert fixture["localQueue"] == config.DEFAULT_PROCESS_K8S_DEFAULT_QUEUE
+    assert set(fixture["priorityClasses"]) == set(executor.PRIORITIES)
+    assert fixture["kueueApiVersion"] == f"kueue.x-k8s.io/{km.KUEUE_API_VERSION}"
+    assert fixture["defaultDenyPolicy"] == km.DEFAULT_DENY_POLICY
+    assert fixture["runKindLabel"] == executor.RUN_KIND_LABEL
+    assert fixture["networkLevelLabel"] == km.NETWORK_LEVEL_LABEL
+
+
+def test_process_k8s_cluster_policy_names_match_infra():
+    """The Role and the admission policies the executor's deployment needs
+    (infra/kubernetes, infra/kueue/common) carry the fixture's names."""
+    import yaml
+
+    from _admission_rules import POLICIES
+
+    fixture = _k8s_cluster()
+    repo = FIXTURES.parents[1]
+    role = yaml.safe_load((repo / "infra/kubernetes/pipeline-role.yaml").read_text())
+    assert fixture["pipelineRole"] == role["metadata"]["name"]
+    assert tuple(fixture["admissionPolicies"]) == POLICIES
+
+
+def test_process_k8s_cluster_allow_policies_select_the_run_labels():
+    from pipeline.process import kubernetes_manifests as km
+    from pipeline.process.executor import RunSpec
+
+    fixture = _k8s_cluster()
+    keys = (fixture["runKindLabel"], fixture["networkLevelLabel"])
+    run = "00000000-0000-4000-8000-000000000001"
+    process = RunSpec(run_id=run, process_id="p", image="i", network_level="isolated")
+    scan = RunSpec(run_id=run, process_id="img", image="i", kind="image_scan")
+    selected = [{k: km.run_labels(spec)[k] for k in keys} for spec in (process, scan)]
+    assert selected == list(fixture["allowPolicies"].values())
+    assert km.isolation_problem(
+        {"spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}},
+        fixture["namespace"],
+    ) is None
+
+
+def test_process_k8s_cluster_mirror_rewrite_matches_golden():
+    from pipeline.config import _parse_registry_mirrors
+    from pipeline.process.kubernetes_manifests import rewrite_image
+
+    fixture = _k8s_cluster()
+    mirrors = fixture["mirrors"]
+    assert _parse_registry_mirrors(json.dumps(mirrors)) == mirrors
+    for case in fixture["mirrorCases"]:
+        assert rewrite_image(case["ref"], mirrors) == case["pulled"], case["ref"]

@@ -1585,7 +1585,8 @@ not built.
   no token to authenticate with.
 - **No per-run PID limit** on either backend. A fork bomb is bounded only by
   the node's kubelet `podPidsLimit` (Docker: the daemon's defaults); R-8's
-  node configuration should set one.
+  NodeClass sets `podPidsLimit` (4096 by default); a cluster-owned NodeClass
+  must set its own.
 - **The timeout counts the image pull.** A pod's `activeDeadlineSeconds`
   runs from the pod's `startTime`, which precedes the pull, so a large image
   eats into the run's timeout; Docker counts from container start.
@@ -1666,6 +1667,10 @@ recorded handle never matches what it launched.
   row".
 - **Start window.** Even with the policy in place, a new run pod may have
   open egress until the CNI enforces policy for it (I-188, GitHub #207).
+- **R-8** renders the default-deny and the two allow policies, drift-tested
+  against `infra/kubernetes/` and pinned by
+  `tests/contract-fixtures/process-k8s-cluster.json`. The residuals above
+  stand: CNI enforcement, and additive policies created outside the chart.
 - Tracked in: `services/pipeline/src/pipeline/process/kubernetes_manifests.py`; GitHub #144.
 - Found in: K-5 review (2026-11-26).
 
@@ -1710,11 +1715,15 @@ or its pod template (Kueue reads such keys to bind a Job to a prebuilt
 Workload, change its admission or its accounting); and a
 third policy admits only `Opaque` and `kubernetes.io/dockerconfigjson`
 Secrets (no ServiceAccount-token Secret).
-**Not bounded:** `nodeSelector`, `tolerations` and `runtimeClassName`, which
-the executor copies from the hardware profile and Kueue mutates at admission;
-a compromised pipeline can place a run on any node those can reach. R-8 can
-bound them to the profile set with a param resource rendered from the chart's
-profiles. **Residual:** the policy narrows the shape, it does not
+**Placement (R-8):** `nodeSelector`, `tolerations` and `runtimeClassName`,
+which the executor copies from the hardware profile and Kueue mutates at
+admission, are bound by the chart's fourth policy,
+`stac-higher-runs-placement`: on Job CREATE the pod template carries exactly
+one `processRuns` family's three fields, or none (an image scan). The chart
+renders K-6's three policies from byte-identical copies and this one from
+`processRuns.families` (a CEL literal, not a param resource: R-8 plan
+addendum A-R3). Its CEL has run under cel-go only, not on an API server
+(I-189). **Residual:** the policy narrows the shape, it does not
 authenticate intent. A compromised pipeline identity
 can still create a scan-shaped Job (`stac-scan-…`, `image_scan`, `scanner`)
 running any image under the run ServiceAccount and get the scanner policy's
@@ -2334,18 +2343,20 @@ but the chart does not set it: it would make `/api/proxy` require
 `X-Proxy-Auth`, and no client sends that header, which would break browsing
 external catalogs.
 
-### I-160 · A cluster cannot run a process until R-8's and K-6's objects exist 🟡
+### I-160 · A cluster cannot run a process until it meets the runs-plane prerequisites 🟡
 
 The pipeline half is K-5: `PROCESS_EXECUTOR=kubernetes` (set by the chart)
 selects the Kubernetes executor, and the chart passes
-`PROCESS_K8S_NAMESPACE` and `PROCESS_K8S_REGISTRY_MIRRORS`. What a cluster
-still lacks before a run can start: the runs namespace, the run
-ServiceAccount, the pipeline's Role and RoleBinding (`infra/kubernetes/`,
-rendered by R-8 with a drift test), the runs NetworkPolicies including
-`stac-higher-runs-default-deny` (without it the executor starts nothing and
-`/health` names the policy), and Kueue's LocalQueue, ClusterQueue, flavors
-and priority classes (K-6). Until then every run requeues without spending
-an attempt and the run tick logs why once a minute.
+`PROCESS_K8S_NAMESPACE` and `PROCESS_K8S_REGISTRY_MIRRORS`. R-8 renders
+every object a run needs: the runs namespace, the run ServiceAccount, the
+pipeline's Role and RoleBinding, the runs NetworkPolicies including
+`stac-higher-runs-default-deny`, Kueue's LocalQueue, ClusterQueue, flavors
+and priority classes, the admission policies and the runs NodePools. A run
+still cannot start until the chart is installed on a cluster that meets the
+prerequisites in the chart README (Kueue installed and configured,
+NetworkPolicy enforced, the runs nodes' inputs). Until then every run
+requeues without spending an attempt and the run tick logs why once a
+minute. R-11 proves it live (I-189).
 
 Tracked in: GitHub #144.
 
@@ -2417,10 +2428,10 @@ render tests and pytest only; the first live run is R-11. Known gaps and
 accepted deviations:
 
 - **Process runs.** The extractor, GeoColor and the image scans the seeds
-  trigger run on the Kubernetes executor, which starts nothing before R-8
-  and K-6 are deployed (R-11; I-160). Until then `seed`, `goes-seed` and
+  trigger run on the Kubernetes executor, which starts nothing until the
+  cluster meets the runs-plane prerequisites (R-11; I-160). Until then `seed`, `goes-seed` and
   `cube-seed` complete and every run they trigger waits, requeued.
-- **`images-seed` fails the Job before R-8 and K-6 are deployed.** It waits for scans that never
+- **`images-seed` fails the Job until the cluster meets the runs-plane prerequisites.** It waits for scans that never
   run, then refuses to deploy an image that is not `approved`, so its
   container exits non-zero after `--scan-timeout` (1800 s by default). The
   Job runs with `backoffLimit: 0`, so that failure is final and does not
@@ -2453,6 +2464,117 @@ accepted deviations:
   history.
 
 Tracked in: GitHub #147 (R-11 runs it live).
+
+### I-189 · The runs plane is render-verified only 🟡
+
+R-8's objects are proven by render tests, drift tests against
+`infra/kubernetes/` and `infra/kueue/`, kubeconform (Kueue v0.20.8's own
+schemas) and the contract fixture; no EKS cluster has applied them. The kind
+leg applies `infra/kubernetes/` and `infra/kueue/common/` as files and, of
+the chart, only the chart-only placement policy (`stac-higher-runs-placement`,
+rendered with kind-equivalent values): kind proves that policy compiles on a
+real API server, admits every Job the executor builds and refuses foreign
+placements. A plain cel-go run proves nothing about compilation: Kubernetes'
+CEL environment adds options (homogeneous aggregate literals among them)
+that refuse expressions plain cel-go accepts, which is how an earlier render
+of this policy passed cel-go and would have failed `helm install`. The
+NodeClass and NodePools are proven only by render tests (kubeconform skips
+the NodeClass, I-194). R-11 must prove, on EKS: Helm refuses the install before creating anything when the Kueue CRDs
+are absent; the NodeClass, NodePools, ClusterQueue and LocalQueue become
+ready; the allow policies are enforced (a run pod reaches DNS and the object
+store and nothing else; a scan pod reaches a public registry on 443 but not
+IMDS, the Pod Identity agent, the API server or a VPC-internal HTTPS
+endpoint; with the EKS public endpoint enabled this holds only when its
+addresses are in `scannerEgressExcept`, I-193); the CNI closes the start window (I-188); a scan is admitted with
+the flavor's label and toleration injected (I-195); the NodePool headroom is
+enough when the quota is full; the placement policy admits every Job the
+executor builds and refuses one with another family's or a hand-made
+placement. The R-11 issue carries the ordered list.
+
+Tracked in: GitHub #147.
+
+### I-190 · One stac-higher release per cluster 🟡
+
+The runs plane's names are fixed: the runs namespace (`processRuns.namespace`
+can move it, but the executor and the chart then follow one value), the
+ClusterQueue and LocalQueue `process-runs`, the WorkloadPriorityClasses
+`interactive` and `triggered` (generic names another Kueue user in the cluster
+may also want), the four admission policies, the NodeClass
+`stac-higher-runs` and the NodePools `stac-higher-runs-<family>`. A second
+release in the same cluster would fight over them. A cluster that already
+has its own `interactive` / `triggered` priority classes must reconcile
+them by hand or set `processRuns.clusterObjects: false`.
+
+### I-191 · Runs isolation is IPv4 only; DNS and nodes come from the cluster 🟡
+
+On an IPv6 EKS cluster NetworkPolicies do not filter a pod's IPv4 egress
+(EKS User Guide, Auto Mode network policies), so runs are not supported
+there. The chart fails closed: it refuses every IPv6 CIDR in the runs values
+(DNS included) and renders no IPv6 `ipBlock`, so no rule admits `::/0`. The
+CoreDNS peer, the runs node role and its subnet and security-group selectors
+are deployment inputs Terraform does not emit (the cluster repo knows
+them). `aws.s3PrefixListCidrs` is a snapshot of the region's S3 managed
+prefix list: if AWS changes the list, re-apply Terraform and re-install the
+chart, or runs lose the object store.
+
+### I-192 · Profile maxima are checked against the family quota, not against a node 🟢
+
+The render refuses a profile whose `cpu.max`, `memory_mb.max` or
+`gpu_count.max` exceeds its family's Kueue quota. It cannot check the
+NodePool's requirements against an instance size: requirements that exclude
+every instance large enough for a profile's maximum leave its largest runs
+pending until `waitForPodsReady` evicts them.
+
+### I-193 · The scanner may reach any public address on 443 🟡
+
+An image-scan pod (an untrusted image's inspection, and a Job shape a
+compromised pipeline identity can create, I-184) may open TCP 443 to any
+address outside link-local, RFC 1918 and CGNAT space (those five ranges
+are template constants), plus the private CIDRs named in
+`processRuns.network.scannerPrivateCidrs`. It can therefore reach any
+public HTTPS endpoint, including the EKS API server's public endpoint when
+it is enabled (the scan has no token) and any VPC range outside RFC 1918 and
+CGNAT space, unless the deployment lists those in
+`processRuns.network.scannerEgressExcept` (chart README "Process runs").
+Closing that needs an egress proxy with a registry allow-list for scans.
+
+Tracked in: GitHub #68.
+
+### I-194 · kubeconform skips the NodeClass 🟢
+
+The datree catalog's `eks.amazonaws.com/v1` NodeClass schema predates
+`advancedCompute` and is closed, so `-strict` would reject `podPidsLimit`;
+`helm.yml` passes `-skip NodeClass`. A render test pins the NodeClass's
+fields; a typo outside them is caught only on a cluster (R-11 runs
+`kubectl apply --dry-run=server` on it).
+
+### I-195 · Image scans are placed by Kueue's flavor toleration 🟡
+
+A scan carries no hardware profile, so its pod has no node selector and no
+toleration (K-5). Each dedicated family's ResourceFlavor tolerates the runs
+taint, and Kueue injects the flavor's node labels and tolerations when it
+admits the Job (proven on kind by K-6). If that injection ever stops, scans
+cannot schedule on the tainted runs nodes and `images-seed` fails; the
+fallback is a pipeline change that gives profile-less specs the default
+profile's `backend.kubernetes`.
+
+### I-196 · What the `isolated` level still allows 🟡
+
+An `isolated` run may reach DNS and the object store, and both are wider
+than they look:
+- **All of S3 in the region.** `aws.s3PrefixListCidrs` is the region's S3
+  managed prefix list, so the policy cannot tell the platform bucket from any
+  other. A run that brings its own credentials (in its code or input data)
+  can write to any bucket it can authenticate to. The run's own STS
+  credential is bucket-scoped (ADR 0013); egress is not. Mitigations, not
+  built: reach S3 through a VPC gateway endpoint whose endpoint policy allows
+  only the platform's buckets, or bucket-scoped egress through a proxy.
+- **DNS recurses.** The cluster resolver forwards to the VPC resolver and on
+  to the internet, so a run can tunnel data out through DNS queries.
+  Mitigations, not built: a DNS policy (Route 53 Resolver DNS Firewall on the
+  VPC, or a CoreDNS policy for the runs namespace) that answers only the
+  names a run needs.
+- Tracked in: `infra/helm/stac-higher/templates/runs-networkpolicies.yaml`.
 
 ## Resolved — archived
 

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { CHART_DIR } from "../../../../infra/helm/stac-higher/tests/render.mjs";
+import { CHART_DIR, REPO_DIR } from "../../../../infra/helm/stac-higher/tests/render.mjs";
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -24,5 +24,16 @@ describe("chart README", () => {
     const readme = readFileSync(join(CHART_DIR, "README.md"), "utf8");
     const missing = keyPaths(values).filter((p) => !readme.includes("`" + p + "`"));
     expect(missing).toEqual([]);
+  });
+
+  it("names the Kueue release every cluster installs, and how (R-8)", () => {
+    const env = readFileSync(join(REPO_DIR, "infra/kueue/kueue.env"), "utf8");
+    const version = /^KUEUE_VERSION=(\S+)$/m.exec(env)?.[1];
+    expect(version).toMatch(/^v\d+\.\d+\.\d+$/);
+    const readme = readFileSync(join(CHART_DIR, "README.md"), "utf8");
+    expect(readme).toContain(`(${version})`);
+    for (const needle of ["infra/kueue/config/production.yaml", "scripts/kueue-narrow-webhooks.py", "NETWORK_POLICY_ENFORCING_MODE=strict"]) {
+      expect(readme).toContain(needle);
+    }
   });
 });

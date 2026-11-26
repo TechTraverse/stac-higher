@@ -1,0 +1,12 @@
+# K-6 (process-compute spec §7.1): the LocalQueue every run Job names by
+# default (PROCESS_K8S_DEFAULT_QUEUE), in the runs namespace, feeding the
+# ClusterQueue of the same name (each deployment supplies its own ClusterQueue:
+# infra/kueue/kind/ for the kind leg). Deployment-independent. R-8 renders
+# this from the chart with a drift test — edit both.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: process-runs
+  namespace: stac-higher-runs
+spec:
+  clusterQueue: process-runs

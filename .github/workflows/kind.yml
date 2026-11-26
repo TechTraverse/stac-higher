@@ -1,7 +1,8 @@
 # K-6 (issue #14; process-compute spec §8): the Kubernetes executor meets a
 # real API server, kubelet and Kueue. A kind cluster (pinned node image) gets
 # the pinned Kueue release with infra/kueue/config/kind.yaml, K-5's
-# infra/kubernetes/ objects and infra/kueue/{common,kind}; the run image is
+# infra/kubernetes/ objects, infra/kueue/{common,kind} and the Helm chart's
+# placement policy (R-8, rendered with kind-equivalent values); the run image is
 # the real platform runtime, built and `kind load`ed; the integration suite
 # runs on the runner AS THE PIPELINE'S SERVICEACCOUNT (the admin kubeconfig is
 # the harness's only), and fails if anything skipped.
@@ -38,6 +39,14 @@ on:
       - services/process-runtime/docker-bake.hcl
       - scripts/kind-up.sh
       - scripts/kind-diagnostics.sh
+      # R-8: kind-up.sh renders the chart's placement policy from these
+      - infra/helm/stac-higher/Chart.yaml
+      - infra/helm/stac-higher/values.yaml
+      - infra/helm/stac-higher/values.schema.json
+      - infra/helm/stac-higher/templates/**
+      - infra/helm/stac-higher/files/**
+      - infra/helm/stac-higher/tests/values/base.yaml
+      - infra/helm/stac-higher/tests/values/kind-kueue.yaml
       - scripts/check-kueue.sh
       - scripts/kueue-narrow-webhooks.py
       - .github/scripts/kind-junit-gate.py
@@ -66,6 +75,14 @@ on:
       - services/process-runtime/docker-bake.hcl
       - scripts/kind-up.sh
       - scripts/kind-diagnostics.sh
+      # R-8: kind-up.sh renders the chart's placement policy from these
+      - infra/helm/stac-higher/Chart.yaml
+      - infra/helm/stac-higher/values.yaml
+      - infra/helm/stac-higher/values.schema.json
+      - infra/helm/stac-higher/templates/**
+      - infra/helm/stac-higher/files/**
+      - infra/helm/stac-higher/tests/values/base.yaml
+      - infra/helm/stac-higher/tests/values/kind-kueue.yaml
       - scripts/check-kueue.sh
       - scripts/kueue-narrow-webhooks.py
       - .github/scripts/kind-junit-gate.py
@@ -131,6 +148,10 @@ jobs:
             runtime.tags=stac-higher-process-runtime:kind
             runtime.platform=linux/amd64
             runtime.cache-from=type=gha,scope=process-runtime
+      # R-8: kind-up.sh renders the chart's placement policy (as helm.yml installs Helm).
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.1
       - name: Install kind and kubectl (pinned, checksummed)
         run: |
           set -euo pipefail
@@ -150,7 +171,7 @@ jobs:
         env:
           # K6-R16: the number of tests the two kind modules collect; raise it
           # with every test added (a parametrized case counts once per case).
-          KIND_MIN_TESTS: "72"
+          KIND_MIN_TESTS: "76"
           # K6-R16: test functions allowed to xfail (comma-separated); empty.
           KIND_ALLOWED_XFAIL: ""
         run: |

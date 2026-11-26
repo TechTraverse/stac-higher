@@ -1,0 +1,59 @@
+{{- /* R-8: the run ServiceAccount and the pipeline's Role and RoleBinding in the runs namespace, from
+infra/kubernetes/{run-serviceaccount,pipeline-role,pipeline-rolebinding}.yaml (K-5; drift-tested by runs.test.ts —
+edit both). Fixed names: the executor's defaults (PROCESS_K8S_RUN_SERVICE_ACCOUNT is not set by the chart). */ -}}
+{{- $ns := .Values.processRuns.namespace -}}
+# The ServiceAccount every run pod runs as: no token, no permissions, and NEVER an annotation (no IRSA role,
+# whatever identity.mode is) or a Pod Identity association. A run's only cloud identity is its run-scoped STS
+# credential (ADR 0013).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stac-higher-run
+  namespace: {{ $ns }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "process-runs") | nindent 4 }}
+automountServiceAccountToken: false
+---
+# Exactly what the Kubernetes executor calls (infra/kubernetes/pipeline-role.yaml lists why each verb exists).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stac-higher-pipeline
+  namespace: {{ $ns }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "process-runs") | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["workloads"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stac-higher-pipeline
+  namespace: {{ $ns }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" . "component" "process-runs") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: stac-higher-pipeline
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.identity.serviceAccounts.pipeline }}
+    namespace: {{ .Values.identity.namespace }}

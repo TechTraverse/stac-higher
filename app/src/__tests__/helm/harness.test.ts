@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   containersOf,
   effectiveEnv,
+  ipv4Contains,
   scenario,
+  stripChartMetadata,
 } from "../../../../infra/helm/stac-higher/tests/render.mjs";
 
 describe("render harness helpers", () => {
@@ -33,5 +35,30 @@ describe("render harness helpers", () => {
   it("scenario layers the named file over base", () => {
     expect(scenario("base")).toHaveLength(1);
     expect(scenario("irsa").map((p: string) => p.split("/").pop())).toEqual(["base.yaml", "irsa.yaml"]);
+  });
+
+  it("stripChartMetadata drops only the chart's own labels and annotations", () => {
+    const doc = {
+      kind: "X",
+      metadata: {
+        name: "n",
+        labels: { "helm.sh/chart": "c", "app.kubernetes.io/name": "s", "pod-security.kubernetes.io/enforce": "restricted" },
+        annotations: { "helm.sh/hook": "pre-install", "argocd.argoproj.io/hook": "PreSync" },
+      },
+    };
+    expect(stripChartMetadata(doc)).toEqual({
+      kind: "X",
+      metadata: { name: "n", labels: { "pod-security.kubernetes.io/enforce": "restricted" } },
+    });
+    expect(doc.metadata.labels["helm.sh/chart"]).toBe("c");
+  });
+
+  it("ipv4Contains does prefix math", () => {
+    expect(ipv4Contains("0.0.0.0/0", "169.254.169.254")).toBe(true);
+    expect(ipv4Contains("169.254.0.0/16", "169.254.170.23")).toBe(true);
+    expect(ipv4Contains("192.0.2.0/24", "169.254.169.254")).toBe(false);
+    expect(ipv4Contains("10.100.0.10/32", "10.100.0.10")).toBe(true);
+    expect(ipv4Contains("10.100.0.10/32", "10.100.0.11")).toBe(false);
+    expect(() => ipv4Contains("fd00::/8", "10.0.0.1")).toThrow();
   });
 });

@@ -1,0 +1,73 @@
+{{- /* R-8: the cluster-scoped Kueue objects and the runs namespace's admission policies (processRuns.clusterObjects).
+WorkloadPriorityClasses and K-6's three admission policies come from infra/kueue/common (addendum A-R2); the
+ResourceFlavors and the ClusterQueue come from processRuns.families (R8-R5, R8-R6, R8-R10). The placement policy
+is runs-placement-policy.yaml (its own file, so the kind leg can render exactly it). */ -}}
+{{- if .Values.processRuns.clusterObjects }}
+{{- $ns := .Values.processRuns.namespace -}}
+{{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
+{{- $order := include "stac-higher.runsFamiliesOrdered" . | fromJsonArray -}}
+{{- $labels := include "stac-higher.labels" (dict "root" . "component" "process-runs") | fromYaml -}}
+{{ include "stac-higher.runsCommonFile" (dict "root" . "file" "workloadpriorityclasses.yaml") }}
+{{ include "stac-higher.runsCommonFile" (dict "root" . "file" "admission-policy.yaml") }}
+{{- /* One ResourceFlavor per enabled family (R8-R6): a dedicated family's flavor carries its node label and
+TOLERATES the runs taint (Kueue injects both on admission, so a profile-less image scan lands on runs nodes); only
+extraTaints (GPU) are nodeTaints, which a workload must tolerate itself. */ -}}
+{{- range $name := $order }}
+{{- $f := get $fams $name -}}
+{{- $spec := dict -}}
+{{- if $f.dedicatedNodes -}}
+{{- $_ := set $spec "nodeLabels" (dict (include "stac-higher.runsFlavorLabel" $) $name) -}}
+{{- $_ := set $spec "tolerations" (list (include "stac-higher.runsToleration" $ | fromJson)) -}}
+{{- end -}}
+{{- with include "stac-higher.runsExtraTaints" $f | fromJsonArray -}}
+{{- $_ := set $spec "nodeTaints" . -}}
+{{- end }}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  {{- if $spec }}
+  {{- toYaml $spec | nindent 2 }}
+  {{- else }} {}
+  {{- end }}
+{{- end }}
+{{- /* The ClusterQueue: only the runs namespace's LocalQueues; quota per family (nominalQuota = the family's quota;
+the NodePool's limits add headroom, R8-R7). Every flavor lists every covered resource, GPU quota "0" on a CPU
+family; the default family first, so a scan is placed there when it fits. */ -}}
+{{- $covered := include "stac-higher.runsCoveredResources" . | fromJsonArray }}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: process-runs
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ $ns }}
+  queueingStrategy: BestEffortFIFO
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Never
+  resourceGroups:
+    - coveredResources: {{ toJson $covered }}
+      flavors:
+        {{- range $name := $order }}
+        {{- $q := (get $fams $name).quota }}
+        - name: {{ $name }}
+          resources:
+            - name: cpu
+              nominalQuota: {{ int $q.cpu | toString | quote }}
+            - name: memory
+              nominalQuota: {{ printf "%dGi" (int $q.memoryGi) }}
+            {{- range $r := slice $covered 2 }}
+            - name: {{ $r }}
+              nominalQuota: {{ ternary (int $q.gpus) 0 (eq (get $fams $name).gpuResource $r) | toString | quote }}
+            {{- end }}
+        {{- end }}
+{{- end }}

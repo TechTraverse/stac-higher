@@ -1,7 +1,7 @@
 // Render harness shared by every helm vitest suite (app/src/__tests__/helm/).
 // Runs `helm template` and parses the output; no cluster is involved.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const CHART_DIR = dirname(HERE);
 /** @type {string} */
 export const VALUES_DIR = join(HERE, "values");
+/** The repository root (the chart is infra/helm/stac-higher). @type {string} */
+export const REPO_DIR = join(CHART_DIR, "..", "..", "..");
 export const KUBE_VERSION = "1.34.0";
 
 /**
@@ -110,4 +112,87 @@ export function effectiveEnv(docs, container) {
     }
   }
   return out;
+}
+
+/**
+ * Every YAML document of every `.yaml` file in a directory (sorted by file name), empty documents dropped.
+ * @param {string} dir
+ * @returns {any[]}
+ */
+export function loadYamlDir(dir) {
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".yaml"))
+    .sort()
+    .flatMap((f) => parseAllDocuments(readFileSync(join(dir, f), "utf8")).map((d) => d.toJS()))
+    .filter((d) => d != null);
+}
+
+const CHART_LABEL = /^(helm\.sh\/|app\.kubernetes\.io\/)/;
+const CHART_ANNOTATION = /^(helm\.sh\/|argocd\.argoproj\.io\/)/;
+
+/**
+ * A deep copy without the chart's own metadata: `helm.sh/*` and `app.kubernetes.io/*` labels,
+ * `helm.sh/*` and `argocd.argoproj.io/*` annotations; an emptied `labels`/`annotations` is dropped.
+ * @param {any} doc
+ * @returns {any}
+ */
+export function stripChartMetadata(doc) {
+  const out = structuredClone(doc);
+  for (const [field, re] of /** @type {const} */ ([["labels", CHART_LABEL], ["annotations", CHART_ANNOTATION]])) {
+    const m = out.metadata?.[field];
+    if (!m) continue;
+    for (const k of Object.keys(m)) if (re.test(k)) delete m[k];
+    if (Object.keys(m).length === 0) delete out.metadata[field];
+  }
+  return out;
+}
+
+/**
+ * @param {string} ip dotted IPv4
+ * @returns {number}
+ */
+function ipv4ToInt(ip) {
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
+    throw new Error(`not an IPv4 address: ${ip}`);
+  }
+  return parts.reduce((acc, p) => acc * 256 + p, 0);
+}
+
+/**
+ * True when the IPv4 CIDR contains the address (pure integer math).
+ * @param {string} cidr
+ * @param {string} ip
+ * @returns {boolean}
+ */
+export function ipv4Contains(cidr, ip) {
+  const [net, bitsText] = cidr.split("/");
+  const bits = Number(bitsText ?? 32);
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) throw new Error(`not an IPv4 CIDR: ${cidr}`);
+  const size = 2 ** (32 - bits);
+  return Math.floor(ipv4ToInt(net) / size) === Math.floor(ipv4ToInt(ip) / size);
+}
+
+/**
+ * True when every address of `inner` is in `outer` (both IPv4 CIDRs).
+ * @param {string} outer
+ * @param {string} inner
+ * @returns {boolean}
+ */
+export function ipv4Covers(outer, inner) {
+  const [net, bits] = inner.split("/");
+  return Number(outer.split("/")[1] ?? 32) <= Number(bits ?? 32) && ipv4Contains(outer, net);
+}
+
+/**
+ * True when an ipBlock peer admits any address of `range`: the CIDRs overlap and no `except` entry covers the
+ * overlap (the narrower of the two).
+ * @param {{ cidr: string, except?: string[] }} block
+ * @param {string} range
+ * @returns {boolean}
+ */
+export function ipBlockReaches(block, range) {
+  const overlap = ipv4Covers(block.cidr, range) ? range : ipv4Covers(range, block.cidr) ? block.cidr : null;
+  if (overlap === null) return false;
+  return !(block.except ?? []).some((e) => ipv4Covers(e, overlap));
 }

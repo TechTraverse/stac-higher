@@ -88,7 +88,7 @@ describe.skipIf(!helmReady())("chart app workload", () => {
     expect(a).toMatch(/^[0-9a-f]{64}$/);
     const hp = {
       version: 1,
-      profiles: [{ id: "standard", label: "S", description: "d", tier: "cpu", accelerator: null, cpu: { min: 0.25, max: 4, default: 1 }, memory_mb: { min: 128, max: 16384, default: 512 }, gpu_count: null, max_queue_wait_seconds: 900, image: null, backend: { kubernetes: { queue: "process-runs", node_selector: {}, tolerations: [], runtime_class: null, extended_resources: {} } } }],
+      profiles: [{ id: "standard", label: "S", description: "d", tier: "cpu", accelerator: null, cpu: { min: 0.25, max: 4, default: 1 }, memory_mb: { min: 128, max: 16384, default: 512 }, gpu_count: null, max_queue_wait_seconds: 900, image: null, backend: {} }],
     };
     expect(sum({ config: { hardwareProfiles: hp } })).not.toBe(a);
     expect(sum({ app: { replicas: 5 } })).toBe(a);

@@ -435,7 +435,9 @@ respect:
 
 - ClusterQueue nominal quotas **must equal** the Karpenter NodePool
   `limits` for that flavor — quota above the pool's ceiling admits jobs
-  that can never schedule.
+  that can never schedule. (R-8: the chart sets the NodePool `limits` to
+  the quota plus headroom for node overhead, because Karpenter counts the
+  launched nodes' capacity and Kueue counts pod requests; R-8 plan R8-R7.)
 - Kueue's `waitForPodsReady` setting (timeout + requeue) must be on, so an
   admitted job whose node never arrives (instance capacity, quota, an AMI
   problem) is evicted back to the queue rather than holding quota forever.

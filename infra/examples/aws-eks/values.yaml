@@ -102,3 +102,29 @@ demoDestination:
   bucket: stac-higher-example-demo
   region: us-east-1
   credentialsSecretArn: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/demo-AbCdEf
+# deployment-supplied: the process-runs plane's cluster inputs (R-8). The cluster
+# repo knows them; Terraform does not emit them. Chart README "Process runs".
+processRuns:
+  network:
+    # The cluster's CoreDNS address: .10 of the service CIDR, as a /32. EKS Auto
+    # Mode runs CoreDNS on each node and creates no kube-dns Service. On a cluster
+    # with one, use [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}},
+    # podSelector: {matchLabels: {k8s-app: kube-dns}}}] instead.
+    dns: [{ ipBlock: { cidr: 10.100.0.10/32 } }]
+    # Image scans reach public registries on 443, never private space (fixed by the
+    # chart). With ECR reached through VPC interface endpoints, name the endpoint
+    # subnets here; each entry widens what an untrusted scan can reach.
+    scannerPrivateCidrs: []
+    # Public ranges a scan must not reach: the EKS public endpoint's addresses
+    # (when it is enabled) and any VPC CIDR outside RFC 1918 / CGNAT space.
+    scannerEgressExcept: []
+  nodes:
+    nodeClass:
+      # IAM role of the runs nodes: AmazonEKSWorkerNodeMinimalPolicy,
+      # AmazonEC2ContainerRegistryPullOnly, ecr:BatchImportUpstreamImage and
+      # ecr:CreateRepository (first pull through the cache), and an EKS access
+      # entry of type EC2 with AmazonEKSAutoNodePolicy at cluster scope.
+      role: stac-higher-example-runs-node
+      subnetSelectorTerms: [{ tags: { kubernetes.io/role/internal-elb: "1" } }]
+      # Include the cluster security group, so the nodes reach the control plane.
+      securityGroupSelectorTerms: [{ id: sg-00000000000000000 }, { tags: { Name: stac-higher-example-runs-nodes } }]

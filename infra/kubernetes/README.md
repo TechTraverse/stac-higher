@@ -47,6 +47,10 @@ as-is.
 
 ## What R-8 (#144) renders
 
+The chart renders these five objects as templates
+(`infra/helm/stac-higher/templates/runs-*.yaml`) with a drift test against
+this directory (`app/src/__tests__/helm/runs.test.ts`); edit both.
+
 - **These five objects**, from the chart's templates (Helm cannot read files
   outside the chart), with a drift test against these files.
 - **The default-deny policy**, `runs-default-deny.yaml`, exactly (K-6
