@@ -233,6 +233,25 @@ describe.skipIf(!helmReady())("chart config layer", () => {
     expect(data(render(), "env-shared").PROCESS_EXECUTOR).toBe("kubernetes");
   });
 
+  it("the chart's pull rewrite and the executor's rewrite agree (R-8 contract fixture)", () => {
+    const fixture = JSON.parse(readFileSync(join(REPO, "tests/contract-fixtures/process-k8s-cluster.json"), "utf8"));
+    const stacApiImage = (docs: Doc[]) =>
+      docs.find((d) => d.kind === "Deployment" && d.metadata.name === "stac-higher-stac-api").spec.template.spec.containers[0].image;
+    let checked = 0;
+    for (const c of fixture.mirrorCases) {
+      if (!/@sha256:[0-9a-f]{64}$/.test(c.ref)) continue;
+      const docs = render({ registry: { mirrorPrefixes: fixture.mirrors }, catalog: { stacApi: { image: c.ref } } });
+      expect(stacApiImage(docs), c.ref).toBe(c.pulled);
+      expect(JSON.parse(data(docs, "env-pipeline").PROCESS_K8S_REGISTRY_MIRRORS)).toEqual(fixture.mirrors);
+      checked++;
+    }
+    expect(checked).toBe(fixture.mirrorCases.length);
+    const d = data(render({}, "digests-mirror"), "env-pipeline");
+    for (const k of ["PROCESS_RUNTIME_IMAGE", "PROCESS_RUNTIME_IMAGE_STACTOOLS", "IMAGE_SCANNER_IMAGE"]) {
+      expect(d[k], k).toMatch(/^ghcr\.io\/techtraverse\/stac-higher-/);
+    }
+  });
+
   it("refuses secret-looking extra env", () => {
     fails({ app: { env: { MY_TOKEN: "x" } } }, "app.env", "MY_TOKEN");
     fails({ pipeline: { env: { AWS_SECRET_ACCESS_KEY: "x" } } }, "pipeline.env", "AWS_SECRET_ACCESS_KEY");
