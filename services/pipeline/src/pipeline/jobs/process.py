@@ -7,7 +7,8 @@ Five registrations:
   deferred, coalesced) run row. Enqueue and execution are split so the
   ceiling's decision is durable in the ledger rather than living in a worker's
   memory.
-- ``pipeline.process_run_tick`` — claims due runs and executes them.
+- ``pipeline.process_run_tick`` — claims and submits due runs, then reconciles
+  every submitted run (K-4: the backstop behind the watcher).
 - ``pipeline.process_cron`` — the minute tick that enqueues due cron sources.
 - ``pipeline.process_sweep`` — stall recovery.
 - ``pipeline.process_reap`` — orphaned-container reconciliation (M3-W-1).
@@ -20,14 +21,17 @@ centrally (M2-H) and the per-job run/duration/outcome metrics come for free.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any
 
 from pipeline.config import Settings
 from pipeline.connections.build import build_adapter
 from pipeline.connections.envelope import decrypt, load_master_key
+from pipeline.dispatcher.listener import run_dispatch_listener
 from pipeline.finalize.extract_run import finalize_extract_run
 from pipeline.finalize.process_run import build_process_request
 from pipeline.finalize.repo import PgFinalizeRepo
@@ -39,18 +43,22 @@ from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
 from pipeline.process.docker_executor import DockerExecutor
+from pipeline.process.executor import Executor
 from pipeline.process.hardware import (
     HardwareProfileError,
     HardwareProfileSet,
     docker_capacities,
     load_hardware_profiles,
 )
+from pipeline.process.ledger import CANCEL_CHANNEL
 from pipeline.process.reaper import process_reap_tick
+from pipeline.process.reconcile import RECONCILE_BATCH, Reconciler, RunBatch
 from pipeline.process.repo import PgProcessRepo, QueuedRun
 from pipeline.process.runner import run_one
 from pipeline.process.staging import build_remote_fetcher
 from pipeline.process.sweep import process_sweep_tick
 from pipeline.process.trigger import trigger_run
+from pipeline.process.watcher import run_watcher
 from pipeline.queue.interface import QueueBackend, RetrySpec
 from pipeline.stac.pgstac_writer import PgPgstacWriter
 from pipeline.storage.platform import build_platform_client
@@ -58,8 +66,71 @@ from pipeline.storage.platform import build_platform_client
 logger = logging.getLogger(__name__)
 
 
+def _docker_executor(settings: Settings) -> Executor:
+    """THE place a process-run executor is built (K-4 addendum A11): the run
+    path, the reconciler, the watcher, the cancel listener and the reaper all
+    come through here, so K-5's backend factory replaces one function."""
+    return DockerExecutor(docker_host=settings.docker_host)
+
+
+def build_reconciler(
+    queue: QueueBackend, settings: Settings, *, executor: Executor | None = None
+) -> Reconciler:
+    """A Reconciler wired to the deployment (K-4): the Pg ledger, the platform
+    store for logs, finalize/run-now through the queue, and the extractor
+    dead-batch hook."""
+    ingest_repo = PgIngestRepo(settings.database_url)
+
+    async def _finalize(run_id: str, process_id: str) -> None:
+        await queue.enqueue(JOB_FINALIZE, {"run_id": run_id, "process_id": process_id})
+
+    async def _run_now(run_id: str) -> None:
+        await queue.enqueue(JOB_RUN_NOW, {"run_id": run_id})
+
+    async def _on_dead(run: RunBatch, error: str) -> None:
+        await fail_extract_batch(ingest_repo, run, error)
+
+    return Reconciler(
+        repo=PgProcessRepo(settings.database_url),
+        executor=executor or _docker_executor(settings),
+        settings=settings,
+        # Built on the first log it stores, not here (review P5).
+        storage_client=lambda: build_platform_client(settings),
+        enqueue_finalize=_finalize,
+        enqueue_run_now=_run_now,
+        on_dead=_on_dead,
+    )
+
+
+def build_run_watcher(queue: QueueBackend, settings: Settings) -> Coroutine[Any, Any, None]:
+    """K-4: the run watcher main.py runs beside the worker — the executor's
+    event stream wakes one long-lived Reconciler. A backend without a
+    ``watch()`` gets a coroutine that idles until cancelled: the run tick is
+    then the only path (K-5's watch may land after its executor)."""
+    executor = _docker_executor(settings)
+    reconciler = build_reconciler(queue, settings, executor=executor)
+    if executor.supports_watch:
+        return run_watcher(executor.watch, reconciler.on_event)
+    return asyncio.Event().wait()
+
+
+def build_cancel_listener(
+    queue: QueueBackend, settings: Settings
+) -> Coroutine[Any, Any, None]:
+    """K-4 (R12): ``LISTEN process_run_cancel`` — the app's cancel statement
+    NOTIFYs in the same transaction, and each wake stops every running run
+    whose cancel was requested. The connect wake drains cancels requested
+    while the worker was down."""
+    reconciler = build_reconciler(queue, settings)
+
+    async def _on_wake() -> None:
+        await reconciler.sweep(limit=RECONCILE_BATCH, cancel_requested_only=True)
+
+    return run_dispatch_listener(settings.database_url, _on_wake, channel=CANCEL_CHANNEL)
+
+
 async def fail_extract_batch(
-    ingest_repo: IngestRepo, run: QueuedRun, error: str
+    ingest_repo: IngestRepo, run: RunBatch, error: str
 ) -> int:
     """G-6: a dead extractor run's ingest rows must not sit in `extracting`
     forever — they carry the run's error instead.
@@ -226,10 +297,15 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         now: dt.datetime,
         profiles: HardwareProfileSet | None,
     ) -> None:
-        """Run an already-claimed batch and enqueue publishing for the ones
-        that succeeded. Shared by the periodic tick and the immediate job so
-        the two cannot drift in what executing a run means."""
-        executor = DockerExecutor(docker_host=settings.docker_host)
+        """Submit an already-claimed batch (K-4: each run returns once it is
+        submitted). Shared by the periodic tick and the immediate job so the
+        two cannot drift in what starting a run means. Every submitted run is
+        reconciled once right away (addendum A6): an event that fired before
+        its handle was recorded — a run that exits in under a second, or a
+        cancel requested before submission — is caught here instead of at the
+        next tick."""
+        executor = _docker_executor(settings)
+        reconciler = build_reconciler(queue, settings, executor=executor)
         storage_client = build_platform_client(settings)
         resolver = build_secret_resolver(settings)
         # GOES spec §3.2: remote inputs are staged through a matching
@@ -241,10 +317,9 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         ingest_repo = PgIngestRepo(settings.database_url)
         images_repo = PgImagesRepo(settings.database_url)
 
-        async def _fail_extract_batch(run: QueuedRun, error: str) -> None:
+        async def _fail_extract_batch(run: RunBatch, error: str) -> None:
             await fail_extract_batch(ingest_repo, run, error)
 
-        finalize_payloads: list[dict[str, Any]] = []
         for run in runs:
             # Per-run isolation: one run's failure must never abandon the rest
             # of the claimed batch in `running`, where only the stall sweep
@@ -264,34 +339,27 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                     master_key=master_key,
                     profiles=profiles,
                 )
+                if result.status == "running":
+                    await reconciler.reconcile_id(run.id)
             except Exception:
                 logger.exception(
                     "process run raised outside the ledger path",
                     extra={"run_id": run.id, "process_id": run.process_id},
                 )
-                continue
-            # Only a SUCCESSFUL run publishes (ADR 0014). A failed run's
-            # partial outputs stay in staging and age out with the TTL sweep:
-            # publishing half of what a crashed run intended would put items
-            # in the catalog that no successful run stands behind.
-            if result.status == "succeeded":
-                finalize_payloads.append(
-                    {"run_id": run.id, "process_id": run.process_id}
-                )
-
-        if finalize_payloads:
-            await queue.enqueue_batch(JOB_FINALIZE, finalize_payloads)
 
     async def process_run_tick(timestamp: int) -> None:
         repo = _repo()
         now = dt.datetime.now(dt.UTC)
         profiles = load_run_profiles(settings)
         runs = await repo.claim_due_runs(
-            now, RUN_BATCH, capacities=docker_capacities(profiles) if profiles else None
+            now, RUN_BATCH, capacities=docker_capacities(profiles) if profiles else None,
+            extract_capacity=settings.process_extract_max_running,
         )
-        if not runs:
-            return
-        await _execute_claimed(runs, repo, now, profiles)
+        if runs:
+            await _execute_claimed(runs, repo, now, profiles)
+        # K-4: the backstop for every submitted run — a missed event, a
+        # restarted worker, a Docker run past its timeout (R10).
+        await build_reconciler(queue, settings).sweep(limit=RECONCILE_BATCH)
 
     async def process_run_now(run_id: str) -> None:
         """Execute one just-queued run without waiting for the tick (G-3).
@@ -305,7 +373,8 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         now = dt.datetime.now(dt.UTC)
         profiles = load_run_profiles(settings)
         run = await repo.claim_run(
-            run_id, now, capacities=docker_capacities(profiles) if profiles else None
+            run_id, now, capacities=docker_capacities(profiles) if profiles else None,
+            extract_capacity=settings.process_extract_max_running,
         )
         if run is None:
             logger.debug(
@@ -400,7 +469,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
 
     async def process_reap(timestamp: int) -> None:
         await process_reap_tick(
-            executor=DockerExecutor(docker_host=settings.docker_host),
+            executor=_docker_executor(settings),
             repo=_repo(),
             # C-2: scan containers are judged against image_scans.
             scan_statuses=PgImagesRepo(settings.database_url).scan_statuses,

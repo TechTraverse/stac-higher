@@ -150,12 +150,24 @@ WEBHOOK_DELIVERIES = Counter(
 PROCESS_RUNS = Counter(
     "pipeline_process_runs_total",
     "Process run terminal outcomes (Phase 9 §6 ledger statuses)",
-    ["outcome"],  # succeeded | dead | failed | queued (infrastructure requeue)
+    # The ledger status a write left the row in (ledger.run_metric_status):
+    # succeeded | failed | dead | cancelled | queued (any requeue or fold,
+    # no attempt spent). Writes that matched nothing are not counted.
+    ["outcome"],
     registry=REGISTRY,
 )
+PROCESS_RECONCILES = Counter(
+    "pipeline_process_reconciles_total",
+    "K-4: what one reconcile of a submitted process run did",
+    # unchanged | phase | succeeded | failed | dead | cancelled | requeued |
+    # merged | skipped | unavailable
+    ["outcome"],
+    registry=REGISTRY,
+)
+
 PROCESS_RUN_SECONDS = Histogram(
     "pipeline_process_run_seconds",
-    "Wall-clock duration of a process run, executor launch to exit",
+    "Wall-clock duration of a process run, submission to collection",
     registry=REGISTRY,
 )
 PROCESS_OUTPUT_ITEMS = Counter(

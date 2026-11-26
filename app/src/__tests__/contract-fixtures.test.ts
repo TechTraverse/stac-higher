@@ -58,6 +58,11 @@ import {
 } from "@/lib/processes/schemas";
 import { hardwareProfileSetSchema } from "@/lib/processes/hardware";
 import {
+  CANCELLABLE_RUN_STATUSES,
+  PROCESS_RUN_CANCEL_CHANNEL,
+  type ProcessRunStatus,
+} from "@/lib/processes/storage";
+import {
   DEPLOY_IMAGE_STATUSES,
   IMAGE_GATE_REASONS,
   IMAGE_SCAN_KINDS,
@@ -673,7 +678,8 @@ describe("process credential budget contract (tests/contract-fixtures/process-cr
     setting: string; grace_setting: string; grace_default_seconds: number;
     deploy_refusal: { status: number; code: string };
     cases: { name: string; max_credential_seconds: number | null; max_queue_wait_seconds: number;
-             timeout_seconds: number; grace_seconds: number; deploy_allowed: boolean }[];
+             timeout_seconds: number; grace_seconds: number; deploy_allowed: boolean;
+             mint_allowed: boolean }[];
     cap_min_seconds: number;
     parse_cases: { name: string; variable: string; raw: string | null; result: number | null | "reject" }[];
   };
@@ -682,6 +688,10 @@ describe("process credential budget contract (tests/contract-fixtures/process-cr
     expect(fx.grace_setting).toBe(CREDENTIAL_GRACE_SECONDS_ENV);
     expect(fx.grace_default_seconds).toBe(DEFAULT_PROCESS_CREDENTIAL_GRACE_SECONDS);
     expect(fx.deploy_refusal).toEqual({ status: CREDENTIAL_BUDGET_STATUS, code: CREDENTIAL_BUDGET_CODE });
+  });
+  // K-4: the pipeline's mint counts the queue wait too, so they agree.
+  it.each(fx.cases)("deploy and mint agree: $name", (c) => {
+    expect(c.deploy_allowed).toBe(c.mint_allowed);
   });
   it.each(fx.cases)("$name", (c) => {
     expect(credentialBudgetError({ maxCredentialSeconds: c.max_credential_seconds, maxQueueWaitSeconds: c.max_queue_wait_seconds,
@@ -704,5 +714,39 @@ describe("process credential budget contract (tests/contract-fixtures/process-cr
     } else {
       expect(read(env)).toBe(c.result);
     }
+  });
+});
+
+// K-4: the run status vocabulary, its cancellable subset and the cancel
+// channel are shared with the pipeline's ledger.py.
+describe("process run status contract", () => {
+  const fx = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL("../../../tests/contract-fixtures/process-run-status.json", import.meta.url),
+      ),
+      "utf8",
+    ),
+  ) as { statuses: string[]; terminal: string[]; cancellable: string[]; cancel_channel: string };
+
+  it("the app's ProcessRunStatus is exactly the fixture's statuses", () => {
+    const every: Record<ProcessRunStatus, true> = {
+      queued: true,
+      running: true,
+      succeeded: true,
+      failed: true,
+      dead: true,
+      cancelled: true,
+    };
+    expect(Object.keys(every).sort()).toEqual([...fx.statuses].sort());
+  });
+  it("cancellable statuses match, in fixture order", () => {
+    expect([...CANCELLABLE_RUN_STATUSES]).toEqual(fx.cancellable);
+  });
+  it("the cancel channel matches", () => {
+    expect(PROCESS_RUN_CANCEL_CHANNEL).toBe(fx.cancel_channel);
+  });
+  it("terminal and cancellable are subsets of statuses", () => {
+    for (const s of [...fx.terminal, ...fx.cancellable]) expect(fx.statuses).toContain(s);
   });
 });

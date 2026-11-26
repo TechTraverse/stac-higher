@@ -711,12 +711,36 @@ oldest first, but a newly triggered run can take a freed slot before them. A
 full profile never holds back runs on other profiles. **Extractor** runs (see
 "Extractors") on the default `standard` profile, which includes every
 built-in extractor, are exempt: they never wait for capacity, never count
-toward it, and are not CPU-capped, so only the pipeline worker bounds them.
-An extractor whose revision picks any other profile is treated like any
-other run on that profile. A started run shows *Starting* for its whole run
-today; the *Running* phase and the queue position the spec puts in the
-tooltip come with the asynchronous executor (K-4). On a cluster (K-5 on)
-the same wait is Kueue holding the run for quota.
+toward it, and are not CPU-capped; instead the deployment allows at most
+`PROCESS_EXTRACT_MAX_RUNNING` of them at once (default 4), and past that
+they wait as *Waiting for capacity* too. An extractor whose revision picks
+any other profile is treated like any other run on that profile. When a run
+finishes, the oldest run waiting for its slot is started straight away, not
+at the next tick. A claimed run shows *Starting* until the executor reports
+it running, then the `running` badge alone, then its verdict. The queue
+position the spec puts in the tooltip is not shown yet. On a cluster (K-5
+on) the same wait is Kueue holding the run for quota, and the run shows
+*Waiting for capacity* while `running`.
+
+## Cancelling a run
+
+Operators (and admins) of the process's group can cancel a run from its row
+(Cancel, then confirm). What happens depends on its status:
+
+- **Queued** or **failed** (waiting for a retry): it becomes `cancelled` at
+  once. Nothing was running.
+- **Running**: the row shows *Cancelling…* while the pipeline stops it —
+  within seconds, at most a minute. Your code gets SIGTERM and 10 seconds
+  to exit before SIGKILL. Its log is kept (the Log link works), and the row
+  ends `cancelled`.
+- Anything else (succeeded, dead, cancelled) cannot be cancelled.
+
+A cancel wins: if the run exits on its own between your click and the stop,
+even successfully, it still ends `cancelled` and nothing it wrote is
+published (its staged outputs age out). A `cancelled` run does not count
+for or against the process's health. You can re-run it like a dead run (the
+same revision). An **extractor** run can be cancelled too; its files are
+picked up again by the ingest sweep. Every cancel is audited.
 
 ## Rate ceiling
 
@@ -742,9 +766,17 @@ a new run; re-running an old row will run the old code. **Extractor** runs are
 the exception: re-run is refused for them, and their files are retried by the
 ingest failed-retry sweep instead (see "Extractors").
 
-A run stranded by a worker or executor crash is returned to `queued` by the
-stall sweep, so the crash direction is safe: a run may execute twice, never
-zero times. The container that crash left behind is removed separately, by the
+A worker restart no longer touches a running run: the run keeps running in
+its container, and the restarted worker collects its verdict and log exactly
+once (the run tick and the container events both lead there). A run longer
+than an hour is therefore never mistaken for a stranded one. The timeout is
+enforced by the platform and may overrun by up to a minute. A container
+that disappears under a running run (removed by hand, say) sends the run
+back to `queued` without spending an attempt.
+
+A run stranded by a worker crash before its container started is returned to
+`queued` by the stall sweep, so the crash direction is safe: a run may
+execute twice, never zero times. The container that crash left behind is removed separately, by the
 orphan reaper — so a second attempt does not collide with the first attempt's
 leftovers. If a newer trigger queued a run for the same source (or ingest
 association) meanwhile, the returning run folds into it instead: its items

@@ -62,6 +62,8 @@ export function successRateOverRuns(runs: ProcessRun[]): {
   rate: number | null;
   counted: number;
 } {
+  // K-4: `cancelled` is deliberately neutral (spec §9) — an operator's stop
+  // is neither a success nor a failure of the process.
   const terminal = runs.filter(
     (r) => r.status === "succeeded" || r.status === "dead",
   );
@@ -106,7 +108,9 @@ export function processVerdict(
     };
   }
 
-  const ledger = realRuns(runs);
+  // K-4: a cancelled run is neutral (spec §9) — it says nothing about the
+  // process, so a process whose only runs were cancelled has "Never run".
+  const ledger = realRuns(runs).filter((r) => r.status !== "cancelled");
   if (ledger.length === 0) {
     return { health: "unknown", label: "Never run", reason: null };
   }

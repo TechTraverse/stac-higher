@@ -25,6 +25,7 @@ import {
   listRuns,
   listSources,
   rerunRun,
+  cancelRun,
   updateProcess,
   updateSource,
 } from "./api";
@@ -181,6 +182,19 @@ export function useRerunRun() {
   return useProcessMutation(({ id, runId }: { id: string; runId: string }) =>
     rerunRun(id, runId),
   );
+}
+
+export function useCancelRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, runId }: { id: string; runId: string }) => cancelRun(id, runId),
+    // K-4: refresh on a refusal too — a 409 usually means the run finished
+    // a moment ago, and the row should stop offering Cancel.
+    onSettled: (_data, _error, { id }) => {
+      void qc.invalidateQueries({ queryKey: processKeys.runs(id) });
+      void qc.invalidateQueries({ queryKey: processKeys.all() });
+    },
+  });
 }
 
 export function useDeleteOutput() {

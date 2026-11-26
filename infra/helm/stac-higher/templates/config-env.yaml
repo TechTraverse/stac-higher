@@ -67,6 +67,7 @@
 {{- $_ := set $pipe "STAGING_S3_REGION" $v.aws.region -}}
 {{- $_ := set $pipe "STAGING_S3_FORCE_PATH_STYLE" (toString $v.objectStore.forcePathStyle) -}}
 {{- $_ := set $pipe "PROCESS_STS_ROLE_ARN" $v.aws.processRunRoleArn -}}
+{{- $_ := set $pipe "PROCESS_EXTRACT_MAX_RUNNING" (toString $v.processRuns.extractMaxRunning) -}}
 {{- $_ := set $pipe "PROCESS_RUNTIME_IMAGE" (include "stac-higher.imageRef" (dict "root" . "key" "process-runtime")) -}}
 {{- $_ := set $pipe "PROCESS_RUNTIME_IMAGE_STACTOOLS" (include "stac-higher.imageRef" (dict "root" . "key" "process-runtime-stactools")) -}}
 {{- $_ := set $pipe "IMAGE_SCANNER_IMAGE" (include "stac-higher.imageRef" (dict "root" . "key" "image-scanner")) -}}

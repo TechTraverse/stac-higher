@@ -1639,6 +1639,58 @@ const MIGRATIONS = [
     `,
   },
   {
+    // K-4 (#12, process-compute spec §5.2/§5.4): `cancelled` joins the run
+    // status vocabulary (terminal; tests/contract-fixtures/process-run-status.json
+    // binds this CHECK, the app's cancel verb and the pipeline's ledger.py),
+    // and `credentials_expire_at` records when a submitted run's STS
+    // credentials expire (written at submission — K-4 plan R6 — so the
+    // credential-expiry requeue never re-derives it from a profile file that
+    // may have changed since).
+    //
+    // The 024 inline CHECK's default name is already
+    // `process_runs_status_check`, so the swap drops every CHECK on `status`
+    // by lookup (never `process_runs_phase_check`) and re-adds it with the
+    // same name. NOT VALID: the new set is a strict superset of the old, so
+    // no existing row can fail it, and skipping the scan matters because all
+    // pending migrations share one transaction — a VALIDATE here would scan
+    // under the ACCESS EXCLUSIVE lock the DROP/ADD took (029's precedent).
+    // Skipped once the constraint already admits `cancelled`.
+    //
+    // `process_runs_terminal_age_idx` deliberately stays ('succeeded','dead'):
+    // nothing reads it yet; the retention leg that will must add `cancelled`
+    // (docs/ISSUES.md).
+    name: "031_process_runs_cancelled",
+    sql: `
+      SET LOCAL lock_timeout = '10s';
+      DO $do$
+      DECLARE c record;
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'stac_higher.process_runs'::regclass
+            AND conname = 'process_runs_status_check'
+            AND pg_get_constraintdef(oid) LIKE '%cancelled%'
+        ) THEN
+          FOR c IN
+            SELECT conname FROM pg_constraint
+             WHERE conrelid = 'stac_higher.process_runs'::regclass AND contype = 'c'
+               AND conname <> 'process_runs_phase_check'
+               AND pg_get_constraintdef(oid) LIKE '%status%'
+          LOOP
+            EXECUTE format('ALTER TABLE stac_higher.process_runs DROP CONSTRAINT %I', c.conname);
+          END LOOP;
+          ALTER TABLE stac_higher.process_runs ADD CONSTRAINT process_runs_status_check
+            CHECK (status IN ('queued','running','succeeded','failed','dead','cancelled'))
+            NOT VALID;
+        END IF;
+      END
+      $do$;
+      ALTER TABLE stac_higher.process_runs
+        ADD COLUMN IF NOT EXISTS credentials_expire_at timestamptz;
+      SET LOCAL lock_timeout TO DEFAULT;
+    `,
+  },
+  {
     // Z-2 (virtual cube spec §4, ADR 0022): a cube sink binds a source
     // collection (fed by a reference-mode ingest association) to the cube
     // collection that owns the virtual Icechunk repository at
@@ -1647,8 +1699,8 @@ const MIGRATIONS = [
     // Collections live in pgstac: no FK; the BFF collection delete removes
     // sink rows naming the deleted collection. source_prefixes,
     // last_snapshot_id and the last_* fields are pipeline-written;
-    // updated_at is app-maintained. 029 (K-3) and 031 (K-4) are reserved
-    // elsewhere; migrations apply by name, so the gap is harmless.
+    // updated_at is app-maintained. 029 (K-3) and 031 (K-4) landed after
+    // this one; migrations apply by name, so the order of landing is harmless.
     name: "032_cube_sinks",
     sql: `
       CREATE TABLE IF NOT EXISTS stac_higher.cube_sinks (

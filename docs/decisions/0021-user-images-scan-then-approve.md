@@ -50,8 +50,9 @@ policy on the summary it writes.
   gets the untrusted-code posture; on Kubernetes it is a Job with no
   redesign; one drain and one ledger for admission and rescans.
 - **Against:** a third platform image to build and refresh; a second
-  Docker network with egress; a blocking `wait` until K-4's async
-  executor (a scan holds a worker slot for minutes — I-124).
+  Docker network with egress; a scan holds a worker slot for minutes while
+  it runs (I-124; K-4 kept the drain blocking, GitHub #203 moves it onto
+  the reconcile path).
 
 ### B. Syft/Grype as a subprocess in the pipeline worker
 
@@ -150,8 +151,8 @@ documented extension, not v1.
 - A second egress-capable Docker network (`scanner-egress`) exists; it
   cannot filter by host, so `allowed_registries` is enforced in software
   twice and the scanner is the only thing on it (I-123).
-- Until K-4, a scan holds a worker slot for up to the policy timeout
-  (I-124); M3-D's concurrency makes that a slot, not a stall.
+- A scan holds a worker slot for up to the policy timeout (I-124, GitHub
+  #203); M3-D's concurrency makes that a slot, not a stall.
 - The Docker Hub anonymous budget (100 pulls / 6 h / IP) is shared by
   scans and launches; a deployment credential is optional and the
   exposure is logged (I-125).
@@ -171,7 +172,8 @@ documented extension, not v1.
   policy; produce scan attestations.
 - When Trivy's SBOM interop or a KEV/EPSS enrichment matures: a second
   engine at admission for secrets/misconfig.
-- When K-4 lands: the drain stops blocking; when K-6 lands: admission
-  enforcement moves into the cluster as defence in depth.
+- When GitHub #203 lands: the drain stops blocking (K-4 gave scans
+  `submit` + status polling but kept them in their slot, I-124); when K-6
+  lands: admission enforcement moves into the cluster as defence in depth.
 - If a partner site needs an air-gapped DB: the mirror URL is already a
   setting; a scheduled scanner-image rebuild is the documented path.

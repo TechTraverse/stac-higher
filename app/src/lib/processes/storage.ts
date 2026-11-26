@@ -715,10 +715,14 @@ export async function deleteOutput(
 // analog). It deliberately does NOT execute anything itself.
 // ---------------------------------------------------------------------------
 
+// Bare column names only, comma-separated: `cancelRun` derives its
+// `upd.<column>` list by splitting this on commas, so an expression or an
+// alias here would break that statement (K-4).
 const RUN_COLUMNS = `
   id, process_id, revision_id, source_id, status, attempts,
   input_items, output_items, log_ref, error, rate_deferred_until,
-  is_test, created_at, started_at, finished_at, phase, phase_detail
+  is_test, created_at, started_at, finished_at, phase, phase_detail,
+  cancel_requested_at
 `;
 
 interface RunRow {
@@ -726,7 +730,7 @@ interface RunRow {
   process_id: string;
   revision_id: string;
   source_id: string | null;
-  status: "queued" | "running" | "succeeded" | "failed" | "dead";
+  status: ProcessRunStatus;
   attempts: number;
   input_items: unknown;
   output_items: unknown;
@@ -739,7 +743,17 @@ interface RunRow {
   finished_at: Date | string | null;
   phase: string | null;
   phase_detail: string | null;
+  cancel_requested_at: Date | string | null;
 }
+
+// K-4: the run status vocabulary lives in a client-safe module (the run row
+// imports it); re-exported here for the server side.
+import { PROCESS_RUN_CANCEL_CHANNEL, type ProcessRunStatus } from "./run-status";
+export {
+  CANCELLABLE_RUN_STATUSES,
+  PROCESS_RUN_CANCEL_CHANNEL,
+  type ProcessRunStatus,
+} from "./run-status";
 
 /** K-3 (process-compute spec §5.2): the sub-state of a queued/running run,
  * pinned by tests/contract-fixtures/process-run-phase.json. */
@@ -770,6 +784,9 @@ export interface ApiProcessRun {
   phase: ProcessRunPhase | null;
   /** The reason for the phase (the UI's tooltip), when there is one. */
   phase_detail: string | null;
+  /** K-4: set once an operator asked to cancel; a `running` run with it set
+   * is being stopped (the UI's *Cancelling…*). */
+  cancel_requested_at: string | null;
 }
 
 export function toApiRun(row: RunRow): ApiProcessRun {
@@ -791,6 +808,7 @@ export function toApiRun(row: RunRow): ApiProcessRun {
     finished_at: iso(row.finished_at),
     phase: (row.phase as ProcessRunPhase | null) ?? null,
     phase_detail: row.phase_detail ?? null,
+    cancel_requested_at: iso(row.cancel_requested_at ?? null),
   };
 }
 
@@ -831,14 +849,79 @@ export class RunAlreadyQueuedError extends Error {
   }
 }
 
+export type CancelOutcome = "cancelled" | "cancel_requested";
+
 /**
- * Re-run a DEAD run (the `redeliver` analog, spec §6).
+ * Cancel a run (K-4, spec §5.3; closes I-81) — ONE statement (plan I11/I12).
+ *
+ * - `queued` / `failed` (retry pending, R4): nothing is submitted, so the row
+ *   flips to `cancelled` at once (`outcome: "cancelled"`).
+ * - `running`: the app never touches the executor (ADR 0004). It sets
+ *   `cancel_requested_at` and fires a payload-less `pg_notify` on
+ *   `process_run_cancel` in the same transaction; the pipeline stops the run,
+ *   keeps its log and lands it `cancelled` (`outcome: "cancel_requested"`).
+ *
+ * `prior_status` comes from the row the CTE locked `FOR UPDATE`, so a claim
+ * that commits first is seen as `running` (READ COMMITTED re-checks a locked
+ * row against its newest version), and a claim that waits behind the cancel
+ * finds a `cancelled` row it cannot claim. Null when the run is unknown,
+ * outside this process, or not cancellable.
+ *
+ * Keep in sync with services/pipeline/tests/test_integration_process_reconcile.py
+ * (APP_CANCEL_SQL), which races this statement against a claim.
+ */
+export async function cancelRun(
+  processId: string,
+  runId: string,
+): Promise<{ run: ApiProcessRun; outcome: CancelOutcome } | null> {
+  await runMigrations();
+  const columns = RUN_COLUMNS.split(",")
+    .map((c) => `upd.${c.trim()}`)
+    .join(", ");
+  const result = await query<RunRow & { prior_status: ProcessRunStatus }>(
+    `WITH target AS (
+       SELECT id, status AS prior_status FROM stac_higher.process_runs
+        WHERE id = $1 AND process_id = $2 AND status IN ('queued','failed','running')
+        FOR UPDATE
+     ), upd AS (
+       UPDATE stac_higher.process_runs r
+          SET cancel_requested_at = coalesce(r.cancel_requested_at, now()),
+              status = CASE WHEN t.prior_status = 'running' THEN r.status ELSE 'cancelled' END,
+              finished_at = CASE WHEN t.prior_status = 'running' THEN r.finished_at ELSE now() END,
+              phase = CASE WHEN t.prior_status = 'running' THEN r.phase ELSE NULL END,
+              phase_detail = CASE WHEN t.prior_status = 'running' THEN r.phase_detail ELSE NULL END,
+              next_attempt_at = CASE WHEN t.prior_status = 'running'
+                                     THEN r.next_attempt_at ELSE NULL END,
+              rate_deferred_until = CASE WHEN t.prior_status = 'running'
+                                         THEN r.rate_deferred_until ELSE NULL END,
+              error = CASE WHEN t.prior_status = 'running' THEN r.error
+                           ELSE 'cancelled by an operator' END
+         FROM target t WHERE r.id = t.id
+       RETURNING r.*, t.prior_status
+     )
+     SELECT ${columns}, upd.prior_status,
+            pg_notify('${PROCESS_RUN_CANCEL_CHANNEL}', '')
+       FROM upd`,
+    [runId, processId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    run: toApiRun(row),
+    outcome: row.prior_status === "running" ? "cancel_requested" : "cancelled",
+  };
+}
+
+/**
+ * Re-run a DEAD or CANCELLED run (the `redeliver` analog, spec §6; K-4).
  *
  * Resets the row to `queued` with a fresh attempt budget so the pipeline's
  * next run tick claims it. Two deliberate constraints:
  *
- * - Only `dead` rows. A queued/running row is already owed work, and
- *   re-running a succeeded one would re-publish its outputs.
+ * - Only `dead` and `cancelled` rows. A queued/running/failed row is
+ *   already owed work, and re-running a succeeded one would re-publish its
+ *   outputs. Every executor column of the earlier attempt is cleared, so the
+ *   re-run is admitted and submitted afresh (K-3/K-4).
  * - The pinned `revision_id` is NOT touched. A re-run re-executes the
  *   revision that failed, not whatever is current — otherwise "re-run" would
  *   silently mean "run something else", and the ledger would misattribute the
@@ -861,8 +944,9 @@ export async function rerunRun(
               started_at = NULL, finished_at = NULL,
               rate_deferred_until = NULL,
               phase = NULL, phase_detail = NULL, next_attempt_at = NULL,
-              executor_backend = NULL
-        WHERE id = $1 AND process_id = $2 AND status = 'dead'
+              executor_backend = NULL, executor_handle = NULL, submitted_at = NULL,
+              cancel_requested_at = NULL, credentials_expire_at = NULL
+        WHERE id = $1 AND process_id = $2 AND status IN ('dead','cancelled')
         RETURNING ${RUN_COLUMNS}`,
       [runId, processId],
     );

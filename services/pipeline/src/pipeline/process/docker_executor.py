@@ -1,9 +1,10 @@
 """Docker Engine API executor (ADR 0013 slice-1 backend, spec §4).
 
 Talks the Engine API over HTTP to a **least-privilege socket proxy**
-(`tecnativa/docker-socket-proxy` with ``CONTAINERS=1 IMAGES=1 INFO=1 POST=1``
-(IMAGES since C-2, for pull-by-digest; INFO since K-3, the read-only
-``GET /info`` that says whether the daemon has an NVIDIA runtime), everything
+(`tecnativa/docker-socket-proxy` with ``CONTAINERS=1 IMAGES=1 INFO=1 POST=1
+EVENTS=1`` (IMAGES since C-2, for pull-by-digest; INFO since K-3, the
+read-only ``GET /info`` that says whether the daemon has an NVIDIA runtime;
+EVENTS since K-4, the run watcher's read-only ``GET /events``), everything
 else off — P9-A verified `exec` and `volumes` return 403 there). The pipeline never
 holds the raw socket, so the proxy is the auditable seam, and
 :func:`assert_safe_docker_host` refuses to start against a raw socket at all.
@@ -25,13 +26,15 @@ residual risk ADR 0013 flagged (the proxy still permits arbitrary
    default bridge — full outbound internet — which is exactly the egress
    boundary this executor exists to hold.
 
-No docker SDK dependency: the Engine API calls used here are four plain HTTP
-requests, and adding a client library for them would widen the dependency
+No docker SDK dependency: the Engine API calls used here are a handful of
+plain HTTP requests plus one event stream (``process/http_stream.py``), and
+adding a client library for them would widen the dependency
 surface of a security-critical component for no benefit.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import datetime as dt
@@ -40,11 +43,13 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from pipeline.images.reference import is_image_digest, is_image_reference
 from pipeline.process.executor import (
+    RESYNC,
     Executor,
     ExecutorUnavailable,
     ExitStatus,
@@ -53,10 +58,19 @@ from pipeline.process.executor import (
     ImagePullFailed,
     LaunchedRun,
     RegistryAuth,
+    RunEvent,
     RunHandle,
     RunSpec,
+    RunState,
+    oom_error,
 )
 from pipeline.process.hardware import docker_backend
+from pipeline.process.http_stream import (
+    HttpStreamError,
+    is_chunked,
+    iter_body_lines,
+    read_http_head,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,15 +92,31 @@ PROCESS_ID_LABEL = "stac-higher.process-id"
 RUN_KIND_LABEL = "stac-higher.run-kind"
 #: C-2: a scan container names the image it scans.
 IMAGE_ID_LABEL = "stac-higher.image-id"
+#: K-4 (R10): every container carries its run's timeout, so ``status()`` can
+#: enforce it on read and a restarted worker recomputes the verdict.
+TIMEOUT_LABEL = "stac-higher.timeout-seconds"
+#: K-4: memory limit in MB, so an OOM verdict names it (``oom_error``).
+MEMORY_LABEL = "stac-higher.memory-mb"
+#: ``cancel`` = ``POST /stop?t=10``: SIGTERM, then SIGKILL after this.
+STOP_GRACE_SECONDS = 10
+#: K-4: the run watcher's ``GET /events`` filter — container events of OUR
+#: runs only (the run-id label), and only the ones that change a verdict.
+EVENT_FILTERS = {
+    "type": ["container"],
+    "label": [RUN_ID_LABEL],
+    "event": ["start", "die", "oom", "destroy"],
+}
 #: Spec §3.2 / §14 decision 1: every user image runs as the platform
 #: runtime's `runner` uid, whatever its own USER says.
 USER_IMAGE_USER = "10001:10001"
 _CONTAINER_NAME_PREFIX = {"process": "stac-run-", "image_scan": "stac-scan-"}
 
 #: Docker reports a SIGKILLed container as 137. It cannot distinguish OUR
-#: timeout kill from any other SIGKILL, which is why `wait` tracks the kill
-#: itself rather than inferring it from the code.
+#: timeout kill from any other SIGKILL, which is why ``status()`` decides
+#: ``timed_out`` from the clock, not from the code.
 SIGKILL_EXIT_CODE = 137
+#: Docker's "never" (`StartedAt`/`FinishedAt` of a container that has not).
+_ZERO_TIME = "0001-01-01T00:00:00Z"
 
 #: The daemon's wording for an absent image on create (lower-cased for the
 #: match): ``{"message":"No such image: <name>"}``.
@@ -196,18 +226,22 @@ class DockerExecutor(Executor):
 
     docker_host: str
     name: str = "docker"
-    #: Per-request HTTP timeout. Deliberately NOT the run budget — `wait`
-    #: long-polls the daemon in slices so a hung daemon surfaces promptly
-    #: while a legitimately long run is not cut short.
+    #: Per-request HTTP timeout. Deliberately NOT the run budget: nothing
+    #: blocks on a run (K-4), so a hung daemon surfaces promptly.
     request_timeout_seconds: int = 30
-    #: How long each /wait long-poll blocks before we re-check our own budget.
-    poll_slice_seconds: int = 5
+    #: K-4 A5: `submit` returns after `POST /start` succeeded, so the
+    #: container is running (or already exited) — never queued for capacity.
+    submitted_phase = "running"
     #: A pull streams progress, so this bounds each socket read, not the
     #: whole pull. Generous: a first pull of a large user image is slow.
     pull_timeout_seconds: int = 900
     #: K-3: the daemon's `GET /info` answer (Runtimes, NCPU), cached for the
     #: executor's life once it succeeds (None = not asked, or it failed).
     _info: dict | None = field(default=None, init=False, repr=False)
+    #: K-4 test seam: "now" for the on-read deadline.
+    clock: Callable[[], dt.datetime] = field(
+        default=lambda: dt.datetime.now(dt.UTC), repr=False
+    )
 
     def __post_init__(self) -> None:
         assert_safe_docker_host(self.docker_host)
@@ -384,7 +418,7 @@ class DockerExecutor(Executor):
 
     # -- Executor -----------------------------------------------------------
 
-    def launch(self, spec: RunSpec) -> RunHandle:
+    def submit(self, spec: RunSpec) -> RunHandle:
         # K-3 (spec §8): GPUs are device requests, and only on a host that
         # can honour them -- otherwise the run dies here, before a pull or a
         # container, naming the profile. No GPU asked, no probe.
@@ -396,7 +430,12 @@ class DockerExecutor(Executor):
         device_requests = self._device_requests(spec) if spec.gpu_count > 0 else None
         if spec.user_image:
             self._ensure_image(spec.image, spec.registry_auth)
-        labels = {RUN_ID_LABEL: spec.run_id, RUN_KIND_LABEL: spec.kind}
+        labels = {
+            RUN_ID_LABEL: spec.run_id,
+            RUN_KIND_LABEL: spec.kind,
+            TIMEOUT_LABEL: str(spec.timeout_seconds),
+            MEMORY_LABEL: str(spec.memory_mb),
+        }
         if spec.kind == "image_scan":
             labels[IMAGE_ID_LABEL] = spec.process_id
         else:
@@ -488,43 +527,112 @@ class DockerExecutor(Executor):
             raise
         return RunHandle(id=container_id, backend=self.name)
 
-    def wait(self, handle: RunHandle, timeout_seconds: int) -> ExitStatus:
-        import time
-
-        deadline = time.monotonic() + timeout_seconds
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            # Long-poll in slices: the daemon blocks until exit, and we cap
-            # each block so our own budget stays authoritative even if the
-            # daemon never answers.
-            slice_seconds = int(min(self.poll_slice_seconds, remaining)) or 1
-            try:
-                result = self._request(
-                    "POST",
-                    f"/containers/{handle.id}/wait",
-                    timeout=slice_seconds + 1,
-                )
-            except ExecutorUnavailable as err:
-                # A read timeout on a long-poll is the normal "still running"
-                # answer, not a backend failure; anything else is real.
-                if "timed out" not in str(err).lower():
-                    return ExitStatus(exit_code=-1, error=str(err))
-                continue
-            if isinstance(result, dict) and "StatusCode" in result:
-                return ExitStatus(exit_code=int(result["StatusCode"]))
-
-        # Budget spent. Killing is what makes the limit real (ADR 0013:
-        # limits are enforced by the executor, not trusted to the code).
+    def status(self, handle: RunHandle) -> RunState:
+        """K-4: one inspect. A 404 is ``lost`` (the daemon affirms it is
+        gone); any other failure is :class:`ExecutorUnavailable`. A running
+        container past ``StartedAt + timeout`` is killed here (R10)."""
         try:
-            self._request("POST", f"/containers/{handle.id}/kill")
-        except ExecutorUnavailable as err:
-            logger.warning(
-                "process run kill failed",
-                extra={"run": handle.id, "error": str(err)},
+            info = self._request("GET", f"/containers/{handle.id}/json")
+        except EngineHTTPError as err:
+            if err.status == 404:
+                return RunState(
+                    "lost", detail="its container is gone (removed outside the pipeline)"
+                )
+            raise
+        if not isinstance(info, dict):
+            raise ExecutorUnavailable(f"docker inspect returned {type(info).__name__}")
+        state = info.get("State") or {}
+        labels = (info.get("Config") or {}).get("Labels") or {}
+        timeout = _int_label(labels.get(TIMEOUT_LABEL))
+        started = _docker_time(state.get("StartedAt"))
+        docker_status = str(state.get("Status") or "")
+        if docker_status == "created":
+            return RunState("starting")
+        if docker_status in ("running", "paused", "restarting"):
+            if timeout is not None and started is not None and (
+                self.clock() - started
+            ).total_seconds() >= timeout:
+                # The deadline, enforced on read: kill, then report the verdict.
+                with contextlib.suppress(EngineHTTPError):
+                    self._request("POST", f"/containers/{handle.id}/kill")
+                return RunState(
+                    "exited", exit=ExitStatus(SIGKILL_EXIT_CODE, timed_out=True),
+                    finished_at=self.clock(),
+                )
+            return RunState("running")
+        # exited / dead / removing: a verdict.
+        code = int(state.get("ExitCode") or 0)
+        finished = _docker_time(state.get("FinishedAt"))
+        timed_out = bool(
+            code != 0 and timeout is not None and started is not None and finished is not None
+            and (finished - started).total_seconds() >= timeout
+        )
+        error = None
+        if state.get("OOMKilled"):
+            error = oom_error(_int_label(labels.get(MEMORY_LABEL)))
+        elif state.get("Error"):
+            error = str(state["Error"])[:500]
+        return RunState(
+            "exited", exit=ExitStatus(code, timed_out=timed_out, error=error),
+            finished_at=finished,
+        )
+
+    def cancel(self, handle: RunHandle) -> None:
+        """K-4: SIGTERM, SIGKILL after the grace; the container is kept for
+        ``logs`` and ``reap``. 304 (already stopped) and 404 are success."""
+        try:
+            self._request(
+                "POST",
+                f"/containers/{handle.id}/stop?t={STOP_GRACE_SECONDS}",
+                timeout=self.request_timeout_seconds + STOP_GRACE_SECONDS,
             )
-        return ExitStatus(exit_code=SIGKILL_EXIT_CODE, timed_out=True)
+        except EngineHTTPError as err:
+            if err.status not in (304, 404):
+                raise
+
+    async def watch(self) -> AsyncIterator[RunEvent]:
+        """K-4: the Engine's ``/events`` stream, filtered to our run-id label,
+        over a plain asyncio connection to the socket proxy (EVENTS=1).
+        Yields :data:`RESYNC` once the stream is open, then one wake-up per
+        event. No ``since`` bookkeeping: every (re)connect resyncs instead.
+        A refused or dropped stream raises :class:`ExecutorUnavailable`."""
+        parsed = urlparse(self.docker_host)
+        host, port = parsed.hostname or "localhost", parsed.port or 2375
+        path = (
+            f"/{API_VERSION}/events?filters="
+            f"{urllib.parse.quote(json.dumps(EVENT_FILTERS, separators=(',', ':')))}"
+        )
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+        except OSError as err:
+            raise ExecutorUnavailable(f"docker GET /events unreachable: {err}") from err
+        try:
+            writer.write(
+                f"GET {path} HTTP/1.1\r\nHost: docker\r\nAccept: application/json\r\n"
+                "Connection: close\r\n\r\n".encode("ascii")
+            )
+            await writer.drain()
+            try:
+                status, headers = await read_http_head(reader)
+            except (HttpStreamError, OSError) as err:
+                raise ExecutorUnavailable(f"docker GET /events failed: {err}") from err
+            if status != 200:
+                raise ExecutorUnavailable(f"docker GET /events failed: {status}")
+            yield RESYNC
+            try:
+                async for line in iter_body_lines(reader, chunked=is_chunked(headers)):
+                    try:
+                        event = _parse_event(json.loads(line))
+                    except ValueError:
+                        continue
+                    if event is not None:
+                        yield event
+            except (HttpStreamError, OSError, asyncio.IncompleteReadError) as err:
+                raise ExecutorUnavailable(f"docker /events stream broke: {err}") from err
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
     def logs(self, handle: RunHandle, max_bytes: int) -> bytes:
         query = "stdout=1&stderr=1&timestamps=0"
@@ -586,6 +694,53 @@ class DockerExecutor(Executor):
                 )
             )
         return entries
+
+
+def _parse_event(obj: object) -> RunEvent | None:
+    """One Engine event -> a wake-up for its run, or None for anything that
+    is not a container event of ours. Carries identity only (R1)."""
+    if not isinstance(obj, dict) or obj.get("Type") != "container":
+        return None
+    actor = obj.get("Actor")
+    if not isinstance(actor, dict):
+        return None
+    attributes = actor.get("Attributes")
+    if not isinstance(attributes, dict):
+        return None
+    run_id = attributes.get(RUN_ID_LABEL)
+    if not isinstance(run_id, str) or not run_id:
+        return None
+    kind = attributes.get(RUN_KIND_LABEL)
+    return RunEvent(
+        run_id=run_id,
+        handle_id=actor.get("ID") if isinstance(actor.get("ID"), str) else None,
+        kind=kind if isinstance(kind, str) and kind else "process",
+    )
+
+
+def _int_label(raw: object) -> int | None:
+    try:
+        value = int(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _docker_time(raw: object) -> dt.datetime | None:
+    """RFC 3339 with up to nanoseconds; Docker's zero time is "never"."""
+    if not isinstance(raw, str) or not raw or raw.startswith("0001-01-01"):
+        return None
+    text = raw.replace("Z", "+00:00")
+    main, dot, rest = text.partition(".")
+    if dot:
+        digits = "".join(ch for ch in rest if ch.isdigit())
+        tz = rest[len(digits):]
+        text = f"{main}.{digits[:6].ljust(6, '0')}{tz}"
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.UTC)
 
 
 def _demultiplex(payload: bytes) -> bytes:

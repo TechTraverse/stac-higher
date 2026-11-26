@@ -256,10 +256,19 @@ are not in the registry (I-107).
   app's `ProcessRunPhase` (`processes-run-phase.test.ts`) and the
   pipeline's `PHASES` in `pipeline/process/ledger.py`
   (`test_process_hardware.py`).
+- `process-run-status.json` (K-4) is style `pinned-enum`. `statuses` is the
+  `process_runs.status` vocabulary in canonical order (migration 031's
+  `process_runs_status_check`, `processes-migration.test.ts`); `terminal`,
+  `cancellable` and `cancel_channel` are the cancel verb's contract. The
+  app's `ProcessRunStatus`, `CANCELLABLE_RUN_STATUSES` and
+  `PROCESS_RUN_CANCEL_CHANNEL` (`contract-fixtures.test.ts`) and the
+  pipeline's `STATUSES`, `TERMINAL_STATUSES`, `CANCELLABLE_STATUSES` and
+  `CANCEL_CHANNEL` in `pipeline/process/ledger.py`
+  (`test_contract_fixtures.py`) consume it.
 
 ## Additional fixture styles (R queue, R-1/R-2)
 
-- `process-credential-budget.json` — a settings contract (no `style` marker). It pins the deployment cap `PROCESS_MAX_CREDENTIAL_SECONDS` (unset = no limit), the grace setting `PROCESS_CREDENTIAL_GRACE_SECONDS` and its default (300 s), the deploy refusal (422, `code` `credential_budget_exceeded`) and the mint refusal's error. Each `cases[]` entry gives the three budget inputs and the cap, with `deploy_allowed` (the app's deploy gate, `app/src/lib/processes/credential-budget.ts`: `max_queue_wait_seconds + timeout_seconds + grace ≤ cap`) and `mint_allowed` (the pipeline's STS mint, `pipeline/process/credentials.py`). The vitest consumer checks `deploy_allowed`; pytest checks `mint_allowed`. `parse_cases[]` (#157) are `{ name, variable, raw, result }`: the env value (`null` = unset) and either the parsed seconds (`null` = no limit) or `"reject"`, which both sides must raise with an error naming `variable`; `cap_min_seconds` is the cap's floor (the STS minimum). The app's `getMaxCredentialSeconds` / `getCredentialGraceSeconds` and the pipeline's `Settings.from_env` both consume them.
+- `process-credential-budget.json` — a settings contract (no `style` marker). It pins the deployment cap `PROCESS_MAX_CREDENTIAL_SECONDS` (unset = no limit), the grace setting `PROCESS_CREDENTIAL_GRACE_SECONDS` and its default (300 s), the deploy refusal (422, `code` `credential_budget_exceeded`) and the mint refusal's error. Each `cases[]` entry gives the three budget inputs and the cap, with `deploy_allowed` (the app's deploy gate, `app/src/lib/processes/credential-budget.ts`: `max_queue_wait_seconds + timeout_seconds + grace ≤ cap`) and `mint_allowed` (the pipeline's STS mint, `pipeline/process/credentials.py`, which since K-4 counts the same sum). Both suites check that the two agree on every case; vitest checks `deploy_allowed`, pytest checks `mint_allowed`. `parse_cases[]` (#157) are `{ name, variable, raw, result }`: the env value (`null` = unset) and either the parsed seconds (`null` = no limit) or `"reject"`, which both sides must raise with an error naming `variable`; `cap_min_seconds` is the cap's floor (the STS minimum). The app's `getMaxCredentialSeconds` / `getCredentialGraceSeconds` and the pipeline's `Settings.from_env` both consume them.
 
 ## Why `app` and `pipeline` expectations can differ
 

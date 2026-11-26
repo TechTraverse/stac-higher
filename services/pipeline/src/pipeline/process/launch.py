@@ -7,12 +7,13 @@ it is where the ADR 0013 invariants are actually made true:
   revision's resolved env, the run-scoped storage credentials, and the code —
   and nothing else. There is no path by which the worker's own environment
   reaches the container.
-- Credentials are minted BEFORE launch and their failure aborts the run, so
+- Credentials are minted BEFORE submit and their failure aborts the run, so
   there is no window where a container exists without a bounded credential.
-- ``reap`` runs in a ``finally``. A crash between launch and reap would
-  otherwise leak a container per run.
+- Since K-4 nothing here waits: ``submit_run`` returns the handle and the
+  Reconciler (``process/reconcile.py``) collects the verdict, the log
+  (``collect_run_log``) and reaps after the verdict commits.
 
-M5-C owns the ledger: this returns an outcome, it does not write
+The ledger is the runner's and the Reconciler's: this module does not write
 ``process_runs``. Keeping the two apart is what lets the run path be tested
 without a database and the ledger be tested without Docker.
 """
@@ -29,11 +30,10 @@ from pipeline.images.policy import ImagePolicy, ImagePolicyError, load_image_pol
 from pipeline.images.registry_auth import RegistryCredentialGone, resolve_registry_auth
 from pipeline.images.repo import ImageRow, ImagesRepo
 from pipeline.images.status import LAUNCH_STATUSES
-from pipeline.metrics import PROCESS_RUN_SECONDS
 from pipeline.process.config import NETWORK_LEVELS, USER_IMAGE_KINDS, EnvEntry, ProcessRuntime
 from pipeline.process.credentials import RunCredentials, mint_run_credentials
 from pipeline.process.docker_executor import CODE_ENV_VAR, encode_code
-from pipeline.process.executor import Executor, ExitStatus, RegistryAuth, RunSpec
+from pipeline.process.executor import Executor, RegistryAuth, RunHandle, RunSpec
 from pipeline.process.hardware import (
     HardwareProfile,
     HardwareProfileError,
@@ -250,15 +250,6 @@ def check_network_cap(runtime: ProcessRuntime, settings: Settings) -> None:
         )
 
 
-@dataclass(frozen=True)
-class RunOutcome:
-    status: ExitStatus
-    #: Object key of the captured log, or None when the log could not be
-    #: stored (a lost log never loses the verdict — §9).
-    log_ref: str | None
-    credentials_prefix: str
-
-
 def resolve_env(
     entries: tuple[EnvEntry, ...],
     resolve_secret,
@@ -356,10 +347,19 @@ def build_run_spec(
     )
 
 
-def execute_run(
+@dataclass(frozen=True)
+class SubmittedHandle:
+    """What :func:`submit_run` hands back: the backend's handle and when the
+    run's credentials expire (``credentials_expire_at``, K-4)."""
+
+    handle: RunHandle
+    credentials_expire_at: dt.datetime | None
+    credentials_prefix: str
+
+
+def submit_run(
     executor: Executor,
     settings: Settings,
-    storage_client,
     *,
     run_id: str,
     process_id: str,
@@ -374,19 +374,27 @@ def execute_run(
     priority: str = "triggered",
     image: ResolvedImage | None = None,
     cpu_exempt: bool = False,
-) -> RunOutcome:
-    """Mint credentials, launch, wait, capture the log, reap. Always reap.
+    now: dt.datetime | None = None,
+) -> SubmittedHandle:
+    """Mint credentials, build the spec, submit — and return (K-4, spec §5.3).
 
-    ``read_prefixes`` are the source collections' canonical prefixes the
-    session policy grants read on; ``extra_env`` is the input env (§3.1).
+    Credentials are minted BEFORE submit and their failure aborts the run, so
+    no container exists without a bounded credential; they last the profile's
+    queue wait + timeout + grace. Nothing here waits on the run: the
+    Reconciler collects it. ``read_prefixes`` are the source collections'
+    canonical prefixes the session policy grants read on; ``extra_env`` is
+    the input env (§3.1). Blocking: call through ``asyncio.to_thread``.
     """
     env = resolve_env(env_entries, resolve_secret)
     credentials = mint_run_credentials(
         settings,
         run_id,
         runtime.timeout_seconds,
+        # K-4 (spec §5.4): the run may wait this long for capacity first.
+        queue_wait_seconds=profile.max_queue_wait_seconds if profile else 0,
         sts_client=sts_client,
         read_prefixes=read_prefixes,
+        now=now,
     )
     spec = build_run_spec(
         settings,
@@ -402,21 +410,30 @@ def execute_run(
         image=image,
         cpu_exempt=cpu_exempt,
     )
+    handle = executor.submit(spec)
+    return SubmittedHandle(
+        handle=handle,
+        credentials_expire_at=credentials.expires_at,
+        credentials_prefix=credentials.prefix,
+    )
 
-    import time
 
-    started = time.monotonic()
-    handle = executor.launch(spec)
-    try:
-        status = executor.wait(handle, runtime.timeout_seconds)
-        payload = executor.logs(handle, settings.process_log_max_bytes)
-    finally:
-        executor.reap(handle)
-        # Observed even on the failure path: a timing histogram that only ever
-        # sees successes would understate what runs actually cost.
-        PROCESS_RUN_SECONDS.observe(time.monotonic() - started)
-
-    log_ref = store_run_log(
+def collect_run_log(
+    executor: Executor,
+    settings: Settings,
+    storage_client,
+    *,
+    handle: RunHandle,
+    process_id: str,
+    run_id: str,
+) -> str | None:
+    """Read the run's log from the backend and store it at its deterministic
+    key; the key, or None when it could not be stored. A lost log never loses
+    the verdict (§9). Re-running it after a crash overwrites the same object
+    with the same bytes. UNTRUSTED content: written to storage, never logged.
+    Blocking: call through ``asyncio.to_thread``."""
+    payload = executor.logs(handle, settings.process_log_max_bytes)
+    return store_run_log(
         storage_client,
         settings.staging_bucket,
         process_id,
@@ -424,16 +441,3 @@ def execute_run(
         payload,
         settings.process_log_max_bytes,
     )
-    # Structured fields only — the run's own output is in the log OBJECT and
-    # is never interpolated into a platform log line (ADR 0013).
-    logger.info(
-        "process run finished",
-        extra={
-            "run_id": run_id,
-            "process_id": process_id,
-            "exit_code": status.exit_code,
-            "timed_out": status.timed_out,
-            "log_ref": log_ref,
-        },
-    )
-    return RunOutcome(status=status, log_ref=log_ref, credentials_prefix=credentials.prefix)

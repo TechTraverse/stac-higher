@@ -1,9 +1,9 @@
 """Orphaned run-container reaper (M3-W-1; the deferral `process/sweep.py` names).
 
-`launch.execute_run` reaps in a ``finally``, which covers every failure the
-worker survives. It cannot cover the worker not surviving: a process killed
-between `launch` and `reap` leaves a container running (or exited but
-undeleted) with nothing left that knows about it. The DB sweep deliberately
+The Reconciler (K-4) reaps each run right after its verdict commits, and a
+claim that loses its row discards what it submitted. Neither covers a worker
+that dies in between: a process killed after a verdict commits and before
+`reap` leaves an exited container with nothing left that knows about it. The DB sweep deliberately
 does not touch containers — that would couple the ledger's failure domain to
 the executor's — so the reconciliation lives here, on the executor side, and
 uses the ledger only as a read.
@@ -11,8 +11,8 @@ uses the ledger only as a read.
 Two rules decide an orphan, and the order they are evaluated in is the
 correctness argument:
 
-1. **The ledger rule.** `claim_due_runs` flips a row to `running` BEFORE the
-   container is created, so `running` is the only status a live container can
+1. **The ledger rule.** A claim flips a row to `running` BEFORE the
+   container is submitted, so `running` is the only status a live container can
    legitimately have. Anything else — terminal, requeued by stall recovery,
    or no row at all — means whoever owned this container is gone.
 2. **The age rule**, a backstop for a row wedged `running` that stall recovery

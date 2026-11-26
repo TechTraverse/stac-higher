@@ -188,6 +188,11 @@ async def run(settings: Settings) -> None:
                 bytes_concurrency=settings.worker_bytes_concurrency,
             ),
             dispatch.build_notify_listener(queue, settings),
+            # K-4: the run watcher (executor events wake the Reconciler) and
+            # the cancel listener (LISTEN process_run_cancel). Both run until
+            # cancelled; a collection cancelled mid-flight rolls back.
+            process.build_run_watcher(queue, settings),
+            process.build_cancel_listener(queue, settings),
             # M3-D: ITEMIZE's flow_stats deltas, written once per association
             # per interval; its task is cancelled with the listener when the
             # worker returns, and main.run's finally flushes once more after.

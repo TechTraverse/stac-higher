@@ -234,7 +234,7 @@ def test_the_memory_executor_lists_what_it_launched_and_has_not_reaped():
     from pipeline.process.executor import RunSpec
 
     executor = MemoryExecutor()
-    handle = executor.launch(RunSpec(run_id="r1", process_id="p1", image="img"))
+    handle = executor.submit(RunSpec(run_id="r1", process_id="p1", image="img"))
     assert [entry.run_id for entry in executor.list_launched()] == ["r1"]
 
     executor.reap(handle)

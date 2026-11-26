@@ -223,3 +223,57 @@ describe("migration 029 (executor phase columns — K-3)", () => {
     expect(sql).not.toContain("process_runs_status_check");
   });
 });
+
+const RUN_STATUS = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../../../tests/contract-fixtures/process-run-status.json", import.meta.url),
+    ),
+    "utf8",
+  ),
+) as { statuses: string[] };
+
+describe("migration 031 (cancelled — K-4)", () => {
+  const sql = migrationEntry("031_process_runs_cancelled");
+
+  it("sits between 030 and 032", () => {
+    // Applied by NAME: a database at 033 applies just 031 (migrate-ordering.test.ts).
+    const at = migrate.indexOf('"031_process_runs_cancelled"');
+    expect(at).toBeGreaterThan(migrate.indexOf('"030_container_images"'));
+    expect(at).toBeLessThan(migrate.indexOf('"032_cube_sinks"'));
+  });
+
+  it("constrains status to exactly the fixture's statuses", () => {
+    const check = sql.match(/CHECK \(status IN \(([^)]+)\)\)/);
+    expect(check).not.toBeNull();
+    const listed = check![1].split(",").map((s) => s.trim().replace(/'/g, ""));
+    expect(listed).toEqual(RUN_STATUS.statuses);
+  });
+
+  it("adds credentials_expire_at, nullable", () => {
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS credentials_expire_at timestamptz;");
+    expect(sql).not.toContain("credentials_expire_at timestamptz NOT NULL");
+  });
+
+  it("names the new constraint process_runs_status_check", () => {
+    expect(sql).toContain("ADD CONSTRAINT process_runs_status_check");
+  });
+
+  it("swaps the CHECK by lookup on process_runs, sparing the phase CHECK, idempotently", () => {
+    expect(sql).toContain("conrelid = 'stac_higher.process_runs'::regclass");
+    expect(sql).toContain("conname <> 'process_runs_phase_check'");
+    // Skipped once the constraint already admits cancelled (a re-run).
+    expect(sql).toMatch(/IF NOT EXISTS \([\s\S]*?LIKE '%cancelled%'/);
+  });
+
+  it("does not hold the hot table hostage: bounded lock wait, no validation scan", () => {
+    expect(sql).toContain("SET LOCAL lock_timeout = '10s';");
+    expect(sql.indexOf("SET LOCAL lock_timeout TO DEFAULT;")).toBeGreaterThan(
+      sql.indexOf("ADD CONSTRAINT process_runs_status_check"),
+    );
+    // A strict superset of the old set: no row can fail it, so NOT VALID skips
+    // the scan under the ACCESS EXCLUSIVE lock every pending migration shares.
+    expect(sql).toMatch(/CHECK \(status IN \([^)]*\)\)\s*NOT VALID;/);
+    expect(sql).not.toContain("VALIDATE CONSTRAINT");
+  });
+});

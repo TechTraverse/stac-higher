@@ -430,6 +430,10 @@
         "credentialGraceSeconds": {
           "type": "integer"
         },
+        "extractMaxRunning": {
+          "type": "integer",
+          "minimum": 1
+        },
         "clusterObjects": {
           "type": "boolean"
         }

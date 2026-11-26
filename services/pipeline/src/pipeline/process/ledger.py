@@ -18,9 +18,19 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
-TERMINAL_STATUSES = ("succeeded", "dead")
+#: K-4: the `process_runs.status` vocabulary, pinned by
+#: tests/contract-fixtures/process-run-status.json and migration 031's CHECK.
+STATUSES = ("queued", "running", "succeeded", "failed", "dead", "cancelled")
+#: `cancelled` (K-4) is terminal and never claimable: no claim reads it, and
+#: only the app's audited re-run moves it back to `queued`.
+TERMINAL_STATUSES = ("succeeded", "dead", "cancelled")
 #: A run in one of these is still owed work by the pipeline.
 OPEN_STATUSES = ("queued", "running", "failed")
+#: What the app's cancel verb accepts (K-4 R4: a retry-pending `failed` run
+#: too); `queued`/`failed` flip at once, `running` is flagged for the pipeline.
+CANCELLABLE_STATUSES = ("queued", "failed", "running")
+#: The payload-less channel the app's cancel statement NOTIFYs (R12).
+CANCEL_CHANNEL = "process_run_cancel"
 
 
 @dataclass(frozen=True)
@@ -85,13 +95,27 @@ def infrastructure_transition(
     )
 
 
+#: How long a run waits before a retry the platform owes it: a `failed`
+#: run's retry spacing and every "no attempt spent" requeue (K-4 R13). The
+#: runtime's RetrySpec carries the attempt BUDGET; the spacing is ours.
+INFRA_RETRY_SECONDS = 60
+
+#: K-4: the conservative limits a Reconciler uses for a submitted run whose
+#: stored revision no longer parses (it parsed at claim time).
+DEFAULT_MAX_ATTEMPTS_ON_UNREADABLE_RUNTIME = 1
+DEFAULT_TIMEOUT_ON_UNREADABLE_RUNTIME = 900
+
 #: K-3 (spec §5.2): the sub-states of a queued/running row in
 #: ``process_runs.phase``, pinned by tests/contract-fixtures/process-run-phase.json
 #: and migration 029's CHECK. NULL on a plain queued row and on every terminal
-#: row. This slice writes `pending_capacity` and `starting`; `running` is
-#: written by K-4's watcher.
+#: row. The claim writes `starting`, a full profile `pending_capacity`, and
+#: since K-4 the submission and the Reconciler write what the backend reports.
 PHASES = ("pending_capacity", "starting", "running")
 PHASE_PENDING_CAPACITY, PHASE_STARTING, PHASE_RUNNING = PHASES
+#: K-4: what an executor's ``status()`` reports (``RunState.phase``). The two
+#: extra states are never written to ``process_runs.phase``: ``exited`` is a
+#: verdict to collect, ``lost`` a run the backend affirms is gone.
+EXECUTOR_PHASES = (*PHASES, "exited", "lost")
 
 #: How long a run released for capacity waits before a claim may take it
 #: again (spec §8). The claim is the run tick's, so the effective wait is the
@@ -103,3 +127,23 @@ def capacity_detail(profile_id: str, capacity: int) -> str:
     """The `phase_detail` a capacity release records — what the UI's
     *Waiting for capacity* tooltip shows."""
     return f"profile {profile_id!r} is at its capacity of {capacity} on this host"
+
+
+def extract_capacity_detail(limit: int) -> str:
+    """K-4 A3: the `phase_detail` of an exempt extractor run held back because
+    the deployment's exempt pool is full."""
+    return (
+        "extractor runs on the default profile are at this deployment's limit of "
+        f"{limit} running at once (PROCESS_EXTRACT_MAX_RUNNING)"
+    )
+
+
+def run_metric_status(outcome: str) -> str | None:
+    """K-4 review P8: the one `pipeline_process_runs_total` vocabulary — the
+    ledger status a write left the row in. A requeue or a fold is `queued`;
+    a write that matched nothing (`skipped`) is not counted."""
+    if outcome in ("requeued", "merged"):
+        return "queued"
+    if outcome == "skipped":
+        return None
+    return outcome

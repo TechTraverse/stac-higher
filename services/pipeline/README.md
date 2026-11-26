@@ -74,15 +74,16 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `PROCESS_SCANNER_NETWORK` | `none` | The scanner run's Docker network (spec §11). `none` means every scan fails for want of a registry; compose sets `stac-higher_scanner-egress`. |
 | `IMAGE_SCANNER_DB_UPDATE` | `true` | Refresh the baked Grype DB at scan start (spec §6.1). `false` for an air-gapped deployment, which rebuilds the scanner image instead. |
 | `GRYPE_DB_UPDATE_URL` | _(unset — Anchore's listing)_ | Where that refresh comes from; an air-gap mirror when set. |
-| `IMAGE_SCAN_CONCURRENCY` | `1` | Scans running at once, deployment-wide. Each holds one worker slot for up to the policy's `scan_limits.timeout_seconds` until K-4 (ISSUES I-124). |
+| `IMAGE_SCAN_CONCURRENCY` | `1` | Scans running at once, deployment-wide. Each holds one worker slot for up to the policy's `scan_limits.timeout_seconds` (ISSUES I-124). |
 | `REGISTRY_DOCKERHUB_USER` / `REGISTRY_DOCKERHUB_TOKEN` | _(unset)_ | Optional deployment Docker Hub credential for `docker.io` images that carry no group `registry` credential, for scans and launch pulls alike (spec §5). Unset = anonymous, which shares Docker's 100-pulls-per-6-hours-per-IP budget (ISSUES I-125). The token never appears in logs or `repr`. |
 | `STAGING_S3_ACCESS_KEY_ID` / `STAGING_S3_SECRET_ACCESS_KEY` | _(unset — the default AWS credential chain)_ | The platform bucket's keys, used for the S3 client, STS, EXTRACT's GDAL reads and the cube writer's Icechunk storage. Set both or neither. Unset = Pod Identity / IRSA / instance profile. Compose sets the MinIO keys. The secret never appears in `repr`. |
 | `PGSSLMODE` / `PGSSLROOTCERT` | _(unset — no TLS requirement)_ | libpq's TLS settings for `DATABASE_URL` (all pipeline connections, pypgstac included); see `docs/backend.md` 'Deployment: S3 credentials and database TLS'. |
-| `PROCESS_CREDENTIAL_GRACE_SECONDS` | `300` | Run credentials live for `timeout_seconds` + this. |
+| `PROCESS_CREDENTIAL_GRACE_SECONDS` | `300` | Run credentials live for the profile's `max_queue_wait_seconds` + `timeout_seconds` + this (K-4). |
+| `PROCESS_EXTRACT_MAX_RUNNING` | `4` | Whole number >= 1. How many extractor runs on the default profile (exempt from its capacity and CPU cap) may run at once, deployment-wide (K-4, I-170). |
 | `PROCESS_MAX_CREDENTIAL_SECONDS` | _(unset — no limit)_ | The longest run credential the pipeline will mint, as an integer ≥ 900 (anything else fails startup). Set `3600` on AWS, where STS role chaining caps a session at one hour. A run or scan needing more is refused with `credential_budget_exceeded` (deployment-artifacts spec §8). |
 | `DB_POOL_MIN` | `2` | Connections the process-wide async pool keeps warm (M3-B). The pool grows on demand and trims back after `max_idle` (600 s), so a mostly-idle deployment holds two backends, not `DB_POOL_MAX`. |
-| `DB_POOL_MAX` | `16` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 4`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC). Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
-| `WORKER_CONCURRENCY` | `12` | Jobs the worker process runs at once, both queues together (M3-D; spec §7 decision 2, S-C's 12–16 band at the conservative end). Size `DB_POOL_MAX` to at least this + 4; the process logs a WARNING at startup when it is not. |
+| `DB_POOL_MAX` | `18` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 6`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC) plus K-4's run watcher and cancel listener. Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
+| `WORKER_CONCURRENCY` | `12` | Jobs the worker process runs at once, both queues together (M3-D; spec §7 decision 2, S-C's 12–16 band at the conservative end). Size `DB_POOL_MAX` to at least this + 6; the process logs a WARNING at startup when it is not. |
 | `WORKER_BYTES_CONCURRENCY` | `4` | Of those slots, how many the `bytes` queue gets — `pipeline.ingest_fetch`, `pipeline.ingest_itemize`, `pipeline.deliver`, the jobs that hold object bytes or a GDAL block cache. Resident memory scales with THIS number (see "Concurrency (M3-D)"); the `default` queue runs everything else with the remainder (8). At least 1, less than `WORKER_CONCURRENCY`. |
 | `FLOW_STATS_FLUSH_SECONDS` | `2.0` | ITEMIZE's per-item `flow_stats` deltas are summed in memory and written once per association per interval; `last_activity_at` trails the item by at most this. Counts are exact; a crash loses at most one interval of telemetry, never a row. |
 | `GDAL_CACHEMAX` | `64` | GDAL block-cache ceiling in MB for EXTRACT's `/vsis3` raster reads (M3-C) — an integer number of MB only; GDAL's own `25%`/`512MB` forms raise in `Settings.from_env`. GDAL's own variable; also passed into every `rasterio.Env`. Part of the "Memory envelope (M3-C)" section below. |
@@ -588,13 +589,14 @@ semaphore (I-91). Raise `WORKER_BYTES_CONCURRENCY` when the byte-realistic
 mix needs more than four transfers in flight (S-C: ~10 slots for 30 items/s
 of 34 MB streamed objects; ~3 when the server-side copy gate allows) and size
 the container from the formula. `WORKER_CONCURRENCY` is the total;
-`DB_POOL_MAX >= WORKER_CONCURRENCY + 4` or the process logs a WARNING at
+`DB_POOL_MAX >= WORKER_CONCURRENCY + 6` or the process logs a WARNING at
 startup and callers wait on the pool under load.
 
 **Connections.** Per pipeline process, worst case: the repo pool
-(`DB_POOL_MAX`, 16) + Procrastinate's own pool (`WORKER_CONCURRENCY + 4`, 16)
+(`DB_POOL_MAX`, 18) + Procrastinate's own pool (`WORKER_CONCURRENCY + 4`, 16)
 + the pgstac writer pool (4) + one standalone LISTEN connection per worker (2)
-+ the dispatch LISTEN connection (1) + the health probe (1) = **40**. The rest
++ the dispatch LISTEN connection (1) + K-4's cancel LISTEN connection (1) +
+the health probe (1) = **43**. The rest
 of the compose stack holds about 28 (the STAC API, titiler, tipg, the app), so
 Postgres's default `max_connections = 100` fits one pipeline replica; a second
 needs `max_connections` raised or the pools trimmed. Idle, the pools hold
@@ -761,14 +763,38 @@ run is `dead`, naming the profile, when: the host has no such runtime; the
 proxy refuses `/info` with a 403 for a GPU run; the daemon refuses the
 device driver on create or start ("could not select device driver"); or the
 run's `cpu` exceeds the daemon's `NCPU` (checked up front, best effort, with
-the daemon's "Range of CPUs" refusal on create as the fallback). `capacity` is the per-host concurrent-run limit per profile:
-`run_one` counts the `running` runs on the profile claimed ahead of this one
-(`count_running_on_profile`, joining `process_revisions`); when full,
-`release_for_capacity` puts the run back to `queued` with its attempt
-restored, `phase = pending_capacity`, a `phase_detail` naming the limit and
-`next_attempt_at = now + 15 s`, which both claim statements honour. Claims
-set `phase = starting`; finish and the stall sweep clear it (migration 029).
+the daemon's "Range of CPUs" refusal on create as the fallback). `capacity` is the per-host concurrent-run limit per profile,
+admitted in the claim itself (`repo._admit_and_claim`): under a per-profile
+advisory lock, in a READ COMMITTED transaction, the claim counts admitted
+runs (`running` with `executor_backend` set) and either claims the run or
+leaves it `queued` as `pending_capacity` with `next_attempt_at = now + 15 s`.
+Extractor runs on the default profile are exempt from the profile's
+capacity and CPU cap and are admitted against their own deployment-wide
+pool instead (`PROCESS_EXTRACT_MAX_RUNNING`, default 4; K-4 addendum A3).
 `backend.kubernetes` stays opaque until K-5.
+
+## Submit, then reconcile (K-4)
+
+The executor ABC is `submit / status / cancel / logs / reap / list_launched`
+plus an optional `watch()`; nothing waits on a run (`process/executor.py`'s
+docstring is the contract). The claim path (`run_one`) stages, mints
+credentials for `max_queue_wait + timeout + grace`, submits, records the
+handle (`record_submission`, fenced on the claim stamp) and returns. Every
+submitted run is then reconciled by `process/reconcile.py`: **events are
+wake-ups and `status()` is the truth**, and a verdict is written only inside
+`repo.collecting()`, a transaction holding the row `FOR UPDATE SKIP LOCKED`
+across log capture and the verdict, with the container reaped after commit —
+so the watcher, the tick and the cancel listener can race and the run is
+still finalized exactly once, across a worker restart. Three wake paths run
+in `main.py` beside the worker: the **run watcher** (`process/watcher.py`,
+Docker `GET /events` filtered to the `stac-higher.run-id` label through the
+socket proxy's `EVENTS=1`, a RESYNC on every connect), the **cancel
+listener** (`LISTEN process_run_cancel`, fired by the app's cancel verb) and
+the one-minute **run tick** (the backstop; it also enforces Docker's timeout
+on read, R10). A run leaving `running` wakes the oldest run waiting for its
+pool. The stall sweep touches only unsubmitted rows. Image scans submit and
+poll `status()` in their thread (`run_to_exit`) and are ignored by the
+watcher (I-124).
 
 ## Shutdown
 

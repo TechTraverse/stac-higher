@@ -113,6 +113,7 @@ processRuns:
   namespace: stac-higher-runs # R-8 creates it
   networkMax: isolated # -> PROCESS_NETWORK_MAX (shared ConfigMap: app + pipeline)
   credentialGraceSeconds: 300 # -> PROCESS_CREDENTIAL_GRACE_SECONDS (shared ConfigMap: app + pipeline)
+  extractMaxRunning: 4 # K-4: integer >= 1 -> PROCESS_EXTRACT_MAX_RUNNING (pipeline): exempt extractor runs admitted at once
   clusterObjects: true # consumed by R-8
 
 config:

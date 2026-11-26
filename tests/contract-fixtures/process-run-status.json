@@ -1,0 +1,8 @@
+{
+  "style": "pinned-enum",
+  "$comment": "K-4 (process-compute spec §5.2/§5.3): the process_runs.status vocabulary. statuses is migration 031's CHECK (process_runs_status_check) in canonical order; terminal is ledger.TERMINAL_STATUSES (cancelled is terminal and never claimed); cancellable is what the app's cancel verb accepts (queued and failed flip to cancelled at once, running is flagged for the pipeline); cancel_channel is the payload-less pg_notify channel the cancel statement fires and the pipeline LISTENs on. Read by app/src/lib/processes/storage.ts (contract-fixtures.test.ts, processes-migration.test.ts) and pipeline/process/ledger.py (test_contract_fixtures.py).",
+  "statuses": ["queued", "running", "succeeded", "failed", "dead", "cancelled"],
+  "terminal": ["succeeded", "dead", "cancelled"],
+  "cancellable": ["queued", "failed", "running"],
+  "cancel_channel": "process_run_cancel"
+}

@@ -76,6 +76,25 @@ describe("runMigrations applies by name", () => {
     expect(db.executed.some((sql) => sql.includes("stac_higher_cube_reader NOLOGIN"))).toBe(false);
   });
 
+  it("a database already at 033 (with 029, without 031) applies exactly 031 (K-4)", async () => {
+    const at = allNames.indexOf("031_process_runs_cancelled");
+    expect(allNames[at - 1]).toBe("030_container_images");
+    expect(allNames[at + 1]).toBe("032_cube_sinks");
+    const withoutK4 = allNames.filter((n) => n !== "031_process_runs_cancelled");
+    expect(withoutK4).toContain("029_process_runs_executor_phase");
+    expect(withoutK4).toContain("033_cube_reader_role");
+
+    await migrateWith(withoutK4);
+
+    expect(db.inserted).toEqual(["031_process_runs_cancelled"]);
+    expect(
+      db.executed.filter((sql) => sql.includes("credentials_expire_at timestamptz")),
+    ).toHaveLength(1);
+    expect(db.executed.some((sql) => sql.includes("ADD COLUMN IF NOT EXISTS phase text"))).toBe(
+      false,
+    );
+  });
+
   it("a database with 029 recorded applies nothing", async () => {
     await migrateWith(allNames);
     expect(db.inserted).toEqual([]);

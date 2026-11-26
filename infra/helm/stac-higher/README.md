@@ -104,6 +104,7 @@ Rendering fails with a message starting with the offending key path.
 | `processRuns.namespace` | `stac-higher-runs` | R-8 creates it. |
 | `processRuns.networkMax` | `isolated` | `PROCESS_NETWORK_MAX` (app and pipeline). |
 | `processRuns.credentialGraceSeconds` | `300` | `PROCESS_CREDENTIAL_GRACE_SECONDS` (app and pipeline). |
+| `processRuns.extractMaxRunning` | `4` | Integer >= 1; `PROCESS_EXTRACT_MAX_RUNNING` (pipeline): how many extractor runs on the default profile, which are exempt from its capacity, may run at once (K-4). |
 | `processRuns.clusterObjects` | `true` | Consumed by R-8. |
 | `config` | | Content for the config ConfigMap. |
 | `config.hardwareProfiles` | `null` | `null` uses the chart's `files/hardware-profiles/eks-cpu.json`. |

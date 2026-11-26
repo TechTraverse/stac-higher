@@ -22,8 +22,8 @@ from pipeline.images.scan_launch import (
 )
 from pipeline.images.scan_result import ScanResultError
 from pipeline.process.credentials import RunCredentials
-from pipeline.process.executor import ExitStatus, RegistryAuth
-from pipeline.process.memory_executor import MemoryExecutor
+from pipeline.process.executor import RegistryAuth
+from pipeline.process.memory_executor import MemoryExecutor, exited
 
 IMG = "7c1e2f4a-3b5d-4c6e-8f90-1a2b3c4d5e6f"
 SCAN = "0d9e8f7a-6b5c-4d3e-9f2a-1b0c9d8e7f6a"
@@ -163,7 +163,7 @@ class FakeStore:
 def test_execute_scan_mints_for_the_scan_prefix_stores_the_log_and_always_reaps():
     sts = FakeSts()
     store = FakeStore()
-    executor = MemoryExecutor(results=[ExitStatus(0)], log_output=b"scanned")
+    executor = MemoryExecutor(default_states=[exited(0)], log_output=b"scanned")
     run = execute_scan(
         executor, SETTINGS, POLICY, store,
         scan_id=SCAN, image=APPROVED, kind="rescan", registry_auth=None, sts_client=sts,
@@ -221,3 +221,21 @@ def test_read_scan_result_head_says_small_but_the_body_was_swapped_oversized():
         read_scan_result(store, "b", key)
     # The GET was ranged, not a full unbounded read of the swapped object.
     assert store.get_calls[0]["Range"] == f"bytes=0-{RESULT_MAX_BYTES}"
+
+
+def test_a_scan_past_the_policy_timeout_is_cancelled_and_reaped():
+    """K-4 R11: a scan polls status() (run_to_exit) and still blocks its
+    thread; past the policy timeout it is stopped, reported timed out, and
+    reaped like any other scan."""
+    import dataclasses
+
+    from pipeline.process.executor import RunState
+
+    executor = MemoryExecutor(default_states=[RunState("running")])
+    run = execute_scan(
+        executor, SETTINGS, dataclasses.replace(POLICY, scan_timeout_seconds=0), FakeStore(),
+        scan_id=SCAN, image=APPROVED, kind="rescan", registry_auth=None, sts_client=FakeSts(),
+    )
+    assert run.status.timed_out is True
+    assert executor.cancelled == [f"mem-{SCAN}"]
+    assert executor.reaped == [f"mem-{SCAN}"]

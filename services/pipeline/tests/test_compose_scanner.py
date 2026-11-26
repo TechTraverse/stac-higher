@@ -49,7 +49,7 @@ def test_the_socket_proxy_environment_is_pinned_exactly():
     """K-3 review: the proxy's whole KEY=VALUE map, so deleting an explicit
     `=0` line (and inheriting an upstream default) fails as loudly as adding
     an `=1`. K-3 added INFO (read-only GET /info, the NVIDIA-runtime and NCPU
-    probe)."""
+    probe); K-4 added EVENTS and pinned the image defaults PING/VERSION off."""
     proxy = _service("docker-socket-proxy")
     env = dict(re.findall(r"^\s*- ([A-Z_]+)=(\S+)\s*$", proxy, re.M))
     assert env == {
@@ -72,4 +72,22 @@ def test_the_socket_proxy_environment_is_pinned_exactly():
         "COMMIT": "0",
         "DISTRIBUTION": "0",
         "AUTH": "0",
+        "EVENTS": "1",
+        "PING": "0",
+        "VERSION": "0",
+    }
+
+
+def test_every_image_default_on_section_is_listed():
+    """K-4 / #202: tecnativa/docker-socket-proxy:0.3.0 turns EVENTS, PING and
+    VERSION on unless told otherwise. Each is written explicitly, so the
+    enabled set is exactly what the file says: the watcher's EVENTS on, the
+    two nothing uses off."""
+    proxy = _service("docker-socket-proxy")
+    env = dict(re.findall(r"^\s*- ([A-Z_]+)=(\S+)\s*$", proxy, re.M))
+    for key in ("EVENTS", "PING", "VERSION"):
+        assert key in env, key
+    assert (env["EVENTS"], env["PING"], env["VERSION"]) == ("1", "0", "0")
+    assert {k for k, v in env.items() if v == "1"} == {
+        "CONTAINERS", "POST", "IMAGES", "INFO", "EVENTS"
     }

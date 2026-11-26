@@ -42,7 +42,7 @@ async def _pg_notify_stream(
     conn = await psycopg.AsyncConnection.connect(database_url, autocommit=True)
     try:
         await conn.execute(f'LISTEN "{channel}"')
-        logger.info("dispatch listener connected", extra={"channel": channel})
+        logger.info("notify listener connected", extra={"channel": channel})
         # Catch-up wake: drain whatever arrived while we were not listening.
         yield "connected"
         while True:
@@ -87,7 +87,7 @@ async def run_dispatch_listener(
             raise
         except Exception:
             logger.exception(
-                "dispatch listener failed; reconnecting",
+                "notify listener failed; reconnecting",
                 extra={"channel": channel, "reconnect_delay": reconnect_delay},
             )
         connects += 1

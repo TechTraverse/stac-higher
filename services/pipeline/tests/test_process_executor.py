@@ -8,6 +8,7 @@ only-intended environment, enforced limits, and reaping on every path.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 import pytest
@@ -58,13 +59,14 @@ from pipeline.process.launch import (
     SecretResolutionError,
     build_run_spec,
     check_network_cap,
-    execute_run,
+    collect_run_log,
     resolve_env,
     resolve_run_image,
     resolve_runtime_image,
+    submit_run,
 )
 from pipeline.process.logs import TRUNCATION_MARKER, cap, store_run_log
-from pipeline.process.memory_executor import MemoryExecutor
+from pipeline.process.memory_executor import MemoryExecutor, exited
 from pipeline.storage.keys import (
     InvalidKeySegment,
     run_input_asset_key,
@@ -148,7 +150,7 @@ def executor_with(api) -> DockerExecutor:
     return ex
 
 
-def test_launch_sets_limits_network_and_never_mounts():
+def test_submit_sets_limits_network_and_never_mounts():
     api = FakeApi({"create": {"Id": "c1"}})
     ex = executor_with(api)
     spec = build_run_spec(
@@ -162,7 +164,7 @@ def test_launch_sets_limits_network_and_never_mounts():
             "AK", "SK", "TOK", "stac-higher", run_staging_prefix(RUN), None, "us-east-1"
         ),
     )
-    ex.launch(spec)
+    ex.submit(spec)
 
     host = api.created_config()["HostConfig"]
     assert host["Memory"] == 256 * 1024 * 1024
@@ -185,7 +187,7 @@ def test_a_failed_start_reaps_the_created_container():
     api = FakeApi({"create": {"Id": "c1"}, "start": ExecutorUnavailable("daemon said no")})
     ex = executor_with(api)
     with pytest.raises(ExecutorUnavailable):
-        ex.launch(
+        ex.submit(
             build_run_spec(
                 settings(),
                 run_id=RUN,
@@ -222,7 +224,7 @@ def test_a_create_404_no_such_image_is_image_missing_not_an_outage():
     to build it."""
     api = FakeApi({"create": _create_404(NO_SUCH_IMAGE)})
     with pytest.raises(ImageMissing) as err:
-        executor_with(api).launch(_platform_spec())
+        executor_with(api).submit(_platform_spec())
     assert not isinstance(err.value, ExecutorUnavailable)
     message = str(err.value)
     assert "stac-higher-process-runtime:local" in message
@@ -237,7 +239,7 @@ def test_a_user_image_missing_on_create_carries_no_build_hint():
     pinned = "ghcr.io/example/tool@sha256:" + "a" * 64
     api = FakeApi({"/images/": {"Id": "x"}, "create": _create_404(f"No such image: {pinned}")})
     with pytest.raises(ImageMissing) as err:
-        executor_with(api).launch(_platform_spec(image=pinned, user_image=True))
+        executor_with(api).submit(_platform_spec(image=pinned, user_image=True))
     assert pinned in str(err.value)
     assert "buildx" not in str(err.value)
 
@@ -255,7 +257,7 @@ def test_a_user_image_missing_on_create_carries_no_build_hint():
 def test_every_other_create_failure_stays_an_outage(error):
     api = FakeApi({"create": error})
     with pytest.raises(ExecutorUnavailable) as err:
-        executor_with(api).launch(_platform_spec())
+        executor_with(api).submit(_platform_spec())
     assert not isinstance(err.value, ImageMissing)
 
 
@@ -273,27 +275,117 @@ def test_a_daemon_no_such_image_body_reaches_the_match_through_the_http_layer(mo
 
     monkeypatch.setattr(urllib.request, "urlopen", daemon)
     with pytest.raises(ImageMissing):
-        DockerExecutor(docker_host="tcp://proxy:2375").launch(_platform_spec())
+        DockerExecutor(docker_host="tcp://proxy:2375").submit(_platform_spec())
 
 
-def test_wait_kills_and_reports_timed_out_when_the_budget_is_spent():
-    # The daemon never answers with a StatusCode, so the budget expires.
-    api = FakeApi({"wait": {}})
+T0 = dt.datetime(2026, 11, 25, 12, 0, tzinfo=dt.UTC)
+
+
+def _inspect(status, *, exit_code=0, started=T0, finished=None, oom=False, error="",
+             timeout=60, memory=256):
+    labels = {"stac-higher.run-id": RUN}
+    if timeout is not None:
+        labels["stac-higher.timeout-seconds"] = str(timeout)
+    if memory is not None:
+        labels["stac-higher.memory-mb"] = str(memory)
+    return {
+        "State": {
+            "Status": status, "ExitCode": exit_code, "OOMKilled": oom, "Error": error,
+            "StartedAt": started.isoformat().replace("+00:00", ".123456789Z")
+            if started else "0001-01-01T00:00:00Z",
+            "FinishedAt": finished.isoformat().replace("+00:00", "Z")
+            if finished else "0001-01-01T00:00:00Z",
+        },
+        "Config": {"Labels": labels},
+    }
+
+
+def _at(api, now):
     ex = executor_with(api)
-    ex.poll_slice_seconds = 1
-    status = ex.wait(RunHandle(id="c1"), timeout_seconds=1)
-    assert status.timed_out is True
-    assert status.exit_code == SIGKILL_EXIT_CODE
-    assert status.ok is False
-    # The kill is what makes the limit real rather than advisory.
-    assert any("kill" in p for _m, p, _b in api.calls)
+    ex.clock = lambda: now
+    return ex
 
 
-def test_wait_returns_a_nonzero_exit_as_a_RESULT_not_an_error():
-    api = FakeApi({"wait": {"StatusCode": 1}})
-    status = executor_with(api).wait(RunHandle(id="c1"), timeout_seconds=30)
-    assert status == ExitStatus(exit_code=1)
-    assert status.ok is False
+def test_submit_labels_the_timeout():
+    api = FakeApi({"create": {"Id": "c1"}})
+    executor_with(api).submit(_platform_spec(timeout_seconds=120, memory_mb=300))
+    labels = api.created_config()["Labels"]
+    assert labels["stac-higher.timeout-seconds"] == "120"
+    assert labels["stac-higher.memory-mb"] == "300"
+
+
+def test_docker_reports_a_submitted_run_as_running():
+    """Addendum A5: submit returns after a successful start."""
+    assert DockerExecutor.submitted_phase == "running"
+
+
+def test_status_maps_created_running_exited():
+    ex = _at(FakeApi({"/json": _inspect("created", started=None)}), T0)
+    assert ex.status(RunHandle(id="c1")).phase == "starting"
+    ex = _at(FakeApi({"/json": _inspect("running")}), T0 + dt.timedelta(seconds=5))
+    assert ex.status(RunHandle(id="c1")).phase == "running"
+    done = _inspect("exited", exit_code=2, finished=T0 + dt.timedelta(seconds=3))
+    state = _at(FakeApi({"/json": done}), T0).status(RunHandle(id="c1"))
+    assert (state.phase, state.exit) == ("exited", ExitStatus(2))
+
+
+def test_status_of_a_gone_container_is_lost():
+    gone = EngineHTTPError("docker GET failed: 404", status=404, detail="No such container")
+    state = executor_with(FakeApi({"/json": gone})).status(RunHandle(id="c1"))
+    assert state.phase == "lost" and state.detail
+
+
+def test_status_of_an_unreachable_daemon_raises():
+    down = ExecutorUnavailable("docker GET unreachable")
+    with pytest.raises(ExecutorUnavailable):
+        executor_with(FakeApi({"/json": down})).status(RunHandle(id="c1"))
+    refused = EngineHTTPError("docker GET failed: 500", status=500, detail="boom")
+    with pytest.raises(ExecutorUnavailable):
+        executor_with(FakeApi({"/json": refused})).status(RunHandle(id="c1"))
+
+
+def test_status_kills_a_run_past_its_deadline():
+    api = FakeApi({"/json": _inspect("running", timeout=60)})
+    state = _at(api, T0 + dt.timedelta(seconds=61)).status(RunHandle(id="c1"))
+    assert state.phase == "exited"
+    assert state.exit == ExitStatus(SIGKILL_EXIT_CODE, timed_out=True)
+    assert [p for m, p, _b in api.calls if m == "POST"] == ["/containers/c1/kill"]
+
+
+def test_a_run_inside_its_budget_is_not_killed():
+    api = FakeApi({"/json": _inspect("running", timeout=60)})
+    assert _at(api, T0 + dt.timedelta(seconds=59)).status(RunHandle(id="c1")).phase == "running"
+    assert not any(m == "POST" for m, _p, _b in api.calls)
+    # A container submitted before K-4 has no timeout label: no deadline.
+    api = FakeApi({"/json": _inspect("running", timeout=None)})
+    assert _at(api, T0 + dt.timedelta(days=9)).status(RunHandle(id="c1")).phase == "running"
+
+
+def test_an_exited_run_past_its_deadline_is_timed_out_after_a_restart():
+    late = _inspect("exited", exit_code=137, finished=T0 + dt.timedelta(seconds=61))
+    assert _at(FakeApi({"/json": late}), T0).status(RunHandle(id="c1")).exit.timed_out
+    early = _inspect("exited", exit_code=1, finished=T0 + dt.timedelta(seconds=10))
+    assert not _at(FakeApi({"/json": early}), T0).status(RunHandle(id="c1")).exit.timed_out
+
+
+def test_status_names_an_oom_kill():
+    from pipeline.process.executor import oom_error
+
+    oom = _inspect("exited", exit_code=137, oom=True, finished=T0 + dt.timedelta(seconds=2))
+    state = _at(FakeApi({"/json": oom}), T0).status(RunHandle(id="c1"))
+    assert state.exit.error == oom_error(256)
+    assert "memory limit" in state.exit.error
+
+
+def test_cancel_stops_with_a_grace_and_is_idempotent():
+    api = FakeApi()
+    executor_with(api).cancel(RunHandle(id="c1"))
+    assert api.calls[0][:2] == ("POST", "/containers/c1/stop?t=10")
+    for code in (304, 404):
+        done = EngineHTTPError(f"docker POST failed: {code}", status=code, detail="")
+        executor_with(FakeApi({"/stop": done})).cancel(RunHandle(id="c1"))
+    with pytest.raises(ExecutorUnavailable):
+        executor_with(FakeApi({"/stop": ExecutorUnavailable("down")})).cancel(RunHandle(id="c1"))
 
 
 def test_logs_survive_an_unavailable_daemon():
@@ -650,40 +742,63 @@ def test_run_keys_reject_traversal(bad):
 # ---------------------------------------------------------------------------
 
 
-def test_execute_run_reaps_even_when_the_run_fails():
-    executor = MemoryExecutor(results=[ExitStatus(exit_code=1)], log_output=b"traceback")
-    store = FakeStore()
-    sts = FakeSts(
-        {"Credentials": {"AccessKeyId": "A", "SecretAccessKey": "S", "SessionToken": "T"}}
-    )
-    outcome = execute_run(
+def test_submit_run_submits_and_returns_without_waiting_or_reaping():
+    """K-4: the claim path submits and returns; the Reconciler collects."""
+    executor = MemoryExecutor(default_states=[exited(exit_code=1)], log_output=b"traceback")
+    t = dt.datetime(2026, 11, 25, 12, 0, tzinfo=dt.UTC)
+    submitted = submit_run(
         executor,
         settings(),
-        store,
         run_id=RUN,
         process_id=PROC,
         runtime=ProcessRuntime(kind="inline_python", timeout_seconds=60),
         code="raise SystemExit(1)",
         env_entries=(),
         resolve_secret=lambda ref: "",
-        sts_client=sts,
+        sts_client=FakeSts(_OK_STS),
+        now=t,
     )
-    assert outcome.status.exit_code == 1
-    assert outcome.log_ref == run_log_key(PROC, RUN)
-    assert outcome.credentials_prefix == run_staging_prefix(RUN)
-    # A crash between launch and reap would leak a container per run.
-    assert executor.reaped == [f"mem-{RUN}"]
+    assert submitted.handle.id == f"mem-{RUN}"
+    assert submitted.credentials_prefix == run_staging_prefix(RUN)
+    assert submitted.credentials_expire_at == t + dt.timedelta(seconds=900)
+    assert executor.status_calls == [] and executor.reaped == []
 
 
-def test_execute_run_never_launches_when_credentials_fail():
+def test_submit_run_mints_for_the_profiles_queue_wait():
+    from pipeline.process.hardware import load_hardware_profiles
+
+    profile = load_hardware_profiles().get("standard")
+    sts = FakeSts(_OK_STS)
+    submit_run(
+        MemoryExecutor(), settings(), run_id=RUN, process_id=PROC,
+        runtime=ProcessRuntime(kind="inline_python", timeout_seconds=600), code="pass",
+        env_entries=(), resolve_secret=lambda ref: "", sts_client=sts, profile=profile,
+    )
+    assert sts.kwargs["DurationSeconds"] == profile.max_queue_wait_seconds + 600 + 300
+
+
+def test_collect_run_log_stores_the_log_at_its_deterministic_key():
+    executor = MemoryExecutor(log_output=b"traceback")
+    store = FakeStore()
+    handle = executor.submit(RunSpec(run_id=RUN, process_id=PROC, image="img"))
+    key = collect_run_log(
+        executor, settings(), store, handle=handle, process_id=PROC, run_id=RUN
+    )
+    assert key == run_log_key(PROC, RUN)
+    # Twice is harmless: the same object, the same bytes (a crash replay).
+    assert collect_run_log(
+        executor, settings(), store, handle=handle, process_id=PROC, run_id=RUN
+    ) == key
+
+
+def test_submit_run_never_submits_when_credentials_fail():
     """There must be no window in which a container exists without a bounded
     credential."""
     executor = MemoryExecutor()
     with pytest.raises(RunCredentialsError):
-        execute_run(
+        submit_run(
             executor,
             settings(),
-            FakeStore(),
             run_id=RUN,
             process_id=PROC,
             runtime=ProcessRuntime(kind="inline_python"),
@@ -692,7 +807,7 @@ def test_execute_run_never_launches_when_credentials_fail():
             resolve_secret=lambda ref: "",
             sts_client=FakeSts(error=RuntimeError("no sts")),
         )
-    assert executor.launched == []
+    assert executor.submitted == []
 
 
 # ---------------------------------------------------------------------------
@@ -844,14 +959,13 @@ def test_run_env_includes_the_input_variables_and_platform_values_still_win():
     assert spec.env["MINE"] == "1"
 
 
-def test_execute_run_mints_with_read_prefixes():
+def test_submit_run_mints_with_read_prefixes():
     sts = FakeSts(
         {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}}
     )
-    execute_run(
+    submit_run(
         MemoryExecutor(),
         settings(),
-        FakeStore(),
         run_id=RUN,
         process_id=PROC,
         runtime=ProcessRuntime(kind="inline_python"),
@@ -1185,9 +1299,9 @@ def _info_calls(api) -> int:
     return sum(1 for _, p, _ in api.calls if p == "/info")
 
 
-def test_launch_sets_nanocpus_from_cpu():
+def test_submit_sets_nanocpus_from_cpu():
     api = FakeApi({"create": {"Id": "c1"}})
-    executor_with(api).launch(_spec(cpu=1.5))
+    executor_with(api).submit(_spec(cpu=1.5))
     host = api.created_config()["HostConfig"]
     assert host["NanoCpus"] == 1_500_000_000
     assert "DeviceRequests" not in host
@@ -1196,7 +1310,7 @@ def test_launch_sets_nanocpus_from_cpu():
 
 def test_a_fractional_cpu_rounds_to_whole_nanocpus():
     api = FakeApi({"create": {"Id": "c1"}})
-    executor_with(api).launch(_spec(cpu=0.25))
+    executor_with(api).submit(_spec(cpu=0.25))
     assert api.created_config()["HostConfig"]["NanoCpus"] == 250_000_000
 
 
@@ -1208,7 +1322,7 @@ def test_an_image_scan_is_not_cpu_limited_by_a_profile():
     silently cap the scanner at one core."""
     api = FakeApi({"create": {"Id": "c1"}})
     spec = _spec(kind="image_scan")
-    executor_with(api).launch(dataclasses.replace(spec, profile=None))
+    executor_with(api).submit(dataclasses.replace(spec, profile=None))
     assert "NanoCpus" not in api.created_config()["HostConfig"]
 
 
@@ -1216,14 +1330,14 @@ def test_a_cpu_exempt_run_is_not_cpu_capped():
     """K-3 ruling: an extractor run on the default profile (`cpu_exempt`) is
     ingest work and stays uncapped, as it was before K-3."""
     api = FakeApi({"create": {"Id": "c1"}})
-    executor_with(api).launch(_spec(cpu=1, cpu_exempt=True))
+    executor_with(api).submit(_spec(cpu=1, cpu_exempt=True))
     assert "NanoCpus" not in api.created_config()["HostConfig"]
     assert _info_calls(api) == 0  # no cap, so no NCPU check
 
 
-def test_launch_sends_device_requests_when_the_host_has_an_nvidia_runtime():
+def test_submit_sends_device_requests_when_the_host_has_an_nvidia_runtime():
     api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"nvidia": {}, "runc": {}}}})
-    executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=2))
+    executor_with(api).submit(_spec(profile="gpu-l4", cpu=4, gpu_count=2))
     host = api.created_config()["HostConfig"]
     assert host["DeviceRequests"] == [{"Driver": "nvidia", "Count": 2, "Capabilities": [["gpu"]]}]
     assert host["NanoCpus"] == 4_000_000_000
@@ -1231,14 +1345,14 @@ def test_launch_sends_device_requests_when_the_host_has_an_nvidia_runtime():
     assert _k3_profiles().get("gpu-l4").backend["docker"]["device_requests"][0]["Count"] == -1
 
 
-def test_launch_refuses_gpus_on_a_host_without_the_runtime():
+def test_submit_refuses_gpus_on_a_host_without_the_runtime():
     from pipeline.process.executor import HardwareUnavailable
 
     api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"runc": {}}}})
     with pytest.raises(
         HardwareUnavailable, match="profile 'gpu-l4' needs an NVIDIA container runtime"
     ):
-        executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+        executor_with(api).submit(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
     assert not any("create" in p for _, p, _ in api.calls)  # nothing was created
 
 
@@ -1252,15 +1366,15 @@ def test_a_gpu_profile_without_device_requests_is_refused_not_launched_gpu_less(
     bare = dataclasses.replace(gpu, docker=DockerBackend(capacity=1))
     api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"nvidia": {}}}})
     with pytest.raises(HardwareUnavailable, match=r"no backend\.docker\.device_requests"):
-        executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1, profile_obj=bare))
+        executor_with(api).submit(_spec(profile="gpu-l4", cpu=4, gpu_count=1, profile_obj=bare))
     assert not any("create" in p for _, p, _ in api.calls)
 
 
 def test_the_runtime_probe_is_cached_per_executor():
     api = FakeApi({"create": {"Id": "c1"}, "/info": {"Runtimes": {"nvidia": {}}}})
     ex = executor_with(api)
-    ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
-    ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    ex.submit(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    ex.submit(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
     assert _info_calls(api) == 1
 
 
@@ -1272,12 +1386,12 @@ def test_an_unreachable_info_endpoint_is_an_executor_fault_not_a_dead_run():
     )
     ex = executor_with(api)
     with pytest.raises(ExecutorUnavailable) as err:
-        ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+        ex.submit(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
     assert not isinstance(err.value, HardwareUnavailable)
     # A failed probe is not cached as "no GPU": the next launch asks again.
     api.responses["/info"] = {"Runtimes": {"nvidia": {}}}
     calls = _info_calls(api)
-    ex.launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+    ex.submit(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
     assert _info_calls(api) == calls + 1
     assert "DeviceRequests" in api.created_config()["HostConfig"]
 
@@ -1299,7 +1413,7 @@ def test_more_cpus_than_the_host_has_is_hardware_unavailable():
     )
     api = FakeApi({"create": refusal})
     with pytest.raises(HardwareUnavailable, match="profile 'standard' asks for 4 CPUs"):
-        executor_with(api).launch(_spec(cpu=4))
+        executor_with(api).submit(_spec(cpu=4))
 
 
 def test_a_403_from_info_kills_a_gpu_run_instead_of_requeueing_forever():
@@ -1310,14 +1424,14 @@ def test_a_403_from_info_kills_a_gpu_run_instead_of_requeueing_forever():
     refused = EngineHTTPError("docker GET /info failed: 403", status=403, detail="Forbidden")
     api = FakeApi({"create": {"Id": "c1"}, "/info": refused})
     with pytest.raises(HardwareUnavailable, match=r"refuses GET /info \(INFO=1\)"):
-        executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+        executor_with(api).submit(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
     assert not any("create" in p for _, p, _ in api.calls)
 
 
 def test_a_403_from_info_does_not_stop_a_cpu_run():
     refused = EngineHTTPError("docker GET /info failed: 403", status=403, detail="Forbidden")
     api = FakeApi({"create": {"Id": "c1"}, "/info": refused})
-    executor_with(api).launch(_spec(cpu=2))
+    executor_with(api).submit(_spec(cpu=2))
     assert api.created_config()["HostConfig"]["NanoCpus"] == 2_000_000_000
 
 
@@ -1343,7 +1457,7 @@ def test_a_missing_device_driver_is_hardware_unavailable(stage):
         responses["/start"] = refusal
     api = FakeApi(responses)
     with pytest.raises(HardwareUnavailable, match="needs a device driver"):
-        executor_with(api).launch(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
+        executor_with(api).submit(_spec(profile="gpu-l4", cpu=4, gpu_count=1))
     if stage == "start":
         # The created container is reaped, not leaked.
         assert any(m == "DELETE" and "c1" in p for m, p, _ in api.calls)
@@ -1356,11 +1470,71 @@ def test_more_cpus_than_the_daemon_reports_is_refused_before_create():
     with pytest.raises(
         HardwareUnavailable, match=r"asks for 4 CPUs, more than this Docker host has \(2\)"
     ):
-        executor_with(api).launch(_spec(cpu=4))
+        executor_with(api).submit(_spec(cpu=4))
     assert not any("create" in p for _, p, _ in api.calls)
 
 
 def test_cpus_within_the_daemon_count_launch():
     api = FakeApi({"create": {"Id": "c1"}, "/info": {"NCPU": 4}})
-    executor_with(api).launch(_spec(cpu=4))
+    executor_with(api).submit(_spec(cpu=4))
     assert api.created_config()["HostConfig"]["NanoCpus"] == 4_000_000_000
+
+
+# -- K-4: credentials outlive the queue wait (spec §5.4, plan R7/R8) ----------
+
+
+def test_mint_adds_the_queue_wait_to_the_duration():
+    sts = FakeSts(_OK_STS)
+    mint_run_credentials(settings(), RUN, 900, queue_wait_seconds=600, sts_client=sts)
+    assert sts.kwargs["DurationSeconds"] == 600 + 900 + 300
+
+
+def test_mint_reports_a_lower_bound_expiry():
+    t = dt.datetime(2026, 11, 25, 12, 0, tzinfo=dt.UTC)
+    creds = mint_run_credentials(
+        settings(), RUN, 900, queue_wait_seconds=600, sts_client=FakeSts(_OK_STS), now=t
+    )
+    assert creds.expires_at == t + dt.timedelta(seconds=1800)
+    # Never part of the run's environment (ADR 0013's env contract).
+    assert not any("EXPIR" in name for name in creds.as_env())
+
+
+def test_the_refusal_names_the_queue_wait():
+    with pytest.raises(CredentialBudgetExceeded) as err:
+        mint_run_credentials(
+            settings(PROCESS_MAX_CREDENTIAL_SECONDS=3600), RUN, 2701, queue_wait_seconds=600,
+            sts_client=FakeSts(_OK_STS),
+        )
+    message = str(err.value)
+    assert message.startswith("credential_budget_exceeded")
+    assert "max_queue_wait 600 s + timeout 2701 s + grace 300 s" in message
+    assert err.value.queue_wait_seconds == 600
+
+
+def test_a_negative_queue_wait_is_refused():
+    with pytest.raises(ValueError):
+        mint_run_credentials(settings(), RUN, 900, queue_wait_seconds=-1,
+                             sts_client=FakeSts(_OK_STS))
+
+
+def test_a_scan_mints_without_a_queue_wait():
+    from pipeline.images.scan_launch import execute_scan
+    from pipeline.process.memory_executor import MemoryExecutor
+    from test_image_scan_launch import APPROVED, POLICY, SCAN, FakeStore
+
+    sts = FakeSts(_OK_STS)
+    execute_scan(
+        MemoryExecutor(), settings(), POLICY, FakeStore(), scan_id=SCAN, image=APPROVED,
+        kind="admission", registry_auth=None, sts_client=sts,
+    )
+    assert sts.kwargs["DurationSeconds"] == max(900, POLICY.scan_timeout_seconds + 300)
+
+
+def test_status_reports_when_the_run_exited():
+    """Review P2: finished_at is FinishedAt, or the on-read kill's own time."""
+    done = _inspect("exited", exit_code=1, finished=T0 + dt.timedelta(seconds=3))
+    state = _at(FakeApi({"/json": done}), T0).status(RunHandle(id="c1"))
+    assert state.finished_at == T0 + dt.timedelta(seconds=3)
+    late = T0 + dt.timedelta(seconds=61)
+    killed = _at(FakeApi({"/json": _inspect("running", timeout=60)}), late)
+    assert killed.status(RunHandle(id="c1")).finished_at == late
