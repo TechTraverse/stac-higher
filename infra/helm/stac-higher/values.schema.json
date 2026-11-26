@@ -444,13 +444,13 @@
         },
         "defaultFamily": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^[a-z0-9]([-a-z0-9]{0,44}[a-z0-9])?$"
         },
         "profileFamilies": {
           "type": "object",
           "additionalProperties": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^[a-z0-9]([-a-z0-9]{0,44}[a-z0-9])?$"
           }
         },
         "families": {
@@ -475,10 +475,14 @@
                   "properties": {
                     "key": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "maxLength": 316,
+                      "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$"
                     },
                     "value": {
-                      "type": "string"
+                      "type": "string",
+                      "maxLength": 63,
+                      "pattern": "^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$"
                     },
                     "effect": {
                       "type": "string",
@@ -536,7 +540,9 @@
                       "properties": {
                         "key": {
                           "type": "string",
-                          "minLength": 1
+                          "minLength": 1,
+                          "maxLength": 316,
+                          "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$"
                         },
                         "operator": {
                           "type": "string",
@@ -595,14 +601,138 @@
               "type": "array",
               "items": {
                 "type": "object",
-                "minProperties": 1
+                "oneOf": [
+                  {
+                    "properties": {
+                      "ipBlock": {
+                        "type": "object",
+                        "properties": {
+                          "cidr": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "cidr"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "ipBlock"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "properties": {
+                      "namespaceSelector": {
+                        "type": "object",
+                        "properties": {
+                          "matchLabels": {
+                            "type": "object",
+                            "minProperties": 1,
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "matchLabels"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "podSelector": {
+                        "type": "object",
+                        "properties": {
+                          "matchLabels": {
+                            "type": "object",
+                            "minProperties": 1,
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "matchLabels"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "namespaceSelector",
+                      "podSelector"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
               }
             },
             "objectStore": {
               "type": "array",
               "items": {
                 "type": "object",
-                "minProperties": 1
+                "oneOf": [
+                  {
+                    "properties": {
+                      "ipBlock": {
+                        "type": "object",
+                        "properties": {
+                          "cidr": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "cidr"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "ipBlock"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "properties": {
+                      "namespaceSelector": {
+                        "type": "object",
+                        "properties": {
+                          "matchLabels": {
+                            "type": "object",
+                            "minProperties": 1,
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "matchLabels"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "podSelector": {
+                        "type": "object",
+                        "properties": {
+                          "matchLabels": {
+                            "type": "object",
+                            "minProperties": 1,
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "matchLabels"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "namespaceSelector",
+                      "podSelector"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
               }
             },
             "objectStorePorts": {

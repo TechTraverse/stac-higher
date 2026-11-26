@@ -52,7 +52,10 @@ describe.skipIf(!helmReady())("runs plane: values contract", () => {
     expect(r.stderr).toContain("aws.s3PrefixListCidrs");
     expect(r.stderr).toContain("processRuns.network.objectStore");
     const minio = renderChart(
-      base({ aws: { s3PrefixListCidrs: [] }, processRuns: { network: { objectStore: [{ podSelector: { matchLabels: { app: "minio" } } }] } } }),
+      base({
+        aws: { s3PrefixListCidrs: [] },
+        processRuns: { network: { objectStore: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "storage" } }, podSelector: { matchLabels: { app: "minio" } } }] } },
+      }),
     );
     expect(minio.ok, minio.stderr).toBe(true);
     const noClass = { role: "", subnetSelectorTerms: [], securityGroupSelectorTerms: [] };
@@ -119,6 +122,65 @@ describe.skipIf(!helmReady())("runs plane: values contract", () => {
     const r = renderChart(base({ processRuns: { network: { dns: [kubeDns] } } }));
     expect(r.ok, r.stderr).toBe(true);
     failsNaming(base({ processRuns: { network: { dns: [{ ipBlock: { cidr: "fd00::a/128" } }] } } }), "processRuns.network.dns");
+  });
+
+  it("selector peers are narrow: both selectors, non-empty matchLabels, never with an ipBlock (review I1)", () => {
+    const ns = { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } };
+    const pod = { matchLabels: { "k8s-app": "kube-dns" } };
+    for (const field of ["dns", "objectStore"]) {
+      for (const peer of [
+        { namespaceSelector: {} },
+        { podSelector: {} },
+        { namespaceSelector: ns },
+        { podSelector: pod },
+        { namespaceSelector: { matchLabels: {} }, podSelector: pod },
+        { namespaceSelector: ns, podSelector: { matchLabels: {} } },
+        { namespaceSelector: { ...ns, matchExpressions: [] }, podSelector: pod },
+        { ipBlock: { cidr: "10.100.0.10/32" }, namespaceSelector: ns, podSelector: pod },
+        { ipBlock: { cidr: "10.100.0.10/32", except: ["10.100.0.10/32"] } },
+        {},
+      ]) {
+        const r = renderChart(base({ processRuns: { network: { [field]: [peer] } } }));
+        expect(r.ok, `${field} ${JSON.stringify(peer)}`).toBe(false);
+        // Helm 4 names schema failures as a JSON pointer, Helm 3 with dots.
+        expect(r.stderr).toMatch(new RegExp(`processRuns[./]network[./]${field}`));
+      }
+      const ok = renderChart(base({ processRuns: { network: { [field]: [{ namespaceSelector: ns, podSelector: pod }] } } }));
+      expect(ok.ok, ok.stderr).toBe(true);
+    }
+  });
+
+  it("scannerEgressExcept entries are strict subsets and not the fixed ranges (review M1)", () => {
+    for (const except of [["0.0.0.0/0"], ["10.0.0.0/8"], ["169.254.0.0/16"], ["203.0.113.0/24", "203.0.113.0/24"]]) {
+      failsNaming(base({ processRuns: { network: { scannerEgressExcept: except } } }), "processRuns.network.scannerEgressExcept");
+    }
+    const ok = renderChart(base({ processRuns: { network: { scannerEgressExcept: ["203.0.113.0/24", "198.51.100.7/32"] } } }));
+    expect(ok.ok, ok.stderr).toBe(true);
+  });
+
+  it("the runs namespace is never a system namespace (review M2)", () => {
+    for (const namespace of ["kube-system", "kube-public", "kube-node-lease", "default", "kueue-system", "stac-higher"]) {
+      for (const createNamespace of [true, false]) {
+        failsNaming(base({ processRuns: { namespace, createNamespace } }), "processRuns.namespace");
+      }
+    }
+  });
+
+  it("taints, requirements and family names are validated at render (review M3)", () => {
+    const fam = (f: object) => base({ processRuns: { families: { "cpu-default": f } } });
+    for (const [values, needle] of [
+      [fam({ extraTaints: [{ key: "bad key!", effect: "NoSchedule" }] }), "extraTaints"],
+      [fam({ extraTaints: [{ key: "example.com/gpu", value: "bad value!", effect: "NoSchedule" }] }), "extraTaints"],
+      [fam({ extraTaints: [{ key: "example.com/gpu", value: "x".repeat(64), effect: "NoSchedule" }] }), "extraTaints"],
+      [fam({ nodePool: { requirements: [{ key: "bad key!", operator: "In", values: ["x"] }] } }), "requirements"],
+      [base({ processRuns: { defaultFamily: "Bad_Name" } }), "defaultFamily"],
+      [base({ processRuns: { profileFamilies: { standard: "Bad_Name" } } }), "profileFamilies"],
+      [fam({ runtimeClass: "Bad_Class" }), "runtimeClass"],
+    ] as const) {
+      const r = renderChart(values);
+      expect(r.ok, needle).toBe(false);
+      expect(r.stderr).toContain(needle);
+    }
   });
 
   it("private, link-local and over-wide CIDRs are refused where they are not named as private (lead ruling)", () => {

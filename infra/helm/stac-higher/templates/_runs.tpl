@@ -232,6 +232,9 @@ refused unless .privateMin is set, and then needs a prefix of at least .privateM
 {{- if or (eq $pr.namespace .Release.Namespace) (eq $pr.namespace $v.identity.namespace) -}}
 {{- fail (printf "processRuns.namespace %q must differ from the release namespace %q: the runs namespace holds nothing but runs (docs/ISSUES.md I-184)" $pr.namespace .Release.Namespace) -}}
 {{- end -}}
+{{- if or (hasPrefix "kube-" $pr.namespace) (has $pr.namespace (list "default" "kueue-system")) -}}
+{{- fail (printf "processRuns.namespace %q is a system namespace; the runs namespace gets a default-deny NetworkPolicy for every pod in it and holds nothing but runs" $pr.namespace) -}}
+{{- end -}}
 {{- $all := include "stac-higher.runsAllFamilies" . | fromJson -}}
 {{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
 {{- include "stac-higher.runsCheckDefaultFamily" . -}}
@@ -312,11 +315,28 @@ refused unless .privateMin is set, and then needs a prefix of at least .privateM
 {{- include "stac-higher.runsCheckCidr" (dict "key" "processRuns.network.scannerPrivateCidrs" "cidr" $cidr "publicMin" 24 "privateMin" 24) -}}
 {{- end -}}
 {{- include "stac-higher.validateRunsProfiles" . -}}
+{{- $fixed := list -}}
+{{- range $f := include "stac-higher.runsScannerExcept" . | fromJsonArray -}}
+{{- $p := include "stac-higher.runsCidr" $f | fromJson -}}
+{{- $fixed = append $fixed (printf "%d/%d" (int64 $p.int) (int $p.bits)) -}}
+{{- end -}}
+{{- $seenExcept := dict -}}
 {{- range $cidr := $net.scannerEgressExcept -}}
 {{- $c := include "stac-higher.runsCidr" $cidr | fromJson -}}
 {{- if or (not $c.ok) $c.v6 -}}
 {{- fail (printf "processRuns.network.scannerEgressExcept: %q is not an IPv4 CIDR (a.b.c.d/n)" (toString $cidr)) -}}
 {{- end -}}
+{{- if lt (int $c.bits) 1 -}}
+{{- fail (printf "processRuns.network.scannerEgressExcept: %q must be a strict subset of 0.0.0.0/0 (prefix /1 or longer)" (toString $cidr)) -}}
+{{- end -}}
+{{- $k := printf "%d/%d" (int64 $c.int) (int $c.bits) -}}
+{{- if has $k $fixed -}}
+{{- fail (printf "processRuns.network.scannerEgressExcept: %q is already one of the chart's fixed exceptions (%s)" (toString $cidr) (include "stac-higher.runsScannerExcept" $ | fromJsonArray | join ", ")) -}}
+{{- end -}}
+{{- if hasKey $seenExcept $k -}}
+{{- fail (printf "processRuns.network.scannerEgressExcept: %q is listed twice" (toString $cidr)) -}}
+{{- end -}}
+{{- $_ := set $seenExcept $k true -}}
 {{- end -}}
 {{- end -}}
 
