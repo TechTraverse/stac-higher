@@ -43,7 +43,8 @@ from pipeline.images.registry_auth import (
 from pipeline.images.repo import ClaimedScan, ImageRow, PgImagesRepo
 from pipeline.images.scan_launch import ScanRun, execute_scan, read_scan_result
 from pipeline.jobs._common import load_key_or_skip
-from pipeline.process.docker_executor import DockerExecutor
+from pipeline.process.executor import ExecutorUnavailable
+from pipeline.process.factory import build_executor
 from pipeline.queue.interface import QueueBackend
 from pipeline.storage.platform import build_platform_client
 
@@ -96,7 +97,16 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         stalled = await repo.fail_stalled_scans(started_before=started_before)
         if stalled:
             logger.warning("stalled image scans failed", extra={"count": stalled})
-        executor = DockerExecutor(docker_host=settings.docker_host)
+        try:
+            # K-5: the deployment's executor (scans run as Jobs on Kubernetes,
+            # K5-R11). An executor that cannot be built leaves scans pending.
+            executor = build_executor(settings)
+        except ExecutorUnavailable as err:
+            logger.warning(
+                "image scan drain skipped: the executor is unavailable",
+                extra={"job": JOB_NAME, "error": str(err)},
+            )
+            return
         storage_client = build_platform_client(settings)
 
         async def run_scan(scan: ClaimedScan, kind: str) -> ScanRun:

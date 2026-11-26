@@ -2,10 +2,16 @@
 
 200 when the queue backend (and therefore the database, for Procrastinate)
 is reachable; 503 otherwise. Suitable as a compose/K8s healthcheck target.
+
+``image_policy`` (C-2) and ``executor`` (K-5: ``{name, reachable, error}``,
+from ``process.factory.ExecutorProbe``) are informational: neither turns the
+answer into a 503, because the readiness probe would otherwise pull a
+pipeline whose ingest is fine.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +43,7 @@ def create_health_app(
     heartbeat_state: HeartbeatState = STATE,
     *,
     image_policy_file: Path | None = None,
+    executor_status: Callable[[], Awaitable[dict[str, Any]]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="stac-higher-pipeline", version=__version__, docs_url=None)
 
@@ -49,6 +56,7 @@ def create_health_app(
             queue_error = str(exc)
 
         reachable = queue_error is None
+        executor = await executor_status() if executor_status is not None else None
         return JSONResponse(
             status_code=200 if reachable else 503,
             content={
@@ -69,6 +77,8 @@ def create_health_app(
                 "db_pool": pool_stats(),
                 # C-2: the image policy's file and whether it parses.
                 "image_policy": image_policy_status(image_policy_file),
+                # K-5: which process-run executor, and can we reach it.
+                "executor": executor,
             },
         )
 

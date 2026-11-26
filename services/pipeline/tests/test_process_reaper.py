@@ -345,3 +345,24 @@ async def test_without_a_scan_ledger_scan_containers_are_never_judged():
     result = await process_reap_tick(executor=executor, repo=LedgerRepo({}), now=NOW)
     assert result.reaped == 1
     assert "reap:c-s1" not in executor.order
+
+
+def test_the_reap_ceiling_counts_the_longest_queue_wait():
+    """K-5 (K5-R22, I-176): a Job pending in Kueue is old but alive."""
+    import dataclasses
+
+    from pipeline.process import kubernetes_manifests, reaper
+    from pipeline.process.config import MAX_TIMEOUT_SECONDS
+    from pipeline.process.hardware import load_hardware_profiles
+    from pipeline.process.reaper import DEFAULT_REAP_MAX_AGE_SECONDS, reap_max_age_seconds
+
+    base = load_hardware_profiles()
+    waits = (900, 7200)
+    profiles = dataclasses.replace(base, profiles=tuple(
+        dataclasses.replace(p, max_queue_wait_seconds=waits[i % 2])
+        for i, p in enumerate(base.profiles)
+    ))
+    assert reap_max_age_seconds(profiles) == MAX_TIMEOUT_SECONDS + 600 + 7200 + 3600
+    assert reap_max_age_seconds(None) == DEFAULT_REAP_MAX_AGE_SECONDS
+    assert reap_max_age_seconds(profiles) > DEFAULT_REAP_MAX_AGE_SECONDS
+    assert reaper._JOB_DEADLINE_SLACK_SECONDS == kubernetes_manifests.JOB_DEADLINE_SLACK_SECONDS

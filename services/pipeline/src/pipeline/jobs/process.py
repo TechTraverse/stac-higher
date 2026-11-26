@@ -42,8 +42,8 @@ from pipeline.ingest.repo import IngestRepo, PgIngestRepo
 from pipeline.jobs._common import load_key_or_skip
 from pipeline.jobs.finalize import build_hooks
 from pipeline.process.cron import is_due
-from pipeline.process.docker_executor import DockerExecutor
-from pipeline.process.executor import Executor
+from pipeline.process.executor import Executor, ExecutorUnavailable
+from pipeline.process.factory import build_executor
 from pipeline.process.hardware import (
     HardwareProfileError,
     HardwareProfileSet,
@@ -51,7 +51,7 @@ from pipeline.process.hardware import (
     load_hardware_profiles,
 )
 from pipeline.process.ledger import CANCEL_CHANNEL
-from pipeline.process.reaper import process_reap_tick
+from pipeline.process.reaper import process_reap_tick, reap_max_age_seconds
 from pipeline.process.reconcile import RECONCILE_BATCH, Reconciler, RunBatch
 from pipeline.process.repo import PgProcessRepo, QueuedRun
 from pipeline.process.runner import run_one
@@ -66,11 +66,30 @@ from pipeline.storage.platform import build_platform_client
 logger = logging.getLogger(__name__)
 
 
-def _docker_executor(settings: Settings) -> Executor:
-    """THE place a process-run executor is built (K-4 addendum A11): the run
-    path, the reconciler, the watcher, the cancel listener and the reaper all
-    come through here, so K-5's backend factory replaces one function."""
-    return DockerExecutor(docker_host=settings.docker_host)
+def _executor_or_none(settings: Settings, job: str) -> Executor | None:
+    """``build_executor`` for a tick: None (and a WARNING) when the executor
+    cannot be built -- the tick then does nothing rather than claim runs it
+    cannot submit (K-5 addendum A17). The worker never dies of it (K5-R18)."""
+    try:
+        return build_executor(settings)
+    except ExecutorUnavailable as err:
+        logger.warning(
+            "process job skipped: the executor is unavailable",
+            extra={"job": job, "executor": settings.process_executor, "error": str(err)},
+        )
+        return None
+
+
+def _claim_admission(executor: Executor, profiles: HardwareProfileSet | None) -> dict[str, Any]:
+    """The claim's admission arguments for this executor (K-5 A4/A5): the
+    backend it stamps (``record_submission`` matches on it), and the
+    profiles' local capacities only where the backend has no scheduler of
+    its own (``enforces_local_capacity``; Kueue owns them on Kubernetes)."""
+    local = profiles is not None and executor.enforces_local_capacity
+    return {
+        "capacities": docker_capacities(profiles) if local and profiles else None,
+        "backend": executor.name,
+    }
 
 
 def build_reconciler(
@@ -92,7 +111,7 @@ def build_reconciler(
 
     return Reconciler(
         repo=PgProcessRepo(settings.database_url),
-        executor=executor or _docker_executor(settings),
+        executor=executor or build_executor(settings),
         settings=settings,
         # Built on the first log it stores, not here (review P5).
         storage_client=lambda: build_platform_client(settings),
@@ -106,8 +125,11 @@ def build_run_watcher(queue: QueueBackend, settings: Settings) -> Coroutine[Any,
     """K-4: the run watcher main.py runs beside the worker — the executor's
     event stream wakes one long-lived Reconciler. A backend without a
     ``watch()`` gets a coroutine that idles until cancelled: the run tick is
-    then the only path (K-5's watch may land after its executor)."""
-    executor = _docker_executor(settings)
+    then the only path; so does an executor that cannot be built (the run
+    tick logs it every minute)."""
+    executor = _executor_or_none(settings, "run_watcher")
+    if executor is None:
+        return asyncio.Event().wait()
     reconciler = build_reconciler(queue, settings, executor=executor)
     if executor.supports_watch:
         return run_watcher(executor.watch, reconciler.on_event)
@@ -120,10 +142,15 @@ def build_cancel_listener(
     """K-4 (R12): ``LISTEN process_run_cancel`` — the app's cancel statement
     NOTIFYs in the same transaction, and each wake stops every running run
     whose cancel was requested. The connect wake drains cancels requested
-    while the worker was down."""
-    reconciler = build_reconciler(queue, settings)
+    while the worker was down. The Reconciler is built per wake, so an
+    executor that cannot be built at worker start does not end the listener
+    (K5-R18)."""
 
     async def _on_wake() -> None:
+        executor = _executor_or_none(settings, "cancel_listener")
+        if executor is None:
+            return
+        reconciler = build_reconciler(queue, settings, executor=executor)
         await reconciler.sweep(limit=RECONCILE_BATCH, cancel_requested_only=True)
 
     return run_dispatch_listener(settings.database_url, _on_wake, channel=CANCEL_CHANNEL)
@@ -296,6 +323,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         repo: PgProcessRepo,
         now: dt.datetime,
         profiles: HardwareProfileSet | None,
+        executor: Executor,
     ) -> None:
         """Submit an already-claimed batch (K-4: each run returns once it is
         submitted). Shared by the periodic tick and the immediate job so the
@@ -304,7 +332,6 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         its handle was recorded — a run that exits in under a second, or a
         cancel requested before submission — is caught here instead of at the
         next tick."""
-        executor = _docker_executor(settings)
         reconciler = build_reconciler(queue, settings, executor=executor)
         storage_client = build_platform_client(settings)
         resolver = build_secret_resolver(settings)
@@ -348,18 +375,23 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 )
 
     async def process_run_tick(timestamp: int) -> None:
+        executor = _executor_or_none(settings, JOB_RUN_TICK)
+        if executor is None:
+            return
         repo = _repo()
         now = dt.datetime.now(dt.UTC)
         profiles = load_run_profiles(settings)
         runs = await repo.claim_due_runs(
-            now, RUN_BATCH, capacities=docker_capacities(profiles) if profiles else None,
+            now, RUN_BATCH, **_claim_admission(executor, profiles),
             extract_capacity=settings.process_extract_max_running,
         )
         if runs:
-            await _execute_claimed(runs, repo, now, profiles)
+            await _execute_claimed(runs, repo, now, profiles, executor)
         # K-4: the backstop for every submitted run — a missed event, a
         # restarted worker, a Docker run past its timeout (R10).
-        await build_reconciler(queue, settings).sweep(limit=RECONCILE_BATCH)
+        await build_reconciler(queue, settings, executor=executor).sweep(
+            limit=RECONCILE_BATCH
+        )
 
     async def process_run_now(run_id: str) -> None:
         """Execute one just-queued run without waiting for the tick (G-3).
@@ -369,11 +401,14 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         execution. Nothing to claim is the normal outcome of a race, not an
         error.
         """
+        executor = _executor_or_none(settings, JOB_RUN_NOW)
+        if executor is None:
+            return  # the run stays queued; the tick retries it
         repo = _repo()
         now = dt.datetime.now(dt.UTC)
         profiles = load_run_profiles(settings)
         run = await repo.claim_run(
-            run_id, now, capacities=docker_capacities(profiles) if profiles else None,
+            run_id, now, **_claim_admission(executor, profiles),
             extract_capacity=settings.process_extract_max_running,
         )
         if run is None:
@@ -382,7 +417,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
                 extra={"run_id": run_id},
             )
             return
-        await _execute_claimed([run], repo, now, profiles)
+        await _execute_claimed([run], repo, now, profiles, executor)
 
     async def _enqueue_now(run_id: str) -> None:
         await queue.enqueue(JOB_RUN_NOW, {"run_id": run_id})
@@ -468,11 +503,23 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         )
 
     async def process_reap(timestamp: int) -> None:
+        executor = _executor_or_none(settings, JOB_REAP)
+        if executor is None:
+            return
+        profiles = load_run_profiles(settings)
+        if profiles is None:
+            logger.warning(
+                "orphan reaper: the hardware profiles are unreadable; using the default "
+                "age ceiling",
+                extra={"job": JOB_REAP},
+            )
         await process_reap_tick(
-            executor=_docker_executor(settings),
+            executor=executor,
             repo=_repo(),
             # C-2: scan containers are judged against image_scans.
             scan_statuses=PgImagesRepo(settings.database_url).scan_statuses,
+            # K-5 (K5-R22, I-176): a run may sit in its backend's queue first.
+            max_age_seconds=reap_max_age_seconds(profiles),
         )
 
     queue.register_task(process_trigger, name=JOB_TRIGGER, retry=TRIGGER_RETRY)

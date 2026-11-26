@@ -288,3 +288,42 @@ async def test_run_passes_the_watcher_and_the_cancel_listener(monkeypatch):
         "test_run_passes_the_watcher_and_the_cancel_listener.<locals>.cancel_listener"
         in captured
     )
+
+
+async def test_health_gets_an_executor_probe(monkeypatch):
+    """K-5: /health's `executor` key is wired to an ExecutorProbe."""
+    import pipeline.main as main_module
+    from pipeline.jobs import dispatch as dispatch_jobs
+    from pipeline.jobs import process as process_jobs
+    from pipeline.process.factory import ExecutorProbe
+    from pipeline.queue.memory import InMemoryQueue
+
+    async def idle():
+        return None
+
+    async def fake_run_until_first_exit(server, *coroutines):
+        for coro in coroutines:
+            coro.close()
+
+    async def no_close() -> None:
+        return None
+
+    captured: dict = {}
+    real_create = main_module.create_health_app
+
+    def create_health_app(queue, **kwargs):
+        captured.update(kwargs)
+        return real_create(queue, **kwargs)
+
+    monkeypatch.setattr(main_module, "create_health_app", create_health_app)
+    monkeypatch.setattr(main_module, "build_queue", lambda settings: InMemoryQueue())
+    monkeypatch.setattr(main_module, "run_until_first_exit", fake_run_until_first_exit)
+    monkeypatch.setattr(main_module, "close_pools", no_close)
+    monkeypatch.setattr(main_module, "close_writer_pools", lambda: None)
+    monkeypatch.setattr(main_module.FLOW_BATCHER, "flush", lambda repo: no_close())
+    monkeypatch.setattr(dispatch_jobs, "build_notify_listener", lambda q, s: idle())
+    monkeypatch.setattr(process_jobs, "build_run_watcher", lambda q, s: idle())
+    monkeypatch.setattr(process_jobs, "build_cancel_listener", lambda q, s: idle())
+
+    await main_module.run(Settings.from_env(env={}))
+    assert isinstance(captured["executor_status"], ExecutorProbe)
