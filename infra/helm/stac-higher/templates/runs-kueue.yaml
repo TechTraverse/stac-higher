@@ -1,0 +1,4 @@
+{{- /* R-8: the LocalQueue every run Job names (PROCESS_K8S_DEFAULT_QUEUE), from K-6's
+infra/kueue/common/localqueue.yaml (addendum A-R2). Namespaced, so it renders whatever processRuns.clusterObjects
+says. */ -}}
+{{ include "stac-higher.runsCommonFile" (dict "root" . "file" "localqueue.yaml") }}

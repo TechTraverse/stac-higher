@@ -426,3 +426,89 @@ forever), and an image scan (1 CPU, the image policy's scan_limits.memory_mb) fi
 {{- fail (printf "processRuns.families.%s.quota.memoryGi (%d Gi) is below config.imagePolicy scan_limits.memory_mb (%v MiB): image scans run on the default family and could never be admitted" $def (int (get $fams $def).quota.memoryGi) $scanMb) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+One of K-6's infra/kueue/common files, from the chart's byte-identical copy (files/kueue/common/, addendum A-R2;
+kueue.test.ts pins the bytes and the rendered objects), never retyped: the CEL text never passes through the
+template parser. Each document gets the chart's labels and its parameters: the runs namespace (LocalQueue
+metadata.namespace, every binding's namespaceSelector) and the pipeline identity (the one literal in the
+pod-update policy's match condition, replaced exactly once or the render fails). (dict "root" $ "file" <name>)
+*/}}
+{{- define "stac-higher.runsCommonFile" -}}
+{{- $r := .root -}}
+{{- $v := $r.Values -}}
+{{- $path := printf "files/kueue/common/%s" .file -}}
+{{- $text := $r.Files.Get $path -}}
+{{- if not $text -}}
+{{- fail (printf "%s is missing from the chart (a copy of infra/kueue/common/%s)" $path .file) -}}
+{{- end -}}
+{{- $literal := "system:serviceaccount:stac-higher:stac-higher-pipeline" -}}
+{{- if eq .file "admission-policy.yaml" -}}
+{{- $n := sub (len (splitList $literal $text)) 1 -}}
+{{- if ne (int $n) 1 -}}
+{{- fail (printf "%s: the pipeline identity %q occurs %d times, expected once (K-6 changed the policy; update templates/_runs.tpl)" $path $literal (int $n)) -}}
+{{- end -}}
+{{- $text = replace $literal (printf "system:serviceaccount:%s:%s" $v.identity.namespace $v.identity.serviceAccounts.pipeline) $text -}}
+{{- end -}}
+{{- $labels := include "stac-higher.labels" (dict "root" $r "component" "process-runs") | fromYaml -}}
+{{- range $raw := regexSplit "(?m)^---[ \\t]*$" $text -1 -}}
+{{- $doc := fromYaml $raw -}}
+{{- if hasKey $doc "Error" -}}
+{{- fail (printf "%s: %s" $path $doc.Error) -}}
+{{- end -}}
+{{- if $doc }}
+---
+{{- $_ := set $doc.metadata "labels" (merge (deepCopy ($doc.metadata.labels | default dict)) $labels) -}}
+{{- if eq $doc.kind "LocalQueue" -}}
+{{- $_ := set $doc.metadata "namespace" $v.processRuns.namespace -}}
+{{- end -}}
+{{- if eq $doc.kind "ValidatingAdmissionPolicyBinding" -}}
+{{- $_ := set $doc.spec.matchResources.namespaceSelector "matchLabels" (dict "kubernetes.io/metadata.name" $v.processRuns.namespace) -}}
+{{- end }}
+{{ toYaml $doc }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The placements a run Job's pod template may carry (addendum A-R3): none (an image scan, K5-8), or exactly one
+enabled family's derived nodeSelector + tolerations + runtimeClassName. Tolerations spelt in full, absent fields as
+the API reads them (operator Equal, value and effect ""). JSON array, deduplicated, the default family first.
+*/}}
+{{- define "stac-higher.runsPlacements" -}}
+{{- $fams := include "stac-higher.runsFamilies" . | fromJson -}}
+{{- $none := dict "nodeSelector" dict "tolerations" list "runtimeClassName" "" -}}
+{{- $out := list $none -}}
+{{- $seen := dict (toJson $none) true -}}
+{{- range $name := include "stac-higher.runsFamiliesOrdered" . | fromJsonArray -}}
+{{- $b := include "stac-higher.runsBackendBlock" (dict "root" $ "name" $name "family" (get $fams $name)) | fromJson -}}
+{{- $tols := list -}}
+{{- range $t := $b.tolerations -}}
+{{- $tols = append $tols (dict "key" ($t.key | default "") "operator" ($t.operator | default "Equal") "value" ($t.value | default "") "effect" ($t.effect | default "")) -}}
+{{- end -}}
+{{- $e := dict "nodeSelector" $b.node_selector "tolerations" $tols "runtimeClassName" ($b.runtime_class | default "") -}}
+{{- if not (hasKey $seen (toJson $e)) -}}
+{{- $_ := set $seen (toJson $e) true -}}
+{{- $out = append $out $e -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{/* The placement rule's CEL (one validation). `a` is one allowed placement; `t`/`e` a pod / allowed toleration. */}}
+{{- define "stac-higher.runsPlacementCel" -}}
+variables.allowed.exists(a,
+  (has(variables.pod.nodeSelector) ? size(variables.pod.nodeSelector) : 0) == size(a.nodeSelector) &&
+  a.nodeSelector.all(k, has(variables.pod.nodeSelector) && k in variables.pod.nodeSelector &&
+    variables.pod.nodeSelector[k] == a.nodeSelector[k]) &&
+  (has(variables.pod.tolerations) ? size(variables.pod.tolerations) : 0) == size(a.tolerations) &&
+  (!has(variables.pod.tolerations) || variables.pod.tolerations.all(t, a.tolerations.exists(e,
+    (has(t.key) ? t.key : '') == e.key && (has(t.operator) ? t.operator : 'Equal') == e.operator &&
+    (has(t.value) ? t.value : '') == e.value && (has(t.effect) ? t.effect : '') == e.effect &&
+    !has(t.tolerationSeconds)))) &&
+  a.tolerations.all(e, has(variables.pod.tolerations) && variables.pod.tolerations.exists(t,
+    (has(t.key) ? t.key : '') == e.key && (has(t.operator) ? t.operator : 'Equal') == e.operator &&
+    (has(t.value) ? t.value : '') == e.value && (has(t.effect) ? t.effect : '') == e.effect &&
+    !has(t.tolerationSeconds))) &&
+  (has(variables.pod.runtimeClassName) ? variables.pod.runtimeClassName : '') == a.runtimeClassName)
+{{- end -}}
