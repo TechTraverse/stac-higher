@@ -139,6 +139,13 @@ class FakeKube:
         self.namespace = NAMESPACE
         self.token = "fake-token-" + secrets.token_hex(4)
         self.kueue = True
+        #: Kueue creates the Workload later (``create_pending_workloads``).
+        self.kueue_async = False
+        #: A foreground Job delete keeps the Job, ``deletionTimestamp`` set,
+        #: until ``finish_deletes`` (as the real GC does while pods go).
+        self.linger_deletes = False
+        self._pending_workloads: list[str] = []
+        self._deleting: list[str] = []
         self.calls: list[Call] = []
         self.used: set[tuple[str, str, str]] = set()
         self.granted = load_role_rules(role_path)
@@ -356,6 +363,24 @@ class FakeKube:
         with self._cond:
             self._failures.append((method.upper(), resource, status, reason, message))
 
+    def create_pending_workloads(self) -> None:
+        """Kueue's job reconciler catching up (``kueue_async``)."""
+        with self._cond:
+            for name in self._pending_workloads:
+                job = self._store[("batch", "jobs")].get(name)
+                if job is not None:
+                    self._create_workload(job)
+            self._pending_workloads.clear()
+
+    def finish_deletes(self) -> None:
+        """The garbage collector completing every lingering foreground delete."""
+        with self._cond:
+            for name in self._deleting:
+                job = self._delete(("batch", "jobs"), name)
+                if job is not None:
+                    self._cascade(job)
+            self._deleting.clear()
+
     def compact(self) -> None:
         """Every resourceVersion up to now is compacted: a watch starting
         from one gets ``ERROR`` 410."""
@@ -463,8 +488,11 @@ class _Handler(BaseHTTPRequestHandler):
         query = dict(parse_qsl(split.query, keep_blank_values=True))
         body = self._body()
         group, namespace, resource, name, sub = _route(split.path)
-        if sub == "log" and resource == "pods":
-            resource = "pods/log"
+        if sub:
+            # Review C10: every subresource is its own RBAC resource
+            # (pods/log, pods/status, pods/ephemeralcontainers, jobs/status…),
+            # exactly as the real authorizer sees it.
+            resource = f"{resource}/{sub}"
         watching = query.get("watch") in ("1", "true")
         if method == "GET":
             verb = "get" if name else ("watch" if watching else "list")
@@ -492,8 +520,8 @@ class _Handler(BaseHTTPRequestHandler):
                 not fake.kueue or split.path.split("/")[3] != KUEUE_API_VERSION
             ):
                 raise _Reply(404, "the server could not find the requested resource")
-            key = ("" if resource == "pods/log" else group, resource.split("/")[0])
-            if key not in _KINDS:
+            key = (group, resource.split("/")[0])
+            if key not in _KINDS or ("/" in resource and resource != "pods/log"):
                 raise _Reply(404, "the server could not find the requested resource")
             if verb == "watch":
                 self._watch(key, query)
@@ -522,6 +550,13 @@ class _Handler(BaseHTTPRequestHandler):
             if verb == "get":
                 return 200, copy.deepcopy(obj), "application/json"
             if verb == "delete":
+                foreground = query.get("propagationPolicy") == "Foreground"
+                if key == ("batch", "jobs") and fake.linger_deletes and foreground:
+                    if not obj["metadata"].get("deletionTimestamp"):
+                        obj["metadata"]["deletionTimestamp"] = _ts(fake._now())
+                        fake._emit(key, "MODIFIED", obj)
+                        fake._deleting.append(name)
+                    return 200, copy.deepcopy(obj), "application/json"
                 fake._delete(key, name)
                 if key == ("batch", "jobs"):
                     fake._cascade(obj)
@@ -549,7 +584,10 @@ class _Handler(BaseHTTPRequestHandler):
                 obj["spec"]["suspend"] = True
             fake._put(key, obj)
             if fake.kueue and queued:
-                fake._create_workload(obj)
+                if fake.kueue_async:
+                    fake._pending_workloads.append(name)
+                else:
+                    fake._create_workload(obj)
             return copy.deepcopy(obj)
         if key == ("", "secrets"):
             for value in (obj.get("data") or {}).values():

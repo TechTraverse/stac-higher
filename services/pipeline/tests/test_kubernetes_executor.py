@@ -491,3 +491,55 @@ def test_a_conflict_or_rejection_deletes_nothing(executor, fake, code):
     with pytest.raises((ExecutorUnavailable, RunRejected)):
         executor.submit(spec())
     assert not [c for c in fake.calls if c.method == "DELETE"]
+
+
+# -- review C6, C10, C12 ---------------------------------------------------------
+
+
+def test_cancel_keeps_a_finished_pod_whose_job_has_not_noticed_yet(executor, fake):
+    """Review C6: the pod ran and finished; deleting the Job now would lose
+    its log. Nothing to stop: leave it for the Job controller and reap."""
+    executor.submit(spec())
+    fake.set_job_status(NAME, suspend=False, active=0)
+    fake.add_pod(NAME, phase="Failed", start_time=NOW,
+                 state={"terminated": {"exitCode": 1}})
+    fake.calls.clear()
+    executor.cancel(HANDLE)
+    assert not [c for c in fake.calls if c.method in ("PATCH", "DELETE")]
+    assert NAME in fake.objects(*JOBS)
+
+
+def test_a_foreground_delete_that_lingers_reads_as_deleting(executor, fake):
+    """Review C10: a foreground delete keeps the Job (deletionTimestamp set)
+    until its pods are gone; status() reads it as row 8."""
+    fake.linger_deletes = True
+    executor.submit(spec())
+    executor.cancel(HANDLE)  # never started: foreground delete
+    assert NAME in fake.objects(*JOBS)
+    assert executor.status(HANDLE).detail == "the run's Job is being deleted outside the platform"
+    executor.reap(HANDLE)  # a second delete of a deleting Job is fine
+    fake.finish_deletes()
+    assert fake.objects(*JOBS) == {} and fake.objects(*SECRETS) == {}
+    assert executor.status(HANDLE).phase == "lost"
+
+
+def test_a_workload_created_later_reads_pending_then_its_message(executor, fake):
+    """Review C10: Kueue creates the Workload asynchronously (row 9)."""
+    fake.kueue_async = True
+    executor.submit(spec())
+    assert fake.objects(*WORKLOADS) == {}
+    state = executor.status(HANDLE)
+    assert (state.phase, state.detail) == ("pending_capacity", None)
+    fake.create_pending_workloads()
+    assert executor.status(HANDLE).detail.startswith("couldn't assign flavors")
+
+
+def test_the_secret_cap_counts_decoded_bytes(executor, fake):
+    """Review C12: the API server caps the decoded data, not its base64."""
+    from pipeline.process.kubernetes_executor import SECRET_MAX_BYTES
+
+    # 900 KiB decoded is ~1.2 MiB of base64: allowed
+    executor.submit(spec(env={"BIG": "x" * (900 * 1024)}))
+    assert NAME in fake.objects(*SECRETS)
+    with pytest.raises(RunRejected):
+        executor.submit(spec(env={"BIG": "x" * SECRET_MAX_BYTES}))

@@ -379,7 +379,7 @@ def test_an_unknown_process_executor_fails_startup():
 
 def test_the_api_url_comes_from_the_in_cluster_variables():
     def url(env):
-        return Settings.from_env(env=env).process_k8s_api_url
+        return Settings.from_env(env={"PROCESS_EXECUTOR": "kubernetes", **env}).process_k8s_api_url
 
     in_cluster = {"KUBERNETES_SERVICE_HOST": "10.0.0.1", "KUBERNETES_SERVICE_PORT": "443"}
     assert url(in_cluster) == "https://10.0.0.1:443"
@@ -395,18 +395,21 @@ def test_the_api_url_comes_from_the_in_cluster_variables():
 
 @pytest.mark.parametrize("raw", ["http://127.0.0.1:8001", "http://localhost:8001", "http://[::1]:8001"])
 def test_plain_http_is_accepted_only_to_loopback(raw):
-    assert Settings.from_env(env={"PROCESS_K8S_API_URL": raw}).process_k8s_api_url == raw
+    env = {"PROCESS_EXECUTOR": "kubernetes", "PROCESS_K8S_API_URL": raw}
+    assert Settings.from_env(env=env).process_k8s_api_url == raw
 
 
 @pytest.mark.parametrize("raw", ["http://10.0.0.1", "ftp://10.0.0.1", "https://", "api:443"])
 def test_plain_http_is_refused_except_to_loopback(raw):
     with pytest.raises(ValueError, match="PROCESS_K8S_API_URL"):
-        Settings.from_env(env={"PROCESS_K8S_API_URL": raw})
+        Settings.from_env(env={"PROCESS_EXECUTOR": "kubernetes", "PROCESS_K8S_API_URL": raw})
 
 
 def test_registry_mirrors_parse():
     def mirrors(raw):
-        settings = Settings.from_env(env={"PROCESS_K8S_REGISTRY_MIRRORS": raw})
+        settings = Settings.from_env(
+            env={"PROCESS_EXECUTOR": "kubernetes", "PROCESS_K8S_REGISTRY_MIRRORS": raw}
+        )
         return settings.process_k8s_registry_mirrors
 
     assert mirrors('{"ghcr.io": "mirror.example.test/ghcr/"}') == {
@@ -436,7 +439,9 @@ def test_registry_mirrors_parse():
 )
 def test_bad_registry_mirrors_fail_startup(raw):
     with pytest.raises(ValueError, match="PROCESS_K8S_REGISTRY_MIRRORS"):
-        Settings.from_env(env={"PROCESS_K8S_REGISTRY_MIRRORS": raw})
+        Settings.from_env(
+            env={"PROCESS_EXECUTOR": "kubernetes", "PROCESS_K8S_REGISTRY_MIRRORS": raw}
+        )
 
 
 def test_k8s_settings_default():
@@ -465,6 +470,7 @@ def test_k8s_settings_default():
 def test_k8s_settings_read_their_env_names():
     s = Settings.from_env(
         env={
+            "PROCESS_EXECUTOR": "kubernetes",
             "PROCESS_K8S_NAMESPACE": "runs",
             "PROCESS_K8S_TOKEN_FILE": "/t",
             "PROCESS_K8S_CA_FILE": "/c",
@@ -479,3 +485,25 @@ def test_k8s_settings_read_their_env_names():
         s.process_k8s_run_service_account,
         s.process_k8s_default_queue,
     ) == ("runs", "/t", "/c", "sa", "q")
+
+
+
+# -- review C9 --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["Runs", "runs_ns", "-runs", "runs-", "a" * 64, "a.b"])
+def test_the_runs_namespace_must_be_a_dns_label(bad):
+    with pytest.raises(ValueError, match="PROCESS_K8S_NAMESPACE"):
+        Settings.from_env(env={"PROCESS_EXECUTOR": "kubernetes", "PROCESS_K8S_NAMESPACE": bad})
+
+
+def test_k8s_settings_are_not_read_on_docker():
+    """A malformed PROCESS_K8S_* value must not stop a Docker deployment."""
+    s = Settings.from_env(env={
+        "PROCESS_K8S_NAMESPACE": "Bad_NS",
+        "PROCESS_K8S_API_URL": "http://10.0.0.1",
+        "PROCESS_K8S_REGISTRY_MIRRORS": "not json",
+    })
+    assert s.process_executor == "docker"
+    assert s.process_k8s_namespace == "stac-higher-runs"
+    assert s.process_k8s_registry_mirrors == {}

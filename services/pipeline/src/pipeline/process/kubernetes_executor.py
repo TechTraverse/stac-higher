@@ -35,7 +35,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
-import json
 import logging
 import secrets
 import threading
@@ -307,7 +306,9 @@ def _job_state(job: Mapping, workload: Mapping | None, pod: Mapping | None, *,
             return RunState("exited", exit=ExitStatus(
                 -1, error=_clip(f"{DEACTIVATED_PREFIX}{words}")))
         quota_reserved = _is_true(wl_conditions, "QuotaReserved")
-        if _is_true(wl_conditions, "Evicted") and not quota_reserved:  # row 11
+        # row 11, before row 13 (review C7): a Workload evicted but still
+        # holding its quota for a moment is a preemption, not a start.
+        if _is_true(wl_conditions, "Evicted"):
             evicted = wl_conditions["Evicted"]
             reason = str(evicted.get("reason") or "")
             message = evicted.get("message") or ""
@@ -497,8 +498,9 @@ class KubernetesExecutor(Executor):
         # Everything is built before the first call: a profile that cannot
         # carry the GPU count (HardwareUnavailable) creates nothing.
         job = build_job(spec, name=name, ctx=ctx, pull_secret=pull_name)
-        probe_secret = build_env_secret(spec, name=name, owner_uid="", ctx=ctx)
-        if len(json.dumps(probe_secret["data"])) > SECRET_MAX_BYTES:
+        # The API server caps a Secret's DECODED data (keys and values) at
+        # 1 MiB (review C12); measure that, not the base64 we send.
+        if sum(len(k.encode()) + len(v.encode()) for k, v in spec.env.items()) > SECRET_MAX_BYTES:
             raise RunRejected(
                 f"run {spec.run_id}'s environment is larger than a Kubernetes Secret "
                 "allows (1 MiB)"
@@ -620,18 +622,20 @@ class KubernetesExecutor(Executor):
         cancel row reordered inside ``collecting``) and replace this body
         with a foreground delete of the Job.
         """
-        started = [
-            pod for pod in self._job_pods(name)
-            if (pod.get("status") or {}).get("startTime")
-            and (pod.get("status") or {}).get("phase") not in ("Succeeded", "Failed")
-        ]
-        for pod in started:
+        started = [pod for pod in self._job_pods(name)
+                   if (pod.get("status") or {}).get("startTime")]
+        live = [pod for pod in started
+                if (pod.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
+        for pod in live:
             pod_name = str((pod.get("metadata") or {}).get("name") or "")
             with contextlib.suppress(KubeNotFound):
                 self.api.patch(
                     self._item(self._pods, pod_name),
                     {"spec": {"activeDeadlineSeconds": CANCEL_POD_DEADLINE_SECONDS}},
                 )
+        # Review C6: a pod that ran and already finished (the Job controller
+        # has not marked the Job yet) has nothing to stop and a log to keep:
+        # only a Job none of whose pods ever started is deleted.
         if not started:
             self._delete_job(name)
 
@@ -649,6 +653,7 @@ class KubernetesExecutor(Executor):
                 f"{self._item(self._pods, pod_name)}/log",
                 query={"container": CONTAINER, "limitBytes": str(max_bytes),
                        "timestamps": "false"},
+                max_bytes=max_bytes,
             )
         except ExecutorUnavailable as err:
             logger.warning(

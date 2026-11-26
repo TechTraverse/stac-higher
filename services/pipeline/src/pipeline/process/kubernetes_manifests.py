@@ -361,6 +361,16 @@ def build_env_secret(spec: RunSpec, *, name: str, owner_uid: str, ctx: JobContex
     }
 
 
+def _registry_host(image: str) -> str:
+    """The registry a reference pulls from (review C11): its first component
+    when that is a host (Docker's rule, as in :func:`rewrite_image`), else
+    Docker Hub. A credential is never keyed on a repository name."""
+    first, sep, _rest = image.partition("/")
+    if sep and ("." in first or ":" in first or first == "localhost"):
+        return first
+    return "docker.io"
+
+
 def build_pull_secret(spec: RunSpec, *, name: str, owner_uid: str, ctx: JobContext
                       ) -> dict | None:
     """A ``kubernetes.io/dockerconfigjson`` Secret ``{name}-pull`` for a user
@@ -369,7 +379,7 @@ def build_pull_secret(spec: RunSpec, *, name: str, owner_uid: str, ctx: JobConte
     auth = spec.registry_auth
     if auth is None:
         return None
-    server = auth.server or spec.image.split("/", 1)[0]
+    server = auth.server or _registry_host(spec.image)
     config = {"auths": {server: {
         "username": auth.username,
         "password": auth.password,

@@ -203,6 +203,8 @@ describe.skipIf(!helmReady())("chart config layer", () => {
     expect(e.PROCESS_K8S_NAMESPACE).toBe("stac-higher-runs");
     expect(e).not.toHaveProperty("PROCESS_K8S_REGISTRY_MIRRORS");
     expect(data(render({ processRuns: { namespace: "other" } }), "env-pipeline").PROCESS_K8S_NAMESPACE).toBe("other");
+    // A DNS-1123 label, as the pipeline requires (review C9).
+    for (const bad of ["Bad_NS", "-runs", "a".repeat(64)]) fails({ processRuns: { namespace: bad } }, "processRuns");
 
     const prefixes = { "ghcr.io": "a.example/ghcr/", "docker.io": "a.example/hub", "quay.io": "" };
     const m = data(render({ registry: { mirrorPrefixes: prefixes } }), "env-pipeline");

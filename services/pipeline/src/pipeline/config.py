@@ -335,6 +335,39 @@ def _parse_process_executor(value: str | None) -> str:
     return v
 
 
+#: A Kubernetes namespace name: an RFC 1123 label.
+_DNS_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
+
+
+def _parse_k8s_namespace(value: str | None) -> str:
+    namespace = _optional(value) or DEFAULT_PROCESS_K8S_NAMESPACE
+    if not _DNS_LABEL_RE.fullmatch(namespace):
+        raise ValueError(
+            f"PROCESS_K8S_NAMESPACE must be a DNS-1123 label (lower-case letters, digits "
+            f"and '-', at most 63), got {value!r}"
+        )
+    return namespace
+
+
+def _k8s_settings(env: Mapping[str, str]) -> dict[str, object]:
+    """The Kubernetes executor's settings, parsed and validated (K-5)."""
+    return {
+        "process_k8s_namespace": _parse_k8s_namespace(env.get("PROCESS_K8S_NAMESPACE")),
+        "process_k8s_api_url": _parse_k8s_api_url(env),
+        "process_k8s_token_file": _optional(env.get("PROCESS_K8S_TOKEN_FILE"))
+        or DEFAULT_PROCESS_K8S_TOKEN_FILE,
+        "process_k8s_ca_file": _optional(env.get("PROCESS_K8S_CA_FILE"))
+        or DEFAULT_PROCESS_K8S_CA_FILE,
+        "process_k8s_run_service_account": _optional(env.get("PROCESS_K8S_RUN_SERVICE_ACCOUNT"))
+        or DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT,
+        "process_k8s_default_queue": _optional(env.get("PROCESS_K8S_DEFAULT_QUEUE"))
+        or DEFAULT_PROCESS_K8S_DEFAULT_QUEUE,
+        "process_k8s_registry_mirrors": _parse_registry_mirrors(
+            env.get("PROCESS_K8S_REGISTRY_MIRRORS")
+        ),
+    }
+
+
 def _parse_k8s_api_url(env: Mapping[str, str]) -> str | None:
     """K-5: ``PROCESS_K8S_API_URL``, else the in-cluster
     ``https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT`` (an IPv6
@@ -641,6 +674,7 @@ class Settings:
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
         env = os.environ if env is None else env
         worker_concurrency, worker_bytes_concurrency = _parse_worker_concurrency(env)
+        process_executor = _parse_process_executor(env.get("PROCESS_EXECUTOR"))
         staging_access_key, staging_secret_key = _parse_staging_keys(env)
         return cls(
             database_url=env.get("DATABASE_URL", DEFAULT_DATABASE_URL),
@@ -772,21 +806,10 @@ class Settings:
                     str(DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY),
                 )
             ),
-            process_executor=_parse_process_executor(env.get("PROCESS_EXECUTOR")),
-            process_k8s_namespace=_optional(env.get("PROCESS_K8S_NAMESPACE"))
-            or DEFAULT_PROCESS_K8S_NAMESPACE,
-            process_k8s_api_url=_parse_k8s_api_url(env),
-            process_k8s_token_file=_optional(env.get("PROCESS_K8S_TOKEN_FILE"))
-            or DEFAULT_PROCESS_K8S_TOKEN_FILE,
-            process_k8s_ca_file=_optional(env.get("PROCESS_K8S_CA_FILE"))
-            or DEFAULT_PROCESS_K8S_CA_FILE,
-            process_k8s_run_service_account=_optional(env.get("PROCESS_K8S_RUN_SERVICE_ACCOUNT"))
-            or DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT,
-            process_k8s_default_queue=_optional(env.get("PROCESS_K8S_DEFAULT_QUEUE"))
-            or DEFAULT_PROCESS_K8S_DEFAULT_QUEUE,
-            process_k8s_registry_mirrors=_parse_registry_mirrors(
-                env.get("PROCESS_K8S_REGISTRY_MIRRORS")
-            ),
+            process_executor=process_executor,
+            # K-5 review C9: read only where they are used, so a malformed
+            # PROCESS_K8S_* value cannot stop a Docker deployment.
+            **(_k8s_settings(env) if process_executor == "kubernetes" else {}),
             image_scanner_image=_optional(env.get("IMAGE_SCANNER_IMAGE"))
             or DEFAULT_IMAGE_SCANNER_IMAGE,
             process_scanner_network=_optional(env.get("PROCESS_SCANNER_NETWORK"))

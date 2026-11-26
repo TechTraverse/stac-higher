@@ -46,6 +46,9 @@ if TYPE_CHECKING:
 
 #: Per-request timeout for REST calls and for opening a watch.
 REQUEST_TIMEOUT_SECONDS = 10
+#: The largest REST response read (review C8): a 500-item page of Jobs is
+#: far below it; anything larger is not an answer we asked for.
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 #: How much of an API server's error message an exception carries.
 _MESSAGE_CHARS = 300
 _ERROR_BODY_BYTES = 64 * 1024
@@ -178,7 +181,9 @@ class KubeApi:
 
     def _request(self, method: str, path: str, *, query: Mapping[str, str] | None = None,
                  body: dict | None = None, content_type: str = "application/json",
-                 redact: bool = False) -> bytes:
+                 redact: bool = False, max_bytes: int | None = None) -> bytes:
+        """One call. The body is read up to ``max_bytes`` (truncated: a log)
+        or, without it, up to :data:`MAX_RESPONSE_BYTES` (refused beyond)."""
         opener = self._opener()
         request = urllib.request.Request(
             self._url(path, query),
@@ -191,7 +196,9 @@ class KubeApi:
             request.add_header("Content-Type", content_type)
         try:
             with opener.open(request, timeout=self.config.request_timeout_seconds) as response:
-                return response.read()
+                if max_bytes is not None:
+                    return response.read(max_bytes)
+                payload = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as err:
             try:
                 payload = err.read(_ERROR_BODY_BYTES)
@@ -205,6 +212,12 @@ class KubeApi:
             raise ExecutorUnavailable(
                 f"kubernetes {method} {path} unreachable at {self.config.api_url}: {err}"
             ) from err
+        if len(payload) > MAX_RESPONSE_BYTES:
+            raise ExecutorUnavailable(
+                f"kubernetes {method} {path} answered with a body larger than "
+                f"{MAX_RESPONSE_BYTES} bytes"
+            )
+        return payload
 
     def _json(self, payload: bytes, method: str, path: str) -> dict:
         try:
@@ -220,8 +233,10 @@ class KubeApi:
     def get(self, path: str, *, query: Mapping[str, str] | None = None) -> dict:
         return self._json(self._request("GET", path, query=query), "GET", path)
 
-    def get_raw(self, path: str, *, query: Mapping[str, str] | None = None) -> bytes:
-        return self._request("GET", path, query=query)
+    def get_raw(self, path: str, *, query: Mapping[str, str] | None = None,
+                max_bytes: int | None = None) -> bytes:
+        """The raw body, at most ``max_bytes`` of it (a log)."""
+        return self._request("GET", path, query=query, max_bytes=max_bytes)
 
     def list(self, path: str, *, label_selector: str, limit: int = 500
              ) -> tuple[list[dict], str]:

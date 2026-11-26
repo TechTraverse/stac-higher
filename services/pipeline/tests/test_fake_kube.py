@@ -303,3 +303,16 @@ def test_the_default_deny_policy_is_served_unless_switched_off(fake):
     assert _req(fake, "GET", path)[0] == 403  # get only, no list
     with FakeKube(default_deny=False) as bare:
         assert _req(bare, "GET", f"{path}/stac-higher-runs-default-deny")[0] == 404
+
+
+def test_subresources_are_their_own_resources(fake):
+    """Review C10: never more permissive than the real authorizer."""
+    _req(fake, "POST", JOBS, _job("j"))
+    pod = fake.add_pod("j", phase="Running")
+    merge = "application/merge-patch+json"
+    body = {"spec": {"ephemeralContainers": [{"name": "x", "image": "y"}]}}
+    assert _req(fake, "PATCH", f"{PODS}/{pod}/ephemeralcontainers", body,
+                content_type=merge)[0] == 403
+    assert _req(fake, "GET", f"{PODS}/{pod}/status")[0] == 403
+    assert _req(fake, "GET", f"{JOBS}/j/status")[0] == 403
+    assert ("", "pods/ephemeralcontainers", "patch") not in fake.used

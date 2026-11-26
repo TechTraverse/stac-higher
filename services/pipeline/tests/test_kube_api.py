@@ -265,6 +265,7 @@ def test_from_settings_needs_an_api_url(tmp_path):
         KubeApi.from_settings(Settings())
     api = KubeApi.from_settings(
         Settings.from_env(env={
+            "PROCESS_EXECUTOR": "kubernetes",
             "PROCESS_K8S_API_URL": "https://10.0.0.1:443",
             "PROCESS_K8S_TOKEN_FILE": str(tmp_path / "t"),
             "PROCESS_K8S_CA_FILE": str(tmp_path / "ca"),
@@ -274,6 +275,37 @@ def test_from_settings_needs_an_api_url(tmp_path):
     assert api.config.token_file == tmp_path / "t"
     assert api.config.ca_file == tmp_path / "ca"
     loopback = KubeApi.from_settings(
-        Settings.from_env(env={"PROCESS_K8S_API_URL": "http://127.0.0.1:8001"})
+        Settings.from_env(env={"PROCESS_EXECUTOR": "kubernetes",
+                               "PROCESS_K8S_API_URL": "http://127.0.0.1:8001"})
     )
     assert loopback.config.ca_file is None
+
+
+# -- review C8: every body read is bounded ---------------------------------------
+
+
+def test_an_oversized_response_is_refused(api, fake, monkeypatch):
+    from pipeline.process import kube_api
+
+    for name in ("a", "b", "c"):
+        api.create(JOBS, _job(name))
+    monkeypatch.setattr(kube_api, "MAX_RESPONSE_BYTES", 200)
+    with pytest.raises(ExecutorUnavailable, match="larger than"):
+        api.get(JOBS)
+
+
+def test_a_raw_read_stops_at_its_limit(api, fake):
+    api.create(JOBS, _job("j"))
+    pod = fake.add_pod("j", phase="Failed", state={"terminated": {"exitCode": 1}},
+                       log=b"x" * 1000)
+    assert api.get_raw(f"{PODS}/{pod}/log", max_bytes=10) == b"x" * 10
+
+
+async def test_an_overlong_stream_line_is_a_stream_error():
+    from pipeline.process.http_stream import HttpStreamError, read_http_head
+
+    reader = asyncio.StreamReader(limit=16)
+    reader.feed_data(b"HTTP/1.1 200 OK\r\nX-Long: " + b"y" * 100 + b"\r\n\r\n")
+    reader.feed_eof()
+    with pytest.raises(HttpStreamError):
+        await read_http_head(reader)

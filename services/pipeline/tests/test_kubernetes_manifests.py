@@ -379,3 +379,33 @@ def test_the_fake_serves_the_executors_kueue_version():
     assert _fake_kube.QUEUE_LABEL == km.QUEUE_LABEL
     assert _fake_kube.JOB_UID_LABEL == km.KUEUE_JOB_UID_LABEL
     assert _fake_kube.POD_JOB_LABEL == km.POD_JOB_LABEL
+
+
+def test_a_pull_secret_for_a_hostless_reference_names_docker_hub():
+    """Review C11: `server` is always set by resolve_registry_auth, and
+    submit refuses a host-less user image; the builder still never keys a
+    credential on a repository name."""
+    auth = RegistryAuth(username="u", password="p", server="")
+    for image, want in ((f"library/python@{DIGEST}", "docker.io"),
+                        (f"localhost:5000/x@{DIGEST}", "localhost:5000"),
+                        (f"ghcr.io/a/b@{DIGEST}", "ghcr.io")):
+        secret = km.build_pull_secret(_spec(image=image, user_image=True, registry_auth=auth),
+                                      name=NAME, owner_uid=UID, ctx=CTX)
+        doc = json.loads(base64.b64decode(secret["data"][".dockerconfigjson"]))
+        assert list(doc["auths"]) == [want]
+
+
+def test_a_preempted_workload_still_holding_quota_reads_pending():
+    """Review C7: Evicted before QuotaReserved, so a preemption never shows
+    running -> starting -> pending_capacity."""
+    from pipeline.process.kubernetes_executor import _job_state
+
+    job = {"metadata": {"name": NAME}, "spec": {"suspend": True}, "status": {}}
+    workload = {"spec": {"active": True}, "status": {"conditions": [
+        {"type": "QuotaReserved", "status": "True"},
+        {"type": "Evicted", "status": "True", "reason": "Preempted", "message": "m"},
+    ]}}
+    import datetime as dt
+
+    state = _job_state(job, workload, None, now=dt.datetime.now(dt.UTC))
+    assert (state.phase, state.detail) == ("pending_capacity", "preempted: m")
