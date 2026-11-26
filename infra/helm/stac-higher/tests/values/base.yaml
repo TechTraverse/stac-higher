@@ -6,6 +6,7 @@ aws:
   region: us-east-1
   bucket: stac-higher-example-platform
   processRunRoleArn: arn:aws:iam::000000000000:role/stac-higher-example-process-run
+  s3PrefixListCidrs: [192.0.2.0/24]
 publicUrls:
   app: https://app.example.com
   objectStore: https://s3.us-east-1.amazonaws.com
@@ -47,3 +48,11 @@ secrets:
   externalSecrets:
     storeRef:
       name: aws-secrets-manager
+processRuns:
+  network:
+    dns: [{ ipBlock: { cidr: 10.100.0.10/32 } }]
+  nodes:
+    nodeClass:
+      role: stac-higher-example-runs-node
+      subnetSelectorTerms: [{ tags: { kubernetes.io/role/internal-elb: "1" } }]
+      securityGroupSelectorTerms: [{ tags: { Name: stac-higher-example-runs-nodes } }]

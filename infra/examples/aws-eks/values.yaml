@@ -102,3 +102,19 @@ demoDestination:
   bucket: stac-higher-example-demo
   region: us-east-1
   credentialsSecretArn: arn:aws:secretsmanager:us-east-1:000000000000:secret:stac-higher-example/demo-AbCdEf
+# deployment-supplied: the process-runs plane's cluster inputs (R-8). The cluster
+# repo knows them; Terraform does not emit them. Chart README "Process runs".
+processRuns:
+  network:
+    # The cluster's CoreDNS address: .10 of the service CIDR, as a /32. EKS Auto
+    # Mode runs CoreDNS on each node and creates no kube-dns Service. On a cluster
+    # with one, use [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}},
+    # podSelector: {matchLabels: {k8s-app: kube-dns}}}] instead.
+    dns: [{ ipBlock: { cidr: 10.100.0.10/32 } }]
+    # The VPC CIDR, so image scans reach registries on 443 but nothing inside the VPC.
+    scannerEgressExcept: [10.0.0.0/16]
+  nodes:
+    nodeClass:
+      role: stac-higher-example-runs-node # IAM role of the runs nodes; needs an EKS access entry
+      subnetSelectorTerms: [{ tags: { kubernetes.io/role/internal-elb: "1" } }]
+      securityGroupSelectorTerms: [{ tags: { Name: stac-higher-example-runs-nodes } }]

@@ -44,6 +44,30 @@ describe.skipIf(!helmReady())("chart values contract", () => {
     expect(renderChart(base({ processRuns: { extractMaxRunning: 1 } })).ok).toBe(true);
   });
 
+  it("processRuns is a closed block (R-8)", () => {
+    const fam = (extra: object) => ({ processRuns: { families: { "cpu-default": extra } } });
+    for (const values of [
+      { processRuns: { nope: 1 } },
+      { processRuns: { network: { nope: 1 } } },
+      { processRuns: { nodes: { nope: 1 } } },
+      { processRuns: { nodes: { nodeClass: { nope: 1 } } } },
+      fam({ nope: 1 }),
+      fam({ nodePool: { nope: 1 } }),
+      fam({ quota: { cpu: 1, memoryGi: 1, nope: 1 } }),
+    ]) {
+      fails(base(values), "nope");
+    }
+    fails(base({ processRuns: { nodes: { nodeClass: { podPidsLimit: 50 } } } }), "podPidsLimit");
+    for (const n of [-1, 100]) {
+      const r = renderChart(base({ processRuns: { nodes: { nodeClass: { podPidsLimit: n } } } }));
+      expect(r.ok, r.stderr).toBe(true);
+    }
+    fails(base({ processRuns: { families: { Bad_Name: { quota: { cpu: 1, memoryGi: 1 } } } } }), "Bad_Name");
+    fails(base({ processRuns: { nodes: { nodeClass: { networkPolicy: "Open" } } } }), "networkPolicy");
+    fails(base({ processRuns: { network: { objectStorePorts: [0] } } }), "objectStorePorts");
+    fails(base(fam({ extraTaints: [{ key: "k", effect: "PreferNoSchedule" }] })), "effect");
+  });
+
   it("renders the base scenario", () => {
     const r = renderChart({ valuesFiles: scenario("base") });
     expect(r.stderr).toBe("");

@@ -21,7 +21,7 @@ aws:
   kmsKeyArn: "" # R-5: informational; the bucket default SSE-KMS applies without a client header
   processRunRoleArn: null # R-5: -> PROCESS_STS_ROLE_ARN (required)
   processMaxCredentialSeconds: 3600 # R-5: integer >= 900 -> PROCESS_MAX_CREDENTIAL_SECONDS; null deletes it (no cap)
-  s3PrefixListCidrs: [] # R-5: consumed by R-8 (runs NetworkPolicy)
+  s3PrefixListCidrs: [] # R-5: the object-store peers of the runs NetworkPolicies (IPv4)
 
 publicUrls:
   app: null # R-5: public app URL, http(s) with no path (required)
@@ -109,12 +109,55 @@ demoDestination:
   region: "" # R-5 (when on): consumed by R-10
   credentialsSecretArn: "" # R-5 (when on): consumed by R-10
 
+# The process-runs plane (R-8): the runs namespace and its objects, Kueue's objects, the runs NodeClass and
+# NodePools. One release per cluster: these names are fixed (README "Process runs").
 processRuns:
-  namespace: stac-higher-runs # R-8 creates it; K-5: -> PROCESS_K8S_NAMESPACE (pipeline)
+  namespace: stac-higher-runs # K-5: -> PROCESS_K8S_NAMESPACE (pipeline); must differ from the release namespace
+  createNamespace: true # render the Namespace (Pod Security restricted); false: the cluster team creates it with those labels
   networkMax: isolated # -> PROCESS_NETWORK_MAX (shared ConfigMap: app + pipeline)
   credentialGraceSeconds: 300 # -> PROCESS_CREDENTIAL_GRACE_SECONDS (shared ConfigMap: app + pipeline)
   extractMaxRunning: 4 # K-4: integer >= 1 -> PROCESS_EXTRACT_MAX_RUNNING (pipeline): exempt extractor runs admitted at once
-  clusterObjects: true # consumed by R-8
+  clusterObjects: true # cluster-scoped objects: WorkloadPriorityClasses, admission policies, ResourceFlavors, ClusterQueue, NodeClass/NodePools
+  defaultFamily: cpu-default # family of every CPU profile not in profileFamilies, and of image scans
+  profileFamilies: {} # hardware-profile id -> family name; required for every GPU profile
+  # One family = one ResourceFlavor, its ClusterQueue quota, one NodePool and the backend.kubernetes block of every
+  # profile mapped to it (derived; README "Process runs"). Keys left out of a new family default to cpu-default's
+  # shape except quota and nodePool.requirements, which it must state. Turn a family off with enabled: false.
+  families:
+    cpu-default:
+      enabled: true
+      dedicatedNodes: true # node label stac-higher.io/flavor=<name>, taint stac-higher.io/runs=true:NoSchedule
+      extraTaints: [] # [{key, value?, effect: NoSchedule|NoExecute}]: ResourceFlavor nodeTaints, NodePool taints (GPU)
+      gpuResource: "" # extended resource carrying gpu_count, e.g. nvidia.com/gpu; "" = a CPU family
+      runtimeClass: "" # "" -> runtime_class null
+      quota: { cpu: 16, memoryGi: 64, gpus: 0 } # Kueue nominalQuota (integers)
+      nodePool:
+        requirements: # Karpenter requirements (EKS Auto Mode labels); never stac-higher.io/flavor or karpenter.sh/nodepool
+          - { key: eks.amazonaws.com/instance-category, operator: In, values: [c, m, r] }
+          - { key: kubernetes.io/arch, operator: In, values: [amd64] }
+          - { key: karpenter.sh/capacity-type, operator: In, values: [on-demand] }
+        headroom: { cpu: 4, memoryGi: 16 } # NodePool limits = quota + headroom (node overhead)
+  network:
+    dns: [] # REQUIRED NetworkPolicy peers for DNS; Auto Mode: [{ipBlock: {cidr: <service CIDR .10>/32}}]
+    objectStore: [] # extra object-store peers (an in-cluster MinIO's selectors); unioned with aws.s3PrefixListCidrs
+    objectStorePorts: [443] # TCP ports of the object store
+    scannerEgressExcept: [] # IPv4 CIDRs carved out of the scanner's 0.0.0.0/0:443 besides 169.254.0.0/16 (e.g. the VPC CIDR)
+  nodes:
+    enabled: true # NodeClass + NodePools (EKS Auto Mode); false: the cluster provides the runs nodes (README example)
+    consolidateAfter: 5m # an empty runs node waits this long for the next run
+    expireAfterHours: 336 # NodePool expireAfter
+    terminationGracePeriodHours: 25 # >= 25 (24 h maximum run + Job slack); expireAfterHours + this <= 504
+    nodeClass:
+      create: true # false: the NodePools use nodeClass.name, which then owns podPidsLimit and networkPolicy
+      name: stac-higher-runs
+      role: "" # REQUIRED with create: IAM role name of the runs nodes (needs an EKS access entry)
+      subnetSelectorTerms: [] # REQUIRED with create
+      securityGroupSelectorTerms: [] # REQUIRED with create
+      networkPolicy: DefaultDeny # DefaultAllow | DefaultDeny; DefaultDeny is the I-188 strict setting on Auto Mode
+      networkPolicyEventLogs: Disabled # Disabled | Enabled
+      podPidsLimit: 4096 # -1 or >= 100 (I-180)
+      ephemeralStorage: {} # passed through when non-empty
+      tags: {} # passed through when non-empty
 
 config:
   hardwareProfiles: null # null -> the chart's files/hardware-profiles/eks-cpu.json

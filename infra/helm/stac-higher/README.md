@@ -41,7 +41,7 @@ Every key at depth 2 or less. `null` means required. Section rows list the
 section's own keys; the schema (`values.schema.json`) rejects unknown keys in
 the closed sections (`aws`, `registry`, `publicUrls`, `objectStore`,
 `database`, `identity`, `secrets.arns`, `secrets.existing`, `demoDestination`,
-`demoSeed`).
+`demoSeed`, `processRuns` and every block inside it).
 Rendering fails with a message starting with the offending key path.
 
 | Key | Default | Meaning |
@@ -62,7 +62,7 @@ Rendering fails with a message starting with the offending key path.
 | `aws.kmsKeyArn` | `""` | Informational; the bucket's default SSE-KMS applies. |
 | `aws.processRunRoleArn` | `null` | `PROCESS_STS_ROLE_ARN`; its partition is also the run session policy's. |
 | `aws.processMaxCredentialSeconds` | `3600` | Integer >= 900; `PROCESS_MAX_CREDENTIAL_SECONDS`. An explicit `null` removes the cap. Hardware profiles whose queue wait plus grace cannot fit under it fail the render. |
-| `aws.s3PrefixListCidrs` | `[]` | Consumed by R-8. |
+| `aws.s3PrefixListCidrs` | `[]` | The object-store peers of the runs NetworkPolicies (IPv4, each /8 or narrower, never link-local). With `processRuns.network.objectStore`, at least one is required. |
 | `publicUrls` | | Browser-facing URLs. |
 | `publicUrls.app` | `null` | `http(s)://host` with no path. Derives the Ingress host and the OIDC redirect. |
 | `publicUrls.objectStore` | `null` | `https://s3.<region>.<suffix>`; the app's `S3_ENDPOINT` only. |
@@ -100,12 +100,18 @@ Rendering fails with a message starting with the offending key path.
 | `secrets.existing` | all `""` | Secret names for `existing` mode. |
 | `demoDestination` | | The demo's destination bucket (R-5's `demo-destination` module); read only by the demo seed Job with `demoSeed.deliver`. |
 | `demoDestination.bucket`, `demoDestination.region`, `demoDestination.credentialsSecretArn` | `""` | Bucket, its region (blank: `aws.region`), and the Secrets Manager entry holding the write-only user's key (JSON `access_key_id`/`secret_access_key`). |
-| `processRuns` | | Process-run settings. |
-| `processRuns.namespace` | `stac-higher-runs` | R-8 creates it. The pipeline's `PROCESS_K8S_NAMESPACE`: where the Kubernetes executor creates every run Job and Secret. |
+| `processRuns` | | The process-runs plane (see Process runs). |
+| `processRuns.namespace` | `stac-higher-runs` | The runs namespace: the pipeline's `PROCESS_K8S_NAMESPACE`, where the Kubernetes executor creates every run Job and Secret. Must differ from the release namespace. |
+| `processRuns.createNamespace` | `true` | Render the Namespace with Pod Security `restricted`. `false`: the cluster team creates it with K-5's two labels (`pod-security.kubernetes.io/enforce: restricted`, `enforce-version: latest`). |
 | `processRuns.networkMax` | `isolated` | `PROCESS_NETWORK_MAX` (app and pipeline). |
 | `processRuns.credentialGraceSeconds` | `300` | `PROCESS_CREDENTIAL_GRACE_SECONDS` (app and pipeline). |
 | `processRuns.extractMaxRunning` | `4` | Integer >= 1; `PROCESS_EXTRACT_MAX_RUNNING` (pipeline): how many extractor runs on the default profile, which are exempt from its capacity, may run at once (K-4). |
-| `processRuns.clusterObjects` | `true` | Consumed by R-8. |
+| `processRuns.clusterObjects` | `true` | Render the cluster-scoped objects: WorkloadPriorityClasses, the four admission policies and bindings, ResourceFlavors, the ClusterQueue and (with `nodes.enabled`) the NodeClass and NodePools. `false`: a cluster team owns them. |
+| `processRuns.defaultFamily` | `cpu-default` | The family of every CPU profile not in `profileFamilies`, and of image scans. Must be an enabled CPU family. |
+| `processRuns.profileFamilies` | `{}` | Hardware-profile id to family name. Required for every GPU profile. |
+| `processRuns.families` | `{cpu-default: …}` | The single source of ResourceFlavors, the ClusterQueue's quota, the NodePools and every profile's `backend.kubernetes`. Per family: `enabled`, `dedicatedNodes`, `extraTaints`, `gpuResource`, `runtimeClass`, `quota` (`cpu`, `memoryGi`, `gpus`), `nodePool` (`requirements`, `headroom`). |
+| `processRuns.network` | | The runs NetworkPolicies' peers: `dns` (required), `objectStore`, `objectStorePorts` (`[443]`), `scannerEgressExcept`. |
+| `processRuns.nodes` | | The EKS Auto Mode NodeClass and NodePools for runs: `enabled`, `consolidateAfter` (`5m`), `expireAfterHours` (`336`), `terminationGracePeriodHours` (`25`), `nodeClass` (`create`, `name`, `role`, `subnetSelectorTerms`, `securityGroupSelectorTerms`, `networkPolicy`, `networkPolicyEventLogs`, `podPidsLimit`, `ephemeralStorage`, `tags`). |
 | `config` | | Content for the config ConfigMap. |
 | `config.hardwareProfiles` | `null` | `null` uses the chart's `files/hardware-profiles/eks-cpu.json`. |
 | `config.imagePolicy` | `null` | `null` uses `files/image-policy/default.json`. |

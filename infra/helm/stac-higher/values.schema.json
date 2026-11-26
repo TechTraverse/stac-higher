@@ -426,6 +426,9 @@
           "maxLength": 63,
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         },
+        "createNamespace": {
+          "type": "boolean"
+        },
         "networkMax": {
           "type": "string"
         },
@@ -438,8 +441,275 @@
         },
         "clusterObjects": {
           "type": "boolean"
+        },
+        "defaultFamily": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profileFamilies": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "families": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z0-9]([-a-z0-9]{0,44}[a-z0-9])?$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "dedicatedNodes": {
+                "type": "boolean"
+              },
+              "extraTaints": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "value": {
+                      "type": "string"
+                    },
+                    "effect": {
+                      "type": "string",
+                      "enum": [
+                        "NoSchedule",
+                        "NoExecute"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "effect"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "gpuResource": {
+                "type": "string",
+                "pattern": "^$|^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[a-z0-9]([-a-z0-9_.]*[a-z0-9])?$"
+              },
+              "runtimeClass": {
+                "type": "string",
+                "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                "maxLength": 253
+              },
+              "quota": {
+                "type": "object",
+                "properties": {
+                  "cpu": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "memoryGi": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "gpus": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "cpu",
+                  "memoryGi"
+                ],
+                "additionalProperties": false
+              },
+              "nodePool": {
+                "type": "object",
+                "properties": {
+                  "requirements": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "operator": {
+                          "type": "string",
+                          "enum": [
+                            "In",
+                            "NotIn",
+                            "Exists",
+                            "DoesNotExist",
+                            "Gt",
+                            "Lt"
+                          ]
+                        },
+                        "values": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "minValues": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "operator"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "headroom": {
+                    "type": "object",
+                    "properties": {
+                      "cpu": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "memoryGi": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "dns": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "minProperties": 1
+              }
+            },
+            "objectStore": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "minProperties": 1
+              }
+            },
+            "objectStorePorts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            },
+            "scannerEgressExcept": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "nodes": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "consolidateAfter": {
+              "type": "string",
+              "pattern": "^([0-9]+(s|m|h))+$"
+            },
+            "expireAfterHours": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "terminationGracePeriodHours": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "nodeClass": {
+              "type": "object",
+              "properties": {
+                "create": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 63,
+                  "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "subnetSelectorTerms": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "securityGroupSelectorTerms": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "networkPolicy": {
+                  "type": "string",
+                  "enum": [
+                    "DefaultAllow",
+                    "DefaultDeny"
+                  ]
+                },
+                "networkPolicyEventLogs": {
+                  "type": "string",
+                  "enum": [
+                    "Disabled",
+                    "Enabled"
+                  ]
+                },
+                "podPidsLimit": {
+                  "type": "integer",
+                  "anyOf": [
+                    {
+                      "const": -1
+                    },
+                    {
+                      "minimum": 100
+                    }
+                  ]
+                },
+                "ephemeralStorage": {
+                  "type": "object"
+                },
+                "tags": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "config": {
       "type": "object",

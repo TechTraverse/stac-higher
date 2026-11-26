@@ -293,6 +293,7 @@ spec:
 {{- end -}}
 {{- end -}}
 {{- include "stac-higher.validateCatalog" . -}}
+{{- include "stac-higher.validateRuns" . -}}
 {{- if $digests -}}
 {{- range $k := list "app" "pipeline" "image-scanner" "process-runtime" "process-runtime-stactools" "titiler" "cube-server" "auth-proxy" -}}
 {{- if not (hasKey $digests $k) -}}

@@ -11,3 +11,12 @@ secrets:
   externalSecrets:
     storeRef:
       name: aws-secrets-manager
+# Deployment-supplied process-runs inputs (R-8): the cluster repo knows them, Terraform does not emit them.
+processRuns:
+  network:
+    dns: [{ ipBlock: { cidr: 10.100.0.10/32 } }] # the cluster's CoreDNS: .10 of the service CIDR (EKS Auto Mode has no kube-dns Service)
+  nodes:
+    nodeClass:
+      role: stac-higher-example-runs-node # the runs nodes' IAM role (with an EKS access entry)
+      subnetSelectorTerms: [{ tags: { kubernetes.io/role/internal-elb: "1" } }]
+      securityGroupSelectorTerms: [{ tags: { Name: stac-higher-example-runs-nodes } }]
