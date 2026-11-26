@@ -725,23 +725,21 @@ contract must not foreclose OGC Application Packages; run↔item provenance
 linkage stays queryable). The facade remains a post-M3 stretch.
 - Tracked in: the Phase 9 design spec §11; ADR 0016.
 
-### I-81 · No cancel-run verb (runaway runs; OGC `dismiss` gap) ⚪
-A `queued`/`running` process run cannot be cancelled: the only recovery
-verbs are the retry budget (automatic) and Re-run (dead rows). An operator
-watching a mis-deployed revision burn its timeout budget can disable the
-process (stops FUTURE runs) but cannot stop the one in flight — the
-executor's timeout is the only backstop. Cancellation needs executor
-cooperation (stop the container, flip the row terminal, keep the crash-safe
-ordering) plus an audited verb + UI affordance. Also the reason the future
-OGC facade cannot claim the `dismiss` conformance class (ADR 0016 §3) —
-the facade never fakes a verb the platform does not have.
-- Tracked in: here; GitHub #12 (K-4 adds the cancel verb); [ADR 0016](decisions/0016-ogc-processes-conformance-posture.md);
-  `services/pipeline/src/pipeline/process/docker_executor.py` (timeout is
-  the existing kill path a cancel would reuse).
-- **Planned (2026-09-02):** lands with **K-4** (ADR 0019 spec §5.3) — the
-  submit-then-reconcile executor makes cancel a `cancel_requested_at` flag
-  the run watcher acts on; `cancelled` becomes a terminal status and the
-  audited verb + UI button ship with it. Status moves to 🟢 when K-4 merges.
+### I-81 · No cancel-run verb (runaway runs; OGC `dismiss` gap) 🟢
+A `queued`/`running` process run could not be cancelled: the only recovery
+verbs were the retry budget and Re-run (dead rows), so a mis-deployed
+revision burned its timeout budget with only the executor's timeout as a
+backstop, and the future OGC facade could not claim `dismiss` (ADR 0016 §3).
+- **Resolved (K-4, migration 031):** `POST /api/processes/[id]/runs/[runId]/cancel`
+  (operator+, audited `cancel`) flips a `queued` or retry-pending `failed`
+  run to the new terminal `cancelled` status at once, and flags a `running`
+  run (`cancel_requested_at` + `pg_notify('process_run_cancel')`); the
+  pipeline stops it (10 s SIGTERM grace), keeps its log and lands it
+  `cancelled`. Cancel wins even over a run that exits in the meantime (plan
+  R3). A cancelled run can be re-run. Run rows show Cancel, *Cancelling…*
+  and a `cancelled` badge. The facade can claim `dismiss` when it ships.
+- Tracked in: `app/src/pages/api/processes/[id]/runs/[runId]/cancel.ts`,
+  `services/pipeline/src/pipeline/process/reconcile.py`; GitHub #12.
 
 ### I-82 · The M3 byte-volume model is declared, not measured 🟡
 M3-S-B redid ROADMAP §2's arithmetic at 2.6M items/day against a **stated
@@ -1402,12 +1400,13 @@ K-3 admits a process or test run in the claim itself (per-profile advisory
 lock; `executor_backend` is the admitted marker). A run whose profile is full
 is not claimed: it stays `queued` as `pending_capacity` with
 `next_attempt_at = now + 15 s` (spec §8). Three limits, accepted:
-- **Latency.** Nothing re-dispatches a waiting run at 15 s. The run tick
-  (every minute) claims it, so the real wait after a slot frees is up to
-  about 75 s, and a newly triggered run's immediate claim can take a freed
-  slot before an older waiting run. There is no queue order among waiting
-  runs. Fix candidate: K-4's run watcher, or a delayed `process_run_now`
-  once the queue interface can schedule one.
+- **Latency.** Since K-4 a run leaving `running` (a verdict, a cancel, a
+  requeue) wakes the oldest run waiting in the same admission pool at once
+  (`wake_capacity_waiters` + `process_run_now`), so the wait after a slot
+  frees is seconds. A run whose slot frees any other way (a pre-submit
+  verdict, the stall sweep) is still picked up by the minute tick, and a
+  newly triggered run's immediate claim can still take a freed slot before
+  an older waiting run: there is no strict queue order among waiters.
 - **Scope.** The count is the whole database's admitted runs on the profile,
   not one Docker host's: `capacity` means "per host" only while one host
   runs process jobs (the local and single-host shape). A host id on the
@@ -1463,8 +1462,74 @@ verify): put the proxy on its own internal network shared only with the
 pipeline. Alternative to `INFO`: drop the probe and rely on the daemon's
 "could not select device driver" and "Range of CPUs" refusals, which the
 executor maps to `HardwareUnavailable` anyway.
+- K-4 (#202, first half): the image's default-on `EVENTS`, `PING` and
+  `VERSION` are now written explicitly — `EVENTS=1` for the run watcher's
+  read-only `GET /events`, `PING=0`, `VERSION=0` — and the compose test pins
+  them. The dedicated network stays open in #202.
 - Tracked in: `docker-compose.yml` (`docker-socket-proxy`), `services/pipeline/tests/test_compose_scanner.py`.
 - Found in: K-3 (2026-11-25).
+
+### I-172 · A crash between a run's verdict and its publish loses the publish 🟡
+The Reconciler writes a run's verdict, its log reference and its source's
+`flow_stats` in one transaction (exactly once), but enqueues
+`process_finalize` (a `succeeded` run) and calls the extractor `on_dead`
+hook (a `dead` extractor run) after that transaction commits. A worker
+killed in that window leaves a `succeeded` row nobody publishes, or a dead
+extractor's ingest rows `extracting` until the ingest stall sweep fails
+them. Pre-existing (the old blocking path had the same window), now stated.
+Fix candidates: a `finalize_enqueued_at` column the run tick sweeps, or an
+outbox row written in the verdict transaction.
+- Tracked in: `services/pipeline/src/pipeline/process/reconcile.py` (`_after_commit`).
+- Found in: K-4 (2026-11-25).
+
+### I-173 · A Docker run can overrun its timeout by up to a minute 🟡
+Docker has no server-side deadline, so `DockerExecutor.status()` enforces
+the run's timeout on read (the `stac-higher.timeout-seconds` label against
+`StartedAt`) and kills a run found past it (K-4 plan R10). Reads happen on
+every container event and on every run tick, so a run that emits no event
+is killed at the first tick after its deadline: up to 60 s late. Run
+credentials carry 300 s of grace, so the overrun cannot outlive them.
+- Tracked in: `services/pipeline/src/pipeline/process/docker_executor.py` (`status`).
+- Found in: K-4 (2026-11-25).
+
+### I-174 · `process_runs_terminal_age_idx` does not cover `cancelled` 🟡
+The 024 partial index is `WHERE status IN ('succeeded','dead')`. Nothing
+reads it yet; migration 031 left it alone. The run-history retention leg
+that will use it must include `cancelled` (a new index, or a predicate the
+planner can match).
+- Tracked in: `app/src/lib/db/migrate.ts` (024, 031).
+- Found in: K-4 (2026-11-25).
+
+### I-175 · A run whose container keeps disappearing requeues forever 🟡
+A submitted run the backend reports `lost` (Docker: the container is gone)
+goes back to `queued` without spending an attempt (K-4 plan R15, like
+K-5's evicted pod), every time. Something that keeps deleting run
+containers therefore loops the run at 60 s spacing with a WARNING each time
+(`process run lost by the executor`) instead of exhausting its budget.
+- Tracked in: `services/pipeline/src/pipeline/process/reconcile.py` (`_requeue_lost`).
+- Found in: K-4 (2026-11-25).
+
+### I-176 · The reaper's age ceiling ignores the queue wait 🟡
+The M3-W-1 reaper removes any run container older than
+`MAX_TIMEOUT_SECONDS + 3600` (`DEFAULT_REAP_MAX_AGE_SECONDS`), even one whose
+row is `running`. Docker never holds a submitted run for capacity, so that
+bound is enough today. K-5's Kubernetes backend can hold a submitted Job for
+up to a profile's `max_queue_wait_seconds`; its caller must pass
+`process_reap_tick(max_age_seconds=…)` widened by the longest queue wait.
+- Tracked in: `services/pipeline/src/pipeline/process/reaper.py`; K-5.
+- Found in: K-4 (2026-11-25).
+
+### I-177 · The 031 status CHECK is not validated 🟡
+Migration 031 re-adds `process_runs_status_check` `NOT VALID` to avoid a
+table scan under the ACCESS EXCLUSIVE lock all pending migrations share
+(029's precedent for the phase CHECK). Every write since is checked, and the
+new list is a strict superset of the old, so no existing row can violate
+it; but `pg_constraint.convalidated` is false. A later migration (or an
+operator, off-peak) can run `ALTER TABLE stac_higher.process_runs VALIDATE
+CONSTRAINT process_runs_status_check` (SHARE UPDATE EXCLUSIVE, no write
+block) — the same applies to `process_runs_phase_check`.
+- Tracked in: `app/src/lib/db/migrate.ts` (029, 031).
+- Found in: K-4 (2026-11-25).
 
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡
 Both need GitHub Advanced Security on a private repo, which this repo does not
@@ -1530,22 +1595,23 @@ endpoint (`169.254.169.254`) blocked at pod and node level, and enforced
 policy. It is built with the Kubernetes work.
 - Tracked in: GitHub #68
 
-### I-124 · A scan holds a worker slot until K-4 🟡
-The drain launches the scanner through the executor and blocks in
-`wait` for up to the policy timeout (900 s, spec §8.1). At worker
-concurrency 1 that stalls ingest and delivery for the scan's duration;
-M3-D's concurrency (12) turns it into one occupied slot, and K-4's
-submit-then-reconcile executor removes the block entirely. Not a reason
-to build a second executor shape (ADR 0021 option A). A large image's
-first pull adds to the same held slot — `_ensure_image` blocks the worker
-for however long the daemon takes to pull it, and that time is not counted
-against the run's own timeout, so a big cold image can occupy a slot well
-past the policy's stated bound. C-2 caps scans at `IMAGE_SCAN_CONCURRENCY`
-(default 1) deployment-wide, so at most that many slots are held, and runs
-each scan in a thread so the event loop is never blocked.
-Measured (C-5): admission scans took 82-109 s for images up to ~1 GB, so
-the held slot is minutes, not the 900 s bound; still closes with K-4.
-- Tracked in: `jobs/image_scans.py` (C-2); closes with K-4.
+### I-124 · A scan holds a worker slot while it runs 🟡
+The drain launches the scanner through the executor and blocks its thread
+until the scan exits, up to the policy timeout (900 s, spec §8.1). Since K-4
+the scan no longer calls `wait`: it `submit`s and polls `status()` through
+`run_to_exit` (K-4 plan R11), but it still occupies one worker slot for the
+scan's duration. M3-D's concurrency (12) makes that one occupied slot, and
+C-2 caps scans at `IMAGE_SCAN_CONCURRENCY` (default 1) deployment-wide,
+each in a thread, so the event loop is never blocked. A large image's
+first pull adds to the same held slot — `_ensure_image` blocks for however
+long the daemon takes to pull it, and that time is not counted against the
+scan's own timeout. Measured (C-5): admission scans took 82-109 s for
+images up to ~1 GB, so the held slot is minutes, not the 900 s bound. Not a
+reason to build a second executor shape (ADR 0021 option A). Fix: move the
+scan verdict (`images/drain.py`) onto the Reconciler's submit-then-reconcile
+path (the watcher already ignores `run-kind=image_scan` events).
+- Tracked in: `jobs/image_scans.py`, `images/scan_launch.py`; follow-up
+  issue "Image scans on the reconcile path (I-124)" (to be filed, K queue).
 
 ### I-125 · Anonymous Docker Hub pulls share a 100-per-6-hour budget per IP 🟡
 Scans (the scanner's own registry reads, Syft's layer pulls included) and
@@ -1881,9 +1947,10 @@ Tracked in: `services/proxy-policy/src/stac_higher_proxy_policy/app.py`; ADR
 A revision deployed before `PROCESS_MAX_CREDENTIAL_SECONDS` was set, or
 before its hardware profile's `max_queue_wait_seconds` grew, is not
 re-checked. The pipeline's mint refusal (R-2) is the backstop and fails the
-run naming the cap. Until K-4 (#12) the pipeline mints `timeout + grace`
-without the queue wait, so the deploy gate is deliberately stricter than the
-mint.
+run naming the cap. Since K-4 the mint counts the same sum as the deploy
+gate (`max_queue_wait + timeout + grace`), so the two agree on every case of
+`process-credential-budget.json`; the remaining gap is only a cap or profile
+change after deploy, which the mint refuses (never clamps, K-4 plan R7).
 
 ### I-150 · Generated platform secrets sit in Terraform state 🟡
 
