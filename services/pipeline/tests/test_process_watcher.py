@@ -212,3 +212,24 @@ async def test_cancellation_propagates():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_a_stream_that_never_opens_backs_off(monkeypatch):
+    """A deployment with no event source (I-160) must not log every 5 s."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    async def watch():
+        raise ExecutorUnavailable("no proxy")
+        yield  # pragma: no cover - makes this an async generator
+
+    async def on_event(event):
+        return None
+
+    await run_watcher(watch, on_event, reconnect_delay=5, max_reconnect_delay=60,
+                      max_connects=6)
+    assert sleeps == [10, 20, 40, 60, 60]

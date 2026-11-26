@@ -26,6 +26,10 @@ from pipeline.process.executor import RunEvent
 logger = logging.getLogger(__name__)
 
 WATCHER_RECONNECT_SECONDS = 5.0
+#: Consecutive failed connects back off to this (a deployment with no event
+#: source at all — the Helm chart until K-5, I-160 — logs once a minute,
+#: not every 5 s).
+WATCHER_MAX_RECONNECT_SECONDS = 60.0
 
 
 async def run_watcher(
@@ -33,14 +37,20 @@ async def run_watcher(
     on_event: Callable[[RunEvent], Awaitable[None]],
     *,
     reconnect_delay: float = WATCHER_RECONNECT_SECONDS,
+    max_reconnect_delay: float = WATCHER_MAX_RECONNECT_SECONDS,
     max_connects: int | None = None,
 ) -> None:
-    """Consume ``watch()`` until cancelled, reconnecting after any failure.
-    ``max_connects`` is a test seam (a bounded number of streams)."""
+    """Consume ``watch()`` until cancelled, reconnecting after any failure:
+    after ``reconnect_delay`` when the stream had opened, doubling up to
+    ``max_reconnect_delay`` while it keeps failing to open. ``max_connects``
+    is a test seam (a bounded number of streams)."""
     connects = 0
+    delay = reconnect_delay
     while True:
+        opened = False
         try:
             async for event in watch():
+                opened = True
                 try:
                     await on_event(event)
                 except asyncio.CancelledError:
@@ -59,9 +69,10 @@ async def run_watcher(
         except Exception as err:
             logger.warning(
                 "run watcher stream failed; reconnecting",
-                extra={"reconnect_delay": reconnect_delay, "error": str(err)},
+                extra={"reconnect_delay": delay, "error": str(err)},
             )
         connects += 1
         if max_connects is not None and connects >= max_connects:
             return
-        await asyncio.sleep(reconnect_delay)
+        delay = reconnect_delay if opened else min(delay * 2, max_reconnect_delay)
+        await asyncio.sleep(delay)

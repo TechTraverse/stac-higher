@@ -2063,7 +2063,10 @@ external catalogs.
 
 `PROCESS_EXECUTOR=kubernetes` is set and unread today. In a cluster, process
 runs fail at launch (no socket proxy). K-5 adds its own settings (runs
-namespace, etc.) to the chart.
+namespace, etc.) to the chart. Since K-4 the pipeline also starts the Docker
+run watcher, which cannot reach a proxy in a cluster: it retries with backoff
+up to once a minute and logs `run watcher stream failed; reconnecting` each
+time, until K-5's executor factory replaces it.
 
 Tracked in: GitHub #13.
 
