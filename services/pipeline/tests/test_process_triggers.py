@@ -1667,3 +1667,21 @@ async def test_a_pre_submit_verdict_lands_cancelled_when_requested():
     assert result.status == "dead"  # what run_one decided...
     assert repo._row(run.id)["status"] == "cancelled"  # ...cancel wins (I10)
     assert repo.source_runs == []
+
+
+@pytest.mark.asyncio
+async def test_a_submission_that_cannot_be_recorded_is_discarded():
+    """Review P4: record_submission raising after a successful submit must
+    not leave a container nobody will reconcile."""
+    repo = FakeProcessRepo()
+    executor = MemoryExecutor()
+    run = await _claim(repo, queued())
+
+    async def boom(*args, **kwargs):
+        raise OSError("database went away")
+
+    repo.record_submission = boom
+    with pytest.raises(OSError):
+        await _run(run, executor, repo)
+    assert executor.cancelled == [f"mem-{run.id}"]
+    assert executor.reaped == [f"mem-{run.id}"]

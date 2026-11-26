@@ -386,3 +386,74 @@ async def test_an_exit_with_no_finish_time_gets_no_suffix():
     run = await h.submitted(cancel=True)
     await h.reconciler().reconcile(run)
     assert h.row(run.id)["error"] == "cancelled by an operator"
+
+
+async def test_publish_happens_before_the_reap():
+    """P3: the durable verdict's follow-ups first; the reap is best effort."""
+    order: list[str] = []
+    executor = MemoryExecutor(default_states=[exited(0)])
+    original_reap = executor.reap
+
+    def reap(handle):
+        order.append("reap")
+        original_reap(handle)
+
+    executor.reap = reap
+    h = Harness(executor)
+    run = await h.submitted()
+
+    async def finalize(run_id, process_id):
+        order.append("finalize")
+
+    await h.reconciler(enqueue_finalize=finalize).reconcile(run)
+    assert order == ["finalize", "reap"]
+
+
+async def test_a_credential_requeue_that_merged_wakes_a_waiter():
+    """P10: a merged (or cancelled) credential requeue freed a slot nobody
+    is resubmitted into."""
+    h = Harness(MemoryExecutor(default_states=[RunState("pending_capacity")]))
+    run = await h.submitted(source_id="s1", expires=NOW + dt.timedelta(seconds=10))
+    await h.repo.enqueue_run(
+        process_id="p1", revision_id="rev-1", source_id="s1", input_items=[],
+        deferred_until=None,
+    )
+    waiter = await h.repo.enqueue_run(
+        process_id="p1", revision_id="rev-1", source_id=None, input_items=[],
+        deferred_until=None, is_test=True,
+    )
+    h.row(waiter).update(phase="pending_capacity", next_attempt_at=NOW)
+    assert await h.reconciler().reconcile(run) == "merged"
+    assert h.run_now == [waiter]
+
+
+async def test_requeue_metrics_use_the_ledger_status():
+    """P8: one PROCESS_RUNS vocabulary — a requeue or fold is `queued`."""
+    from pipeline.metrics import PROCESS_RUNS
+
+    def count(label):
+        return PROCESS_RUNS.labels(outcome=label)._value.get()
+
+    queued, requeued = count("queued"), count("requeued")
+    h = Harness(MemoryExecutor(default_states=[RunState("lost")]))
+    run = await h.submitted()
+    assert await h.reconciler().reconcile(run) == "requeued"
+    assert count("queued") == queued + 1
+    assert count("requeued") == requeued
+
+
+async def test_the_storage_client_is_built_on_first_use_and_cached():
+    """P5: building a Reconciler (at worker start) never builds the storage
+    client — a DNS blip at boot must not crash-loop the worker."""
+    built: list[int] = []
+
+    def factory():
+        built.append(1)
+        return Store()
+
+    h = Harness(MemoryExecutor(default_states=[exited(0)]))
+    rec = h.reconciler(storage_client=factory)
+    assert built == []
+    for _ in range(2):
+        await rec.reconcile(await h.submitted())
+    assert built == [1]

@@ -64,6 +64,7 @@ from pipeline.process.ledger import (
     INFRA_RETRY_SECONDS,
     infrastructure_transition,
     outcome_transition,
+    run_metric_status,
 )
 from pipeline.process.repo import ProcessRepo, QueuedRun, capacity_exempt
 from pipeline.process.staging import InputStagingError, RemoteFetcher, stage_inputs
@@ -377,15 +378,23 @@ async def run_one(
     # K-4 I5: the run is the backend's now. Record the handle once, fenced on
     # the claim stamp; a lost claim means another worker owns the row, so
     # what this worker just submitted must not survive.
-    record = await repo.record_submission(
-        run.id,
-        claimed_at=run.claimed_at,
-        handle=submitted.handle.id,
-        backend=executor.name,
-        phase=executor.submitted_phase,
-        submitted_at=at,
-        credentials_expire_at=submitted.credentials_expire_at,
-    )
+    try:
+        record = await repo.record_submission(
+            run.id,
+            claimed_at=run.claimed_at,
+            handle=submitted.handle.id,
+            backend=executor.name,
+            phase=executor.submitted_phase,
+            submitted_at=at,
+            credentials_expire_at=submitted.credentials_expire_at,
+        )
+    except BaseException:
+        # Review P4: the ledger never learned the handle, so nothing would
+        # ever reconcile this container. Remove it; the row's stall sweep
+        # (still unsubmitted) requeues the run.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(_discard, executor, submitted.handle)
+        raise
     if record is None:
         await asyncio.to_thread(_discard, executor, submitted.handle)
         logger.warning(
@@ -461,7 +470,9 @@ async def _requeue(repo: ProcessRepo, run: QueuedRun, transition) -> str:
         error=transition.error or "",
         next_attempt_at=transition.next_attempt_at,
     )
-    PROCESS_RUNS.labels(outcome=_requeue_status(outcome)).inc()
+    status = run_metric_status(outcome)
+    if status is not None:
+        PROCESS_RUNS.labels(outcome=status).inc()
     return outcome
 
 

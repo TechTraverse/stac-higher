@@ -136,3 +136,14 @@ def extract_capacity_detail(limit: int) -> str:
         "extractor runs on the default profile are at this deployment's limit of "
         f"{limit} running at once (PROCESS_EXTRACT_MAX_RUNNING)"
     )
+
+
+def run_metric_status(outcome: str) -> str | None:
+    """K-4 review P8: the one `pipeline_process_runs_total` vocabulary — the
+    ledger status a write left the row in. A requeue or a fold is `queued`;
+    a write that matched nothing (`skipped`) is not counted."""
+    if outcome in ("requeued", "merged"):
+        return "queued"
+    if outcome == "skipped":
+        return None
+    return outcome

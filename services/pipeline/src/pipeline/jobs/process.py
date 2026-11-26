@@ -94,7 +94,8 @@ def build_reconciler(
         repo=PgProcessRepo(settings.database_url),
         executor=executor or _docker_executor(settings),
         settings=settings,
-        storage_client=build_platform_client(settings),
+        # Built on the first log it stores, not here (review P5).
+        storage_client=lambda: build_platform_client(settings),
         enqueue_finalize=_finalize,
         enqueue_run_now=_run_now,
         on_dead=_on_dead,
@@ -305,7 +306,7 @@ def register(queue: QueueBackend, settings: Settings) -> None:
         next tick."""
         executor = _docker_executor(settings)
         reconciler = build_reconciler(queue, settings, executor=executor)
-        storage_client = reconciler.storage_client
+        storage_client = build_platform_client(settings)
         resolver = build_secret_resolver(settings)
         # GOES spec §3.2: remote inputs are staged through a matching
         # reference-mode association's adapter, else a public GET. A missing

@@ -55,6 +55,7 @@ from pipeline.process.ledger import (
     DEFAULT_TIMEOUT_ON_UNREADABLE_RUNTIME,
     INFRA_RETRY_SECONDS,
     outcome_transition,
+    run_metric_status,
 )
 from pipeline.process.repo import ProcessRepo, SubmittedRun, capacity_exempt
 
@@ -97,6 +98,9 @@ class Reconciler:
     repo: ProcessRepo
     executor: Executor
     settings: Settings
+    #: The platform object store for run logs, or a zero-argument factory
+    #: that builds it on first use (review P5: the watcher's Reconciler is
+    #: built at worker start, where a DNS blip must not crash the process).
     storage_client: Any
     #: (run_id, process_id): publish a succeeded run (ADR 0014).
     enqueue_finalize: Callable[[str, str], Awaitable[None]]
@@ -312,8 +316,9 @@ class Reconciler:
             "process run requeued before its credentials expire",
             extra={"run_id": run.id, "process_id": run.process_id, "outcome": outcome},
         )
-        # No wake: the run itself is resubmitted at once into the slot it freed.
-        await self._after_commit(run, handle, outcome, None, wake=False)
+        # A requeued run is resubmitted at once into the slot it freed, so no
+        # wake; a fold or a cancel freed the slot for someone else (P10).
+        await self._after_commit(run, handle, outcome, None, wake=outcome != "requeued")
         if outcome == "requeued":
             await self.enqueue_run_now(run.id)
         return outcome
@@ -334,9 +339,14 @@ class Reconciler:
             return DEFAULT_MAX_ATTEMPTS_ON_UNREADABLE_RUNTIME, DEFAULT_TIMEOUT_ON_UNREADABLE_RUNTIME
         return runtime.max_attempts, runtime.timeout_seconds
 
+    def _storage(self) -> Any:
+        if callable(self.storage_client) and not hasattr(self.storage_client, "put_object"):
+            self.storage_client = self.storage_client()
+        return self.storage_client
+
     async def _log(self, run: SubmittedRun, handle: RunHandle) -> str | None:
         return await asyncio.to_thread(
-            collect_run_log, self.executor, self.settings, self.storage_client,
+            collect_run_log, self.executor, self.settings, self._storage(),
             handle=handle, process_id=run.process_id, run_id=run.id,
         )
 
@@ -363,8 +373,20 @@ class Reconciler:
         self, run: SubmittedRun, handle: RunHandle, written: str, error: str | None,
         *, wake: bool = True,
     ) -> None:
-        """The verdict is durable: reap, then publish or fail the batch."""
-        PROCESS_RUNS.labels(outcome=written).inc()
+        """The verdict is durable: wake a waiter, publish or fail the batch,
+        THEN reap (review P3) — the durable follow-ups first, so a slow or
+        failing daemon delays only the container's removal, which the M3-W-1
+        reaper's ledger rule retries anyway."""
+        status = run_metric_status(written)
+        if status is not None:
+            PROCESS_RUNS.labels(outcome=status).inc()
+        if wake:
+            await self._wake_waiters(run)
+        if written == "succeeded":
+            # Only a SUCCESSFUL run publishes (ADR 0014).
+            await self.enqueue_finalize(run.id, run.process_id)
+        elif written == "dead" and run.association_id is not None and self.on_dead is not None:
+            await self.on_dead(run, error or "run died")
         try:
             await asyncio.to_thread(self.executor.reap, handle)
         except Exception:
@@ -373,10 +395,3 @@ class Reconciler:
                 "process run reap failed after its verdict",
                 extra={"run_id": run.id}, exc_info=True,
             )
-        if wake:
-            await self._wake_waiters(run)
-        if written == "succeeded":
-            # Only a SUCCESSFUL run publishes (ADR 0014).
-            await self.enqueue_finalize(run.id, run.process_id)
-        elif written == "dead" and run.association_id is not None and self.on_dead is not None:
-            await self.on_dead(run, error or "run died")

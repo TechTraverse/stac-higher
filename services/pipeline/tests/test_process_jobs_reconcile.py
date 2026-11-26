@@ -20,7 +20,6 @@ class StubReconciler:
     def __init__(self):
         self.reconciled: list[str] = []
         self.sweeps: list[int] = []
-        self.storage_client = object()
 
     async def reconcile_id(self, run_id):
         self.reconciled.append(run_id)
@@ -44,6 +43,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(jobs, "build_reconciler", lambda *_a, **_k: stub)
     monkeypatch.setattr(jobs, "run_one", fake_run_one)
     monkeypatch.setattr(jobs, "load_run_profiles", lambda _settings: None)
+    monkeypatch.setattr(jobs, "build_platform_client", lambda _settings: object())
     queue = InMemoryQueue()
     jobs.register(queue, Settings.from_env({}))
     return queue, repo, stub, results
