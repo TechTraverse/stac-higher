@@ -1,0 +1,45 @@
+# Kueue controller configuration for the kind CI leg (K-6, K6-R7): the kind
+# CI variant -- differs from production.yaml only in waitForPodsReady timing
+# (timeout and the three backoff numbers), pinned by
+# services/pipeline/tests/test_kueue_manifests.py, so the eviction -> requeue
+# -> deactivation path fits in one CI test. Never install it elsewhere.
+apiVersion: config.kueue.x-k8s.io/v1beta2
+kind: Configuration
+health:
+  healthProbeBindAddress: :8081
+metrics:
+  bindAddress: :8443
+webhook:
+  port: 9443
+leaderElection:
+  leaderElect: true
+  resourceName: c1f6bfd2.kueue.x-k8s.io
+controller:
+  groupKindConcurrency:
+    Job.batch: 5
+    Pod: 5
+    Workload.kueue.x-k8s.io: 10
+    LocalQueue.kueue.x-k8s.io: 5
+    Cohort.kueue.x-k8s.io: 1
+    ClusterQueue.kueue.x-k8s.io: 5
+    ResourceFlavor.kueue.x-k8s.io: 1
+clientConnection:
+  qps: 300
+  burst: 500
+# K-6 (kind): 30 s, one requeue, short backoff.
+waitForPodsReady:
+  timeout: 30s
+  blockAdmission: false
+  requeuingStrategy:
+    timestamp: Eviction
+    backoffLimitCount: 1
+    backoffBaseSeconds: 5
+    backoffMaxSeconds: 10
+# K-6: Jobs without a queue label are not Kueue's; the runs namespace's
+# admission policy refuses them instead (infra/kueue/common/admission-policy.yaml).
+manageJobsWithoutQueueName: false
+# K-6: Kueue manages only what the platform submits. Disabled integrations
+# keep a no-op webhook (jobframework/setup.go), so pods still create.
+integrations:
+  frameworks:
+    - "batch/job"
