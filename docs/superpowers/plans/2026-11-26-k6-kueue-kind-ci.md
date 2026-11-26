@@ -764,3 +764,135 @@ Every test builds its executor with `_kind.executor()`, submits `_kind.code_spec
 - **The brief's test list.** Submit → running → succeeded with log: Task 6. `pending_capacity` then admission: Task 7. Preemption without an attempt: Task 7 (real Reconciler). Cancel AND timeout keeping the log, fallback named and decided by diagnosis: Task 6 + K6-R12. OOM wording: Task 6. `lost` on a deleted Job: Task 6 (and eviction, Task 7). `watch()` events: Task 6. Label-less Job rejected: Task 7. RBAC denial: Tasks 5 and 7.
 - **Type and name consistency.** `_kind.executor()` → `build_executor` (C2); `_kind.api()` → `KubeApi.from_settings` (C3) for reviews and raw denials only; constants asserted come from `kubernetes_executor` (A5) or `executor` (`oom_error`, `PRIORITIES`, `RunRejected`); `KUEUE_API_VERSION` from `kubernetes_manifests` (C9) is pinned against the manifests (Task 2) and the live server (Task 5); the LocalQueue and namespace names are pinned against K-5's settings defaults (Task 2); `KIND_MIN_TESTS = 24` = 17 tests in `test_integration_kind_executor.py` (Tasks 5–6) + 7 in `test_integration_kind_kueue.py` (Task 7).
 - **Proportion.** Manifests and the workflow are given in full because their exact values are the deliverable; test bodies are described by their assertions.
+
+---
+
+## Addendum A · Task 0 reconciliation with K-5 as merged (2026-11-26)
+
+K-5 merged as `d5883f7` (PR #205). This addendum folds what changed into the
+plan. Where it and the body above disagree, the addendum wins.
+
+### Versions re-checked
+
+`gh release list` (2026-11-26): Kueue v0.20.8 is still the newest 0.20 patch
+(v0.19.15 and v0.21.0-rc.2 aside); kind v0.33.0 is still the newest release,
+and its notes list `kindest/node:v1.34.11@sha256:44e222ee…d67d`. Re-downloaded
+and re-hashed: Kueue `manifests.yaml` (`ecbc26a9…290a`), `kind-linux-amd64`
+(`aee61515…8e0d`, the release's `.sha256sum`), kubectl v1.34.11 linux/amd64
+(`8efbb943…b7a8`, dl.k8s.io's `.sha256`), kubeconform v0.8.0 darwin-arm64
+(`f84f4dfb…9d67`) and its `openapi2jsonschema.py` (`d145babf…81f3`). All pins
+in Global Constraints stand.
+
+### Contract points C1–C18
+
+All hold, with these differences:
+
+- **C4.** The Role has a sixth rule, `networking.k8s.io networkpolicies get`
+  (the executor's isolation precondition). The rules-review test compares
+  against the file, so it needs no edit.
+- **C5.** The Job now carries `podFailurePolicy: FailJob on DisruptionTarget`
+  (Ask A6 taken) beside `backoffLimit: 0`.
+- **C10.** Rows renumbered: row 3 now also maps a Job `Failed` with reason
+  `PodFailurePolicy` to `lost` (`POD_FAILURE_POLICY_REASON`), and a row 6b
+  maps a pod the node refused before any container ran to `lost`
+  (`POD_FAILED_PREFIX`). Row 12 reads `QuotaReserved` by status only (A1).
+- **C13.** `probe()` also runs the isolation check; `submit()` runs it before
+  the Job create.
+- **C14.** Wider: a 422 **or** a 403 whose Status message names an admission
+  webhook's denial (`KubeApiError.admission_denied`) raises `RunRejected`;
+  any other 403 is `ExecutorUnavailable`.
+- **New precondition (addendum A18 of K-5).** The executor refuses to start
+  any run (`ExecutorUnavailable`, requeue) unless the runs namespace holds
+  NetworkPolicy `stac-higher-runs-default-deny` with `podSelector: {}`,
+  `policyTypes` ⊇ {Ingress, Egress} and no rules. A passed check is cached
+  60 s per (API URL, namespace) in module state
+  (`kubernetes_executor.reset_isolation_cache()`).
+- **Network level.** A process run must ask for network level `isolated` and
+  no hosts, else `RunRejected`. `code_spec` uses the RunSpec defaults, which
+  satisfy that.
+
+Asks A1–A6: **all taken** (A5's constants exist: `JOB_GONE_DETAIL`,
+`JOB_DELETING_DETAIL`, `DISRUPTION_EXIT`, `PREEMPTED_PREFIX`,
+`WAITING_FOR_NODE_PREFIX`, `DEACTIVATED_PREFIX`, plus `POD_FAILED_PREFIX`,
+`START_FAILURE_PREFIX`, `CANCEL_POD_DEADLINE_SECONDS`).
+
+### Rulings added or changed
+
+- **K6-R19 · The default-deny NetworkPolicy ships as
+  `infra/kubernetes/runs-default-deny.yaml`.** It is a runs-namespace object
+  every deployment needs, like the namespace, the run ServiceAccount and the
+  Role, and not a Kueue object; R-8 already renders `infra/kubernetes/` with a
+  drift test per file, so the fifth file rides the same mechanism. This
+  amends Global Constraints ("do not touch `infra/kubernetes/`"): one new file
+  and K-5's README lines that said the directory holds no NetworkPolicy. A
+  static test proves the file passes K-5's own `isolation_problem()` and is
+  named `DEFAULT_DENY_POLICY`. **No allow policy is shipped for kind:** the
+  kind runs need no network (code and env arrive through the Secret, logs
+  through the kubelet); R-8 owns the `isolated`/`scanner` allow policies.
+- **K6-R20 · NetworkPolicy enforcement is proven, then tested.** kind's
+  default CNI enforces NetworkPolicy from **v0.24.0** (release notes:
+  "Out-of-the-box support for network policy via
+  sigs.k8s.io/kube-network-policies"; v0.25.0 adds a DNS fix for network
+  policies), so the v0.33.0 pin qualifies. A scratch namespace proves it
+  first (a client reaches a server pod and an external IP with no policy, and
+  stops reaching the server once a default-deny is applied); only then does a
+  real run, submitted through the executor, prove it cannot connect to
+  `169.254.169.254` or to an external address.
+- **K6-R21 · The admission policy is I-184's, not K6-R9's (supersedes
+  K6-R9).** `infra/kueue/common/admission-policy.yaml` holds two policies and
+  two bindings, all bound to the runs namespace by `kubernetes.io/metadata.name`,
+  `failurePolicy: Fail`, every validation `reason: Invalid` (422 → the
+  executor's `RunRejected`):
+  - `stac-higher-runs-jobs` on `batch/v1 jobs`: on CREATE and UPDATE the queue
+    label and a priority of `interactive`/`triggered`; on CREATE only (Kueue
+    and the garbage collector update our Jobs; a shape rule on UPDATE could
+    strand a foreground delete) the pod template's `serviceAccountName ==
+    stac-higher-run`, `automountServiceAccountToken == false`, `emptyDir`
+    volumes only, image pull Secrets named `<job>-pull` only, no init or
+    ephemeral containers, no container `env`, `envFrom` only a `secretRef`
+    naming the Job itself.
+  - `stac-higher-runs-pod-updates` on `v1 pods` UPDATE, matched only when the
+    requester is `system:serviceaccount:stac-higher:stac-higher-pipeline`:
+    `activeDeadlineSeconds` present and not raised; labels, annotations,
+    ownerReferences and finalizers unchanged; and every pod-spec field the API
+    server lets an UPDATE change (containers, initContainers, tolerations,
+    schedulingGates, terminationGracePeriodSeconds, nodeSelector, affinity)
+    unchanged.
+  Every validation message starts with a rule id (`[queue-label]` …).
+  **Drift:** one table, `services/pipeline/tests/_admission_rules.py`, maps
+  each rule id to the problem string K-5's pure rules in
+  `tests/test_kubernetes_rbac.py` report, plus a mutation that violates it. A
+  static test requires the YAML's ids, the table's ids and the problem
+  strings the pure functions can return (read from their source with `ast`)
+  to correspond exactly, and that each mutation makes the pure rules report
+  exactly its problem; the kind tests apply the same mutations to a real
+  server and expect a 422 naming the same id. The pure rules stay K-5's (not
+  moved): K-6 imports them.
+- **K6-R22 · Each unverified K-5 assumption is settled by a recording
+  scenario.** A scenario drives the cluster once, never raises, and records
+  what it saw (states, Job and Workload conditions, pod status). Separate
+  tests then assert, each with a failure message naming which documented
+  outcome occurred and what follows (`infra/kubernetes/README.md`'s K-6 list).
+  Observations are appended to `$KIND_OUT/observations.jsonl`, uploaded on
+  every run (no Secret data: only object status and test-made text).
+- **K6-R23 · `waitForPodsReady.timeout` in `config/production.yaml` must
+  exceed `kubernetes_executor.START_FAILURE_GRACE_SECONDS`** (a static test):
+  otherwise Kueue evicts a pod still pulling before the executor would fail
+  it. The kind variant's 30 s is the deliberate exception (no kind test pulls
+  an image).
+- **K6-R24 · Kueue's job-webhook denial is provoked with a queue label that
+  is not a DNS subdomain.** v0.20.8's `ValidateJobOnCreate` →
+  `ValidateQueueName` → `ValidateLabelAsCRDName` refuses it, and
+  controller-runtime turns a field-error list into `Denied()` (HTTP 403,
+  "admission webhook … denied the request"). The test drives it through
+  `submit()` (the executor's default queue set to the bad name) and records
+  the status and message.
+- **K6-R25 · `kind-up.sh` waits for the admission policies to enforce** (a
+  server dry-run of a label-less Job is refused) and fails on any
+  `status.typeChecking.expressionWarnings`, so a CEL type error fails the
+  bring-up step, not thirty tests.
+- **Budget.** Test step `timeout-minutes: 25`, job 45 (the network, admission
+  and scenario tests added ~6 minutes). The JUnit gate accepts xfail and
+  nothing else that skips; `KIND_MIN_TESTS` equals the number of test
+  functions in the two kind modules (Task 8 counts them).
+- **ISSUES numbering** starts at I-185 (I-184 is the last, from K-5).
