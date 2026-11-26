@@ -57,10 +57,22 @@ _ERROR_BODY_BYTES = 64 * 1024
 class KubeApiError(ExecutorUnavailable):
     """The API server answered with an error ``Status``."""
 
-    def __init__(self, message: str, *, status: int, reason: str) -> None:
+    def __init__(self, message: str, *, status: int, reason: str,
+                 server_message: str = "") -> None:
         super().__init__(message)
         self.status = status
         self.reason = reason
+        #: The Status body's own message ("" for a redacted call).
+        self.server_message = server_message
+
+    @property
+    def admission_denied(self) -> bool:
+        """A 403 from an admission webhook's ``Denied()`` (review D8): the
+        request's content was refused, not the caller's permissions."""
+        text = self.server_message
+        return self.status == 403 and "admission webhook" in text and (
+            "denied the request" in text
+        )
 
 
 class KubeNotFound(KubeApiError):
@@ -85,7 +97,8 @@ def _error(method: str, path: str, status: int, payload: bytes, http_reason: str
     if message and not redact:
         text += f": {message[:_MESSAGE_CHARS]}"
     cls = KubeNotFound if status == 404 else KubeGone if status == 410 else KubeApiError
-    return cls(text, status=status, reason=reason)
+    return cls(text, status=status, reason=reason,
+               server_message="" if redact else message[:_MESSAGE_CHARS])
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

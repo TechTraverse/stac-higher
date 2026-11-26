@@ -543,3 +543,21 @@ def test_the_secret_cap_counts_decoded_bytes(executor, fake):
     assert NAME in fake.objects(*SECRETS)
     with pytest.raises(RunRejected):
         executor.submit(spec(env={"BIG": "x" * SECRET_MAX_BYTES}))
+
+
+def test_an_admission_webhook_denial_is_a_dead_run(executor, fake):
+    """Review D8(3): controller-runtime's `Denied()` answers 403, the same
+    code as an RBAC refusal. The Status message tells them apart: a webhook
+    denial is the run's definition (dead, loudly); RBAC is the deployment
+    (requeue)."""
+    fake.fail_next("POST", "jobs", 403, reason="Forbidden",
+                   message='admission webhook "vjob.kb.io" denied the request: '
+                           'priority class "urgent" not found')
+    with pytest.raises(RunRejected, match="denied the request"):
+        executor.submit(spec())
+    fake.fail_next("POST", "jobs", 403, reason="Forbidden",
+                   message='jobs.batch is forbidden: User "system:serviceaccount:x:y" '
+                           'cannot create resource "jobs"')
+    with pytest.raises(ExecutorUnavailable) as err:
+        executor.submit(spec())
+    assert not isinstance(err.value, RunRejected)

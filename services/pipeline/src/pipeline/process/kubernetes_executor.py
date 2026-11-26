@@ -510,7 +510,10 @@ class KubernetesExecutor(Executor):
             created = self.api.create(self._jobs, job)
         except ExecutorUnavailable as err:
             status = err.status if isinstance(err, KubeApiError) else None
-            if status == 422:
+            if status == 422 or (isinstance(err, KubeApiError) and err.admission_denied):
+                # Field validation, a ValidatingAdmissionPolicy (422) or an
+                # admission webhook's Denied() (403, review D8): the run's
+                # definition, so it dies loudly instead of requeueing forever.
                 raise RunRejected(f"the cluster rejected run {spec.run_id}'s Job: {err}") from err
             if status != 409:
                 # Review C1: the API server may have created the Job and lost

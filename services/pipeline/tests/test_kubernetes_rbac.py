@@ -174,3 +174,101 @@ def test_the_readme_names_every_manifest():
     readme = (INFRA / "README.md").read_text()
     for path in sorted(Path(INFRA).glob("*.yaml")):
         assert path.name in readme
+
+
+# -- review D2: the admission policy K-6 renders, encoded against build_job -----
+#
+# A compromised pipeline identity holds `jobs create`, `pods patch` and
+# `secrets create` in the runs namespace. K-6's ValidatingAdmissionPolicy
+# (#14) bounds what it can do with them; these are its rules, so every Job
+# the executor builds is proven to pass them before a cluster sees one.
+
+PRIORITIES = {"interactive", "triggered"}
+
+
+def vap_job_violations(job: dict) -> list[str]:
+    """Job CREATE in the runs namespace."""
+    problems = []
+    name = job["metadata"]["name"]
+    labels = job["metadata"].get("labels") or {}
+    if not labels.get("kueue.x-k8s.io/queue-name"):
+        problems.append("queue label")
+    if labels.get("kueue.x-k8s.io/priority-class") not in PRIORITIES:
+        problems.append("priority class")
+    pod = job["spec"]["template"]["spec"]
+    if pod.get("serviceAccountName") != DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT:
+        problems.append("serviceAccountName")
+    if pod.get("automountServiceAccountToken") is not False:
+        problems.append("automountServiceAccountToken")
+    if any(set(v) != {"name", "emptyDir"} for v in pod.get("volumes") or []):
+        problems.append("volumes")
+    for secret in pod.get("imagePullSecrets") or []:
+        if secret.get("name") != f"{name}-pull":
+            problems.append("imagePullSecrets")
+    for key in ("initContainers", "ephemeralContainers"):
+        if pod.get(key):
+            problems.append(key)
+    for container in pod["containers"]:
+        if container.get("env"):
+            problems.append("env")
+        for source in container.get("envFrom") or []:
+            if set(source) != {"secretRef"} or source["secretRef"].get("name") != name:
+                problems.append("envFrom")
+    return problems
+
+
+def vap_pod_update_violations(old: dict, new: dict) -> list[str]:
+    """Pod UPDATE by the pipeline's ServiceAccount: only a lowered
+    spec.activeDeadlineSeconds."""
+    old_spec = {k: v for k, v in old["spec"].items() if k != "activeDeadlineSeconds"}
+    new_spec = {k: v for k, v in new["spec"].items() if k != "activeDeadlineSeconds"}
+    problems = []
+    if old_spec != new_spec or old.get("metadata") != new.get("metadata"):
+        problems.append("only spec.activeDeadlineSeconds may change")
+    if new["spec"].get("activeDeadlineSeconds", 0) > old["spec"].get(
+        "activeDeadlineSeconds", float("inf")
+    ):
+        problems.append("the deadline may only be lowered")
+    return problems
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"priority": "interactive"},
+        {"user_image": True, "image": f"ghcr.io/acme/private@{DIGEST}",
+         "registry_auth": RegistryAuth(username="u", password="p", server="ghcr.io")},
+        {"kind": "image_scan", "profile": None},
+    ],
+)
+def test_every_built_job_passes_the_admission_policy(overrides):
+    ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
+    run = spec(**overrides)
+    pull = f"{NAME}-pull" if run.registry_auth else None
+    job = km.build_job(run, name=NAME, ctx=ctx, pull_secret=pull)
+    assert vap_job_violations(job) == []
+
+
+def test_the_admission_rules_catch_what_they_exist_for():
+    ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
+    job = km.build_job(spec(), name=NAME, ctx=ctx, pull_secret=None)
+    pod = job["spec"]["template"]["spec"]
+    pod["serviceAccountName"] = "default"
+    pod["volumes"].append({"name": "s", "secret": {"secretName": "another-run"}})
+    pod["containers"][0]["envFrom"].append({"secretRef": {"name": "another-run"}})
+    del job["metadata"]["labels"]["kueue.x-k8s.io/queue-name"]
+    assert set(vap_job_violations(job)) == {"serviceAccountName", "volumes", "envFrom",
+                                            "queue label"}
+
+
+def test_the_executors_only_pod_update_passes_the_admission_policy():
+    ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
+    pod_spec = km.build_job(spec(), name=NAME, ctx=ctx, pull_secret=None)["spec"]["template"]
+    old = {"metadata": {"name": "p"}, "spec": pod_spec["spec"]}
+    patched = {"metadata": {"name": "p"},
+               "spec": {**pod_spec["spec"],
+                        "activeDeadlineSeconds": kx.CANCEL_POD_DEADLINE_SECONDS}}
+    assert vap_pod_update_violations(old, patched) == []
+    swapped = {"metadata": {"name": "p"}, "spec": {**pod_spec["spec"], "containers": []}}
+    assert vap_pod_update_violations(old, swapped)
