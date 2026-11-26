@@ -19,7 +19,7 @@ it works on Helm 3 and 4 and needs Kubernetes 1.34 or later.
   Pod Identity agent).
 - NetworkPolicy enforcement enabled. The chart renders NetworkPolicies; without
   an enforcing CNI they are inert.
-- Kueue v0.19+ with `waitForPodsReady` on and `managedJobsWithoutQueueName: false`.
+- Kueue v0.20.8 with `waitForPodsReady` on and `managedJobsWithoutQueueName: false`.
   Both live in Kueue's own install configuration, which the chart cannot set.
   (R-6 renders no Kueue objects; later slices rely on this.)
 - External Secrets Operator with a `ClusterSecretStore` for Secrets Manager,
@@ -54,7 +54,7 @@ Rendering fails with a message starting with the offending key path.
 | `global.imageRegistry` | `""` | The GHCR mirror prefix; replaces the leading `ghcr.io` of images the chart pulls. |
 | `registry` | | ECR mirror information. |
 | `registry.host` | `""` | The ECR registry host. Informational. |
-| `registry.mirrorPrefixes` | `{}` | `ghcr.io`, `docker.io`, `quay.io` mapped to prefixes. The pull rewrite falls back to it when `global.imageRegistry` is blank. |
+| `registry.mirrorPrefixes` | `{}` | `ghcr.io`, `docker.io`, `quay.io` mapped to prefixes. The pull rewrite falls back to it when `global.imageRegistry` is blank. Also feeds the pipeline's `PROCESS_K8S_REGISTRY_MIRRORS` (K-5): the executor rewrites platform images at Job creation, never user images. |
 | `aws` | | AWS facts from Terraform. |
 | `aws.partition` | `aws` | Informational. |
 | `aws.region` | `us-east-1` | Becomes `AWS_REGION`, `AWS_DEFAULT_REGION`, `S3_REGION`, `STAGING_S3_REGION`. |
@@ -101,7 +101,7 @@ Rendering fails with a message starting with the offending key path.
 | `demoDestination` | | The demo's destination bucket (R-5's `demo-destination` module); read only by the demo seed Job with `demoSeed.deliver`. |
 | `demoDestination.bucket`, `demoDestination.region`, `demoDestination.credentialsSecretArn` | `""` | Bucket, its region (blank: `aws.region`), and the Secrets Manager entry holding the write-only user's key (JSON `access_key_id`/`secret_access_key`). |
 | `processRuns` | | Process-run settings. |
-| `processRuns.namespace` | `stac-higher-runs` | R-8 creates it. |
+| `processRuns.namespace` | `stac-higher-runs` | R-8 creates it. The pipeline's `PROCESS_K8S_NAMESPACE`: where the Kubernetes executor creates every run Job and Secret. |
 | `processRuns.networkMax` | `isolated` | `PROCESS_NETWORK_MAX` (app and pipeline). |
 | `processRuns.credentialGraceSeconds` | `300` | `PROCESS_CREDENTIAL_GRACE_SECONDS` (app and pipeline). |
 | `processRuns.extractMaxRunning` | `4` | Integer >= 1; `PROCESS_EXTRACT_MAX_RUNNING` (pipeline): how many extractor runs on the default profile, which are exempt from its capacity, may run at once (K-4). |
@@ -344,11 +344,13 @@ what in-cluster mode changes:
   it whenever `demoSeed.enabled`, beside the auth-proxy. When `networkPolicy.appIngressFrom` restricts the app and
   `images-seed` is chosen, the chart adds the seed pod as a peer on the app's
   policy.
-- **`images-seed` before the Kubernetes executor.** Process runs (the
-  extractor, GeoColor, image scans) need K-5 (I-160). Until then the other
-  seeds complete but the runs they trigger fail at launch, and `images-seed`
-  waits out its scan timeout and fails the Job. Leave it out of
-  `demoSeed.seeds` until K-5. See `docs/ISSUES.md` I-169.
+- **`images-seed` before R-8 and K-6 are deployed.** Process runs (the
+  extractor, GeoColor, image scans) run on the Kubernetes executor (K-5),
+  which starts nothing until the runs namespace, its RBAC and its default-deny
+  NetworkPolicy exist (R-8) and Kueue's objects are applied (K-6). Until then
+  the runs wait as requeued and `images-seed` waits out its scan timeout and
+  fails the Job. Leave it out of `demoSeed.seeds` until then. See
+  `docs/ISSUES.md` I-169.
 
 ## Install paths
 
@@ -458,7 +460,22 @@ hosts use their `registry.mirrorPrefixes` entry, with trailing slashes trimmed
 and digests unchanged. The runtime image refs in the environment
 (`PROCESS_RUNTIME_IMAGE`, `PROCESS_RUNTIME_IMAGE_STACTOOLS`,
 `IMAGE_SCANNER_IMAGE`) keep the upstream form, because image rows store
-upstream refs and the executor maps the pull.
+upstream refs and the executor maps the pull: the same prefixes reach the
+pipeline as `PROCESS_K8S_REGISTRY_MIRRORS`, applied to those platform images
+only. A user's own image is pulled from its own registry, never through the
+pull-through cache (which holds the deployment's upstream credentials).
+
+## Process runs
+
+The pipeline runs every process run and image scan as a Kubernetes Job in
+`processRuns.namespace` (`PROCESS_EXECUTOR=kubernetes`, K-5): one Job and one
+Secret per submission, admitted by Kueue. Prerequisites, all outside this
+chart today: the namespace, the run ServiceAccount and the pipeline's
+Role/RoleBinding (`infra/kubernetes/`, rendered by R-8), the runs
+NetworkPolicies including `stac-higher-runs-default-deny` (R-8; the executor
+refuses to start runs without it), and Kueue's LocalQueue and cluster objects
+(K-6). Switching `PROCESS_EXECUTOR` with runs in flight strands them: drain
+the runs first.
 
 ## Uninstall
 

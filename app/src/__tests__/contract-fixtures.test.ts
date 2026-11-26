@@ -10,6 +10,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import {
+  DEFAULT_EXECUTOR_BACKEND,
+  PROCESS_EXECUTOR_BACKENDS,
+} from "@/lib/processes/executor";
+import {
   CREDENTIAL_BUDGET_CODE,
   CREDENTIAL_BUDGET_STATUS,
   CREDENTIAL_GRACE_SECONDS_ENV,
@@ -748,5 +752,25 @@ describe("process run status contract", () => {
   });
   it("terminal and cancellable are subsets of statuses", () => {
     for (const s of [...fx.terminal, ...fx.cancellable]) expect(fx.statuses).toContain(s);
+  });
+});
+
+// K-5: PROCESS_EXECUTOR's vocabulary (and process_runs.executor_backend's) is
+// shared with the pipeline's config.PROCESS_EXECUTORS.
+describe("process executor contract", () => {
+  const fx = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL("../../../tests/contract-fixtures/process-executor.json", import.meta.url),
+      ),
+      "utf8",
+    ),
+  ) as { backends: string[]; default: string };
+
+  it("the backends match, in fixture order", () => {
+    expect([...PROCESS_EXECUTOR_BACKENDS]).toEqual(fx.backends);
+  });
+  it("the default matches", () => {
+    expect(DEFAULT_EXECUTOR_BACKEND).toBe(fx.default);
   });
 });
