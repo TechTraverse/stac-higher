@@ -355,12 +355,17 @@ def probe_pod(namespace: str, name: str, code: str, *, env: Mapping[str, str] | 
     return code_, log
 
 
-#: Probe code: try each target in K6_TARGETS ([[label, host, port, tries]]),
-#: print one JSON line ``K6-NET {label: true|false}`` and exit 0.
+#: Probe code: try each target in K6_TARGETS ([[label, host, port, tries]];
+#: a host or port ``$NAME`` is read from the pod's environment), print one
+#: JSON line ``K6-NET {label: true|false}`` and exit 0.
 REACH_CODE = """
 import json, os, socket, time
 results = {}
 for label, host, port, tries in json.loads(os.environ["K6_TARGETS"]):
+    if str(host).startswith("$"):
+        host = os.environ.get(host[1:], "")
+    if str(port).startswith("$"):
+        port = int(os.environ.get(port[1:], "0"))
     ok = False
     for attempt in range(tries):
         try:
