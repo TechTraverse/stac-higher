@@ -108,7 +108,7 @@ def test_db_pool_defaults():
 
     settings = Settings.from_env(env={})
     assert settings.db_pool_min == DEFAULT_DB_POOL_MIN == 2
-    assert settings.db_pool_max == DEFAULT_DB_POOL_MAX == 16
+    assert settings.db_pool_max == DEFAULT_DB_POOL_MAX == 18
     # The sizing invariant the README documents: a pool smaller than the
     # concurrent checkouts makes callers wait and then raise PoolTimeout.
     assert settings.db_pool_max > 12
@@ -170,7 +170,7 @@ def test_worker_concurrency_defaults_to_the_settled_split():
     assert settings.default_queue_concurrency == 8
     assert settings.flow_stats_flush_seconds == DEFAULT_FLOW_STATS_FLUSH_SECONDS == 2.0
     # The README invariant M3-B documented: the pool clears the slots + ticks.
-    assert settings.db_pool_max >= settings.worker_concurrency + 4
+    assert settings.db_pool_max >= settings.worker_concurrency + 6
 
 
 def test_worker_concurrency_reads_its_env_names():
@@ -207,7 +207,9 @@ def test_sizing_warnings_flag_an_undersized_pool():
     warnings = sizing_warnings(Settings.from_env(env={"DB_POOL_MAX": "10"}))
     assert len(warnings) == 1
     assert "DB_POOL_MAX" in warnings[0].message
-    assert warnings[0].extra == {"db_pool_max": 10, "worker_concurrency": 12, "required": 16}
+    assert warnings[0].extra == {"db_pool_max": 10, "worker_concurrency": 12, "required": 18}
+    # K-4: the watcher and cancel listener are two more pool users.
+    assert len(sizing_warnings(Settings.from_env(env={"DB_POOL_MAX": "17"}))) == 1
 
 
 # ---------------------------------------------------------------------------

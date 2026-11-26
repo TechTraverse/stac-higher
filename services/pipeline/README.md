@@ -82,8 +82,8 @@ backend lands in Phase 8 as a second implementation of the same ABC.
 | `PROCESS_EXTRACT_MAX_RUNNING` | `4` | Whole number >= 1. How many extractor runs on the default profile (exempt from its capacity and CPU cap) may run at once, deployment-wide (K-4, I-170). |
 | `PROCESS_MAX_CREDENTIAL_SECONDS` | _(unset — no limit)_ | The longest run credential the pipeline will mint, as an integer ≥ 900 (anything else fails startup). Set `3600` on AWS, where STS role chaining caps a session at one hour. A run or scan needing more is refused with `credential_budget_exceeded` (deployment-artifacts spec §8). |
 | `DB_POOL_MIN` | `2` | Connections the process-wide async pool keeps warm (M3-B). The pool grows on demand and trims back after `max_idle` (600 s), so a mostly-idle deployment holds two backends, not `DB_POOL_MAX`. |
-| `DB_POOL_MAX` | `16` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 4`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC). Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
-| `WORKER_CONCURRENCY` | `12` | Jobs the worker process runs at once, both queues together (M3-D; spec §7 decision 2, S-C's 12–16 band at the conservative end). Size `DB_POOL_MAX` to at least this + 4; the process logs a WARNING at startup when it is not. |
+| `DB_POOL_MAX` | `18` | Ceiling on concurrent checkouts. **Size it as at least `WORKER_CONCURRENCY + 6`** — the worker's job concurrency (M3-D default 12) plus the periodic ticks that can overlap a job (dispatch poll, flow monitor, history sweep, GC) plus K-4's run watcher and cancel listener. Too small does not error immediately: a caller waits `pool.timeout` (30 s) and then raises `psycopg_pool.PoolTimeout`, which surfaces as a failed job with a queue retry. Watch `requests_waiting` on `/health` — persistently non-zero means the pool is undersized. |
+| `WORKER_CONCURRENCY` | `12` | Jobs the worker process runs at once, both queues together (M3-D; spec §7 decision 2, S-C's 12–16 band at the conservative end). Size `DB_POOL_MAX` to at least this + 6; the process logs a WARNING at startup when it is not. |
 | `WORKER_BYTES_CONCURRENCY` | `4` | Of those slots, how many the `bytes` queue gets — `pipeline.ingest_fetch`, `pipeline.ingest_itemize`, `pipeline.deliver`, the jobs that hold object bytes or a GDAL block cache. Resident memory scales with THIS number (see "Concurrency (M3-D)"); the `default` queue runs everything else with the remainder (8). At least 1, less than `WORKER_CONCURRENCY`. |
 | `FLOW_STATS_FLUSH_SECONDS` | `2.0` | ITEMIZE's per-item `flow_stats` deltas are summed in memory and written once per association per interval; `last_activity_at` trails the item by at most this. Counts are exact; a crash loses at most one interval of telemetry, never a row. |
 | `GDAL_CACHEMAX` | `64` | GDAL block-cache ceiling in MB for EXTRACT's `/vsis3` raster reads (M3-C) — an integer number of MB only; GDAL's own `25%`/`512MB` forms raise in `Settings.from_env`. GDAL's own variable; also passed into every `rasterio.Env`. Part of the "Memory envelope (M3-C)" section below. |
@@ -589,13 +589,14 @@ semaphore (I-91). Raise `WORKER_BYTES_CONCURRENCY` when the byte-realistic
 mix needs more than four transfers in flight (S-C: ~10 slots for 30 items/s
 of 34 MB streamed objects; ~3 when the server-side copy gate allows) and size
 the container from the formula. `WORKER_CONCURRENCY` is the total;
-`DB_POOL_MAX >= WORKER_CONCURRENCY + 4` or the process logs a WARNING at
+`DB_POOL_MAX >= WORKER_CONCURRENCY + 6` or the process logs a WARNING at
 startup and callers wait on the pool under load.
 
 **Connections.** Per pipeline process, worst case: the repo pool
-(`DB_POOL_MAX`, 16) + Procrastinate's own pool (`WORKER_CONCURRENCY + 4`, 16)
+(`DB_POOL_MAX`, 18) + Procrastinate's own pool (`WORKER_CONCURRENCY + 4`, 16)
 + the pgstac writer pool (4) + one standalone LISTEN connection per worker (2)
-+ the dispatch LISTEN connection (1) + the health probe (1) = **40**. The rest
++ the dispatch LISTEN connection (1) + K-4's cancel LISTEN connection (1) +
+the health probe (1) = **43**. The rest
 of the compose stack holds about 28 (the STAC API, titiler, tipg, the app), so
 Postgres's default `max_connections = 100` fits one pipeline replica; a second
 needs `max_connections` raised or the pools trimmed. Idle, the pools hold

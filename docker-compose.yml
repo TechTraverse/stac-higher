@@ -354,18 +354,19 @@ services:
       - HEALTH_PORT=8083
       # M3-B: the process-wide async connection pool the repos check out of.
       # DB_POOL_MAX must exceed the worker's job concurrency plus the periodic
-      # ticks that overlap it (WORKER_CONCURRENCY + 4); undersizing it does not
+      # ticks that overlap it and K-4's run watcher + cancel listener
+      # (WORKER_CONCURRENCY + 6); undersizing it does not
       # error, it makes callers wait 30 s and then raise PoolTimeout. Watch
       # `requests_waiting` in GET :8083/health.
       - DB_POOL_MIN=${DB_POOL_MIN:-2}
-      - DB_POOL_MAX=${DB_POOL_MAX:-16}
+      - DB_POOL_MAX=${DB_POOL_MAX:-18}
       # M3-C: the memory envelope — see services/pipeline/README.md "Memory envelope (M3-C)"
       - GDAL_CACHEMAX=${GDAL_CACHEMAX:-64}
       - FETCH_CHUNK_BYTES=${FETCH_CHUNK_BYTES:-8388608}
       - FETCH_TRANSFER_CONCURRENCY=${FETCH_TRANSFER_CONCURRENCY:-4}
       # M3-D: 12 job slots — 8 on the `default` queue, 4 on the `bytes` queue
       # (FETCH/ITEMIZE/deliver, the jobs that hold bytes). Memory scales with
-      # WORKER_BYTES_CONCURRENCY; DB_POOL_MAX must stay >= WORKER_CONCURRENCY + 4.
+      # WORKER_BYTES_CONCURRENCY; DB_POOL_MAX must stay >= WORKER_CONCURRENCY + 6.
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-12}
       - WORKER_BYTES_CONCURRENCY=${WORKER_BYTES_CONCURRENCY:-4}
       - FLOW_STATS_FLUSH_SECONDS=${FLOW_STATS_FLUSH_SECONDS:-2.0}

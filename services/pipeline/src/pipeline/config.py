@@ -240,8 +240,13 @@ DEFAULT_DB_POOL_MIN = 2
 #: (M3-D default 12) plus the periodic ticks that can overlap a job — dispatch
 #: poll, flow monitor, history sweep, GC — or a caller waits `pool.timeout`
 #: (30 s) and then raises `psycopg_pool.PoolTimeout`. Formula in
-#: services/pipeline/README.md: DB_POOL_MAX >= WORKER_CONCURRENCY + 4.
-DEFAULT_DB_POOL_MAX = 16
+#: services/pipeline/README.md: DB_POOL_MAX >= WORKER_CONCURRENCY +
+#: POOL_HEADROOM (the job slots, the overlapping ticks, and K-4's run watcher
+#: and cancel listener, which check out repo connections beside the jobs).
+DEFAULT_DB_POOL_MAX = 18
+#: The periodic ticks that can overlap a job (4) + K-4's run watcher and
+#: cancel listener (2).
+POOL_HEADROOM = 6
 
 # --- Memory envelope (M3-C, spec §3 / S-E) ---------------------------------
 #: GDAL block cache ceiling (MB). GDAL honours the GDAL_CACHEMAX env var on
@@ -697,11 +702,11 @@ def sizing_warnings(settings: Settings) -> list[SizingWarning]:
     first load rehearsal, so it is said out loud at startup instead.
     """
     warnings: list[SizingWarning] = []
-    required = settings.worker_concurrency + 4
+    required = settings.worker_concurrency + POOL_HEADROOM
     if settings.db_pool_max < required:
         warnings.append(
             SizingWarning(
-                "DB_POOL_MAX is below WORKER_CONCURRENCY + 4; repo checkouts will wait"
+                "DB_POOL_MAX is below WORKER_CONCURRENCY + 6; repo checkouts will wait"
                 " and raise PoolTimeout under load",
                 {
                     "db_pool_max": settings.db_pool_max,

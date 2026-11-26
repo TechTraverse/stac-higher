@@ -233,3 +233,28 @@ async def test_a_stream_that_never_opens_backs_off(monkeypatch):
     await run_watcher(watch, on_event, reconnect_delay=5, max_reconnect_delay=60,
                       max_connects=6)
     assert sleeps == [10, 20, 40, 60, 60]
+
+
+async def test_a_stream_that_goes_silent_is_reopened():
+    """Review P9: a half-open connection yields nothing forever; past the
+    idle timeout the watcher closes it and reconnects (RESYNC again)."""
+    connects = 0
+    closed = 0
+
+    async def watch():
+        nonlocal connects, closed
+        connects += 1
+        try:
+            yield RESYNC
+            await asyncio.Event().wait()  # never yields again
+        finally:
+            closed += 1
+
+    seen: list[RunEvent] = []
+
+    async def on_event(event):
+        seen.append(event)
+
+    await run_watcher(watch, on_event, reconnect_delay=0, idle_timeout=0.05, max_connects=2)
+    assert connects == 2 and closed == 2
+    assert seen == [RESYNC, RESYNC]

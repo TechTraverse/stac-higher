@@ -30,6 +30,15 @@ WATCHER_RECONNECT_SECONDS = 5.0
 #: source at all — the Helm chart until K-5, I-160 — logs once a minute,
 #: not every 5 s).
 WATCHER_MAX_RECONNECT_SECONDS = 60.0
+#: A stream silent this long is treated as dead and reopened (review P9): a
+#: little over the socket proxy's 10-minute client timeout, so a healthy idle
+#: stream is closed by the proxy first, and a half-open connection (the proxy
+#: or daemon gone without a FIN) cannot hold the watcher forever.
+WATCHER_IDLE_TIMEOUT_SECONDS = 11 * 60.0
+
+
+class StreamIdle(Exception):
+    """No event within the idle timeout."""
 
 
 async def run_watcher(
@@ -38,6 +47,7 @@ async def run_watcher(
     *,
     reconnect_delay: float = WATCHER_RECONNECT_SECONDS,
     max_reconnect_delay: float = WATCHER_MAX_RECONNECT_SECONDS,
+    idle_timeout: float = WATCHER_IDLE_TIMEOUT_SECONDS,
     max_connects: int | None = None,
 ) -> None:
     """Consume ``watch()`` until cancelled, reconnecting after any failure:
@@ -48,8 +58,9 @@ async def run_watcher(
     delay = reconnect_delay
     while True:
         opened = False
+        stream = watch()
         try:
-            async for event in watch():
+            async for event in _with_idle_timeout(stream, idle_timeout):
                 opened = True
                 try:
                     await on_event(event)
@@ -66,6 +77,11 @@ async def run_watcher(
             )
         except asyncio.CancelledError:
             raise
+        except StreamIdle:
+            logger.warning(
+                "run watcher stream went silent; reconnecting",
+                extra={"idle_timeout": idle_timeout},
+            )
         except Exception as err:
             logger.warning(
                 "run watcher stream failed; reconnecting",
@@ -76,3 +92,25 @@ async def run_watcher(
             return
         delay = reconnect_delay if opened else min(delay * 2, max_reconnect_delay)
         await asyncio.sleep(delay)
+
+
+async def _with_idle_timeout(
+    stream: AsyncIterator[RunEvent], idle_timeout: float
+) -> AsyncIterator[RunEvent]:
+    """Yield from ``stream``, raising :class:`StreamIdle` when no item
+    arrives within ``idle_timeout``. The stream is closed on every exit, so
+    its connection is released (the Docker stream's ``finally``)."""
+    iterator = stream.__aiter__()
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(iterator.__anext__(), idle_timeout)
+            except StopAsyncIteration:
+                return
+            except TimeoutError as err:
+                raise StreamIdle from err
+            yield item
+    finally:
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
