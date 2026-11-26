@@ -1513,6 +1513,8 @@ goes back to `queued` without spending an attempt (K-4 plan R15, like
 K-5's evicted pod), every time. Something that keeps deleting run
 containers therefore loops the run at 60 s spacing with a WARNING each time
 (`process run lost by the executor`) instead of exhausting its budget.
+On Kubernetes the same holds for a node that keeps refusing the run's pod
+(a pod `Failed` with a `status.reason` and no terminated container).
 - Tracked in: `services/pipeline/src/pipeline/process/reconcile.py` (`_requeue_lost`).
 - Found in: K-4 (2026-11-25).
 
@@ -1628,6 +1630,9 @@ first: stop triggers and wait until no run is `running`. Not built. Related:
 when the selected executor cannot be built (no API URL), the run tick returns
 before its sweep, so already-submitted runs freeze where they are; the tick
 logs one WARNING a minute and `/health` reports `executor.reachable: false`.
+Two pipelines with different `PROCESS_EXECUTOR` values on one database are
+not supported either: each reaper removes the other backend's runs, whose
+recorded handle never matches what it launched.
 - Tracked in: `services/pipeline/src/pipeline/process/reconcile.py`, `docs/processes.md`, the chart README.
 - Found in: K-5 (2026-11-26).
 
