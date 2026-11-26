@@ -950,3 +950,14 @@ Asks A1–A6: **all taken** (A5's constants exist: `JOB_GONE_DETAIL`,
   `check-kueue.sh`); the kind leg proves that a Deployment elsewhere creates
   with Kueue down. `KIND_MIN_TESTS = 61`, and xfails are allowed only when
   named in `KIND_ALLOWED_XFAIL`.
+- **K6-R29 · The startup race is a property of the CNI class (lead ruling).**
+  The second CI run confirmed it: all three targets were reachable at t0, the
+  window ran from 0.26 s (last reachable) to 0.51 s (first blocked), and all
+  were blocked once settled, with `hostNetwork` false. K-6 does not change
+  the executor; #207 owns the mitigation. The isolation test asserts the
+  settled state and that `first_blocked_s` ≤ 10 s, and records t0. I-188
+  records the residual. `infra/kubernetes/README.md` makes strict
+  enforcement a cluster prerequisite for R-8/R-11
+  (`NETWORK_POLICY_ENFORCING_MODE=strict` on the VPC CNI; the Auto Mode
+  NodeClass's `networkPolicy: DefaultDeny`, to be proven live) and adds the
+  live check that a run connecting at t=0 is blocked.

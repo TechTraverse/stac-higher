@@ -584,6 +584,9 @@ def test_the_pipeline_cannot_do_what_it_must_not():
 # -- network isolation (K-5 hand-off item 11; K6-R20) ------------------------------
 
 IMDS = "169.254.169.254"
+#: How long a new run pod's egress may stay open before enforcement catches
+#: up (measured ~0.5 s on kind v0.33.0; generous so only a regression fails).
+STARTUP_WINDOW_BOUND_S = 10.0
 
 
 def _external_ip() -> str:
@@ -657,7 +660,8 @@ def test_a_run_pod_cannot_reach_metadata_the_api_or_the_internet(network_control
     CNI has learned the new pod's IP (kube-network-policies diverts only the
     IPs of pods it knows to its queue), is measured and recorded, not
     asserted: that is a property of the CNI's enforcing mode, which the
-    deployment must choose (K6-R27, docs/ISSUES.md)."""
+    deployment must choose (K6-R27, docs/ISSUES.md I-188, GitHub #207). The window
+    must stay under STARTUP_WINDOW_BOUND_S."""
     external = network_controls["external"]
     targets = [["imds", IMDS, 80], ["external", external, 443],
                ["api", "$KUBERNETES_SERVICE_HOST", "$KUBERNETES_SERVICE_PORT"]]
@@ -692,6 +696,14 @@ def test_a_run_pod_cannot_reach_metadata_the_api_or_the_internet(network_control
         assert "external" not in untestable, (
             "the external-host check is vacuous: even with no policy a pod could not reach "
             f"{external}:443 ({network_controls})")
+        # The startup window (docs/ISSUES.md I-188, GitHub #207) is recorded,
+        # not asserted; but it must stay short, or enforcement latency regressed.
+        window = results.get("window") or {}
+        blocked_at = window.get("first_blocked_s")
+        assert blocked_at is not None and blocked_at <= STARTUP_WINDOW_BOUND_S, (
+            f"OUTCOME 'enforcement latency regressed': a new run pod's egress to {external} "
+            f"was first blocked at {blocked_at} s (bound {STARTUP_WINDOW_BOUND_S} s; measured "
+            f"~0.5 s on kind v0.33.0). window={window}, t0={t0}")
         reached = sorted(k for k, v in settled.items() if v and k not in untestable)
         assert reached == [], (
             f"OUTCOME 'reachable throughout': {results.get('settled_at_s')} s after start a "

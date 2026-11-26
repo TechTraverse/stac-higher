@@ -1664,6 +1664,8 @@ recorded handle never matches what it launched.
   can reach only the mirror, user images cannot be pulled. This narrows the
   deployment spec §5's "the executor rewrites … every `container_images`
   row".
+- **Start window.** Even with the policy in place, a new run pod may have
+  open egress until the CNI enforces policy for it (I-188, GitHub #207).
 - Tracked in: `services/pipeline/src/pipeline/process/kubernetes_manifests.py`; GitHub #144.
 - Found in: K-5 review (2026-11-26).
 
@@ -1767,6 +1769,28 @@ a required status check; a change outside its paths that breaks the kind
 leg is caught by the weekly run, not the PR (K6-R14).
 - Tracked in: `.github/workflows/kind.yml`.
 - Found in: K-6 (2026-11-26).
+
+### I-188 · A new run pod has open egress for a moment at start 🟡
+On a CNI whose NetworkPolicy enforcement is eventually consistent, a pod
+starts with no policy applied and gets its rules only once the CNI's agent
+has learned the pod's IP. A run that connects at once gets out despite the
+runs namespace's default-deny. Measured on kind v0.33.0 (kindnetd with
+kube-network-policies, which sends only known, policy-selected pod IPs to its
+queue): IMDS, the API service and an internet address were all reachable at
+t=0; the run's egress was last reachable at 0.26 s and first blocked at
+0.51 s; everything was blocked by 15 s. A connection opened in the window is
+not re-checked (kube-network-policies checks new connections only, unless its
+strict mode is on). The AWS VPC CNI documents the same behaviour for its
+`standard` enforcing mode ("containers in the new pod will start with a
+default allow policy") and a default deny from the first packet in `strict`
+mode. K-5's fail-closed check (I-183) proves the policy object exists, not
+that a pod is covered from its first packet. Until #207 lands (a start gate
+in the run pod, or strict enforcement as a deployment prerequisite), a
+deployment must run its CNI in a strict enforcing mode
+(`infra/kubernetes/README.md`). The kind leg records the window on every
+run and fails if it exceeds 10 s.
+- Tracked in: GitHub #207.
+- Found in: K-6 kind leg (2026-11-26).
 
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡
 Both need GitHub Advanced Security on a private repo, which this repo does not

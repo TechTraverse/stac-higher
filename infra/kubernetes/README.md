@@ -62,6 +62,28 @@ as-is.
   (`aws.s3PrefixListCidrs`); `run-kind=image_scan` + `network-level=scanner`
   → DNS, the object store and 443. A drift test pins that every allow policy
   in the runs namespace is one of those two, selecting on both labels.
+- **Strict NetworkPolicy enforcement (until #207 lands; I-188).** On a CNI
+  that applies policy to a new pod only after it has learned the pod, a run
+  has open egress for its first moments (measured ~0.5 s on kind). The
+  cluster's CNI must enforce from a pod's first packet:
+  - **AWS VPC CNI (EKS with managed nodes):** set the environment variable
+    `NETWORK_POLICY_ENFORCING_MODE=strict` in the `aws-node` container of the
+    VPC CNI DaemonSet. In `standard` mode "containers in the new pod will
+    start with a default allow policy"; in `strict` mode "pods that use the
+    VPC CNI start with a default deny policy, then policies are configured"
+    (Amazon EKS User Guide, "Restrict Pod network traffic with Kubernetes
+    network policies", Step 1). Network policy itself is enabled with the
+    add-on configuration `{"enableNetworkPolicy": "true"}`. Strict mode
+    denies every pod in the cluster that no policy allows, CoreDNS
+    included, so the allow policies for the platform's own pods must exist
+    first.
+  - **EKS Auto Mode:** the documented setting is the NodeClass's
+    `networkPolicy: DefaultDeny` (pods with no network policy applied deny
+    all traffic, DNS included; network policy is enabled with the
+    `amazon-vpc-cni` ConfigMap's `enable-network-policy-controller: "true"`;
+    EKS User Guide, "Use Network Policies with EKS Auto Mode"). The guide
+    does not say whether it also closes the start window, so R-11 must prove
+    it live.
 - **IMDS.** Block `169.254.169.254` from run pods (no allow policy may cover
   it) and set the nodes' instance-metadata hop limit to 1.
 - **Node egress to user registries.** User images are pulled from their own
@@ -140,3 +162,9 @@ No real API server has run the executor; these come first, in order
     EKS the VPC CNI's network policy must be enabled), then prove a run
     pod's connections to `169.254.169.254` and to an external host fail
     while the object store answers.
+12. **A run pod that connects at t=0 is blocked** (I-188): with the CNI in
+    its strict enforcing mode, a run whose first act is to connect to IMDS,
+    the API service and an internet address reaches none of them. K-6's
+    `test_a_run_pod_cannot_reach_metadata_the_api_or_the_internet` measures
+    exactly this (its `t0` phase); on kind it records the open window
+    instead.
