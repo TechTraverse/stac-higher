@@ -94,7 +94,10 @@ ResourceFlavors and the ClusterQueue from values (quota = NodePool limits),
 with a drift test that kind-equivalent values reproduce `kind/`. Kueue
 itself is a cluster prerequisite pinned by `kueue.env` and
 `config/production.yaml`. `scripts/check-kueue.sh --schemas-only <dir>`
-writes the pinned release's v1beta2 JSON schemas for kubeconform.
+writes the pinned release's v1beta2 JSON schemas for kubeconform. The chart
+carries `common/` byte for byte in `infra/helm/stac-higher/files/kueue/common/`
+and renders it with drift tests (`app/src/__tests__/helm/kueue.test.ts`);
+edit both.
 
 ## Kueue's webhooks
 

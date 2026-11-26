@@ -94,8 +94,13 @@ Written into the chart's README as a prerequisites list:
 
 - EKS **1.34+** (Kueue's tested range), **Auto Mode** (managed Karpenter,
   built-in load balancing, Pod Identity agent).
-- **NetworkPolicy enforcement** enabled.
-- **Kueue v0.19+ controller** installed (cluster-scoped CRDs and webhooks),
+- **NetworkPolicy enforcement** enabled. (R-8: on Auto Mode, ConfigMap
+  `kube-system/amazon-vpc-cni` `enable-network-policy-controller: "true"`;
+  enforced from a pod's first packet, I-188. The chart README lists the
+  runs plane's further inputs: the CoreDNS address, the runs node role and
+  its subnet and security-group selectors.)
+- **Kueue v0.19+ controller** installed (R-8: exactly `infra/kueue/kueue.env`'s
+  v0.20.8, through `scripts/kueue-narrow-webhooks.py`) (cluster-scoped CRDs and webhooks),
   configured with `waitForPodsReady` **on** (K spec §7.3) and
   `managedJobsWithoutQueueName: false` (§7.1). These live in Kueue's own
   install configuration, which the chart cannot set.
@@ -198,7 +203,7 @@ tag, `appVersion` = the same.
 | demo seed | Job, **off by default** | `pipeline.demo seed / goes-seed / images-seed` against the deployed stack (§8, R-9) |
 | ingress | Ingress per public host | className, annotations and hosts from values; nothing AWS-specific in templates |
 | runs namespace | Namespace `stac-higher-runs`, default-deny NetworkPolicies, LocalQueue | §6.5 |
-| cluster objects | toggle `processRuns.clusterObjects` | ResourceFlavor `cpu-default`, ClusterQueue `process-runs`, WorkloadPriorityClasses, Auto Mode NodePool for runs, ValidatingAdmissionPolicy (label-less Jobs) — reuse #14 (K-6) manifests, do not re-author |
+| cluster objects | toggle `processRuns.clusterObjects` | ResourceFlavor `cpu-default`, ClusterQueue `process-runs`, WorkloadPriorityClasses, Auto Mode NodePool for runs, ValidatingAdmissionPolicy (label-less Jobs) — reuse #14 (K-6) manifests, do not re-author (R-8 adds the Auto Mode NodeClass and derives flavors, quotas, NodePools and the profiles' `backend.kubernetes` from one `processRuns.families` block: `docs/superpowers/plans/2026-11-26-r8-chart-process-runs.md`) |
 | observability | `ServiceMonitor`s, toggle | pipeline `/metrics`, eoapi's |
 
 **Delivery mechanics must work under both `helm upgrade --install` from CI

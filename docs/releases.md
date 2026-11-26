@@ -176,6 +176,21 @@ public release asset:
 | Images | `images.*.digest` | `digests.values.yaml` ("Feeding the chart") |
 | Terraform modules | `terraformModules.ref` | the composition module's `source` |
 
+The cluster must meet the chart's prerequisites before the first install
+(`infra/helm/stac-higher/README.md` "Cluster prerequisites"): Kueue at
+`infra/kueue/kueue.env`'s version, installed through
+`scripts/kueue-narrow-webhooks.py` and configured with
+`infra/kueue/config/production.yaml`; NetworkPolicy enforced from a pod's
+first packet; and an install identity that may create the runs plane's
+cluster-scoped kinds (`ClusterQueue`, `ResourceFlavor`,
+`WorkloadPriorityClass`, `ValidatingAdmissionPolicy` and its binding,
+`NodePool`, `NodeClass`) and the runs `Namespace`, or
+`processRuns.clusterObjects: false` when a cluster team owns them. The
+values file adds what `helm_values` does not carry, from the cluster repo:
+`processRuns.network.dns` (the CoreDNS address) and
+`processRuns.nodes.nodeClass.role`, `subnetSelectorTerms` and
+`securityGroupSelectorTerms` (`infra/examples/aws-eks/values.yaml`).
+
 A chart version tag can be pushed again: re-running a tag's Containers
 workflow overwrites it (I-164). A deployment that needs immutability records
 `chart.digest` and checks, before installing, that the version still resolves
