@@ -1035,8 +1035,12 @@ ClusterQueue quota per flavor must be mirrored by hand to the NodePool
 `limits` (ADR 0019 invariant), and `waitForPodsReady` must evict an admitted
 job whose node never arrives back to the queue. A quota above the pool's
 ceiling admits jobs that never schedule.
-- Tracked in: ADR 0019; spec §7.3; K-6 (`waitForPodsReady`), K-8 (limits =
-  quota). Revisit when Kueue supports CapacityBuffer.
+K-6 configures that safety net (`infra/kueue/config/production.yaml`): an
+admitted run whose pod is not ready in 10 minutes is evicted and requeued;
+after three requeues Kueue deactivates it and the run dies (K5-R8). The kind
+leg proves the path with a 30 s timeout.
+- Tracked in: ADR 0019; spec §7.3; K-8 (limits = quota). Revisit when Kueue
+  supports CapacityBuffer.
 
 ### I-93 · Run credentials vs. queue wait 🟡
 Run-scoped STS credentials are minted before submit (they are in the run's
@@ -1696,6 +1700,47 @@ and arguments pinned at admission (the scanner image's digest) or scans in
 a namespace of their own with their own identity; not built.
 - Tracked in: `infra/kubernetes/pipeline-role.yaml`, `infra/kueue/common/admission-policy.yaml`; GitHub #14.
 - Found in: K-5 review (2026-11-26).
+
+### I-185 · What the kind leg cannot show 🟡
+The kind CI leg (`.github/workflows/kind.yml`, K-6) runs the Kubernetes
+executor against a real API server, kubelet, Kueue and CNI, but not:
+- **GPUs**: flavors with GPU node labels, extended resources, the device
+  plugin (no GPU on the runners; K-5's mapping unit tests and K-9's cluster
+  gate cover them).
+- **Karpenter**: NodePools and the quota-equals-limits rule (I-92; K-8/R-11).
+- **The registry mirror** rewrite and the pull-through cache (R-8 #144).
+- **The allow policies** for `isolated` runs and scans (R-8 renders them):
+  kind proves the default-deny is enforced by kindnet, not that EKS's VPC CNI
+  enforces policy, nor what an allow policy opens.
+- **The in-cluster pipeline pod**: the tests run on the runner with a token
+  file and the CA, not the projected mount and the `KUBERNETES_SERVICE_HOST`
+  URL (K6-R4; R-11).
+- **Image-scan Jobs** end to end (the scanner image is not built; its Job
+  shape is admitted by a server dry run).
+- **A real `410 Gone`** on a watch (the fake owns it; K6-R13).
+- **Production `waitForPodsReady` timing** (kind uses 30 s; K-9 measures).
+- **Kubernetes newer than 1.34** (one node image; a matrix is a one-line
+  addition).
+- Tracked in: `.github/workflows/kind.yml`; R-8 (#144), R-11, K-8 (#16), K-9.
+- Found in: K-6 (2026-11-26).
+
+### I-186 · Kueue's pod webhook couples every pod creation to Kueue 🟡
+Kueue registers its pod mutating webhook (`mpod.kb.io`, failurePolicy
+`Fail`, every namespace except `kube-system` and `kueue-system`) even with
+the pod integration disabled, answering no-op. While Kueue's webhook is down,
+no pod in any other namespace (app, pipeline, catalog) can be created. The
+cluster installer should narrow that webhook's `namespaceSelector` to the
+runs namespace, or accept the coupling and monitor Kueue's availability.
+- Tracked in: `infra/kueue/README.md`; GitHub #16 (K-8).
+- Found in: K-6 (2026-11-26).
+
+### I-187 · The kind workflow is path-filtered and not a required check 🟢
+`.github/workflows/kind.yml` runs on changes to its paths and weekly
+(Mondays). A skipped path-filtered workflow reports nothing, so it cannot be
+a required status check; a change outside its paths that breaks the kind
+leg is caught by the weekly run, not the PR (K6-R14).
+- Tracked in: `.github/workflows/kind.yml`.
+- Found in: K-6 (2026-11-26).
 
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡
 Both need GitHub Advanced Security on a private repo, which this repo does not

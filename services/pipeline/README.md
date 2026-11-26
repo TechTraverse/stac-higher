@@ -846,8 +846,37 @@ backend (the extractor pool still applies).
 
 RBAC is `infra/kubernetes/pipeline-role.yaml`. The tests drive the executor
 against a fake API server (`tests/_fake_kube.py`) that enforces that Role,
-and `tests/test_kubernetes_rbac.py` fails if any grant goes unused. No real
-cluster has run it yet: K-6's kind leg is the first.
+and `tests/test_kubernetes_rbac.py` fails if any grant goes unused. On a
+real cluster it runs in K-6's kind leg (below).
+
+## Kubernetes integration suite (kind, K-6)
+
+`tests/test_integration_kind_executor.py` and
+`tests/test_integration_kind_kueue.py` run the executor against a kind
+cluster with Kueue (`.github/workflows/kind.yml`). They skip unless
+`KIND_INTEGRATION=1`; with it set and a variable missing, collection fails.
+The executor runs as the pipeline's ServiceAccount (`stac-higher-pipeline`,
+a bound token); the admin kubeconfig is used only by the harness
+(`tests/_kind.py`, through `kubectl`) to inject faults and observe. On a
+machine with Docker and kind, from the repo root:
+
+```bash
+scripts/kind-up.sh "$PWD/.kind"
+docker buildx bake -f services/process-runtime/docker-bake.hcl runtime \
+  --set runtime.tags=stac-higher-process-runtime:kind --load
+kind load docker-image stac-higher-process-runtime:kind --name stac-higher
+cd services/pipeline
+set -a; . ../../.kind/kind.env; set +a
+uv run pytest tests/test_integration_kind_executor.py tests/test_integration_kind_kueue.py -v
+kind delete cluster --name stac-higher
+```
+
+The tests share one 1-CPU quota and run serially, each starting and ending
+with an empty runs namespace. The scenarios that settle K-5's open
+assumptions (preemption, timeout, cancel, the Kueue webhook's denial) print
+`K6-OBSERVATION` lines and append them to `$KIND_OUT/observations.jsonl`.
+`scripts/kind-diagnostics.sh <dir> <admin-kubeconfig>` collects logs and
+object state, never Secrets.
 
 ## Shutdown
 

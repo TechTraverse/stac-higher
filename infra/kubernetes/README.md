@@ -71,21 +71,28 @@ as-is.
 - **Node PID limit.** Set the kubelet's `podPidsLimit`; runs have no per-pod
   PID limit of their own (I-180).
 
-## The admission policy K-6 (#14) renders
+## The admission policy (K-6, #14)
 
-A ValidatingAdmissionPolicy (and binding) for the runs namespace, bounding
-what the pipeline's identity can create (I-184). `tests/test_kubernetes_rbac.py`
-encodes the same rules and checks every Job the executor builds against them.
+`infra/kueue/common/admission-policy.yaml`: ValidatingAdmissionPolicies (and
+bindings) for the runs namespace, bounding what the pipeline's identity can
+create (I-184). `tests/test_kubernetes_rbac.py` encodes the same rules and
+checks every Job the executor builds against them;
+`tests/_admission_rules.py` ties each CEL rule to its Python twin
+(`infra/kueue/README.md`).
 
 - **Job CREATE:** the `kueue.x-k8s.io/queue-name` label is present; the
   `kueue.x-k8s.io/priority-class` label is `interactive` or `triggered`; the
+  pod template's `stac-higher.run-kind` / `stac-higher.network-level` pair is
+  `(process, isolated)`, or `(image_scan, scanner)` for a `stac-scan-` Job,
+  and repeats the Job's run-kind, network-level and run-id labels; the
   pod template's `serviceAccountName` is `stac-higher-run` and
   `automountServiceAccountToken` is `false`; every volume is an `emptyDir`;
   `imagePullSecrets` name only `<job name>-pull`; no `initContainers` or
   `ephemeralContainers`; no container `env`; `envFrom` is only a `secretRef`
   naming the Job's own name.
 - **Pod UPDATE by the pipeline's ServiceAccount:** only
-  `spec.activeDeadlineSeconds` may change, and only downwards.
+  `spec.activeDeadlineSeconds` may change, and only downwards (labels
+  included: a run cannot be relabelled into another egress policy).
 - A refusal answers 422 (`Invalid`), which the executor turns into a dead
   run naming the reason; so does an admission webhook's 403 denial (its
   message says "admission webhook … denied the request"). An RBAC 403 is a

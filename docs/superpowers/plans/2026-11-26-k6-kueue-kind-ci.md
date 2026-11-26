@@ -896,3 +896,34 @@ Asks A1–A6: **all taken** (A5's constants exist: `JOB_GONE_DETAIL`,
   nothing else that skips; `KIND_MIN_TESTS` equals the number of test
   functions in the two kind modules (Task 8 counts them).
 - **ISSUES numbering** starts at I-185 (I-184 is the last, from K-5).
+
+### Addendum A, continued · lead rulings and R-8's asks
+
+- **K6-R26 · Run labels are closed and tied to the Job name (lead ruling,
+  security review).** Two more Job CREATE rules: `[run-labels]` — the pod
+  template's (`stac-higher.run-kind`, `stac-higher.network-level`) is
+  `(process, isolated)`, or `(image_scan, scanner)` when the Job name starts
+  `stac-scan-` (`kubernetes_manifests.NAME_PREFIX`); `[template-labels]` —
+  the template repeats the Job's run-kind, network-level and run-id labels.
+  The pure twin in `tests/test_kubernetes_rbac.py` gained both (and its
+  admitted-Job test now names each Job as the executor does, `job_name`);
+  every Job the executor builds passes. A pod's labels cannot change after
+  creation (`[pod-update-metadata]`; the kind test relabels a run into
+  `scanner` and expects a 422). Residual in I-184: a scan-shaped Job still
+  gets the scanner's egress.
+- **R-8's asks (taken).** (1) The pipeline identity appears once in
+  `admission-policy.yaml` (the pod-update match condition) and the run
+  ServiceAccount once; the deadline rule is "present and not above the old
+  value" (set or lowered, never raised or removed — the API server itself
+  also refuses a raise or removal). (2) `scripts/check-kueue.sh
+  --schemas-only <dir>` writes the pinned v1beta2 schemas to `<dir>/schemas`
+  without needing kubeconform. (3) `common/` holds one object per document,
+  stable names, nothing deployment-specific but the runs namespace and the
+  two identities above; kind capacity is under `kind/`. (4) `kind.json`'s
+  `backend.kubernetes` block is exactly the plan's shape. Also added:
+  `test_a_flavors_tolerations_reach_the_admitted_pods` (a second flavor with
+  `tolerations`, the node tainted for the test only) for R-8's taint plan.
+- **Counts.** `KIND_MIN_TESTS = 51` (23 in `test_integration_kind_executor.py`,
+  28 in `test_integration_kind_kueue.py`, parametrized cases counted). The
+  JUnit gate is `.github/scripts/kind-junit-gate.py` (xfail allowed, any other
+  skip fails; a failure table goes to the job summary).
