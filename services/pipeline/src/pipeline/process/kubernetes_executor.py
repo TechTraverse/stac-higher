@@ -32,6 +32,7 @@ that turns the check off; tests serve the policy from the fake API server.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime as dt
 import json
@@ -51,6 +52,7 @@ from pipeline.config import (
 )
 from pipeline.images.reference import is_image_digest, is_image_reference
 from pipeline.process.executor import (
+    RESYNC,
     RUN_ID_LABEL,
     RUN_KIND_LABEL,
     Executor,
@@ -79,6 +81,7 @@ from pipeline.process.kubernetes_manifests import (
     isolation_problem,
     job_name,
     network_refusal,
+    parse_job_name,
 )
 
 if TYPE_CHECKING:
@@ -115,6 +118,16 @@ START_FAILURE_PREFIX = "the run could not start"
 POD_FAILURE_POLICY_REASON = "PodFailurePolicy"
 #: A container killed without an exit code reads as SIGKILL.
 SIGKILL_EXIT_CODE = 137
+
+#: K5-R21: the server ends each watch after this (``timeoutSeconds``), so a
+#: watch reconnects with a fresh token at least this often.
+WATCH_TIMEOUT_SECONDS = 300
+#: A watch silent this long (no event, no bookmark) is a dead connection.
+#: Both are read at call time (K-6 A3).
+WATCH_IDLE_SECONDS = 360
+#: A watch the server closed sooner than this is resumed after a pause, so a
+#: misbehaving server cannot spin the loop.
+_WATCH_MIN_LIFETIME_SECONDS = 1.0
 
 #: How long a passed isolation check is trusted (addendum A18): one API read
 #: per minute per namespace, not one per run. A failed check is never cached.
@@ -325,6 +338,43 @@ def _job_state(job: Mapping, workload: Mapping | None, pod: Mapping | None, *,
         "starting", detail=_clip(waiting.get("reason")) if waiting and waiting.get("reason")
         else None,
     )
+
+
+def _job_event(obj: object) -> RunEvent | None:
+    """A Job watch object -> a wake-up for its run (identity only, K-4 R1),
+    or None for anything not ours."""
+    if not isinstance(obj, dict):
+        return None
+    meta = obj.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    labels = meta.get("labels") or {}
+    run_id = labels.get(RUN_ID_LABEL) if isinstance(labels, dict) else None
+    name = meta.get("name")
+    if not isinstance(run_id, str) or not run_id or not isinstance(name, str):
+        return None
+    kind = labels.get(RUN_KIND_LABEL)
+    return RunEvent(run_id=run_id, handle_id=name,
+                    kind=kind if isinstance(kind, str) and kind else "process")
+
+
+def _workload_event(obj: object) -> RunEvent | None:
+    """A Workload watch object -> a wake-up for its Job's run. Kueue does not
+    copy the Job's labels onto its Workload, so the run is read from the
+    owning Job's name (K5-R21)."""
+    if not isinstance(obj, dict):
+        return None
+    meta = obj.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    for owner in meta.get("ownerReferences") or []:
+        if not isinstance(owner, dict) or owner.get("kind") != "Job":
+            continue
+        parsed = parse_job_name(owner.get("name"))
+        if parsed is not None:
+            kind, run_id = parsed
+            return RunEvent(run_id=run_id, handle_id=str(owner["name"]), kind=kind)
+    return None
 
 
 @dataclass
@@ -633,6 +683,83 @@ class KubernetesExecutor(Executor):
         self.api.get(self._jobs, query={"labelSelector": RUN_ID_LABEL, "limit": "1"})
         self.require_isolation()
 
-    async def watch(self) -> AsyncIterator[RunEvent]:  # Task 7
-        raise NotImplementedError
-        yield  # pragma: no cover
+    def _list_resource_version(self, path: str, selector: str) -> str:
+        """The resourceVersion of a ``limit=1`` list: where a watch starts,
+        without replaying every existing object as ADDED (the RESYNC already
+        sweeps the ledger)."""
+        doc = self.api.get(path, query={"labelSelector": selector, "limit": "1"})
+        return str((doc.get("metadata") or {}).get("resourceVersion") or "")
+
+    async def watch(self) -> AsyncIterator[RunEvent]:
+        """K5-R21: a Job watch (our run-id label) and, when Kueue is
+        installed, a Workload watch, merged into K-4 wake-ups. Each starts
+        from a ``limit=1`` list's resourceVersion, asks for bookmarks, and
+        resumes from the last seen or bookmarked version when the server
+        ends it normally; a 410, a transport error or
+        :data:`WATCH_IDLE_SECONDS` of silence on either RAISES, so K-4's
+        ``run_watcher`` reconnects and resyncs. No pod watch: what only a
+        pod shows (pull errors) is the run tick's (K5-R7)."""
+        job_rv = await asyncio.to_thread(self._list_resource_version, self._jobs, RUN_ID_LABEL)
+        try:
+            workload_rv: str | None = await asyncio.to_thread(
+                self._list_resource_version, self._workloads, ""
+            )
+        except KubeNotFound:
+            workload_rv = None  # Kueue not installed: Jobs only
+        yield RESYNC
+        queue: asyncio.Queue[RunEvent] = asyncio.Queue()
+        pumps = [asyncio.create_task(
+            self._pump(self._jobs, RUN_ID_LABEL, job_rv, _job_event, queue)
+        )]
+        if workload_rv is not None:
+            pumps.append(asyncio.create_task(
+                self._pump(self._workloads, "", workload_rv, _workload_event, queue)
+            ))
+        getter: asyncio.Task | None = None
+        try:
+            while True:
+                getter = asyncio.create_task(queue.get())
+                done, _pending = await asyncio.wait(
+                    [getter, *pumps], return_when=asyncio.FIRST_COMPLETED
+                )
+                if getter in done:
+                    yield getter.result()
+                    continue
+                getter.cancel()
+                for pump in pumps:
+                    if pump.done():
+                        pump.result()  # re-raises the pump's error
+                raise ExecutorUnavailable("a kubernetes watch ended unexpectedly")
+        finally:
+            for task in (*pumps, getter):
+                if task is not None:
+                    task.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
+
+    async def _pump(self, path: str, selector: str, rv: str,
+                    mapper: Callable[[object], RunEvent | None],
+                    queue: asyncio.Queue[RunEvent]) -> None:
+        """One watch, resumed across normal closes; raises on anything else."""
+        loop = asyncio.get_running_loop()
+        while True:
+            query = {
+                "resourceVersion": rv,
+                "allowWatchBookmarks": "true",
+                "timeoutSeconds": str(WATCH_TIMEOUT_SECONDS),
+            }
+            if selector:
+                query["labelSelector"] = selector
+            opened = loop.time()
+            async for event in self.api.watch(path, query=query,
+                                              idle_timeout=WATCH_IDLE_SECONDS):
+                obj = event.get("object")
+                meta = obj.get("metadata") if isinstance(obj, dict) else None
+                if isinstance(meta, dict) and meta.get("resourceVersion"):
+                    rv = str(meta["resourceVersion"])
+                if event.get("type") == "BOOKMARK":
+                    continue
+                wake = mapper(obj)
+                if wake is not None:
+                    await queue.put(wake)
+            if loop.time() - opened < _WATCH_MIN_LIFETIME_SECONDS:
+                await asyncio.sleep(_WATCH_MIN_LIFETIME_SECONDS)
