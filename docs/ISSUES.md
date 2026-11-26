@@ -1039,16 +1039,17 @@ ceiling admits jobs that never schedule.
   quota). Revisit when Kueue supports CapacityBuffer.
 
 ### I-93 · Run credentials vs. queue wait 🟡
-Run-scoped STS credentials are minted before submit (they are in the Job's
-environment) and today last `max(900, timeout + grace)`. A run that waits
-two hours for a GPU would start with expired credentials. K-4 mints for
-`max_queue_wait + timeout + grace` and requeues (no attempt spent) any run
-still pending with less than `timeout + grace` left — losing its queue
-position. In EKS the pipeline's own credentials come from Pod Identity /
+Run-scoped STS credentials are minted before submit (they are in the run's
+environment) and last `max(900, max_queue_wait + timeout + grace)`; a run
+still pending with less than `timeout + grace` left is cancelled and
+resubmitted with fresh ones, without spending an attempt and losing its
+queue position (K-4; dormant on Docker, which never holds a submitted run).
+Residual: in EKS the pipeline's own credentials come from Pod Identity /
 IRSA, and `AssumeRole` from role credentials is **role chaining, capped at
-one hour**, which bounds cloud profiles' `max_queue_wait_seconds` unless the
-run role is assumed with web identity directly. Measure at K-9.
-- Tracked in: spec §5.4; K-4; K-9. GitHub #12, #17.
+one hour**. That bounds cloud profiles' `max_queue_wait_seconds +
+timeout_seconds + grace` to 3600 s (`PROCESS_MAX_CREDENTIAL_SECONDS`)
+unless the run role is assumed with web identity directly. Measure at K-9.
+- Tracked in: spec §5.4; K-9. GitHub #17.
 
 ### I-94 · Run logs are captured at exit only ⚪
 Both backends read the run's combined output once, at exit, capped at
@@ -1395,7 +1396,7 @@ assert-and-warn on the file (the M3-A `use_queue` pattern).
 - Tracked in: `services/pipeline/src/pipeline/process/runner.py`, `services/pipeline/src/pipeline/process/hardware.py`.
 - Found in: K-1 Task 4/5 reviews (2026-09-15).
 
-### I-170 · Docker capacity: a waiting run is retried by the minute tick, counted across every worker, and default-profile extractor runs are exempt 🟡
+### I-170 · Docker capacity is counted across every worker, waiters have no strict order, and default-profile extractor runs have their own pool 🟡
 K-3 admits a process or test run in the claim itself (per-profile advisory
 lock; `executor_backend` is the admitted marker). A run whose profile is full
 is not claimed: it stays `queued` as `pending_capacity` with
@@ -1610,8 +1611,7 @@ images up to ~1 GB, so the held slot is minutes, not the 900 s bound. Not a
 reason to build a second executor shape (ADR 0021 option A). Fix: move the
 scan verdict (`images/drain.py`) onto the Reconciler's submit-then-reconcile
 path (the watcher already ignores `run-kind=image_scan` events).
-- Tracked in: `jobs/image_scans.py`, `images/scan_launch.py`; follow-up
-  issue "Image scans on the reconcile path (I-124)" (to be filed, K queue).
+- Tracked in: `jobs/image_scans.py`, `images/scan_launch.py`; GitHub #203.
 
 ### I-125 · Anonymous Docker Hub pulls share a 100-per-6-hour budget per IP 🟡
 Scans (the scanner's own registry reads, Syft's layer pulls included) and

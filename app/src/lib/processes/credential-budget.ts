@@ -2,9 +2,9 @@
  * Credential budget at deploy time (R-1, spec §8).
  *
  * On AWS, STS role chaining caps a run's credentials at one hour, and the
- * pipeline mints `timeout + grace` for each run. The pipeline refuses at
- * mint (R-2); this is the deploy-time half, so the operator hears no at the
- * form. A revision's budget is the hardware profile's `max_queue_wait_seconds`
+ * pipeline mints `max_queue_wait + timeout + grace` for each run (K-4). The
+ * pipeline refuses the same sum at mint (R-2); this is the deploy-time half,
+ * so the operator hears no at the form. A revision's budget is the hardware profile's `max_queue_wait_seconds`
  * + the revision's `timeout_seconds` + the grace; it must fit
  * `PROCESS_MAX_CREDENTIAL_SECONDS` (unset = no limit). Shapes shared with the
  * pipeline are pinned by `tests/contract-fixtures/process-credential-budget.json`.

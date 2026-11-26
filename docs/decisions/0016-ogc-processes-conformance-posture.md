@@ -67,9 +67,9 @@ Within that:
    mid-2026).
 3. **`dismiss` (job cancel) is not claimed** until a native cancel-run
    verb exists (ISSUES I-81). The facade never fakes a verb the platform
-   does not have. *Status (K-4, #12):* the native verb now exists
-   (`POST /api/processes/[id]/runs/[runId]/cancel`), so `dismiss` is
-   implementable; the facade claims it when it ships.
+   does not have. The native verb exists
+   (`POST /api/processes/[id]/runs/[runId]/cancel`, K-4), so the facade
+   claims `dismiss` when it ships.
 4. **Part 2 (DRU) is out of facade scope** — it would expose deploy
    externally, a separate auth/ownership decision. One constraint binds
    now: the future `container` runtime's contract (ADR 0013's deferred
