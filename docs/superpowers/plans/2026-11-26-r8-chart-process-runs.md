@@ -534,3 +534,123 @@ spec:
 - **Issue coverage (#144).** Runs namespace, LocalQueue, default-deny → Tasks 3, 4, 6. Isolated runs to DNS and `aws.s3PrefixListCidrs` only; scans 443 → Task 4. Pipeline Role/RoleBinding → Task 3. Behind `processRuns.clusterObjects`: ResourceFlavor `cpu-default`, ClusterQueue `process-runs` with quota tied to NodePool limits (R8-R7), WorkloadPriorityClasses, Auto Mode NodePool, admission policy, reused from #14 → Tasks 6, 7, R8-R10. Registry mirror map: already in the executor (K-5) and the chart (K5-9); Task 8 + Task 1 prove the two rewrites agree; the issue's "rewrites host only, keeps the digest, unmapped hosts unchanged" is K-5's `test_rewrite_image_swaps_the_host_only` plus the fixture cases. Uncached by-digest ECR pull → Task 11, with the STOP rule. Files in scope: `infra/helm/stac-higher/` (the issue's `charts/` is stale) and pipeline tests only.
 - **The brief's eight points.** (1) objects and values → Values section, Tasks 2–4, R8-R1…R3; (2) Kueue from values, CRD absence (R8-R4), one source (R8-R5) → Tasks 5–6; (3) NodePools/NodeClass, GPU, taints, hop limit, `podPidsLimit`, node egress, Auto Mode vs self-managed, ownership (R8-R8, R8-R9, R8-R13) → Task 7, README; (4) mirror map → R8-R11, Tasks 1, 8; (5) executor wiring, the profile ConfigMap for both workloads, I-169 / R-10 caveats → facts table (already wired), Task 5, Task 10; (6) scenarios, TDD list, kubeconform with Kueue/Karpenter schemas, trivy → Tasks 2–9; (7) R-11 text → Task 11; (8) chart version, releases, README, ISSUES → R8-R14, Task 10.
 - **Names.** Every fixed name appears once in Global Constraints and is pinned by the fixture (Task 1) or a drift test (Tasks 3, 6).
+
+---
+
+## Addendum — Task 0 against K-5 and K-6 as merged (2026-11-26)
+
+K-6 merged as `0b99099` (PR #206) after this plan was written. Every contract
+point was re-checked in merged code; the differences and the rulings they
+force are below. Where this addendum and the body disagree, the addendum wins.
+
+### Contract points
+
+| # | As merged | Effect on this plan |
+|---|---|---|
+| K5-1…K5-3, K5-5…K5-9 | As the table says (`kubernetes_manifests.py`, `config.py`, `executor.py`, `hardware.py`, `config-env.yaml`). The chart sets no `PROCESS_K8S_RUN_SERVICE_ACCOUNT`, so the run ServiceAccount is the fixed name `stac-higher-run`. | None. |
+| K5-4 | `infra/kubernetes/` holds **five** objects: K-6 added `runs-default-deny.yaml` (NetworkPolicy `stac-higher-runs-default-deny`, `podSelector: {}`, `policyTypes: [Ingress, Egress]`, no rules). | The drift test of Task 3 covers the whole directory, object for object, including the default-deny that Task 4 renders (A-R1). |
+| K6-1 | `KUEUE_VERSION=v0.20.8`. | As planned. |
+| K6-2/K6-3 | `common/admission-policy.yaml` holds **three** ValidatingAdmissionPolicies with same-named bindings: `stac-higher-runs-jobs` (Job CREATE and UPDATE, 20 validations: queue-label, priority-class, run-labels, template-labels, service-account, no-token, volumes, pull-secrets, no-init-containers, no-ephemeral-containers, no-env, env-from, kueue-keys, placement, host, resources, no-probes, deadlines, suspended, no-owner), `stac-higher-runs-pod-updates` (Pod UPDATE, `matchConditions` on the pipeline user) and `stac-higher-runs-secrets` (Secret types). Parameters: the runs namespace (each binding's `namespaceSelector`), the pipeline identity (one literal, `system:serviceaccount:stac-higher:stac-higher-pipeline`, in the pod-update match condition) and the run ServiceAccount (`'stac-higher-run'` inside a CEL expression; fixed in the chart, as above). The plan's name `stac-higher-runs-require-kueue` does not exist. | Task 6 reproduces K-6's names (A-R2). |
+| K6-4 | `kind/` = ResourceFlavor `cpu-default` with `spec: {}`; ClusterQueue exactly as the table says. | `tests/values/kind-kueue.yaml` as planned. |
+| K6-5 | `config/production.yaml` as the table says. Kueue must additionally be installed through `scripts/kueue-narrow-webhooks.py` (I-186). | README prerequisites (A-R5). |
+| K6-6 | `scripts/check-kueue.sh --schemas-only <dir>` writes `<dir>/schemas/{kind}_{version}.json` (v1beta2 only) without kubeconform. | Task 9 uses that mode (A-R7). |
+| K6-7 | `infra/hardware-profiles/kind.json` as the table says. | As planned. |
+| K6-8 | K-6 consumed I-185…I-188 (I-185 kind-leg blind spots, I-186 Kueue webhook coupling, I-187 kind workflow path filter, I-188 the start window). The next free number is **I-189**. No `fix/` PR on K-5 came out of K-6. | Task 10 numbers from I-189. |
+
+### Fact checks left open by the plan
+
+- **(a) Karpenter NodePool `limits` count launched node capacity.** The
+  scheduler drops every instance type whose `Capacity` exceeds the remaining
+  limit (`filterByRemainingResources` in
+  `kubernetes-sigs/karpenter` `pkg/controllers/provisioning/scheduling/scheduler.go`
+  compares `it.Capacity` with `limits − in use`); the docs call the check
+  eventually consistent. R8-R7 (limits = quota + headroom) stands.
+- **(b) Helm refuses an unknown kind before creating anything.** Helm's
+  install action builds the whole release manifest against discovery
+  (`KubeClient.Build`, `pkg/action/install.go`) before its `Create` call;
+  only `crds/` objects are created earlier and this chart has none. R8-R4
+  stands; R-11 still confirms it live.
+
+### Rulings
+
+- **A-R1 · One drift test for `infra/kubernetes/`.** `runs.test.ts`
+  `RBAC and isolation equal infra/kubernetes` loads all five files and the
+  rendered Namespace, ServiceAccount, Role, RoleBinding and the default-deny
+  NetworkPolicy; deep-equal object for object after `stripChartMetadata`.
+  Those four objects plus the policy stay plain templates (R8-R2).
+- **A-R2 · `infra/kueue/common/` is loaded, not retyped.** The three files
+  are copied byte for byte into the chart (`files/kueue/common/`, because
+  `helm package` includes only files under the chart directory) and rendered
+  with `.Files.Get`; each YAML document is parsed with `fromYaml`, gets the
+  chart's labels, and its parameters are set structurally (LocalQueue
+  `metadata.namespace`, every binding's `namespaceSelector`). The pipeline
+  identity is the one parameter inside CEL text: the template replaces the
+  exact literal `system:serviceaccount:stac-higher:stac-higher-pipeline`
+  with `system:serviceaccount:<identity.namespace>:<identity.serviceAccounts.pipeline>`
+  and fails the render unless the literal occurs exactly once (a K-6 edit
+  that renames it cannot silently stop the substitution). *Why:* the 250
+  lines of CEL never pass through Helm's template parser, so no character in
+  them can be interpreted, and a byte-equality test (`kueue.test.ts`
+  `the chart's copies of infra/kueue/common are byte-identical`) plus the
+  object-for-object test of the default render (R8-R10) leave nothing that
+  can drift. *Cost:* a third copy of the files in the repo; the byte test
+  makes any one-sided edit fail CI, and the fix is a `cp`.
+- **A-R3 · The unbounded trio is bound by a fourth, chart-only policy.**
+  `stac-higher-runs-placement` (+ binding, same name, same namespace
+  selector, `failurePolicy: Fail`, `reason: Invalid`, message id
+  `[placement-profile]`) admits a run Job on CREATE only when its pod
+  template's `nodeSelector`, `tolerations` and `runtimeClassName` together
+  equal one family's derived placement (`processRuns.families`, enabled
+  ones) or are all absent (a profile-less image scan, K5-8; Kueue injects the
+  flavor's labels and tolerations later, by an UPDATE this policy does not
+  match). It renders with the other cluster objects (`clusterObjects`).
+  `infra/kueue/common/` is not touched, so its drift tests stay exact and
+  K-6's kind leg and `tests/_admission_rules.py` need no change.
+  - **Param resource or generated CEL — generated CEL.** A param resource is
+    possible on 1.34: a policy names a `paramKind` (a CRD or a native kind
+    such as ConfigMap), its binding a `paramRef` (`name` or `selector`,
+    optional `namespace`, required `parameterNotFoundAction: Allow|Deny`);
+    with a namespace-scoped `paramKind` and no `paramRef.namespace`, the
+    request's namespace is searched (Kubernetes docs, "Validating Admission
+    Policy", sections "Per-namespace Parameters" and "paramRef"). But the
+    only native kind fit to carry the data is a ConfigMap, whose `data` is a
+    flat string map, and Kubernetes CEL has no JSON decoding (the libraries
+    it adds are strings, lists, regex, URL, IP, CIDR, authorizer, quantity,
+    semver and format: Kubernetes docs, "Common Expression Language in
+    Kubernetes"). Comparing a pod's structured tolerations with strings would
+    need a bespoke encoding rebuilt in CEL, and a CRD would be a new cluster
+    prerequisite. The chart instead renders the allowed placements as a CEL
+    list literal (`toJson` output is valid CEL literal syntax) into the
+    policy's one variable. Both are rendered by the same `helm upgrade` from
+    the same values, so the param resource's only advantage (changing data
+    without changing the policy) buys nothing here, and the policy needs no
+    extra object in the runs namespace (K-5's rule: it holds nothing else).
+  - The rule compares field by field with the API's absent-means-default
+    reading (`operator` absent = `Equal`, `value`/`effect` absent = `""`)
+    in both directions (every pod toleration is allowed, every allowed one is
+    present), and refuses any `tolerationSeconds`.
+  - *Cost:* nothing on CI applies this CEL to an API server (the kind leg
+    applies `infra/kueue/common/` only); a render test pins its text and the
+    allowed list, a cel-go check run locally exercises it, and R-11 commits
+    the violation on EKS (ISSUES entry).
+- **A-R4 · Flavor tolerations are proven (kind).** R8-R6 stands unchanged:
+  the runs taint goes in each dedicated flavor's `tolerations`; only
+  `extraTaints` (GPU) become `nodeTaints`.
+- **A-R5 · Cluster prerequisites gain two.** The chart README, the R-11
+  text and the ISSUES entries name: Kueue at `kueue.env`'s version, its
+  manifests passed through `scripts/kueue-narrow-webhooks.py` (I-186) and
+  configured with `config/production.yaml`; and a CNI that enforces
+  NetworkPolicy from a pod's first packet (I-188, #207): VPC CNI
+  `NETWORK_POLICY_ENFORCING_MODE=strict`; EKS Auto Mode `networkPolicy:
+  DefaultDeny` on the NodeClass (the chart's default, R8-R8), documented as
+  default-deny but not as closing the start window, so R-11 must prove it.
+- **A-R6 · The chart's own NodeClass is the Auto Mode strict setting.**
+  R8-R8's `networkPolicy: DefaultDeny` is now also the I-188 mitigation on
+  Auto Mode; the render keeps the enum but the README says `DefaultAllow`
+  forfeits it.
+- **A-R7 · kubeconform in `helm.yml`** runs
+  `scripts/check-kueue.sh --schemas-only "$RUNNER_TEMP/kueue"` (needs `uv`
+  and `curl`, no kubeconform) and lists that location before the datree
+  catalog.
+- **A-R8 · No GitHub writes from the implementer.** Task 0's
+  `gh issue edit 144 …` is left to the lead.
