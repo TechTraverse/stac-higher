@@ -2484,7 +2484,8 @@ are absent; the NodeClass, NodePools, ClusterQueue and LocalQueue become
 ready; the allow policies are enforced (a run pod reaches DNS and the object
 store and nothing else; a scan pod reaches a public registry on 443 but not
 IMDS, the Pod Identity agent, the API server or a VPC-internal HTTPS
-endpoint); the CNI closes the start window (I-188); a scan is admitted with
+endpoint; with the EKS public endpoint enabled this holds only when its
+addresses are in `scannerEgressExcept`, I-193); the CNI closes the start window (I-188); a scan is admitted with
 the flavor's label and toleration injected (I-195); the NodePool headroom is
 enough when the quota is full; the placement policy admits every Job the
 executor builds and refuses one with another family's or a hand-made
