@@ -24,6 +24,9 @@ const fixturePath = fileURLToPath(
 const localPath = fileURLToPath(
   new URL("../../../infra/hardware-profiles/local.json", import.meta.url),
 );
+const kindPath = fileURLToPath(
+  new URL("../../../infra/hardware-profiles/kind.json", import.meta.url),
+);
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
   document: unknown;
   bounds_cases: {
@@ -50,6 +53,17 @@ describe("parseHardwareProfiles", () => {
     const standard = set.profiles.find((p) => p.id === DEFAULT_HARDWARE_PROFILE);
     expect(standard?.cpu.default).toBe(DEFAULT_HARDWARE_CPU);
     expect(standard?.gpu_count).toBeNull();
+  });
+
+  it("the shipped kind set parses and agrees with the defaults", () => {
+    // K-6: the kind CI deployment's set; the pipeline reads it too.
+    const set = parseHardwareProfiles(JSON.parse(readFileSync(kindPath, "utf8")));
+    const standard = set.profiles.find((p) => p.id === DEFAULT_HARDWARE_PROFILE);
+    expect(standard?.cpu.default).toBe(DEFAULT_HARDWARE_CPU);
+    expect(standard?.gpu_count).toBeNull();
+    for (const profile of publicProfiles(set)) {
+      expect(profile).not.toHaveProperty("backend");
+    }
   });
 });
 

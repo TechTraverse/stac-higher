@@ -14,8 +14,10 @@ from pipeline.process.hardware import (
     DEFAULT_HARDWARE_PROFILE,
     PROFILES_ENV_VAR,
     HardwareProfileError,
+    KubernetesBackend,
     check_hardware_bounds,
     hardware_profiles_path,
+    kubernetes_backend,
     load_hardware_profiles,
     parse_hardware_profiles,
 )
@@ -24,6 +26,7 @@ FIXTURE = (
     Path(__file__).resolve().parents[3] / "tests" / "contract-fixtures" / "hardware-profiles.json"
 )
 LOCAL_SET = Path(__file__).resolve().parents[3] / "infra" / "hardware-profiles" / "local.json"
+KIND_SET = LOCAL_SET.with_name("kind.json")
 
 
 def _fixture() -> dict:
@@ -92,6 +95,14 @@ def test_the_local_set_parses():
     profiles = load_hardware_profiles(LOCAL_SET)
     assert [p.id for p in profiles.profiles] == ["standard", "cpu-large"]
     assert profiles.get("cpu-large").backend["docker"]["capacity"] == 1
+
+
+def test_the_kind_set_parses_and_agrees_with_the_defaults():
+    """K-6: the kind CI deployment's set (infra/hardware-profiles/kind.json)."""
+    standard = load_hardware_profiles(KIND_SET).standard
+    assert standard.cpu.default == DEFAULT_HARDWARE_CPU
+    assert standard.gpu_count is None
+    assert kubernetes_backend(standard) == KubernetesBackend(queue="process-runs")
 
 
 def test_path_prefers_the_env_var_then_the_checkout(tmp_path):

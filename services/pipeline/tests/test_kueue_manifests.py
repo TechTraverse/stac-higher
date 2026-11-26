@@ -25,6 +25,7 @@ from pipeline.config import (
 from pipeline.process import kubernetes_executor as kx
 from pipeline.process import kubernetes_manifests as km
 from pipeline.process.executor import PRIORITIES
+from pipeline.process.hardware import kubernetes_backend, load_hardware_profiles
 from test_kubernetes_rbac import vap_job_violations, vap_pod_update_violations
 
 REPO = Path(__file__).resolve().parents[3]
@@ -304,3 +305,43 @@ def test_each_pod_update_mutation_breaks_exactly_its_rule(rule):
     new = copy.deepcopy(old)
     rule.mutate(new)
     assert vap_pod_update_violations(old, new) == [rule.problem]
+
+
+# -- Task 3: the kind hardware-profile set ------------------------------------
+
+KIND_PROFILES = REPO / "infra" / "hardware-profiles" / "kind.json"
+
+
+def _quantity(raw: str) -> float:
+    """A Kubernetes quantity as the ClusterQueue writes it: cpu ``1`` /
+    ``500m``, memory ``4Gi`` / ``512Mi`` (memory in MiB)."""
+    for suffix, factor in (("Gi", 1024), ("Mi", 1), ("m", 0.001)):
+        if raw.endswith(suffix):
+            return float(raw[: -len(suffix)]) * factor
+    return float(raw)
+
+
+def _quota() -> dict[str, float]:
+    [group] = _cluster_queue()["spec"]["resourceGroups"]
+    [flavor] = group["flavors"]
+    return {r["name"]: _quantity(str(r["nominalQuota"])) for r in flavor["resources"]}
+
+
+def test_kind_profiles_fit_the_cluster_queue():
+    """K6-R11: a profile whose maximum exceeds the quota would pend forever."""
+    quota = _quota()
+    for profile in load_hardware_profiles(KIND_PROFILES).profiles:
+        assert profile.cpu.max <= quota["cpu"], profile.id
+        assert profile.memory_mb.max <= quota["memory"], profile.id
+        assert profile.gpu_count is None, f"{profile.id}: no GPU flavor on kind"
+
+
+def test_kind_profiles_name_the_local_queue_and_existing_flavors():
+    queue = _one(_load(COMMON / "localqueue.yaml"), "LocalQueue")["metadata"]["name"]
+    flavor_labels = [(d.get("spec") or {}).get("nodeLabels") or {}
+                     for d in _load(KIND / "resourceflavors.yaml")]
+    for profile in load_hardware_profiles(KIND_PROFILES).profiles:
+        block = kubernetes_backend(profile)
+        assert block.queue == queue, profile.id
+        # spec §3.4: the selector must equal its flavor's labels.
+        assert dict(block.node_selector) in flavor_labels, profile.id
