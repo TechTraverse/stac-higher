@@ -715,6 +715,9 @@ export async function deleteOutput(
 // analog). It deliberately does NOT execute anything itself.
 // ---------------------------------------------------------------------------
 
+// Bare column names only, comma-separated: `cancelRun` derives its
+// `upd.<column>` list by splitting this on commas, so an expression or an
+// alias here would break that statement (K-4).
 const RUN_COLUMNS = `
   id, process_id, revision_id, source_id, status, attempts,
   input_items, output_items, log_ref, error, rate_deferred_until,

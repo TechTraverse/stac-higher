@@ -1139,7 +1139,7 @@ function CancelRunButton({ processId, run }: { processId: string; run: ProcessRu
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              Keep running
+              Don&apos;t cancel
             </Button>
             <Button
               variant="destructive"

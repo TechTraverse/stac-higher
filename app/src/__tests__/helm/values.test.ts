@@ -39,6 +39,11 @@ function walk(dir: string): string[] {
 }
 
 describe.skipIf(!helmReady())("chart values contract", () => {
+  it("refuses an exempt extractor pool below 1 (K-4)", () => {
+    fails(base({ processRuns: { extractMaxRunning: 0 } }), "extractMaxRunning");
+    expect(renderChart(base({ processRuns: { extractMaxRunning: 1 } })).ok).toBe(true);
+  });
+
   it("renders the base scenario", () => {
     const r = renderChart({ valuesFiles: scenario("base") });
     expect(r.stderr).toBe("");

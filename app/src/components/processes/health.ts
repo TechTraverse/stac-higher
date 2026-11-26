@@ -108,7 +108,9 @@ export function processVerdict(
     };
   }
 
-  const ledger = realRuns(runs);
+  // K-4: a cancelled run is neutral (spec §9) — it says nothing about the
+  // process, so a process whose only runs were cancelled has "Never run".
+  const ledger = realRuns(runs).filter((r) => r.status !== "cancelled");
   if (ledger.length === 0) {
     return { health: "unknown", label: "Never run", reason: null };
   }

@@ -101,3 +101,11 @@ describe("a cancelled run is neutral (K-4, spec §9)", () => {
     expect(processVerdict(process, ledger, 1).health).toBe("ok");
   });
 });
+
+describe("a process whose runs are all cancelled (K-4 review A9)", () => {
+  it("reads Never run, not Healthy", () => {
+    const verdict = processVerdict(process, [run({ status: "cancelled" })], 1);
+    expect(verdict.label).toBe("Never run");
+    expect(verdict.health).toBe("unknown");
+  });
+});

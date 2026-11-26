@@ -87,6 +87,9 @@ describe("cancelRun (K-4)", () => {
   it("maps the locked row's prior status to the outcome", async () => {
     mockQuery.mockResolvedValueOnce({ rows: [row("running")] } as never);
     expect((await cancelRun(PROCESS_ID, RUN_ID))?.outcome).toBe("cancel_requested");
+    // A retry-pending `failed` run (R4) flips at once too.
+    mockQuery.mockResolvedValueOnce({ rows: [row("failed")] } as never);
+    expect((await cancelRun(PROCESS_ID, RUN_ID))?.outcome).toBe("cancelled");
     mockQuery.mockResolvedValueOnce({ rows: [row("queued")] } as never);
     const queued = await cancelRun(PROCESS_ID, RUN_ID);
     expect(queued?.outcome).toBe("cancelled");

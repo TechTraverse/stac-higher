@@ -66,6 +66,8 @@ describe("RunRow cancel (K-4)", () => {
     expect(within(dialog).getByText("Cancel this run?")).toBeInTheDocument();
     expect(dialog).toHaveTextContent("its log is kept");
     expect(dialog).toHaveTextContent("can be re-run");
+    // Fits a queued or retrying run too, not only a running one (review A12).
+    expect(within(dialog).getByRole("button", { name: "Don't cancel" })).toBeInTheDocument();
     expect(state.cancel).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("run-cancel-confirm"));
     await waitFor(() => expect(state.cancel).toHaveBeenCalledTimes(1));
