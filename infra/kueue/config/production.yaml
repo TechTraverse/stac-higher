@@ -1,0 +1,49 @@
+# Kueue controller configuration for every stac-higher cluster (K-6, K6-R7).
+# Kueue v0.20.8's shipped default plus four changes, each marked "K-6".
+# Installed as ConfigMap kueue-manager-config, key controller_manager_config.yaml,
+# in kueue-system; a change needs `kubectl rollout restart` of the controller.
+# config/kind.yaml is the CI variant: it differs only in waitForPodsReady
+# timing, pinned by services/pipeline/tests/test_kueue_manifests.py.
+apiVersion: config.kueue.x-k8s.io/v1beta2
+kind: Configuration
+health:
+  healthProbeBindAddress: :8081
+metrics:
+  bindAddress: :8443
+webhook:
+  port: 9443
+leaderElection:
+  leaderElect: true
+  resourceName: c1f6bfd2.kueue.x-k8s.io
+controller:
+  groupKindConcurrency:
+    Job.batch: 5
+    Pod: 5
+    Workload.kueue.x-k8s.io: 10
+    LocalQueue.kueue.x-k8s.io: 5
+    Cohort.kueue.x-k8s.io: 1
+    ClusterQueue.kueue.x-k8s.io: 5
+    ResourceFlavor.kueue.x-k8s.io: 1
+clientConnection:
+  qps: 300
+  burst: 500
+# K-6: an admitted run whose pod is not ready in 10 minutes (no node came --
+# spec §7.3, I-92) is evicted and requeued; after three requeues Kueue
+# deactivates it and the executor reports it exited (K5-R8). 10 minutes also
+# outlasts the executor's 5-minute image-pull grace (K6-R23).
+waitForPodsReady:
+  timeout: 10m
+  blockAdmission: false
+  requeuingStrategy:
+    timestamp: Eviction
+    backoffLimitCount: 3
+    backoffBaseSeconds: 60
+    backoffMaxSeconds: 3600
+# K-6: Jobs without a queue label are not Kueue's; the runs namespace's
+# admission policy refuses them instead (infra/kueue/common/admission-policy.yaml).
+manageJobsWithoutQueueName: false
+# K-6: Kueue manages only what the platform submits. Disabled integrations
+# keep a no-op webhook (jobframework/setup.go), so pods still create.
+integrations:
+  frameworks:
+    - "batch/job"

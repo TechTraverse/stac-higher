@@ -1035,8 +1035,12 @@ ClusterQueue quota per flavor must be mirrored by hand to the NodePool
 `limits` (ADR 0019 invariant), and `waitForPodsReady` must evict an admitted
 job whose node never arrives back to the queue. A quota above the pool's
 ceiling admits jobs that never schedule.
-- Tracked in: ADR 0019; spec §7.3; K-6 (`waitForPodsReady`), K-8 (limits =
-  quota). Revisit when Kueue supports CapacityBuffer.
+K-6 configures that safety net (`infra/kueue/config/production.yaml`): an
+admitted run whose pod is not ready in 10 minutes is evicted and requeued;
+after three requeues Kueue deactivates it and the run dies (K5-R8). The kind
+leg proves the path with a 30 s timeout.
+- Tracked in: ADR 0019; spec §7.3; K-8 (limits = quota). Revisit when Kueue
+  supports CapacityBuffer.
 
 ### I-93 · Run credentials vs. queue wait 🟡
 Run-scoped STS credentials are minted before submit (they are in the run's
@@ -1660,6 +1664,8 @@ recorded handle never matches what it launched.
   can reach only the mirror, user images cannot be pulled. This narrows the
   deployment spec §5's "the executor rewrites … every `container_images`
   row".
+- **Start window.** Even with the policy in place, a new run pod may have
+  open egress until the CNI enforces policy for it (I-188, GitHub #207).
 - Tracked in: `services/pipeline/src/pipeline/process/kubernetes_manifests.py`; GitHub #144.
 - Found in: K-5 review (2026-11-26).
 
@@ -1679,9 +1685,122 @@ only the Job's own Secret, image pull Secrets named `{job}-pull`, the queue
 label and a known priority class; and on Pod UPDATE by the pipeline's
 ServiceAccount only a lowered `spec.activeDeadlineSeconds`. Every Job the
 executor builds is checked against those rules in
-`tests/test_kubernetes_rbac.py`. Until K-6 lands, the residual stands.
-- Tracked in: `infra/kubernetes/pipeline-role.yaml`; GitHub #14.
+`tests/test_kubernetes_rbac.py`.
+
+K-6 ships those rules as `infra/kueue/common/admission-policy.yaml` (two
+ValidatingAdmissionPolicies on the runs namespace) and adds two on Job
+CREATE: the pod template's `stac-higher.run-kind` / `stac-higher.network-level`
+pair must be `(process, isolated)`, or `(image_scan, scanner)` for a
+`stac-scan-` Job; and the template must repeat the Job's run-kind,
+network-level and run-id labels. A pod's labels cannot be changed by the
+pipeline afterwards (the pod-update rule). After review it also refuses, on
+Job CREATE, any placement or host setting the executor never makes (a pinned
+`nodeName`, a pod priority class, affinity, spread constraints, scheduling
+gates, host namespaces, host aliases, DNS settings, …), containers whose
+requests differ from their limits (Kueue counts requests), a Job or pod
+without `activeDeadlineSeconds` or beyond the platform's maximum timeout (pod
+86 400 s, Job 87 000 s), a termination grace above 30 s, a volume that is not
+a memory-backed, sized `emptyDir` (node disk), probes and lifecycle hooks (a
+kubelet request from the node, outside NetworkPolicy), and any Job with an
+owner reference or that is not suspended on arrival (a Job controlled by a
+Kueue-managed Job is not suspended by Kueue and runs outside the quota), and
+any label or annotation in Kueue's domains (`kueue.x-k8s.io/`, its
+subdomains) beyond the Job's queue-name and priority-class labels, on the Job
+or its pod template (Kueue reads such keys to bind a Job to a prebuilt
+Workload, change its admission or its accounting); and a
+third policy admits only `Opaque` and `kubernetes.io/dockerconfigjson`
+Secrets (no ServiceAccount-token Secret).
+**Not bounded:** `nodeSelector`, `tolerations` and `runtimeClassName`, which
+the executor copies from the hardware profile and Kueue mutates at admission;
+a compromised pipeline can place a run on any node those can reach. R-8 can
+bound them to the profile set with a param resource rendered from the chart's
+profiles. **Residual:** the policy narrows the shape, it does not
+authenticate intent. A compromised pipeline identity
+can still create a scan-shaped Job (`stac-scan-…`, `image_scan`, `scanner`)
+running any image under the run ServiceAccount and get the scanner policy's
+egress (DNS, the object store, 443). Closing that needs the scan's image
+and arguments pinned at admission (the scanner image's digest) or scans in
+a namespace of their own with their own identity; not built.
+- Tracked in: `infra/kubernetes/pipeline-role.yaml`, `infra/kueue/common/admission-policy.yaml`; GitHub #14.
 - Found in: K-5 review (2026-11-26).
+
+### I-185 · What the kind leg cannot show 🟡
+The kind CI leg (`.github/workflows/kind.yml`, K-6) runs the Kubernetes
+executor against a real API server, kubelet, Kueue and CNI, but not:
+- **GPUs**: flavors with GPU node labels, extended resources, the device
+  plugin (no GPU on the runners; K-5's mapping unit tests and K-9's cluster
+  gate cover them).
+- **Karpenter**: NodePools and the quota-equals-limits rule (I-92; K-8/R-11).
+- **The registry mirror** rewrite and the pull-through cache (R-8 #144).
+- **The allow policies** for `isolated` runs and scans (R-8 renders them):
+  kind proves the default-deny is enforced by kindnet, not that EKS's VPC CNI
+  enforces policy, nor what an allow policy opens.
+- **The in-cluster pipeline pod**: the tests run on the runner with a token
+  file and the CA, not the projected mount and the `KUBERNETES_SERVICE_HOST`
+  URL (K6-R4; R-11).
+- **Image-scan Jobs** end to end (the scanner image is not built; its Job
+  shape is admitted by a server dry run).
+- **A real `410 Gone`** on a watch (the fake owns it; K6-R13).
+- **Production `waitForPodsReady` timing** (kind uses 30 s; K-9 measures).
+- **Kubernetes newer than 1.34** (one node image; a matrix is a one-line
+  addition).
+- Tracked in: `.github/workflows/kind.yml`; R-8 (#144), R-11, K-8 (#16), K-9.
+- Found in: K-6 (2026-11-26).
+
+### I-186 · Kueue's webhooks couple workloads in every namespace to Kueue 🟡
+Kueue v0.20.8's release manifests register 36 of their 43 admission
+webhooks with `failurePolicy: Fail` on every namespace except `kube-system`
+and `kueue-system`, including for integrations the configuration disables
+(they answer no-op): `mpod`/`vpod` (pods, CREATE and UPDATE: the executor's
+cancel patch included), `mdeployment`/`vdeployment` and
+`mstatefulset`/`vstatefulset` (CREATE and UPDATE), `mjob`/`vjob`, LeaderWorkerSet,
+JobSet, Ray, Kubeflow, AppWrapper, Spark and TrainJob. As released, while
+Kueue's webhook is down no pod, Deployment or StatefulSet anywhere outside
+those two namespaces can be created, and no Deployment or StatefulSet rolled.
+**Mitigation (K-6):** `scripts/kueue-narrow-webhooks.py` rewrites every
+webhook that has a namespaceSelector to match only the runs namespace before
+the manifests are applied; the seven without one (ClusterQueue,
+ResourceFlavor, Cohort, Workload) match only Kueue's own API. Kueue does not
+undo it: its only writer to webhook configurations, the cert-controller
+rotator, sets `clientConfig.caBundle` alone. `scripts/check-kueue.sh` fails
+when a Kueue release's webhooks differ from `infra/kueue/webhooks.txt`. The
+kind leg installs Kueue this way, proves it still admits, preempts and
+validates, and that with Kueue stopped a Deployment in `default` still
+creates while a run Job is refused. **Residual:** the cluster installer (K-8)
+must apply the same transform; a plain `kubectl apply` of Kueue's manifests
+restores the coupling.
+- Tracked in: `scripts/kueue-narrow-webhooks.py`, `infra/kueue/README.md`; GitHub #16 (K-8).
+- Found in: K-6 (2026-11-26); widened in its review.
+
+### I-187 · The kind workflow is path-filtered and not a required check 🟢
+`.github/workflows/kind.yml` runs on changes to its paths and weekly
+(Mondays). A skipped path-filtered workflow reports nothing, so it cannot be
+a required status check; a change outside its paths that breaks the kind
+leg is caught by the weekly run, not the PR (K6-R14).
+- Tracked in: `.github/workflows/kind.yml`.
+- Found in: K-6 (2026-11-26).
+
+### I-188 · A new run pod has open egress for a moment at start 🟡
+On a CNI whose NetworkPolicy enforcement is eventually consistent, a pod
+starts with no policy applied and gets its rules only once the CNI's agent
+has learned the pod's IP. A run that connects at once gets out despite the
+runs namespace's default-deny. Measured on kind v0.33.0 (kindnetd with
+kube-network-policies, which sends only known, policy-selected pod IPs to its
+queue): IMDS, the API service and an internet address were all reachable at
+t=0; the run's egress was last reachable at 0.26 s and first blocked at
+0.51 s; everything was blocked by 15 s. A connection opened in the window is
+not re-checked (kube-network-policies checks new connections only, unless its
+strict mode is on). The AWS VPC CNI documents the same behaviour for its
+`standard` enforcing mode ("containers in the new pod will start with a
+default allow policy") and a default deny from the first packet in `strict`
+mode. K-5's fail-closed check (I-183) proves the policy object exists, not
+that a pod is covered from its first packet. Until #207 lands (a start gate
+in the run pod, or strict enforcement as a deployment prerequisite), a
+deployment must run its CNI in a strict enforcing mode
+(`infra/kubernetes/README.md`). The kind leg records the window on every
+run and fails if it exceeds 10 s.
+- Tracked in: GitHub #207.
+- Found in: K-6 kind leg (2026-11-26).
 
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡
 Both need GitHub Advanced Security on a private repo, which this repo does not

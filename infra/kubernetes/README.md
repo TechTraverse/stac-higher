@@ -11,10 +11,14 @@ spec §6.3; tracking issue #13.
 | `run-serviceaccount.yaml` | ServiceAccount `stac-higher-run`: every run pod's identity; no token, no permissions |
 | `pipeline-role.yaml` | Role `stac-higher-pipeline`: exactly the verbs the executor calls (the file's comment lists why each exists) |
 | `pipeline-rolebinding.yaml` | Binds the Role to the chart's pipeline ServiceAccount `stac-higher-pipeline` in `stac-higher` |
+| `runs-default-deny.yaml` | NetworkPolicy `stac-higher-runs-default-deny`: every run pod, no ingress, no egress (K-6; the executor's isolation precondition) |
 
-`kubectl apply -f infra/kubernetes/` creates those four objects and nothing
-else: no NetworkPolicy, LocalQueue, Kueue object or admission policy. Those
-are R-8's (#144) and K-6's (#14); what each must provide is below.
+`kubectl apply -f infra/kubernetes/` creates those five objects and nothing
+else: no allow policy, LocalQueue, Kueue object or admission policy. The
+Kueue objects and the admission policy are K-6's (`infra/kueue/`); the allow
+policies are R-8's (#144); what each must provide is below. K-6's kind leg
+(`.github/workflows/kind.yml`) applies this directory to a kind cluster
+as-is.
 
 ## Rules
 
@@ -43,20 +47,11 @@ are R-8's (#144) and K-6's (#14); what each must provide is below.
 
 ## What R-8 (#144) renders
 
-- **These four objects**, from the chart's templates (Helm cannot read files
+- **These five objects**, from the chart's templates (Helm cannot read files
   outside the chart), with a drift test against these files.
-- **The default-deny policy, exactly:**
-
-  ```yaml
-  apiVersion: networking.k8s.io/v1
-  kind: NetworkPolicy
-  metadata:
-    name: stac-higher-runs-default-deny
-    namespace: stac-higher-runs
-  spec:
-    podSelector: {}
-    policyTypes: [Ingress, Egress]
-  ```
+- **The default-deny policy**, `runs-default-deny.yaml`, exactly (K-6
+  ships the file; `test_kueue_manifests.py` proves it passes the executor's
+  own check).
 
 - **The label contract.** Every run pod carries
   `stac-higher.run-kind` ∈ {`process`, `image_scan`} and
@@ -67,6 +62,28 @@ are R-8's (#144) and K-6's (#14); what each must provide is below.
   (`aws.s3PrefixListCidrs`); `run-kind=image_scan` + `network-level=scanner`
   → DNS, the object store and 443. A drift test pins that every allow policy
   in the runs namespace is one of those two, selecting on both labels.
+- **Strict NetworkPolicy enforcement (until #207 lands; I-188).** On a CNI
+  that applies policy to a new pod only after it has learned the pod, a run
+  has open egress for its first moments (measured ~0.5 s on kind). The
+  cluster's CNI must enforce from a pod's first packet:
+  - **AWS VPC CNI (EKS with managed nodes):** set the environment variable
+    `NETWORK_POLICY_ENFORCING_MODE=strict` in the `aws-node` container of the
+    VPC CNI DaemonSet. In `standard` mode "containers in the new pod will
+    start with a default allow policy"; in `strict` mode "pods that use the
+    VPC CNI start with a default deny policy, then policies are configured"
+    (Amazon EKS User Guide, "Restrict Pod network traffic with Kubernetes
+    network policies", Step 1). Network policy itself is enabled with the
+    add-on configuration `{"enableNetworkPolicy": "true"}`. Strict mode
+    denies every pod in the cluster that no policy allows, CoreDNS
+    included, so the allow policies for the platform's own pods must exist
+    first.
+  - **EKS Auto Mode:** the documented setting is the NodeClass's
+    `networkPolicy: DefaultDeny` (pods with no network policy applied deny
+    all traffic, DNS included; network policy is enabled with the
+    `amazon-vpc-cni` ConfigMap's `enable-network-policy-controller: "true"`;
+    EKS User Guide, "Use Network Policies with EKS Auto Mode"). The guide
+    does not say whether it also closes the start window, so R-11 must prove
+    it live.
 - **IMDS.** Block `169.254.169.254` from run pods (no allow policy may cover
   it) and set the nodes' instance-metadata hop limit to 1.
 - **Node egress to user registries.** User images are pulled from their own
@@ -75,22 +92,39 @@ are R-8's (#144) and K-6's (#14); what each must provide is below.
   images are not supported on that cluster (I-183).
 - **Node PID limit.** Set the kubelet's `podPidsLimit`; runs have no per-pod
   PID limit of their own (I-180).
+- **Bound what the admission policy leaves open (I-184).** A run Job's
+  `nodeSelector`, `tolerations` and `runtimeClassName` come from the hardware
+  profile, so `infra/kueue/common/admission-policy.yaml` cannot fix them
+  without knowing the profiles. Render a param resource from the chart's
+  profile set (each profile's `backend.kubernetes` node selector,
+  tolerations and runtime class), bind the Job policy to it, and add one
+  rule: the pod template's three fields equal some profile's (Kueue's own
+  additions at admission are an UPDATE, which the shape rules do not check).
+- **Kueue installed with narrowed webhooks** (`scripts/kueue-narrow-webhooks.py`,
+  I-186) and the cluster's CNI in a strict enforcing mode (below, I-188).
 
-## The admission policy K-6 (#14) renders
+## The admission policy (K-6, #14)
 
-A ValidatingAdmissionPolicy (and binding) for the runs namespace, bounding
-what the pipeline's identity can create (I-184). `tests/test_kubernetes_rbac.py`
-encodes the same rules and checks every Job the executor builds against them.
+`infra/kueue/common/admission-policy.yaml`: ValidatingAdmissionPolicies (and
+bindings) for the runs namespace, bounding what the pipeline's identity can
+create (I-184). `tests/test_kubernetes_rbac.py` encodes the same rules and
+checks every Job the executor builds against them;
+`tests/_admission_rules.py` ties each CEL rule to its Python twin
+(`infra/kueue/README.md`).
 
 - **Job CREATE:** the `kueue.x-k8s.io/queue-name` label is present; the
   `kueue.x-k8s.io/priority-class` label is `interactive` or `triggered`; the
+  pod template's `stac-higher.run-kind` / `stac-higher.network-level` pair is
+  `(process, isolated)`, or `(image_scan, scanner)` for a `stac-scan-` Job,
+  and repeats the Job's run-kind, network-level and run-id labels; the
   pod template's `serviceAccountName` is `stac-higher-run` and
   `automountServiceAccountToken` is `false`; every volume is an `emptyDir`;
   `imagePullSecrets` name only `<job name>-pull`; no `initContainers` or
   `ephemeralContainers`; no container `env`; `envFrom` is only a `secretRef`
   naming the Job's own name.
 - **Pod UPDATE by the pipeline's ServiceAccount:** only
-  `spec.activeDeadlineSeconds` may change, and only downwards.
+  `spec.activeDeadlineSeconds` may change, and only downwards (labels
+  included: a run cannot be relabelled into another egress policy).
 - A refusal answers 422 (`Invalid`), which the executor turns into a dead
   run naming the reason; so does an admission webhook's 403 denial (its
   message says "admission webhook … denied the request"). An RBAC 403 is a
@@ -138,3 +172,9 @@ No real API server has run the executor; these come first, in order
     EKS the VPC CNI's network policy must be enabled), then prove a run
     pod's connections to `169.254.169.254` and to an external host fail
     while the object store answers.
+12. **A run pod that connects at t=0 is blocked** (I-188): with the CNI in
+    its strict enforcing mode, a run whose first act is to connect to IMDS,
+    the API service and an internet address reaches none of them. K-6's
+    `test_a_run_pod_cannot_reach_metadata_the_api_or_the_internet` measures
+    exactly this (its `t0` phase); on kind it records the open window
+    instead.

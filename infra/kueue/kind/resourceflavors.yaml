@@ -1,0 +1,11 @@
+# K-6 (process-compute spec §7.1): the kind leg's one flavor, for the one
+# profile family in infra/hardware-profiles/kind.json (CPU only). No
+# nodeLabels, so any node; a profile's node_selector must equal its flavor's
+# nodeLabels (spec §3.4, pinned by test_kueue_manifests.py). GPU flavors
+# arrive with K-8's eks.json. R-8 renders a deployment's flavors from values
+# with a drift test that kind-equivalent values reproduce this file.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: cpu-default
+spec: {}

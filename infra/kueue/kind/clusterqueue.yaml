@@ -1,0 +1,27 @@
+# K-6 (process-compute spec §7.1, §8; K6-R10, K6-R11): the kind leg's
+# ClusterQueue. One CPU in total, so a second run waits for capacity and
+# pending_capacity is exercised; memory is deliberately not the binding
+# resource. Admits only the runs namespace's LocalQueues. R-8 renders a
+# deployment's ClusterQueue from values (quota = the node pool's limits) with
+# a drift test that kind-equivalent values reproduce this file.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: process-runs
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: stac-higher-runs
+  queueingStrategy: BestEffortFIFO
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Never
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: cpu-default
+          resources:
+            - name: cpu
+              nominalQuota: "1"
+            - name: memory
+              nominalQuota: 4Gi

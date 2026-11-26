@@ -1,0 +1,18 @@
+# K-6 (process-compute spec §6.2; K-5 addendum A18; plan K6-R19): every run
+# pod's network starts closed. Selects every pod in the runs namespace and
+# allows no ingress and no egress; R-8's additive allow policies grant what a
+# run's network level may reach (infra/kubernetes/README.md). The executor
+# refuses to start any run unless this object exists exactly so
+# (kubernetes_manifests.isolation_problem, DEFAULT_DENY_POLICY); the kind leg
+# proves the CNI enforces it.
+#
+# R-8 (#144) renders the same object from the chart's templates with a drift
+# test against this file; K-6 (#14) applies this directory to kind as-is.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stac-higher-runs-default-deny
+  namespace: stac-higher-runs
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

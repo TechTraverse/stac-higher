@@ -58,3 +58,6 @@ infra/helm/stac-higher/charts/*.tgz
 
 __pycache__/
 *.pyc
+
+# K-6: scripts/kind-up.sh output (admin kubeconfig, a pipeline token)
+.kind/

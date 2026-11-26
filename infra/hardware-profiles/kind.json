@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "standard",
+      "label": "Standard",
+      "description": "kind CI: one CPU of quota in total, so a second run waits for capacity.",
+      "tier": "cpu",
+      "accelerator": null,
+      "cpu": { "min": 0.25, "max": 1, "default": 1 },
+      "memory_mb": { "min": 128, "max": 1024, "default": 512 },
+      "gpu_count": null,
+      "max_queue_wait_seconds": 600,
+      "image": null,
+      "backend": {
+        "kubernetes": {
+          "queue": "process-runs",
+          "node_selector": {},
+          "tolerations": [],
+          "runtime_class": null,
+          "extended_resources": {}
+        }
+      }
+    }
+  ]
+}

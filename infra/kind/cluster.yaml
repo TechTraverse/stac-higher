@@ -1,0 +1,14 @@
+# kind cluster for the Kubernetes executor's CI leg (K-6). Single node.
+# The API server is published on 127.0.0.1:6443 so the tests (on the
+# runner) reach it at a fixed URL covered by its serving certificate (K6-R4).
+# No node image here: scripts/kind-up.sh passes --image from
+# infra/kind/versions.env, so the digest lives in one file. The default CNI
+# (kindnetd) stays on: it enforces NetworkPolicy (K6-R20).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: stac-higher
+networking:
+  apiServerAddress: "127.0.0.1"
+  apiServerPort: 6443
+nodes:
+  - role: control-plane

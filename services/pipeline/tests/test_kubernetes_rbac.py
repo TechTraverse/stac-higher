@@ -9,6 +9,8 @@ Security ``restricted``."""
 from __future__ import annotations
 
 import asyncio
+import copy
+import re
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,7 @@ from pipeline.config import (
 )
 from pipeline.process import kubernetes_executor as kx
 from pipeline.process import kubernetes_manifests as km
+from pipeline.process.config import MAX_TIMEOUT_SECONDS
 from pipeline.process.executor import RegistryAuth, RunHandle
 
 INFRA = ROLE_PATH.parent
@@ -186,6 +189,97 @@ def test_the_readme_names_every_manifest():
 PRIORITIES = {"interactive", "triggered"}
 
 
+#: K-6 lead ruling: the only (run-kind, network-level) pairs a pod template
+#: may carry, by the Job's name prefix (the NetworkPolicies select on both).
+SCAN_PAIR = ("image_scan", km.SCANNER_NETWORK_LEVEL)
+PROCESS_PAIR = ("process", km.ENFORCEABLE_NETWORK_LEVELS[0])
+#: The run labels a pod template must repeat from its Job.
+TEMPLATE_RUN_LABELS = (km.RUN_KIND_LABEL, km.NETWORK_LEVEL_LABEL, km.RUN_ID_LABEL)
+
+
+#: K-6 review R2: pod-template fields build_job never sets, mapped to the
+#: value the API server defaults them to (None: no default, must be absent).
+#: Placement and priority (scheduler, Kueue flavor and taint bypass) ...
+PLACEMENT_FIELDS = {
+    "nodeName": None, "priorityClassName": None, "priority": None,
+    "preemptionPolicy": "PreemptLowerPriority", "affinity": None,
+    "topologySpreadConstraints": None, "schedulingGates": None, "overhead": None,
+    "readinessGates": None, "resourceClaims": None, "resources": None,
+    "schedulerName": "default-scheduler",
+}
+#: ... and the host's network, names and DNS.
+HOST_FIELDS = {
+    "hostNetwork": False, "hostPID": False, "hostIPC": False, "hostAliases": None,
+    "hostname": None, "hostnameOverride": None, "subdomain": None, "setHostnameAsFQDN": False,
+    "shareProcessNamespace": False, "dnsPolicy": "ClusterFirst", "dnsConfig": None,
+}
+
+
+def _set_beyond_default(pod: dict, fields: dict) -> bool:
+    return any(key in pod and pod[key] not in (None, default) for key, default in fields.items())
+
+
+def _requests_equal_limits(container: dict) -> bool:
+    """Kueue counts requests: every container must state cpu and memory
+    limits and request exactly them (absent requests default to the limits)."""
+    resources = container.get("resources") or {}
+    limits = resources.get("limits") or {}
+    requests = resources.get("requests", limits)
+    return {"cpu", "memory"} <= set(limits) and requests == limits
+
+
+#: K-6 re-review N2: the deadlines a run Job may carry. A run's timeout is at
+#: most MAX_TIMEOUT_SECONDS (the app's TIMEOUT_SECONDS_MAX; the scan policy's
+#: own cap is the same); the Job's deadline adds the executor's slack; a pod
+#: ignoring SIGTERM is killed within the grace (the executor sets 10 s).
+MAX_POD_DEADLINE_SECONDS = MAX_TIMEOUT_SECONDS
+MAX_JOB_DEADLINE_SECONDS = MAX_TIMEOUT_SECONDS + km.JOB_DEADLINE_SLACK_SECONDS
+MAX_GRACE_SECONDS = 30
+#: N4: kubelet-run probes and hooks (an httpGet/tcpSocket with a host is a
+#: request from the node, outside every NetworkPolicy).
+PROBE_FIELDS = ("livenessProbe", "readinessProbe", "startupProbe", "lifecycle")
+
+
+#: K-6 security review: a label or annotation key in Kueue's domains
+#: (kueue.x-k8s.io/ and its subdomains, e.g. provreq.kueue.x-k8s.io/). Kueue
+#: reads many such keys on a Job (prebuilt-workload-name, max-exec-time-seconds,
+#: job-min-parallelism, elastic-job, wait-for-pods-ready, …); a run Job may
+#: carry only the two the executor sets, on the Job itself.
+KUEUE_KEY = re.compile(r"^([^/]*\.)?kueue\.x-k8s\.io/")
+JOB_KUEUE_LABELS = ("kueue.x-k8s.io/queue-name", "kueue.x-k8s.io/priority-class")
+
+
+def _foreign_kueue_keys(job: dict) -> list[str]:
+    meta = job["metadata"]
+    template = job["spec"]["template"].get("metadata") or {}
+    keys = [k for k in meta.get("labels") or {} if k not in JOB_KUEUE_LABELS]
+    keys += list(meta.get("annotations") or {})
+    keys += list(template.get("labels") or {}) + list(template.get("annotations") or {})
+    return [k for k in keys if KUEUE_KEY.match(k)]
+
+
+def kueue_mutated(job: dict) -> dict:
+    """The Job as validating admission sees it. Kueue's mutating job webhook
+    (mjob, v0.20.8 ``ApplyDefaultForSuspend``) runs in the mutating phase,
+    before every validating policy, and suspends a Job with a queue label --
+    unless its controller owner is a Job Kueue manages
+    (``WorkloadShouldBeSuspended``). The model treats any controller owner as
+    Kueue-managed (in the tests it is a run Job)."""
+    job = copy.deepcopy(job)
+    labels = job["metadata"].get("labels") or {}
+    owned = any(o.get("controller") for o in job["metadata"].get("ownerReferences") or [])
+    if labels.get("kueue.x-k8s.io/queue-name") and not owned:
+        job["spec"]["suspend"] = True
+    return job
+
+
+def _disk_safe(volume: dict) -> bool:
+    """N3: memory-backed and sized, as the executor builds it."""
+    empty_dir = volume.get("emptyDir")
+    return (set(volume) == {"name", "emptyDir"} and isinstance(empty_dir, dict)
+            and empty_dir.get("medium") == "Memory" and "sizeLimit" in empty_dir)
+
+
 def vap_job_violations(job: dict) -> list[str]:
     """Job CREATE in the runs namespace."""
     problems = []
@@ -195,12 +289,20 @@ def vap_job_violations(job: dict) -> list[str]:
         problems.append("queue label")
     if labels.get("kueue.x-k8s.io/priority-class") not in PRIORITIES:
         problems.append("priority class")
+    template_labels = (job["spec"]["template"].get("metadata") or {}).get("labels") or {}
+    expected = SCAN_PAIR if name.startswith(km.NAME_PREFIX["image_scan"]) else PROCESS_PAIR
+    pair = (template_labels.get(km.RUN_KIND_LABEL), template_labels.get(km.NETWORK_LEVEL_LABEL))
+    if pair != expected:
+        problems.append("run labels")
+    if any(key not in labels or labels.get(key) != template_labels.get(key)
+           for key in TEMPLATE_RUN_LABELS):
+        problems.append("template labels")
     pod = job["spec"]["template"]["spec"]
     if pod.get("serviceAccountName") != DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT:
         problems.append("serviceAccountName")
     if pod.get("automountServiceAccountToken") is not False:
         problems.append("automountServiceAccountToken")
-    if any(set(v) != {"name", "emptyDir"} for v in pod.get("volumes") or []):
+    if not all(_disk_safe(v) for v in pod.get("volumes") or []):
         problems.append("volumes")
     for secret in pod.get("imagePullSecrets") or []:
         if secret.get("name") != f"{name}-pull":
@@ -214,6 +316,42 @@ def vap_job_violations(job: dict) -> list[str]:
         for source in container.get("envFrom") or []:
             if set(source) != {"secretRef"} or source["secretRef"].get("name") != name:
                 problems.append("envFrom")
+    if _foreign_kueue_keys(job):
+        problems.append("kueue keys")
+    if _set_beyond_default(pod, PLACEMENT_FIELDS):
+        problems.append("placement")
+    if _set_beyond_default(pod, HOST_FIELDS):
+        problems.append("host")
+    if not all(_requests_equal_limits(c) for c in pod["containers"]):
+        problems.append("resources")
+    if any(key in c for c in pod["containers"] for key in PROBE_FIELDS):
+        problems.append("probes")
+    job_deadline = job["spec"].get("activeDeadlineSeconds")
+    pod_deadline = pod.get("activeDeadlineSeconds")
+    if (job_deadline is None or job_deadline > MAX_JOB_DEADLINE_SECONDS
+            or pod_deadline is None or pod_deadline > MAX_POD_DEADLINE_SECONDS
+            or pod.get("terminationGracePeriodSeconds", 30) > MAX_GRACE_SECONDS):
+        problems.append("deadlines")
+    # N1: Kueue does not suspend (or give a Workload to) a Job whose
+    # controller owner is a Job it manages; such a Job would run outside the
+    # quota. The executor's Jobs have no owner and are suspended by Kueue.
+    if job["spec"].get("suspend") is not True:
+        problems.append("suspended")
+    if job["metadata"].get("ownerReferences"):
+        problems.append("owner references")
+    return problems
+
+
+#: K-6 review R5: the Secret types the executor creates.
+SECRET_TYPES = ("Opaque", "kubernetes.io/dockerconfigjson")
+
+
+def vap_secret_violations(secret: dict) -> list[str]:
+    """Secret CREATE in the runs namespace: no service-account-token (or any
+    other) type the cluster would fill in."""
+    problems = []
+    if secret.get("type", "Opaque") not in SECRET_TYPES:
+        problems.append("secret type")
     return problems
 
 
@@ -245,9 +383,11 @@ def vap_pod_update_violations(old: dict, new: dict) -> list[str]:
 def test_every_built_job_passes_the_admission_policy(overrides):
     ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
     run = spec(**overrides)
-    pull = f"{NAME}-pull" if run.registry_auth else None
-    job = km.build_job(run, name=NAME, ctx=ctx, pull_secret=pull)
-    assert vap_job_violations(job) == []
+    name = km.job_name(run.kind, run.run_id, "a1b2c3")  # the executor's own naming
+    pull = f"{name}-pull" if run.registry_auth else None
+    job = km.build_job(run, name=name, ctx=ctx, pull_secret=pull)
+    assert "suspend" not in job["spec"] and "ownerReferences" not in job["metadata"]
+    assert vap_job_violations(kueue_mutated(job)) == []
 
 
 def test_the_admission_rules_catch_what_they_exist_for():
@@ -258,8 +398,9 @@ def test_the_admission_rules_catch_what_they_exist_for():
     pod["volumes"].append({"name": "s", "secret": {"secretName": "another-run"}})
     pod["containers"][0]["envFrom"].append({"secretRef": {"name": "another-run"}})
     del job["metadata"]["labels"]["kueue.x-k8s.io/queue-name"]
-    assert set(vap_job_violations(job)) == {"serviceAccountName", "volumes", "envFrom",
-                                            "queue label"}
+    # Without a queue label Kueue does not suspend the Job either.
+    assert set(vap_job_violations(kueue_mutated(job))) == {
+        "serviceAccountName", "volumes", "envFrom", "queue label", "suspended"}
 
 
 def test_the_executors_only_pod_update_passes_the_admission_policy():
@@ -272,3 +413,23 @@ def test_the_executors_only_pod_update_passes_the_admission_policy():
     assert vap_pod_update_violations(old, patched) == []
     swapped = {"metadata": {"name": "p"}, "spec": {**pod_spec["spec"], "containers": []}}
     assert vap_pod_update_violations(old, swapped)
+
+
+def test_every_secret_the_executor_builds_passes_the_admission_policy():
+    ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
+    run = spec(image=f"ghcr.io/acme/private@{DIGEST}", user_image=True,
+               registry_auth=RegistryAuth(username="u", password="p", server="ghcr.io"))
+    secrets = [km.build_env_secret(run, name=NAME, owner_uid="u", ctx=ctx),
+               km.build_pull_secret(run, name=NAME, owner_uid="u", ctx=ctx)]
+    assert [vap_secret_violations(s) for s in secrets] == [[], []]
+    assert vap_secret_violations({"type": "kubernetes.io/service-account-token"})
+
+
+def test_the_deadline_bounds_admit_the_longest_run_the_platform_allows():
+    ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
+    job = km.build_job(spec(timeout_seconds=MAX_TIMEOUT_SECONDS), name=NAME, ctx=ctx,
+                       pull_secret=None)
+    assert km.TERMINATION_GRACE_SECONDS <= MAX_GRACE_SECONDS
+    assert vap_job_violations(kueue_mutated(job)) == []
+    job["spec"]["template"]["spec"]["activeDeadlineSeconds"] += 1
+    assert vap_job_violations(kueue_mutated(job)) == ["deadlines"]

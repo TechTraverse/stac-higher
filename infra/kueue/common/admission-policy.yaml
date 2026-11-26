@@ -1,0 +1,371 @@
+# K-6 (process-compute spec §7.1, §6.3; plan K6-R21; docs/ISSUES.md I-184):
+# what may be created and changed in the runs namespace, whoever asks.
+#
+# The pipeline's Role grants `jobs create`, `pods patch` and `secrets create`
+# there. These three policies bound what those grants can do: a Job must be a
+# run Job exactly as the executor builds it (Kueue's queue, a known priority,
+# run labels tied to its name, the run ServiceAccount without a token,
+# emptyDir volumes only, its environment only from its own Secret, no
+# placement or host settings of its own, requests equal to limits, deadlines),
+# the pipeline may change a pod only by lowering its activeDeadlineSeconds
+# (the executor's cancel), and a Secret must be of a type the executor makes.
+#
+# Every refusal answers 422 (`reason: Invalid`), which the executor turns
+# into a dead run naming the refusal (RunRejected), never a silent requeue.
+# Every message starts with a rule id; services/pipeline/tests/
+# _admission_rules.py maps each id to K-5's pure twin of the rule
+# (tests/test_kubernetes_rbac.py) and to the violation the kind leg commits,
+# and test_kueue_manifests.py fails if the two sides drift apart.
+#
+# Deployment-independent except two names: the runs namespace (every
+# binding) and the pipeline ServiceAccount (the pod-update match
+# condition). R-8 renders this from the chart with those parameterised and a
+# drift test against this file — edit both.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: stac-higher-runs-jobs
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+  variables:
+    # The shape rules apply on CREATE only: Kueue (suspend, admission) and
+    # the garbage collector (foreground deletion) update our Jobs, and a
+    # shape rule on UPDATE could strand a Job's deletion. The labels are
+    # checked on both, so a Job cannot be relabelled out of Kueue.
+    - name: create
+      expression: "request.operation == 'CREATE'"
+    - name: pod
+      expression: "object.spec.template.spec"
+    # An UPDATE that leaves the labels as they were is admitted, so a Job
+    # that predates this policy can still finish its foreground deletion (the
+    # garbage collector's finalizer patch is an UPDATE).
+    - name: labelsUnchanged
+      expression: >-
+        request.operation == 'UPDATE' &&
+        has(object.metadata.labels) == has(oldObject.metadata.labels) &&
+        (!has(object.metadata.labels) || object.metadata.labels == oldObject.metadata.labels)
+  validations:
+    - expression: >-
+        variables.labelsUnchanged ||
+        has(object.metadata.labels) &&
+        'kueue.x-k8s.io/queue-name' in object.metadata.labels &&
+        object.metadata.labels['kueue.x-k8s.io/queue-name'] != ''
+      message: "[queue-label] Jobs in this namespace must carry a non-empty kueue.x-k8s.io/queue-name label (Kueue admits every process run)."
+      reason: Invalid
+    - expression: >-
+        variables.labelsUnchanged ||
+        has(object.metadata.labels) &&
+        'kueue.x-k8s.io/priority-class' in object.metadata.labels &&
+        object.metadata.labels['kueue.x-k8s.io/priority-class'] in ['interactive', 'triggered']
+      message: "[priority-class] Jobs in this namespace must carry kueue.x-k8s.io/priority-class 'interactive' or 'triggered'."
+      reason: Invalid
+    # The NetworkPolicies select run pods on stac-higher.run-kind and
+    # stac-higher.network-level, so the pod template's pair is closed and tied
+    # to the Job's name as the executor builds it: `stac-scan-…` is
+    # (image_scan, scanner), anything else (process, isolated). This narrows
+    # the shape; it cannot tell a real scan from a scan-shaped Job (I-184).
+    - expression: >-
+        !variables.create ||
+        (has(object.spec.template.metadata) &&
+         has(object.spec.template.metadata.labels) &&
+         'stac-higher.run-kind' in object.spec.template.metadata.labels &&
+         'stac-higher.network-level' in object.spec.template.metadata.labels &&
+         (object.metadata.name.startsWith('stac-scan-')
+           ? (object.spec.template.metadata.labels['stac-higher.run-kind'] == 'image_scan' &&
+              object.spec.template.metadata.labels['stac-higher.network-level'] == 'scanner')
+           : (object.spec.template.metadata.labels['stac-higher.run-kind'] == 'process' &&
+              object.spec.template.metadata.labels['stac-higher.network-level'] == 'isolated')))
+      message: "[run-labels] A run Job's pods must be labelled stac-higher.run-kind/network-level (process, isolated), or (image_scan, scanner) for a stac-scan- Job."
+      reason: Invalid
+    - expression: >-
+        !variables.create ||
+        (has(object.metadata.labels) &&
+         has(object.spec.template.metadata) &&
+         has(object.spec.template.metadata.labels) &&
+         ['stac-higher.run-kind', 'stac-higher.network-level', 'stac-higher.run-id'].all(k,
+           k in object.metadata.labels &&
+           k in object.spec.template.metadata.labels &&
+           object.metadata.labels[k] == object.spec.template.metadata.labels[k]))
+      message: "[template-labels] A run Job's pod template must repeat the Job's stac-higher.run-kind, network-level and run-id labels."
+      reason: Invalid
+    - expression: >-
+        !variables.create ||
+        (has(variables.pod.serviceAccountName) &&
+         variables.pod.serviceAccountName == 'stac-higher-run')
+      message: "[service-account] A run Job's pods must run as the ServiceAccount stac-higher-run."
+      reason: Invalid
+    - expression: >-
+        !variables.create ||
+        (has(variables.pod.automountServiceAccountToken) &&
+         variables.pod.automountServiceAccountToken == false)
+      message: "[no-token] A run Job's pods must set automountServiceAccountToken: false."
+      reason: Invalid
+    - expression: >-
+        !variables.create || !has(variables.pod.volumes) ||
+        variables.pod.volumes.all(v, has(v.emptyDir) &&
+          has(v.emptyDir.medium) && v.emptyDir.medium == 'Memory' &&
+          has(v.emptyDir.sizeLimit))
+      message: "[volumes] A run Job's pods may mount only memory-backed, sized emptyDir volumes."
+      reason: Invalid
+    - expression: >-
+        !variables.create || !has(variables.pod.imagePullSecrets) ||
+        variables.pod.imagePullSecrets.all(s,
+          has(s.name) && s.name == object.metadata.name + '-pull')
+      message: "[pull-secrets] A run Job may name only its own image pull Secret (<job name>-pull)."
+      reason: Invalid
+    - expression: >-
+        !variables.create || !has(variables.pod.initContainers) ||
+        size(variables.pod.initContainers) == 0
+      message: "[no-init-containers] A run Job's pods may not have init containers."
+      reason: Invalid
+    - expression: >-
+        !variables.create || !has(variables.pod.ephemeralContainers) ||
+        size(variables.pod.ephemeralContainers) == 0
+      message: "[no-ephemeral-containers] A run Job's pods may not have ephemeral containers."
+      reason: Invalid
+    - expression: >-
+        !variables.create ||
+        variables.pod.containers.all(c, !has(c.env) || size(c.env) == 0)
+      message: "[no-env] A run Job's containers take their environment only from the run's Secret (no env entries)."
+      reason: Invalid
+    - expression: >-
+        !variables.create ||
+        variables.pod.containers.all(c, !has(c.envFrom) || c.envFrom.all(e,
+          has(e.secretRef) && !has(e.configMapRef) && !has(e.prefix) &&
+          has(e.secretRef.name) && e.secretRef.name == object.metadata.name))
+      message: "[env-from] A run Job's containers may read only the Secret named after the Job (envFrom secretRef)."
+      reason: Invalid
+    # Kueue reads many keys in its domains on a Job (v0.20.8
+    # pkg/controller/constants: prebuilt-workload-name, max-exec-time-seconds,
+    # wait-for-pods-ready, priority-boost, workload-allowed-resource-flavors,
+    # provreq.kueue.x-k8s.io/*, …; elsewhere elastic-job, job-min-parallelism,
+    # pod-group and topology keys) that change how it admits or accounts the
+    # Job. A run Job carries only queue-name and priority-class, on the Job;
+    # Kueue's mutating webhook adds none to a Job that already has both.
+    - expression: >-
+        !variables.create ||
+        ((!has(object.metadata.labels) || object.metadata.labels.all(k,
+            !k.matches('^([^/]*\\.)?kueue\\.x-k8s\\.io/') ||
+            k in ['kueue.x-k8s.io/queue-name', 'kueue.x-k8s.io/priority-class'])) &&
+         (!has(object.metadata.annotations) || object.metadata.annotations.all(k,
+            !k.matches('^([^/]*\\.)?kueue\\.x-k8s\\.io/'))) &&
+         (!has(object.spec.template.metadata) ||
+          ((!has(object.spec.template.metadata.labels) ||
+            object.spec.template.metadata.labels.all(k,
+              !k.matches('^([^/]*\\.)?kueue\\.x-k8s\\.io/'))) &&
+           (!has(object.spec.template.metadata.annotations) ||
+            object.spec.template.metadata.annotations.all(k,
+              !k.matches('^([^/]*\\.)?kueue\\.x-k8s\\.io/'))))))
+      message: "[kueue-keys] A run Job may carry only the kueue.x-k8s.io/queue-name and priority-class labels; no other Kueue label or annotation, on the Job or its pods."
+      reason: Invalid
+    # Placement and priority are Kueue's and the profile's: no pinned node,
+    # no pod priority (it would preempt other workloads), no affinity, spread,
+    # gates, claims or pod-level resources; the scheduler and preemption
+    # policy only at their defaults. nodeSelector, tolerations and
+    # runtimeClassName come from the hardware profile and are not bounded
+    # here (docs/ISSUES.md I-184).
+    - expression: >-
+        !variables.create ||
+        (!has(variables.pod.nodeName) && !has(variables.pod.priorityClassName) &&
+         !has(variables.pod.priority) &&
+         (!has(variables.pod.preemptionPolicy) ||
+          variables.pod.preemptionPolicy == 'PreemptLowerPriority') &&
+         !has(variables.pod.affinity) && !has(variables.pod.topologySpreadConstraints) &&
+         !has(variables.pod.schedulingGates) && !has(variables.pod.overhead) &&
+         !has(variables.pod.readinessGates) && !has(variables.pod.resourceClaims) &&
+         !has(variables.pod.resources) &&
+         (!has(variables.pod.schedulerName) ||
+          variables.pod.schedulerName == 'default-scheduler'))
+      message: "[placement] A run Job may not set its pods' node, priority, affinity, spread, gates, claims, pod-level resources or scheduler."
+      reason: Invalid
+    - expression: >-
+        !variables.create ||
+        ((!has(variables.pod.hostNetwork) || variables.pod.hostNetwork == false) &&
+         (!has(variables.pod.hostPID) || variables.pod.hostPID == false) &&
+         (!has(variables.pod.hostIPC) || variables.pod.hostIPC == false) &&
+         !has(variables.pod.hostAliases) && !has(variables.pod.hostname) &&
+         !has(variables.pod.hostnameOverride) && !has(variables.pod.subdomain) &&
+         (!has(variables.pod.setHostnameAsFQDN) || variables.pod.setHostnameAsFQDN == false) &&
+         (!has(variables.pod.shareProcessNamespace) ||
+          variables.pod.shareProcessNamespace == false) &&
+         (!has(variables.pod.dnsPolicy) || variables.pod.dnsPolicy == 'ClusterFirst') &&
+         !has(variables.pod.dnsConfig))
+      message: "[host] A run Job's pods may not use the host's network, PID or IPC namespaces, host aliases, hostnames or their own DNS settings."
+      reason: Invalid
+    # Kueue counts requests: every container states cpu and memory limits and
+    # requests exactly them, so quota cannot be under-declared.
+    - expression: >-
+        !variables.create ||
+        variables.pod.containers.all(c,
+          has(c.resources) && has(c.resources.limits) && has(c.resources.requests) &&
+          'cpu' in c.resources.limits && 'memory' in c.resources.limits &&
+          c.resources.requests == c.resources.limits)
+      message: "[resources] A run Job's containers must request exactly their cpu and memory limits."
+      reason: Invalid
+    # Probes and lifecycle hooks run in the kubelet: an httpGet or tcpSocket
+    # with a host is a request from the node, outside every NetworkPolicy.
+    - expression: >-
+        !variables.create ||
+        variables.pod.containers.all(c,
+          !has(c.livenessProbe) && !has(c.readinessProbe) && !has(c.startupProbe) &&
+          !has(c.lifecycle))
+      message: "[no-probes] A run Job's containers may not have probes or lifecycle hooks."
+      reason: Invalid
+    # A run's timeout is at most 86400 s (the app's TIMEOUT_SECONDS_MAX, the
+    # pipeline's MAX_TIMEOUT_SECONDS); the Job's deadline adds the executor's
+    # 600 s slack; a pod ignoring SIGTERM is killed within 30 s (the executor
+    # sets 10). test_kueue_manifests.py ties these numbers to the code.
+    - expression: >-
+        !variables.create ||
+        (has(object.spec.activeDeadlineSeconds) &&
+         object.spec.activeDeadlineSeconds <= 87000 &&
+         has(variables.pod.activeDeadlineSeconds) &&
+         variables.pod.activeDeadlineSeconds <= 86400 &&
+         has(variables.pod.terminationGracePeriodSeconds) &&
+         variables.pod.terminationGracePeriodSeconds <= 30)
+      message: "[deadlines] A run Job and its pods must carry activeDeadlineSeconds within the platform's maximum, and a termination grace of at most 30 s."
+      reason: Invalid
+    # Kueue's mutating job webhook runs before every validating policy and
+    # suspends a queue-labelled Job, so every Job the executor builds arrives
+    # here suspended (the kind leg's dry runs prove it). Kueue skips that --
+    # no suspension, no Workload, no quota -- for a Job whose controller owner
+    # is a Job it manages (v0.20.8 WorkloadShouldBeSuspended), and the
+    # pipeline can read a run Job's uid. The executor never sets an owner.
+    - expression: >-
+        !variables.create ||
+        (has(object.spec.suspend) && object.spec.suspend == true)
+      message: "[suspended] A run Job must reach admission suspended, so Kueue admits it."
+      reason: Invalid
+    - expression: >-
+        !variables.create || !has(object.metadata.ownerReferences) ||
+        size(object.metadata.ownerReferences) == 0
+      message: "[no-owner] A run Job may not have an owner (an owned Job escapes Kueue)."
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: stac-higher-runs-jobs
+spec:
+  policyName: stac-higher-runs-jobs
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: stac-higher-runs
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: stac-higher-runs-pod-updates
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["pods"]
+  # Only the pipeline's own updates (the kubelet writes pods/status, a
+  # subresource this policy does not match).
+  matchConditions:
+    - name: by-the-pipeline
+      expression: "request.userInfo.username == 'system:serviceaccount:stac-higher:stac-higher-pipeline'"
+  validations:
+    - expression: >-
+        has(object.spec.activeDeadlineSeconds) &&
+        (!has(oldObject.spec.activeDeadlineSeconds) ||
+         object.spec.activeDeadlineSeconds <= oldObject.spec.activeDeadlineSeconds)
+      message: "[pod-update-deadline] The pipeline may only lower a run pod's activeDeadlineSeconds."
+      reason: Invalid
+    - expression: >-
+        has(object.metadata.labels) == has(oldObject.metadata.labels) &&
+        (!has(object.metadata.labels) || object.metadata.labels == oldObject.metadata.labels) &&
+        has(object.metadata.annotations) == has(oldObject.metadata.annotations) &&
+        (!has(object.metadata.annotations) ||
+         object.metadata.annotations == oldObject.metadata.annotations) &&
+        has(object.metadata.ownerReferences) == has(oldObject.metadata.ownerReferences) &&
+        (!has(object.metadata.ownerReferences) ||
+         object.metadata.ownerReferences == oldObject.metadata.ownerReferences) &&
+        has(object.metadata.finalizers) == has(oldObject.metadata.finalizers) &&
+        (!has(object.metadata.finalizers) ||
+         object.metadata.finalizers == oldObject.metadata.finalizers)
+      message: "[pod-update-metadata] The pipeline may not change a run pod's labels, annotations, owners or finalizers."
+      reason: Invalid
+    # Every pod-spec field the API server lets an UPDATE change (ValidatePodUpdate,
+    # Kubernetes 1.34), except activeDeadlineSeconds; the rest is immutable.
+    - expression: >-
+        object.spec.containers == oldObject.spec.containers &&
+        has(object.spec.initContainers) == has(oldObject.spec.initContainers) &&
+        (!has(object.spec.initContainers) ||
+         object.spec.initContainers == oldObject.spec.initContainers) &&
+        has(object.spec.tolerations) == has(oldObject.spec.tolerations) &&
+        (!has(object.spec.tolerations) ||
+         object.spec.tolerations == oldObject.spec.tolerations) &&
+        has(object.spec.schedulingGates) == has(oldObject.spec.schedulingGates) &&
+        (!has(object.spec.schedulingGates) ||
+         object.spec.schedulingGates == oldObject.spec.schedulingGates) &&
+        has(object.spec.terminationGracePeriodSeconds) ==
+          has(oldObject.spec.terminationGracePeriodSeconds) &&
+        (!has(object.spec.terminationGracePeriodSeconds) ||
+         object.spec.terminationGracePeriodSeconds ==
+           oldObject.spec.terminationGracePeriodSeconds) &&
+        has(object.spec.nodeSelector) == has(oldObject.spec.nodeSelector) &&
+        (!has(object.spec.nodeSelector) ||
+         object.spec.nodeSelector == oldObject.spec.nodeSelector) &&
+        has(object.spec.affinity) == has(oldObject.spec.affinity) &&
+        (!has(object.spec.affinity) || object.spec.affinity == oldObject.spec.affinity)
+      message: "[pod-update-spec] The pipeline may change nothing in a run pod's spec but activeDeadlineSeconds."
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: stac-higher-runs-pod-updates
+spec:
+  policyName: stac-higher-runs-pod-updates
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: stac-higher-runs
+---
+# K-6 review R5: the pipeline may create Secrets in the runs namespace (a
+# run's environment, a pull credential); only those two types. A
+# kubernetes.io/service-account-token Secret would be filled with a token by
+# the cluster.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: stac-higher-runs-secrets
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["secrets"]
+  validations:
+    - expression: >-
+        !has(object.type) || object.type in ['Opaque', 'kubernetes.io/dockerconfigjson']
+      message: "[secret-type] Secrets in this namespace must be Opaque or kubernetes.io/dockerconfigjson."
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: stac-higher-runs-secrets
+spec:
+  policyName: stac-higher-runs-secrets
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: stac-higher-runs
