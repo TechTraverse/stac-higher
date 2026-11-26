@@ -120,7 +120,7 @@ async def test_pool_sizes_default_when_env_is_absent(monkeypatch):
     monkeypatch.delenv("DB_POOL_MIN", raising=False)
     monkeypatch.delenv("DB_POOL_MAX", raising=False)
     created = await dbpool.get_async_pool(DSN)
-    assert (created.min_size, created.max_size) == (2, 16)
+    assert (created.min_size, created.max_size) == (2, 18)
 
 
 def test_pool_name_drops_user_and_password():
@@ -139,7 +139,7 @@ async def test_pool_stats_is_keyed_by_the_redacted_name():
     await dbpool.get_async_pool(DSN)
     stats = dbpool.pool_stats()
     assert list(stats) == ["localhost:5433/postgis"]
-    assert stats["localhost:5433/postgis"]["pool_max"] == 16
+    assert stats["localhost:5433/postgis"]["pool_max"] == 18
 
 
 def test_pool_stats_is_empty_before_any_pool_exists():
