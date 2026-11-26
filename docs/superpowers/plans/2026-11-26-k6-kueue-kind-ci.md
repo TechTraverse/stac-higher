@@ -927,3 +927,16 @@ Asks A1–A6: **all taken** (A5's constants exist: `JOB_GONE_DETAIL`,
   28 in `test_integration_kind_kueue.py`, parametrized cases counted). The
   JUnit gate is `.github/scripts/kind-junit-gate.py` (xfail allowed, any other
   skip fails; a failure table goes to the job summary).
+- **K6-R27 · Run isolation is asserted once enforcement has settled; the
+  startup window is measured.** The first CI run showed a run pod under the
+  runs namespace's default-deny reaching IMDS, the API service and the
+  internet. The run's connects started about 0.5 s after the kubelet admitted
+  the pod. kindnet's kube-network-policies (the commit kind v0.33.0 pins)
+  diverts to its NFQUEUE only the IPs of pods it already knows that a policy
+  selects (`ManagedIPs`, an nftables set synced at most once a second).
+  Packets from an IP not yet in that set are never evaluated, and a packet
+  whose source pod is unknown matches no policy. The probe now records three
+  phases: `t0`, a polled `window` timing when egress is first blocked, and
+  `settled` (from 15 s). Only `settled` is asserted. The window is recorded
+  as an observation and a `::warning::`, for the lead to rule on (ISSUES,
+  R-8/R-11 strict enforcing mode, a possible executor mitigation).

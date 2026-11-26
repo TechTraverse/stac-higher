@@ -379,7 +379,59 @@ print("K6-NET " + json.dumps(results), flush=True)
 """
 
 
-def reach_results(log: str) -> dict[str, bool] | None:
+#: Phased probe code (K6-R27): separates "blocked from the start" from
+#: "reachable until the CNI learns the new pod". K6_TARGETS is
+#: [[label, host, port]] (``$NAME`` read from the environment); K6_WINDOW is
+#: the label polled during the window. Phases, timed from process start:
+#:   t0       one attempt per target at once (2 s timeout);
+#:   window   a fresh connection to K6_WINDOW every ~0.25 s until it is
+#:            refused or times out, or K6_SETTLE_S passes: when it was last
+#:            reachable and first blocked;
+#:   settled  from K6_SETTLE_S on, three fresh attempts per target (any
+#:            success = reachable).
+#: Prints one line ``K6-NET {"t0": {...}, "window": {...}, "settled": {...},
+#: "settled_at_s": n}``; a result is True only for a completed TCP handshake.
+PHASED_REACH_CODE = """
+import json, os, socket, time
+start = time.monotonic()
+def now():
+    return round(time.monotonic() - start, 2)
+def resolve(value):
+    return os.environ.get(value[1:], "") if str(value).startswith("$") else value
+targets = [(label, resolve(host), int(resolve(port)))
+           for label, host, port in json.loads(os.environ["K6_TARGETS"])]
+settle = float(os.environ.get("K6_SETTLE_S", "15"))
+def reach(host, port, timeout):
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+out = {"t0": {}, "t0_at_s": now()}
+for label, host, port in targets:
+    out["t0"][label] = reach(host, port, 2)
+window = {"target": os.environ["K6_WINDOW"], "last_reachable_s": None,
+          "first_blocked_s": None}
+_, host, port = next(t for t in targets if t[0] == window["target"])
+while now() < settle:
+    at = now()
+    if reach(host, port, 1):
+        window["last_reachable_s"] = at
+        time.sleep(0.25)
+    else:
+        window["first_blocked_s"] = at
+        break
+out["window"] = window
+while now() < settle:
+    time.sleep(0.2)
+out["settled_at_s"] = now()
+out["settled"] = {label: any(reach(host, port, 2) for _ in range(3))
+                  for label, host, port in targets}
+print("K6-NET " + json.dumps(out), flush=True)
+"""
+
+
+def reach_results(log: str) -> dict | None:
     for line in log.splitlines():
         if line.startswith("K6-NET "):
             return json.loads(line[len("K6-NET "):])

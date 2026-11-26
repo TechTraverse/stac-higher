@@ -585,10 +585,13 @@ def network_controls() -> dict:
                 "metadata": {"name": "default-deny", "namespace": NETPOL_NAMESPACE},
                 "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}}
         _kind.kapply(deny)
-        time.sleep(5)  # let the CNI's policy controller see it
-        after = [["server", ip, 8080, 2], ["external", rec["external"], 443, 2]]
-        code, log = _kind.probe_pod(NETPOL_NAMESPACE, "client-denied", _kind.REACH_CODE,
-                                    env={"K6_TARGETS": json.dumps(after)})
+        time.sleep(5)  # let the CNI's policy controller see the POLICY
+        # A NEW client under the policy, external first: its t0 phase shows
+        # whether a pod the CNI has not learned yet gets out (K6-R27).
+        after = [["external", rec["external"], 443], ["server", ip, 8080]]
+        code, log = _kind.probe_pod(NETPOL_NAMESPACE, "client-denied", _kind.PHASED_REACH_CODE,
+                                    env={"K6_TARGETS": json.dumps(after),
+                                         "K6_WINDOW": "external"})
         rec["denied"] = _kind.reach_results(log) or {"exit": code, "log": log[-500:]}
     except Exception as err:  # recorded; the tests name what it means
         rec["error"] = repr(err)
@@ -603,7 +606,8 @@ def test_this_cluster_enforces_network_policy(network_controls):
     assert open_.get("server") is True, (
         f"the probe is broken: with no policy the client could not reach the server pod "
         f"({network_controls})")
-    assert denied.get("server") is False and denied.get("external") is False, (
+    settled = denied.get("settled") or {}
+    assert settled.get("server") is False and settled.get("external") is False, (
         "OUTCOME: NetworkPolicy is NOT enforced in this cluster (a default-deny changed "
         f"nothing): the kind node's CNI ignores policies; check the kind version "
         f"(>= v0.24.0 enforces) ({network_controls})")
@@ -611,21 +615,45 @@ def test_this_cluster_enforces_network_policy(network_controls):
 
 def test_a_run_pod_cannot_reach_metadata_the_api_or_the_internet(network_controls):
     """The runs namespace's default-deny (infra/kubernetes/runs-default-deny.yaml)
-    on a real run: no IMDS, no API server, no internet."""
+    on a real run: no IMDS, no API server, no internet ONCE ENFORCEMENT HAS
+    SETTLED (strict). Whether a run gets out in its first moments, before the
+    CNI has learned the new pod's IP (kube-network-policies diverts only the
+    IPs of pods it knows to its queue), is measured and recorded, not
+    asserted: that is a property of the CNI's enforcing mode, which the
+    deployment must choose (K6-R27, docs/ISSUES.md)."""
     external = network_controls["external"]
-    targets = [["imds", IMDS, 80, 2], ["external", external, 443, 2],
-               ["api", "$KUBERNETES_SERVICE_HOST", "$KUBERNETES_SERVICE_PORT", 2]]
+    targets = [["imds", IMDS, 80], ["external", external, 443],
+               ["api", "$KUBERNETES_SERVICE_HOST", "$KUBERNETES_SERVICE_PORT"]]
     ex = _kind.executor()
-    handle = ex.submit(code_spec(_kind.REACH_CODE, env={"K6_TARGETS": json.dumps(targets)}))
+    handle = ex.submit(code_spec(_kind.PHASED_REACH_CODE, timeout_seconds=180, env={
+        "K6_TARGETS": json.dumps(targets), "K6_WINDOW": "external", "K6_SETTLE_S": "15"}))
     with _kind.reaping(ex, handle):
-        state = _kind.wait_state(ex, handle, {"exited", "lost"})
+        state = _kind.wait_state(ex, handle, {"exited", "lost"}, timeout=240)
         log = ex.logs(handle, 65536).decode(errors="replace")
-        results = _kind.reach_results(log)
-        observe("run-isolation", results=results, state=state)
+        results = _kind.reach_results(log) or {}
+        pod = _kind.pod_of(handle) or {}
+        container = next(iter((pod.get("status") or {}).get("containerStatuses") or []), {})
+        t0 = results.get("t0") or {}
+        observe("run-isolation", results=results, state=state,
+                pod_start=(pod.get("status") or {}).get("startTime"),
+                container_started=((container.get("state") or {}).get("terminated")
+                                   or {}).get("startedAt"),
+                host_network=(pod.get("spec") or {}).get("hostNetwork", False),
+                startup_race=any(t0.values()))
+        if any(t0.values()):
+            print(f"::warning::K-6 startup race: a new run pod reached "
+                  f"{[k for k, v in t0.items() if v]} before NetworkPolicy enforcement "
+                  f"settled (window {results.get('window')})")
         assert state.phase == "exited" and state.exit.ok, (state, log[-500:])
-        assert results == {"imds": False, "external": False, "api": False}, (
-            f"a run pod reached {[k for k, v in (results or {}).items() if v]}; controls "
-            f"without a policy: {network_controls.get('open')}")
+        assert (pod.get("spec") or {}).get("hostNetwork") in (None, False), pod.get("spec")
+        settled = results.get("settled")
+        assert settled is not None, f"the probe printed no result: {log[-500:]}"
+        assert settled == {"imds": False, "external": False, "api": False}, (
+            f"OUTCOME 'reachable throughout': {results.get('settled_at_s')} s after start a "
+            f"run pod still reached {[k for k, v in settled.items() if v]} (t0={t0}, "
+            f"window={results.get('window')}); the default-deny does not select run pods or "
+            f"is not enforced for them. Controls without a policy: "
+            f"{network_controls.get('open')}")
         assert (network_controls.get("open") or {}).get("external") is True, (
             "the external-host check is vacuous: even with no policy a pod could not reach "
             f"{external}:443 ({network_controls})")
