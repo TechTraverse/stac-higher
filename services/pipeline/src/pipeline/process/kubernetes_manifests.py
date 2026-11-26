@@ -17,8 +17,20 @@ security-relevant shape is pinned by plain dict assertions
 - Every pod is Pod Security ``restricted``: uid 10001, no privilege
   escalation, every capability dropped, RuntimeDefault seccomp, a read-only
   root with memory-backed scratch, no ServiceAccount token, no service links
-  (K5-R13, K5-R14). ``RunSpec.network`` is not read: isolation is R-8's
-  NetworkPolicy, selected by ``stac-higher.run-kind`` (K5-R15).
+  (K5-R13, K5-R14).
+- Network isolation FAILS CLOSED (lead security ruling, addendum A18). The
+  Docker network name (``RunSpec.network``) has no meaning here; isolation is
+  the runs namespace's NetworkPolicies. Every run pod carries
+  ``stac-higher.network-level`` (the revision's level; ``scanner`` for a
+  scan), the executor refuses to start anything while the namespace lacks
+  :data:`DEFAULT_DENY_POLICY` (deny all ingress and egress to every run pod,
+  :func:`isolation_problem`), and it refuses a run whose level or host list
+  no policy here can express (:func:`network_refusal`) instead of running it
+  wider or narrower.
+- Only PLATFORM images go through the registry mirror map (lead security
+  ruling, addendum A19): a pull-through cache holds the deployment's
+  upstream credentials, so a user-supplied reference is pulled from its own
+  registry, never through the cache.
 - ``requests == limits`` for cpu, memory and the GPU resource: what Kueue
   counts is what the pod gets (Guaranteed QoS).
 """
@@ -42,7 +54,7 @@ from pipeline.process.executor import (
 )
 from pipeline.process.hardware import KubernetesBackend, kubernetes_backend
 
-#: Kueue's labels (v0.19.2 ``pkg/controller/constants``).
+#: Kueue's labels (v0.20.8 ``pkg/controller/constants``).
 QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 PRIORITY_LABEL = "kueue.x-k8s.io/priority-class"
 KUEUE_JOB_UID_LABEL = "kueue.x-k8s.io/job-uid"
@@ -51,7 +63,7 @@ POD_JOB_LABEL = "batch.kubernetes.io/job-name"
 #: Karpenter (EKS Auto Mode) never consolidates a node away from under a
 #: pod carrying this (K5-R6).
 DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
-#: The Workload API version Kueue v0.19.2 stores (Task 0 addendum).
+#: The Workload API version Kueue v0.20.8 serves (the only one; Task 0 addendum, K-6 A2).
 KUEUE_API_VERSION = "v1beta2"
 #: The one container of every run pod.
 CONTAINER = "run"
@@ -64,8 +76,29 @@ TERMINATION_GRACE_SECONDS = 10
 #: writable on a read-only root.
 PLATFORM_WORKDIRS = {"process": "/home/runner", "image_scan": "/home/scanner"}
 NAME_PREFIX = {"process": "stac-run-", "image_scan": "stac-scan-"}
+#: K-6 A6: a disrupted pod fails its Job with reason ``PodFailurePolicy``
+#: (``status()`` maps that to ``lost``: requeue, no attempt spent).
+DISRUPTION_POD_FAILURE_POLICY = {
+    "rules": [{"action": "FailJob", "onPodConditions": [{"type": "DisruptionTarget"}]}]
+}
 #: Image scans run at the `triggered` priority (lead ruling).
 SCAN_PRIORITY = "triggered"
+
+#: K-5 network contract with R-8 (#144), addendum A18. Every run pod carries
+#: this label: a process run its revision's GOES §4 level, a scan
+#: :data:`SCANNER_NETWORK_LEVEL`. R-8's allow policies select on it (and on
+#: ``stac-higher.run-kind``); nothing is admitted by default.
+NETWORK_LEVEL_LABEL = "stac-higher.network-level"
+SCANNER_NETWORK_LEVEL = "scanner"
+#: The levels a policy in the runs namespace can express today: ``isolated``
+#: = DNS + the object store. ``inputs``/``open`` need policy R-8 has not
+#: defined, and ``hosts`` needs FQDN egress, which NetworkPolicy cannot say
+#: (spec §6.2): such a run is refused, never run wider or narrower.
+ENFORCEABLE_NETWORK_LEVELS = ("isolated",)
+#: The NetworkPolicy that must exist in the runs namespace before any run
+#: starts: it selects every run pod and denies all ingress and egress, so a
+#: run gets only what R-8's additive allow policies grant.
+DEFAULT_DENY_POLICY = "stac-higher-runs-default-deny"
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _JOB_NAME_RE = re.compile(rf"^stac-(run|scan)-({_UUID})-([0-9a-f]{{6}})$")
@@ -120,9 +153,99 @@ def run_labels(spec: RunSpec) -> dict[str, str]:
     labels = {RUN_ID_LABEL: spec.run_id, RUN_KIND_LABEL: spec.kind}
     if spec.kind == "image_scan":
         labels[IMAGE_ID_LABEL] = spec.process_id
+        labels[NETWORK_LEVEL_LABEL] = SCANNER_NETWORK_LEVEL
     else:
         labels[PROCESS_ID_LABEL] = spec.process_id
+        labels[NETWORK_LEVEL_LABEL] = spec.network_level
     return labels
+
+
+def network_refusal(spec: RunSpec) -> str | None:
+    """Why this run's network cannot be enforced on Kubernetes, or None.
+    A process run must ask for an :data:`ENFORCEABLE_NETWORK_LEVELS` level
+    and no hosts; a scan's egress is R-8's scanner policy."""
+    if spec.kind == "image_scan":
+        return None
+    if spec.network_hosts:
+        return (
+            f"run {spec.run_id} asks for network hosts {list(spec.network_hosts)}, and a "
+            "per-run host allow-list cannot be enforced on Kubernetes (NetworkPolicy has "
+            "no FQDN egress); refusing rather than running it with wider or narrower access"
+        )
+    if spec.network_level not in ENFORCEABLE_NETWORK_LEVELS:
+        return (
+            f"run {spec.run_id} asks for network level {spec.network_level!r}, which the "
+            f"Kubernetes executor cannot enforce (it enforces {list(ENFORCEABLE_NETWORK_LEVELS)})"
+        )
+    return None
+
+
+def selector_matches(selector: object, labels: Mapping[str, str]) -> bool:
+    """A Kubernetes ``LabelSelector`` (matchLabels + matchExpressions) against
+    a label set. An empty selector matches everything; anything malformed
+    matches nothing (fail closed)."""
+    if not isinstance(selector, dict):
+        return False
+    match_labels = selector.get("matchLabels") or {}
+    expressions = selector.get("matchExpressions") or []
+    if not isinstance(match_labels, dict) or not isinstance(expressions, list):
+        return False
+    if any(labels.get(k) != v for k, v in match_labels.items()):
+        return False
+    for expr in expressions:
+        if not isinstance(expr, dict):
+            return False
+        key, op = expr.get("key"), expr.get("operator")
+        values = expr.get("values") or []
+        if op == "In" and labels.get(key) not in values:
+            return False
+        if op == "NotIn" and key in labels and labels[key] in values:
+            return False
+        if op == "Exists" and key not in labels:
+            return False
+        if op == "DoesNotExist" and key in labels:
+            return False
+        if op not in ("In", "NotIn", "Exists", "DoesNotExist"):
+            return False
+    return True
+
+
+#: Representative label sets of every kind of run pod the executor builds.
+_SAMPLE_RUN_POD_LABELS: tuple[dict[str, str], ...] = (
+    *(
+        {RUN_ID_LABEL: "r", RUN_KIND_LABEL: "process", PROCESS_ID_LABEL: "p",
+         NETWORK_LEVEL_LABEL: level}
+        for level in ENFORCEABLE_NETWORK_LEVELS
+    ),
+    {RUN_ID_LABEL: "s", RUN_KIND_LABEL: "image_scan", IMAGE_ID_LABEL: "i",
+     NETWORK_LEVEL_LABEL: SCANNER_NETWORK_LEVEL},
+)
+
+
+def isolation_problem(policy: dict | None, namespace: str) -> str | None:
+    """Why ``policy`` (the namespace's :data:`DEFAULT_DENY_POLICY`, None when
+    absent) does not isolate run pods, or None when it does: it must select
+    every run pod the executor builds, list both ``Ingress`` and ``Egress``
+    in ``policyTypes``, and allow nothing."""
+    where = f"namespace {namespace!r} NetworkPolicy {DEFAULT_DENY_POLICY!r}"
+    if policy is None:
+        return f"network isolation is not in place: {where} does not exist (R-8 renders it)"
+    spec = policy.get("spec") if isinstance(policy, dict) else None
+    if not isinstance(spec, dict):
+        return f"network isolation is not in place: {where} has no spec"
+    if not all(
+        selector_matches(spec.get("podSelector"), labels) for labels in _SAMPLE_RUN_POD_LABELS
+    ):
+        return f"network isolation is not in place: {where} does not select every run pod"
+    types = spec.get("policyTypes") or []
+    if not isinstance(types, list) or not {"Ingress", "Egress"} <= set(types):
+        return (
+            f"network isolation is not in place: {where} must list both Ingress and "
+            "Egress in policyTypes"
+        )
+    if spec.get("ingress") or spec.get("egress"):
+        return f"network isolation is not in place: {where} allows traffic; it must deny all"
+    return None
 
 
 def _block(spec: RunSpec) -> KubernetesBackend:
@@ -170,7 +293,9 @@ def build_job(spec: RunSpec, *, name: str, ctx: JobContext, pull_secret: str | N
         scratch[workdir] = "workdir"
     container: dict = {
         "name": CONTAINER,
-        "image": spec.image if spec.registry_auth else rewrite_image(
+        # Platform images only (addendum A19): a user image never goes
+        # through a cache holding the deployment's upstream credentials.
+        "image": spec.image if spec.user_image else rewrite_image(
             spec.image, ctx.registry_mirrors
         ),
         # The COMPLETE environment, from the run's own Secret (ADR 0013).
@@ -234,6 +359,11 @@ def build_job(spec: RunSpec, *, name: str, ctx: JobContext, pull_secret: str | N
         "spec": {
             # The platform owns retry (outcome_transition), never the Job.
             "backoffLimit": 0,
+            # K-6 A6: a pod the cluster disrupted (eviction, node loss,
+            # preemption by the scheduler) fails the Job AT ONCE with reason
+            # PodFailurePolicy, so status() reads `lost` from the Job even
+            # when the pod is already gone (needs restartPolicy: Never).
+            "podFailurePolicy": DISRUPTION_POD_FAILURE_POLICY,
             "completions": 1,
             "parallelism": 1,
             "activeDeadlineSeconds": spec.timeout_seconds + JOB_DEADLINE_SLACK_SECONDS,

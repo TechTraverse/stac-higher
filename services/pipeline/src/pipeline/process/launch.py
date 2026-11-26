@@ -336,6 +336,8 @@ def build_run_spec(
         # process network today: levels above `isolated` are refused by
         # `check_network_cap` until the egress proxy (GOES spec §11) exists.
         network=settings.process_network,
+        network_level=runtime.network_level,
+        network_hosts=runtime.network_hosts,
         cpu=runtime.hardware_cpu,
         gpu_count=runtime.hardware_gpu_count,
         profile=profile,

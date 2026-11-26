@@ -47,6 +47,13 @@ _KINDS = {
     ("", "pods"): ("v1", "Pod"),
     ("", "secrets"): ("v1", "Secret"),
     (KUEUE_GROUP, "workloads"): (f"{KUEUE_GROUP}/{KUEUE_API_VERSION}", "Workload"),
+    ("networking.k8s.io", "networkpolicies"): ("networking.k8s.io/v1", "NetworkPolicy"),
+}
+#: The runs namespace's default-deny policy R-8 renders (the executor's
+#: isolation precondition); the fake serves it unless told otherwise.
+DEFAULT_DENY_POLICY = {
+    "metadata": {"name": "stac-higher-runs-default-deny"},
+    "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]},
 }
 _REASONS = {
     400: "BadRequest", 401: "Unauthorized", 403: "Forbidden", 404: "NotFound",
@@ -128,7 +135,7 @@ class _Watch:
 class FakeKube:
     """See the module docstring. A context manager."""
 
-    def __init__(self, *, role_path: Path = ROLE_PATH) -> None:
+    def __init__(self, *, role_path: Path = ROLE_PATH, default_deny: bool = True) -> None:
         self.namespace = NAMESPACE
         self.token = "fake-token-" + secrets.token_hex(4)
         self.kueue = True
@@ -146,6 +153,11 @@ class FakeKube:
         self._cond = threading.Condition()
         self._stopping = False
         self._server: ThreadingHTTPServer | None = None
+        if default_deny:
+            with self._cond:
+                self._put(
+                    ("networking.k8s.io", "networkpolicies"), copy.deepcopy(DEFAULT_DENY_POLICY)
+                )
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -255,7 +267,9 @@ class FakeKube:
             },
             "spec": {"active": True, "queueName": meta["labels"][QUEUE_LABEL]},
             "status": {"conditions": [{
-                "type": "QuotaReserved", "status": "False", "reason": "Pending",
+                # Kueue v0.20's reason (K-6 A1); the executor reads only the
+                # status and treats the reason as detail text.
+                "type": "QuotaReserved", "status": "False", "reason": "WaitingForQuota",
                 "message": "couldn't assign flavors to pod set main: insufficient quota",
                 "lastTransitionTime": _ts(self._now()),
             }]},

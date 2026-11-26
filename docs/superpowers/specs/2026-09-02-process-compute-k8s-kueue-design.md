@@ -389,7 +389,7 @@ token mounted.
 
 ## 7. Kueue topology
 
-Kueue **v0.19.2** (2026-08-20), installed with server-side apply, on
+Kueue **v0.20.8** (pinned by K-6; v0.19.2 when this spec was written — the 0.19 line leaves support and v0.20 serves only `v1beta2`), installed with server-side apply, on
 Kubernetes **1.34+** (the versions Kueue tests against).
 
 ### 7.1 Objects (slice 1)

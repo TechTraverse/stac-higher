@@ -144,7 +144,9 @@ def test_kueue_emulation_suspends_a_queue_labelled_job_and_creates_its_workload(
     assert wl["metadata"]["ownerReferences"][0]["name"] == "q"
     assert wl["metadata"]["ownerReferences"][0]["kind"] == "Job"
     cond = wl["status"]["conditions"][0]
-    assert (cond["type"], cond["status"], cond["reason"]) == ("QuotaReserved", "False", "Pending")
+    assert (cond["type"], cond["status"], cond["reason"]) == (
+        "QuotaReserved", "False", "WaitingForQuota"
+    )
     # Not queue-labelled, or Kueue absent: neither suspended nor queued.
     _, plain = _req(fake, "POST", JOBS, _job("p", queue=False))
     assert not plain["spec"].get("suspend")
@@ -292,3 +294,12 @@ def test_fail_next_injects_one_error(fake):
     status, body = _req(fake, "GET", JOBS)
     assert status == 500 and body["reason"] == "InternalError" and body["message"] == "boom"
     assert _req(fake, "GET", JOBS)[0] == 200
+
+
+def test_the_default_deny_policy_is_served_unless_switched_off(fake):
+    path = f"/apis/networking.k8s.io/v1/namespaces/{NS}/networkpolicies"
+    status, policy = _req(fake, "GET", f"{path}/stac-higher-runs-default-deny")
+    assert status == 200 and policy["spec"]["podSelector"] == {}
+    assert _req(fake, "GET", path)[0] == 403  # get only, no list
+    with FakeKube(default_deny=False) as bare:
+        assert _req(bare, "GET", f"{path}/stac-higher-runs-default-deny")[0] == 404

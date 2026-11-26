@@ -124,8 +124,13 @@ def test_the_job_is_kueue_labelled_and_never_retried():
     assert spec["backoffLimit"] == 0
     assert spec["completions"] == spec["parallelism"] == 1
     assert spec["activeDeadlineSeconds"] == 900 + km.JOB_DEADLINE_SLACK_SECONDS == 1500
-    for absent in ("ttlSecondsAfterFinished", "suspend", "podFailurePolicy"):
+    for absent in ("ttlSecondsAfterFinished", "suspend"):
         assert absent not in spec
+    # K-6 A6: a disrupted pod fails the Job at once, readable as `lost`.
+    assert spec["podFailurePolicy"] == {
+        "rules": [{"action": "FailJob", "onPodConditions": [{"type": "DisruptionTarget"}]}]
+    }
+    assert spec["template"]["spec"]["restartPolicy"] == "Never"
     # No profile, or a profile without a queue: the deployment's default.
     for spec_ in (_spec(profile=None), _spec(profile=_profile({}))):
         job = km.build_job(spec_, name=NAME, ctx=CTX, pull_secret=None)
@@ -238,22 +243,87 @@ def test_entrypoint_and_cmd_map_to_command_and_args():
     assert container["command"] == ["python", "-c"] and container["args"] == ["print(1)"]
     bare = _container(km.build_job(_spec(), name=NAME, ctx=CTX, pull_secret=None))
     assert "command" not in bare and "args" not in bare
+    # K-6 A4: the cluster's default pull policy applies (kind loads images).
+    user = _container(km.build_job(_spec(user_image=True), name=NAME, ctx=CTX,
+                                   pull_secret=None))
+    assert "imagePullPolicy" not in bare and "imagePullPolicy" not in user
     assert bare["name"] == km.CONTAINER == "run"
 
 
-def test_the_image_is_rewritten_unless_it_has_a_credential():
+def test_only_platform_images_go_through_the_mirror():
+    """Lead security ruling (addendum A19): a pull-through cache holds the
+    deployment's upstream credentials, so a user image is never pulled
+    through it -- public or private."""
+    platform = km.build_job(_spec(), name=NAME, ctx=CTX, pull_secret=None)
+    assert _container(platform)["image"] == (
+        f"{MIRROR_GHCR}/techtraverse/stac-higher-process-runtime@{DIGEST}"
+    )
     public = f"docker.io/library/python@{DIGEST}"
     job = km.build_job(_spec(image=public, user_image=True), name=NAME, ctx=CTX,
                        pull_secret=None)
-    assert _container(job)["image"] == f"{MIRROR_HUB}/library/python@{DIGEST}"
+    assert _container(job)["image"] == public
     private = f"ghcr.io/acme/private@{DIGEST}"
     auth = RegistryAuth(username="u", password="p", server="ghcr.io")
     job = km.build_job(_spec(image=private, user_image=True, registry_auth=auth), name=NAME,
                        ctx=CTX, pull_secret=f"{NAME}-pull")
     assert _container(job)["image"] == private
     assert _pod(job)["imagePullSecrets"] == [{"name": f"{NAME}-pull"}]
-    platform = km.build_job(_spec(), name=NAME, ctx=CTX, pull_secret=None)
-    assert _container(platform)["image"].startswith(MIRROR_GHCR + "/")
+    scanner = f"ghcr.io/techtraverse/stac-higher-image-scanner@{DIGEST}"
+    scan = km.build_job(_spec(kind="image_scan", run_id=SCAN, image=scanner, profile=None),
+                        name=NAME, ctx=CTX, pull_secret=None)
+    assert _container(scan)["image"].startswith(MIRROR_GHCR + "/")
+
+
+def test_run_labels_carry_the_network_level():
+    assert km.run_labels(_spec())[km.NETWORK_LEVEL_LABEL] == "isolated"
+    scan = km.run_labels(_spec(kind="image_scan", run_id=SCAN))
+    assert scan[km.NETWORK_LEVEL_LABEL] == km.SCANNER_NETWORK_LEVEL == "scanner"
+
+
+def test_network_refusal():
+    assert km.network_refusal(_spec()) is None
+    assert km.network_refusal(_spec(kind="image_scan", network_level="open")) is None
+    assert "host allow-list" in km.network_refusal(
+        _spec(network_level="hosts", network_hosts=("a.example",))
+    )
+    for level in ("inputs", "open"):
+        assert repr(level) in km.network_refusal(_spec(network_level=level))
+
+
+@pytest.mark.parametrize(
+    ("selector", "labels", "want"),
+    [
+        ({}, {"a": "b"}, True),
+        ({"matchLabels": {"a": "b"}}, {"a": "b", "c": "d"}, True),
+        ({"matchLabels": {"a": "b"}}, {"a": "x"}, False),
+        ({"matchExpressions": [{"key": "a", "operator": "Exists"}]}, {"a": "1"}, True),
+        ({"matchExpressions": [{"key": "a", "operator": "Exists"}]}, {}, False),
+        ({"matchExpressions": [{"key": "a", "operator": "In", "values": ["1"]}]},
+         {"a": "1"}, True),
+        ({"matchExpressions": [{"key": "a", "operator": "NotIn", "values": ["1"]}]},
+         {"a": "1"}, False),
+        ({"matchExpressions": [{"key": "a", "operator": "DoesNotExist"}]}, {}, True),
+        ({"matchExpressions": [{"key": "a", "operator": "Like"}]}, {"a": "1"}, False),
+        (None, {"a": "1"}, False),
+    ],
+)
+def test_selector_matches(selector, labels, want):
+    assert km.selector_matches(selector, labels) is want
+
+
+def test_isolation_problem():
+    ok = {"spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}}
+    assert km.isolation_problem(ok, "ns") is None
+    by_kind = {"spec": {
+        "podSelector": {"matchExpressions": [
+            {"key": "stac-higher.run-kind", "operator": "Exists"}]},
+        "policyTypes": ["Egress", "Ingress"], "ingress": [], "egress": [],
+    }}
+    assert km.isolation_problem(by_kind, "ns") is None
+    missing = km.isolation_problem(None, "ns")
+    assert "'ns'" in missing and km.DEFAULT_DENY_POLICY in missing
+    assert "does not exist" in missing
+    assert km.isolation_problem({"spec": None}, "ns")
 
 
 def test_a_scan_job():

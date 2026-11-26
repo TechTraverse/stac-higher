@@ -12,6 +12,10 @@
 #   pipeline can never read a run's environment back.
 # - workloads (Kueue): list (status finds a Job's Workload by its job-uid
 #   label; the watch's starting resourceVersion), watch (watch). No get.
+# - networkpolicies: get, read-only (the executor refuses to start runs
+#   until the default-deny policy `stac-higher-runs-default-deny` exists and
+#   denies all ingress and egress to every run pod). One named object, so
+#   no list or watch.
 #
 # Namespaced Role, never a ClusterRole. The unit tests' fake API server
 # (services/pipeline/tests/_fake_kube.py) enforces this file, and
@@ -40,3 +44,6 @@ rules:
   - apiGroups: ["kueue.x-k8s.io"]
     resources: ["workloads"]
     verbs: ["list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get"]

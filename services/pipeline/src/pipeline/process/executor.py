@@ -176,6 +176,12 @@ class RunSpec:
     #: executor's network boundary (ADR 0013): runs attach to a dedicated
     #: restricted network, never the platform's own.
     network: str | None = None
+    #: K-5 (lead security ruling): the revision's GOES §4 network level and
+    #: hosts. Docker realises every accepted level as ``network``; the
+    #: Kubernetes executor labels the pod with the level (R-8's policies
+    #: select on it) and REFUSES a level or host list it cannot enforce.
+    network_level: str = "isolated"
+    network_hosts: tuple[str, ...] = ()
     # K-1 (process-compute spec §4): the hardware the run asked for, resolved
     # against the deployment's profile set at launch. Defaults keep every
     # existing construction valid. The Docker executor reads them for
