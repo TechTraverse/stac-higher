@@ -1,0 +1,6 @@
+{
+  "style": "pinned-enum",
+  "$comment": "K-5 (process-compute spec §3.3, §6): the process-run executor backends a deployment selects with PROCESS_EXECUTOR, and the one used when it is unset. The value is what process_runs.executor_backend holds for a run that backend admitted. Readers: the pipeline's config.PROCESS_EXECUTORS / DEFAULT_PROCESS_EXECUTOR and the app's app/src/lib/processes/executor.ts (the hardware-profiles route reports it).",
+  "backends": ["docker", "kubernetes"],
+  "default": "docker"
+}

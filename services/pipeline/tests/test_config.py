@@ -352,3 +352,130 @@ def test_max_credential_seconds_parses(raw, want):
 def test_max_credential_seconds_refuses_anything_but_an_integer_of_at_least_900(raw):
     with pytest.raises(ValueError, match="PROCESS_MAX_CREDENTIAL_SECONDS"):
         Settings.from_env(env={"PROCESS_MAX_CREDENTIAL_SECONDS": raw})
+
+
+# -- K-5: PROCESS_EXECUTOR and the Kubernetes executor settings ---------------
+
+
+def test_process_executor_defaults_to_docker():
+    from pipeline.config import DEFAULT_PROCESS_EXECUTOR
+
+    assert Settings.from_env(env={}).process_executor == DEFAULT_PROCESS_EXECUTOR == "docker"
+    assert Settings().process_executor == "docker"
+
+
+def test_process_executor_is_case_and_space_tolerant():
+    assert Settings.from_env(env={"PROCESS_EXECUTOR": " Kubernetes "}).process_executor == (
+        "kubernetes"
+    )
+    assert Settings.from_env(env={"PROCESS_EXECUTOR": ""}).process_executor == "docker"
+
+
+def test_an_unknown_process_executor_fails_startup():
+    with pytest.raises(ValueError, match="PROCESS_EXECUTOR") as err:
+        Settings.from_env(env={"PROCESS_EXECUTOR": "ecs"})
+    assert "docker" in str(err.value) and "kubernetes" in str(err.value)
+
+
+def test_the_api_url_comes_from_the_in_cluster_variables():
+    def url(env):
+        return Settings.from_env(env=env).process_k8s_api_url
+
+    in_cluster = {"KUBERNETES_SERVICE_HOST": "10.0.0.1", "KUBERNETES_SERVICE_PORT": "443"}
+    assert url(in_cluster) == "https://10.0.0.1:443"
+    assert url({"KUBERNETES_SERVICE_HOST": "fd00::1", "KUBERNETES_SERVICE_PORT": "443"}) == (
+        "https://[fd00::1]:443"
+    )
+    assert url({}) is None
+    assert url({**in_cluster, "PROCESS_K8S_API_URL": "https://api.example.test:6443"}) == (
+        "https://api.example.test:6443"
+    )
+    assert Settings().process_k8s_api_url is None
+
+
+@pytest.mark.parametrize("raw", ["http://127.0.0.1:8001", "http://localhost:8001", "http://[::1]:8001"])
+def test_plain_http_is_accepted_only_to_loopback(raw):
+    assert Settings.from_env(env={"PROCESS_K8S_API_URL": raw}).process_k8s_api_url == raw
+
+
+@pytest.mark.parametrize("raw", ["http://10.0.0.1", "ftp://10.0.0.1", "https://", "api:443"])
+def test_plain_http_is_refused_except_to_loopback(raw):
+    with pytest.raises(ValueError, match="PROCESS_K8S_API_URL"):
+        Settings.from_env(env={"PROCESS_K8S_API_URL": raw})
+
+
+def test_registry_mirrors_parse():
+    def mirrors(raw):
+        settings = Settings.from_env(env={"PROCESS_K8S_REGISTRY_MIRRORS": raw})
+        return settings.process_k8s_registry_mirrors
+
+    assert mirrors('{"ghcr.io": "mirror.example.test/ghcr/"}') == {
+        "ghcr.io": "mirror.example.test/ghcr"
+    }
+    assert mirrors('{"docker.io": "mirror.example.test/hub", "localhost:5000": "m.test/l"}') == {
+        "docker.io": "mirror.example.test/hub",
+        "localhost:5000": "m.test/l",
+    }
+    assert mirrors("") == {}
+    assert mirrors(" ") == {}
+    assert Settings.from_env(env={}).process_k8s_registry_mirrors == {}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[]",
+        "not json",
+        '{"ghcr.io": 1}',
+        '{"https://ghcr.io": "m.test/ghcr"}',
+        '{"ghcr.io/x": "m.test/ghcr"}',
+        '{"GHCR": "m.test/ghcr"}',
+        '{"ghcr.io": "https://m.test/ghcr"}',
+        '{"ghcr.io": ""}',
+    ],
+)
+def test_bad_registry_mirrors_fail_startup(raw):
+    with pytest.raises(ValueError, match="PROCESS_K8S_REGISTRY_MIRRORS"):
+        Settings.from_env(env={"PROCESS_K8S_REGISTRY_MIRRORS": raw})
+
+
+def test_k8s_settings_default():
+    from pipeline.config import (
+        DEFAULT_PROCESS_K8S_CA_FILE,
+        DEFAULT_PROCESS_K8S_DEFAULT_QUEUE,
+        DEFAULT_PROCESS_K8S_NAMESPACE,
+        DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT,
+        DEFAULT_PROCESS_K8S_TOKEN_FILE,
+    )
+
+    s = Settings.from_env(env={})
+    assert s.process_k8s_namespace == DEFAULT_PROCESS_K8S_NAMESPACE == "stac-higher-runs"
+    assert s.process_k8s_token_file == DEFAULT_PROCESS_K8S_TOKEN_FILE == (
+        "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    )
+    assert s.process_k8s_ca_file == DEFAULT_PROCESS_K8S_CA_FILE == (
+        "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    )
+    assert s.process_k8s_run_service_account == DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT == (
+        "stac-higher-run"
+    )
+    assert s.process_k8s_default_queue == DEFAULT_PROCESS_K8S_DEFAULT_QUEUE == "process-runs"
+
+
+def test_k8s_settings_read_their_env_names():
+    s = Settings.from_env(
+        env={
+            "PROCESS_K8S_NAMESPACE": "runs",
+            "PROCESS_K8S_TOKEN_FILE": "/t",
+            "PROCESS_K8S_CA_FILE": "/c",
+            "PROCESS_K8S_RUN_SERVICE_ACCOUNT": "sa",
+            "PROCESS_K8S_DEFAULT_QUEUE": "q",
+        }
+    )
+    assert (
+        s.process_k8s_namespace,
+        s.process_k8s_token_file,
+        s.process_k8s_ca_file,
+        s.process_k8s_run_service_account,
+        s.process_k8s_default_queue,
+    ) == ("runs", "/t", "/c", "sa", "q")

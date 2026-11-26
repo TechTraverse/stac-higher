@@ -73,12 +73,22 @@ S3 in cloud; distinct from per-connection endpoints):
   (C-2, container-images spec §6, §11); ``REGISTRY_DOCKERHUB_USER`` /
   ``REGISTRY_DOCKERHUB_TOKEN`` -- the optional deployment Docker Hub
   credential (spec §5, ISSUES I-125).
+- ``PROCESS_EXECUTOR`` -- ``docker`` (default) or ``kubernetes`` (K-5); any
+  other value fails startup. ``PROCESS_K8S_NAMESPACE``, ``PROCESS_K8S_API_URL``
+  (default: the in-cluster ``KUBERNETES_SERVICE_HOST/PORT``),
+  ``PROCESS_K8S_TOKEN_FILE``, ``PROCESS_K8S_CA_FILE``,
+  ``PROCESS_K8S_RUN_SERVICE_ACCOUNT``, ``PROCESS_K8S_DEFAULT_QUEUE`` and
+  ``PROCESS_K8S_REGISTRY_MIRRORS`` (a JSON object, registry host -> mirror
+  prefix) configure the Kubernetes executor.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import urllib.parse
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -212,6 +222,24 @@ DEFAULT_PROCESS_EXTRACT_MAX_RUNNING = 4
 #: `isolated` until the egress proxy (spec §11) exists; the pipeline enforces
 #: it at launch independently of the app's write gate.
 DEFAULT_PROCESS_NETWORK_MAX = "isolated"
+#: K-5 (process-compute spec §3.3, §6): the process-run executor backends
+#: (``PROCESS_EXECUTOR``); the value is what ``process_runs.executor_backend``
+#: holds. Pinned by ``tests/contract-fixtures/process-executor.json``.
+PROCESS_EXECUTORS = ("docker", "kubernetes")
+DEFAULT_PROCESS_EXECUTOR = "docker"
+#: K-5 (spec §6.1): every run Job and Secret lives in this one namespace.
+DEFAULT_PROCESS_K8S_NAMESPACE = "stac-higher-runs"
+#: K-5: the pipeline pod's projected ServiceAccount token and the cluster CA,
+#: read per request (bound tokens rotate).
+DEFAULT_PROCESS_K8S_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+DEFAULT_PROCESS_K8S_CA_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+#: K-5 (K5-R14): the token-less ServiceAccount every run pod runs as.
+DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT = "stac-higher-run"
+#: K-5: the Kueue LocalQueue a run goes to when its profile names none.
+DEFAULT_PROCESS_K8S_DEFAULT_QUEUE = "process-runs"
+#: K-5: plain http:// to the API server only to these hosts (the unit tests'
+#: fake API server; never a real cluster).
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 #: K-1: unset means the repo checkout's ``infra/hardware-profiles/local.json``;
 #: the image sets it to its copy of the deployment's profile set.
 DEFAULT_PROCESS_HARDWARE_PROFILES_FILE: str | None = None
@@ -294,6 +322,77 @@ def _parse_network_max(value: str) -> str:
     if v not in NETWORK_LEVELS:
         raise ValueError(f"PROCESS_NETWORK_MAX must be one of {NETWORK_LEVELS}, got {value!r}")
     return v
+
+
+def _parse_process_executor(value: str | None) -> str:
+    """K-5 (K5-R18): a misspelt backend must not run silently on Docker, so
+    anything outside ``PROCESS_EXECUTORS`` fails startup. Blank = the default."""
+    v = (value or "").strip().lower() or DEFAULT_PROCESS_EXECUTOR
+    if v not in PROCESS_EXECUTORS:
+        raise ValueError(
+            f"PROCESS_EXECUTOR must be one of {PROCESS_EXECUTORS}, got {value!r}"
+        )
+    return v
+
+
+def _parse_k8s_api_url(env: Mapping[str, str]) -> str | None:
+    """K-5: ``PROCESS_K8S_API_URL``, else the in-cluster
+    ``https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT`` (an IPv6
+    host bracketed); None outside a cluster. ``https`` always; ``http`` only
+    to a loopback host (the unit tests' fake API server)."""
+    raw = (env.get("PROCESS_K8S_API_URL") or "").strip()
+    if not raw:
+        host = (env.get("KUBERNETES_SERVICE_HOST") or "").strip()
+        if not host:
+            return None
+        port = (env.get("KUBERNETES_SERVICE_PORT") or "443").strip()
+        raw = f"https://[{host}]:{port}" if ":" in host else f"https://{host}:{port}"
+    parsed = urllib.parse.urlparse(raw)
+    try:
+        hostname = parsed.hostname
+        parsed.port  # noqa: B018 -- raises ValueError on a malformed port
+    except ValueError as err:
+        raise ValueError(f"PROCESS_K8S_API_URL is not a URL: {raw!r}") from err
+    if not hostname:
+        raise ValueError(f"PROCESS_K8S_API_URL needs a host, got {raw!r}")
+    if parsed.scheme == "https":
+        return raw
+    if parsed.scheme == "http" and hostname in _LOOPBACK_HOSTS:
+        return raw
+    raise ValueError(
+        "PROCESS_K8S_API_URL must be https:// (http:// only to a loopback host), "
+        f"got {raw!r}"
+    )
+
+
+def _parse_registry_mirrors(value: str | None) -> dict[str, str]:
+    """K-5 (K5-R12): a JSON object ``{"<registry host>": "<mirror prefix>"}``;
+    blank = no mirrors. A key must be a registry host (the image-reference
+    grammar's host: no scheme, no path); a value a non-empty prefix with no
+    scheme, stored without a trailing slash."""
+    from pipeline.images.reference import IMAGE_HOST_RE
+
+    raw = (value or "").strip()
+    if not raw:
+        return {}
+    what = "PROCESS_K8S_REGISTRY_MIRRORS"
+    try:
+        doc = json.loads(raw)
+    except ValueError as err:
+        raise ValueError(f"{what} must be a JSON object: {err}") from err
+    if not isinstance(doc, dict):
+        raise ValueError(f"{what} must be a JSON object of registry host -> mirror prefix")
+    mirrors: dict[str, str] = {}
+    for host, prefix in doc.items():
+        if not isinstance(host, str) or IMAGE_HOST_RE.fullmatch(host) is None:
+            raise ValueError(f"{what}: {host!r} is not a registry host")
+        if not isinstance(prefix, str) or not prefix.strip("/ ") or "://" in prefix:
+            raise ValueError(
+                f"{what}: the mirror for {host!r} must be a registry prefix without a "
+                f"scheme, got {prefix!r}"
+            )
+        mirrors[host] = prefix.strip().rstrip("/")
+    return mirrors
 
 
 def _parse_allow_hosts(raw: str | None) -> frozenset[str]:
@@ -494,6 +593,20 @@ class Settings:
     #: K-1: path of the hardware-profile document — see DEFAULT_PROCESS_HARDWARE_PROFILES_FILE.
     process_hardware_profiles_file: str | None = DEFAULT_PROCESS_HARDWARE_PROFILES_FILE
     process_input_stage_concurrency: int = DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY
+    #: K-5 (spec §6): which executor runs process runs and image scans -- see
+    #: PROCESS_EXECUTORS. Only ``kubernetes`` reads the ``process_k8s_*`` fields.
+    process_executor: str = DEFAULT_PROCESS_EXECUTOR
+    process_k8s_namespace: str = DEFAULT_PROCESS_K8S_NAMESPACE
+    #: K-5: the API server; resolved in from_env. None = not in a cluster.
+    process_k8s_api_url: str | None = None
+    process_k8s_token_file: str = DEFAULT_PROCESS_K8S_TOKEN_FILE
+    process_k8s_ca_file: str = DEFAULT_PROCESS_K8S_CA_FILE
+    process_k8s_run_service_account: str = DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT
+    process_k8s_default_queue: str = DEFAULT_PROCESS_K8S_DEFAULT_QUEUE
+    #: K-5 (K5-R12): registry host -> pull-through mirror prefix, applied to
+    #: every image a run Job pulls. A plain dict: the frozen dataclass is
+    #: never hashed.
+    process_k8s_registry_mirrors: Mapping[str, str] = field(default_factory=dict)
     #: C-2 image scanner (spec §6, §11) -- see the DEFAULT_IMAGE_SCANNER_* constants.
     image_scanner_image: str = DEFAULT_IMAGE_SCANNER_IMAGE
     process_scanner_network: str = DEFAULT_PROCESS_SCANNER_NETWORK
@@ -658,6 +771,21 @@ class Settings:
                     "PROCESS_INPUT_STAGE_CONCURRENCY",
                     str(DEFAULT_PROCESS_INPUT_STAGE_CONCURRENCY),
                 )
+            ),
+            process_executor=_parse_process_executor(env.get("PROCESS_EXECUTOR")),
+            process_k8s_namespace=_optional(env.get("PROCESS_K8S_NAMESPACE"))
+            or DEFAULT_PROCESS_K8S_NAMESPACE,
+            process_k8s_api_url=_parse_k8s_api_url(env),
+            process_k8s_token_file=_optional(env.get("PROCESS_K8S_TOKEN_FILE"))
+            or DEFAULT_PROCESS_K8S_TOKEN_FILE,
+            process_k8s_ca_file=_optional(env.get("PROCESS_K8S_CA_FILE"))
+            or DEFAULT_PROCESS_K8S_CA_FILE,
+            process_k8s_run_service_account=_optional(env.get("PROCESS_K8S_RUN_SERVICE_ACCOUNT"))
+            or DEFAULT_PROCESS_K8S_RUN_SERVICE_ACCOUNT,
+            process_k8s_default_queue=_optional(env.get("PROCESS_K8S_DEFAULT_QUEUE"))
+            or DEFAULT_PROCESS_K8S_DEFAULT_QUEUE,
+            process_k8s_registry_mirrors=_parse_registry_mirrors(
+                env.get("PROCESS_K8S_REGISTRY_MIRRORS")
             ),
             image_scanner_image=_optional(env.get("IMAGE_SCANNER_IMAGE"))
             or DEFAULT_IMAGE_SCANNER_IMAGE,
