@@ -1,0 +1,49 @@
+# Kueue v0.20.8's admission webhooks and how scripts/kueue-narrow-webhooks.py
+# installs them (K-6 review R3; docs/ISSUES.md I-186):
+#   narrowed    namespaceSelector replaced by the runs namespace only
+#   kueue-only  no namespaceSelector; matches only Kueue's own API group
+# scripts/check-kueue.sh fails when the pinned release's list differs, so a
+# Kueue bump that adds or re-scopes a webhook is reviewed here first.
+mappwrapper.kb.io narrowed
+mclusterqueue.kb.io kueue-only
+mdeployment.kb.io narrowed
+mjaxjob.kb.io narrowed
+mjob.kb.io narrowed
+mjobset.kb.io narrowed
+mleaderworkerset.kb.io narrowed
+mmpijob.kb.io narrowed
+mpaddlejob.kb.io narrowed
+mpod.kb.io narrowed
+mpytorchjob.kb.io narrowed
+mraycluster.kb.io narrowed
+mrayjob.kb.io narrowed
+mrayservice.kb.io narrowed
+mresourceflavor.kb.io kueue-only
+msparkapplication.kb.io narrowed
+mstatefulset.kb.io narrowed
+mtfjob.kb.io narrowed
+mtrainjob.kb.io narrowed
+mworkload.kb.io kueue-only
+mxgboostjob.kb.io narrowed
+vappwrapper.kb.io narrowed
+vclusterqueue.kb.io kueue-only
+vcohort.kb.io kueue-only
+vdeployment.kb.io narrowed
+vjaxjob.kb.io narrowed
+vjob.kb.io narrowed
+vjobset.kb.io narrowed
+vleaderworkerset.kb.io narrowed
+vmpijob.kb.io narrowed
+vpaddlejob.kb.io narrowed
+vpod.kb.io narrowed
+vpytorchjob.kb.io narrowed
+vraycluster.kb.io narrowed
+vrayjob.kb.io narrowed
+vrayservice.kb.io narrowed
+vresourceflavor.kb.io kueue-only
+vsparkapplication.kb.io narrowed
+vstatefulset.kb.io narrowed
+vtfjob.kb.io narrowed
+vtrainjob.kb.io narrowed
+vworkload.kb.io kueue-only
+vxgboostjob.kb.io narrowed

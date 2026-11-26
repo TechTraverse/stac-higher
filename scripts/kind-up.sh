@@ -15,8 +15,8 @@
 #   kind.env           what the kind test modules read (`set -a; . kind.env`)
 # It does not build or load the run image (the workflow overlaps that with
 # cluster creation); it prints the commands a local user runs for it.
-# Needs: docker, kind, kubectl, curl, sha256sum or shasum. Never prints the
-# token.
+# Needs: docker, kind, kubectl, curl, uv, sha256sum or shasum. Never prints
+# the token.
 set -euo pipefail
 
 out=${1:?usage: scripts/kind-up.sh <out-dir>}
@@ -54,7 +54,12 @@ curl -sSfL -o "$out/kueue-manifests.yaml" \
   "https://github.com/kubernetes-sigs/kueue/releases/download/${KUEUE_VERSION}/manifests.yaml"
 sha256_check "$KUEUE_MANIFESTS_SHA256" "$out/kueue-manifests.yaml" \
   || die "Kueue manifests.yaml does not match KUEUE_MANIFESTS_SHA256 (infra/kueue/kueue.env)"
-k apply --server-side -f "$out/kueue-manifests.yaml" >/dev/null
+# K-6 review R3 (docs/ISSUES.md I-186): Kueue's webhooks match only the runs
+# namespace, so nothing elsewhere depends on Kueue being up.
+uv run --no-project --with pyyaml python -I scripts/kueue-narrow-webhooks.py \
+  "$out/kueue-manifests.yaml" "$out/kueue-manifests-narrowed.yaml" \
+  --namespace "$RUNS_NS" --expect infra/kueue/webhooks.txt
+k apply --server-side -f "$out/kueue-manifests-narrowed.yaml" >/dev/null
 k -n kueue-system create configmap kueue-manager-config \
   --from-file=controller_manager_config.yaml=infra/kueue/config/kind.yaml \
   --dry-run=client -o yaml \

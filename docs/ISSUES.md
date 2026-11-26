@@ -1735,15 +1735,30 @@ executor against a real API server, kubelet, Kueue and CNI, but not:
 - Tracked in: `.github/workflows/kind.yml`; R-8 (#144), R-11, K-8 (#16), K-9.
 - Found in: K-6 (2026-11-26).
 
-### I-186 · Kueue's pod webhook couples every pod creation to Kueue 🟡
-Kueue registers its pod mutating webhook (`mpod.kb.io`, failurePolicy
-`Fail`, every namespace except `kube-system` and `kueue-system`) even with
-the pod integration disabled, answering no-op. While Kueue's webhook is down,
-no pod in any other namespace (app, pipeline, catalog) can be created. The
-cluster installer should narrow that webhook's `namespaceSelector` to the
-runs namespace, or accept the coupling and monitor Kueue's availability.
-- Tracked in: `infra/kueue/README.md`; GitHub #16 (K-8).
-- Found in: K-6 (2026-11-26).
+### I-186 · Kueue's webhooks couple workloads in every namespace to Kueue 🟡
+Kueue v0.20.8's release manifests register 36 of their 43 admission
+webhooks with `failurePolicy: Fail` on every namespace except `kube-system`
+and `kueue-system`, including for integrations the configuration disables
+(they answer no-op): `mpod`/`vpod` (pods, CREATE and UPDATE: the executor's
+cancel patch included), `mdeployment`/`vdeployment` and
+`mstatefulset`/`vstatefulset` (CREATE and UPDATE), `mjob`/`vjob`, LeaderWorkerSet,
+JobSet, Ray, Kubeflow, AppWrapper, Spark and TrainJob. As released, while
+Kueue's webhook is down no pod, Deployment or StatefulSet anywhere outside
+those two namespaces can be created, and no Deployment or StatefulSet rolled.
+**Mitigation (K-6):** `scripts/kueue-narrow-webhooks.py` rewrites every
+webhook that has a namespaceSelector to match only the runs namespace before
+the manifests are applied; the seven without one (ClusterQueue,
+ResourceFlavor, Cohort, Workload) match only Kueue's own API. Kueue does not
+undo it: its only writer to webhook configurations, the cert-controller
+rotator, sets `clientConfig.caBundle` alone. `scripts/check-kueue.sh` fails
+when a Kueue release's webhooks differ from `infra/kueue/webhooks.txt`. The
+kind leg installs Kueue this way, proves it still admits, preempts and
+validates, and that with Kueue stopped a Deployment in `default` still
+creates while a run Job is refused. **Residual:** the cluster installer (K-8)
+must apply the same transform; a plain `kubectl apply` of Kueue's manifests
+restores the coupling.
+- Tracked in: `scripts/kueue-narrow-webhooks.py`, `infra/kueue/README.md`; GitHub #16 (K-8).
+- Found in: K-6 (2026-11-26); widened in its review.
 
 ### I-187 · The kind workflow is path-filtered and not a required check 🟢
 `.github/workflows/kind.yml` runs on changes to its paths and weekly

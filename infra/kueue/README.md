@@ -9,6 +9,7 @@ in `infra/kubernetes/`.
 | Path | What |
 |---|---|
 | `kueue.env` | The Kueue release (`KUEUE_VERSION`) and the sha256 of its `manifests.yaml`: the one pin. |
+| `webhooks.txt` | The release's admission webhooks and how the install narrows each to the runs namespace. |
 | `config/production.yaml` | The controller configuration every cluster installs: Kueue's default plus `waitForPodsReady` (10 m, three requeues, then deactivation), `integrations.frameworks: [batch/job]`, `manageJobsWithoutQueueName: false`. |
 | `config/kind.yaml` | The kind CI variant: identical except `waitForPodsReady` timing (30 s, one requeue, 5–10 s backoff). Never install it elsewhere. |
 | `common/workloadpriorityclasses.yaml` | `interactive` (1000) and `triggered` (100). |
@@ -27,7 +28,10 @@ capacity.
 ## Installing on a cluster
 
 1. Kueue: `manifests.yaml` for `KUEUE_VERSION`, checked against
-   `KUEUE_MANIFESTS_SHA256`, by `kubectl apply --server-side`.
+   `KUEUE_MANIFESTS_SHA256`, passed through `scripts/kueue-narrow-webhooks.py`
+   (every Kueue webhook then matches only the runs namespace; it refuses a
+   release whose webhooks differ from `webhooks.txt`), and applied with
+   `kubectl apply --server-side`.
 2. Its configuration: ConfigMap `kueue-manager-config` in `kueue-system`,
    key `controller_manager_config.yaml` = `config/production.yaml`, then
    `kubectl -n kueue-system rollout restart deploy/kueue-controller-manager`.
@@ -84,12 +88,15 @@ itself is a cluster prerequisite pinned by `kueue.env` and
 `config/production.yaml`. `scripts/check-kueue.sh --schemas-only <dir>`
 writes the pinned release's v1beta2 JSON schemas for kubeconform.
 
-## Kueue's pod webhook
+## Kueue's webhooks
 
-Kueue registers `mpod.kb.io` (failurePolicy `Fail`, every namespace but
-`kube-system` and `kueue-system`) even with the pod integration disabled (it
-answers no-op), so no pod anywhere can be created while Kueue's webhook is
-down (`docs/ISSUES.md`).
+As released, Kueue's framework webhooks (pods, Deployments, StatefulSets,
+Jobs and more; failurePolicy `Fail`) match every namespace but
+`kube-system` and `kueue-system`, even for disabled integrations, so a Kueue
+outage would stop pod, Deployment and StatefulSet creation cluster-wide.
+Step 1 narrows them to the runs namespace (`docs/ISSUES.md` I-186);
+`webhooks.txt` lists each webhook and its treatment, and a bump that changes
+the list fails `scripts/check-kueue.sh` until it is reviewed.
 
 ## Bumping Kueue
 

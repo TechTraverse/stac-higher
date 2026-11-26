@@ -53,6 +53,12 @@ mkdir -p "$work"
 curl -sSfL -o "$work/manifests.yaml" \
   "https://github.com/kubernetes-sigs/kueue/releases/download/${KUEUE_VERSION}/manifests.yaml"
 sha256_check "$KUEUE_MANIFESTS_SHA256" "$work/manifests.yaml"
+# K-6 review R3: every webhook the release registers is one the platform has
+# reviewed and narrows (infra/kueue/webhooks.txt).
+if ! $schemas_only; then
+  uv run --no-project --with pyyaml python -I scripts/kueue-narrow-webhooks.py \
+    "$work/manifests.yaml" "$work/manifests-narrowed.yaml" --expect infra/kueue/webhooks.txt
+fi
 curl -sSfL -o "$work/openapi2jsonschema.py" "$O2J_URL"
 sha256_check "$O2J_SHA256" "$work/openapi2jsonschema.py"
 

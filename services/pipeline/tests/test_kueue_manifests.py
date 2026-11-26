@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import importlib.util
 import json
 import re
 from pathlib import Path
@@ -427,3 +428,64 @@ def test_kind_runs_the_charts_kubernetes_minor():
     [cluster] = _load(KIND_DIR / "cluster.yaml")
     assert "image" not in json.dumps(cluster)  # the digest lives once
     assert cluster["networking"]["apiServerAddress"] == "127.0.0.1"
+
+
+# -- K-6 review R3: Kueue's webhooks narrowed to the runs namespace -------------
+
+NARROW_SCRIPT = REPO / "scripts" / "kueue-narrow-webhooks.py"
+
+
+def _narrower():
+    loaded = importlib.util.spec_from_file_location("kueue_narrow_webhooks", NARROW_SCRIPT)
+    module = importlib.util.module_from_spec(loaded)
+    loaded.loader.exec_module(module)
+    return module
+
+
+SAMPLE = """apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: untouched   # a comment that must survive
+data: {a: '1'}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: kueue-mutating-webhook-configuration
+webhooks:
+- name: mpod.kb.io
+  namespaceSelector:
+    matchExpressions:
+    - {key: kubernetes.io/metadata.name, operator: NotIn, values: [kube-system]}
+  rules:
+  - {apiGroups: [''], apiVersions: [v1], operations: [CREATE], resources: [pods]}
+- name: mworkload.kb.io
+  rules:
+  - {apiGroups: [kueue.x-k8s.io], apiVersions: [v1beta2], operations: [CREATE],
+     resources: [workloads]}
+"""
+
+
+def test_the_narrowing_rewrites_only_selectors_of_webhook_configurations():
+    text, seen = _narrower().narrow(SAMPLE, DEFAULT_PROCESS_K8S_NAMESPACE)
+    assert seen == {"mpod.kb.io": "narrowed", "mworkload.kb.io": "kueue-only"}
+    assert "# a comment that must survive" in text  # other documents verbatim
+    [_config, hooks] = [d for d in yaml.safe_load_all(text) if d]
+    by_name = {h["name"]: h for h in hooks["webhooks"]}
+    assert by_name["mpod.kb.io"]["namespaceSelector"] == {
+        "matchLabels": {"kubernetes.io/metadata.name": DEFAULT_PROCESS_K8S_NAMESPACE}}
+    assert "namespaceSelector" not in by_name["mworkload.kb.io"]
+
+
+def test_the_narrowing_refuses_an_unscoped_webhook_on_another_api():
+    unscoped = SAMPLE.replace("kueue.x-k8s.io", "apps")
+    with pytest.raises(SystemExit, match=r"mworkload\.kb\.io has no namespaceSelector"):
+        _narrower().narrow(unscoped, DEFAULT_PROCESS_K8S_NAMESPACE)
+
+
+def test_the_webhook_list_is_well_formed():
+    expected = _narrower().read_expected(str(KUEUE / "webhooks.txt"))
+    assert expected and set(expected.values()) <= {"narrowed", "kueue-only"}
+    assert {"mpod.kb.io", "vpod.kb.io", "mdeployment.kb.io", "vjob.kb.io"} <= set(expected)
+    assert all(expected[n] == "narrowed"
+               for n in ("mpod.kb.io", "vpod.kb.io", "mdeployment.kb.io", "vstatefulset.kb.io"))

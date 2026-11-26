@@ -610,8 +610,11 @@ def network_controls() -> dict:
                            == "Running"),
             what="the probe server running", timeout=120)
         ip = server["status"]["podIP"]
+        # Positive controls for every target the run test checks (K-6 review
+        # R6b): a run's False is trusted only where this pod's is True.
         before = [["server", ip, 8080, 20], ["external", rec["external"], 443, 3],
-                  ["imds", IMDS, 80, 2]]
+                  ["imds", IMDS, 80, 2],
+                  ["api", "$KUBERNETES_SERVICE_HOST", "$KUBERNETES_SERVICE_PORT", 3]]
         code, log = _kind.probe_pod(NETPOL_NAMESPACE, "client-open", _kind.REACH_CODE,
                                     env={"K6_TARGETS": json.dumps(before)})
         rec["open"] = _kind.reach_results(log) or {"exit": code, "log": log[-500:]}
@@ -682,12 +685,67 @@ def test_a_run_pod_cannot_reach_metadata_the_api_or_the_internet(network_control
         assert (pod.get("spec") or {}).get("hostNetwork") in (None, False), pod.get("spec")
         settled = results.get("settled")
         assert settled is not None, f"the probe printed no result: {log[-500:]}"
-        assert settled == {"imds": False, "external": False, "api": False}, (
-            f"OUTCOME 'reachable throughout': {results.get('settled_at_s')} s after start a "
-            f"run pod still reached {[k for k, v in settled.items() if v]} (t0={t0}, "
-            f"window={results.get('window')}); the default-deny does not select run pods or "
-            f"is not enforced for them. Controls without a policy: "
-            f"{network_controls.get('open')}")
-        assert (network_controls.get("open") or {}).get("external") is True, (
+        controls = network_controls.get("open") or {}
+        untestable = sorted(k for k in settled if controls.get(k) is not True)
+        observe("run-isolation-testable", testable=sorted(set(settled) - set(untestable)),
+                not_testable_here=untestable, controls=controls)
+        assert "external" not in untestable, (
             "the external-host check is vacuous: even with no policy a pod could not reach "
             f"{external}:443 ({network_controls})")
+        reached = sorted(k for k, v in settled.items() if v and k not in untestable)
+        assert reached == [], (
+            f"OUTCOME 'reachable throughout': {results.get('settled_at_s')} s after start a "
+            f"run pod still reached {reached} (t0={t0}, window={results.get('window')}); the "
+            "default-deny does not select run pods or is not enforced for them. Controls "
+            f"without a policy: {controls}; not testable here: {untestable}")
+
+
+# -- Kueue's webhooks narrowed to the runs namespace (K-6 review R3, I-186) ------
+# Last in the module: it stops Kueue's controller and restores it.
+
+
+def test_kueues_webhooks_reach_only_the_runs_namespace():
+    """Installed through scripts/kueue-narrow-webhooks.py, every Kueue webhook
+    with a namespace selector matches only the runs namespace, so with Kueue
+    down a Deployment elsewhere still creates while a run Job is refused."""
+    narrowed = {"matchLabels": {"kubernetes.io/metadata.name": NAMESPACE}}
+    wide = []
+    for kind in ("mutatingwebhookconfiguration", "validatingwebhookconfiguration"):
+        for config in (kget(kind, namespace=None) or {}).get("items") or []:
+            if not config["metadata"]["name"].startswith("kueue-"):
+                continue
+            wide += [h["name"] for h in config["webhooks"]
+                     if "namespaceSelector" in h and h["namespaceSelector"] != narrowed]
+    assert wide == [], f"Kueue webhooks still matching other namespaces: {wide}"
+
+    deployment = {
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "metadata": {"name": "k6-without-kueue", "namespace": "default"},
+        "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "k6"}},
+                 "template": {"metadata": {"labels": {"app": "k6"}}, "spec": {
+                     "containers": [{"name": "c", "image": _built_job()["spec"]["template"][
+                         "spec"]["containers"][0]["image"]}]}}},
+    }
+    rec: dict = {}
+    try:
+        kubectl("-n", "kueue-system", "scale", "deploy/kueue-controller-manager", "--replicas=0")
+        kubectl("-n", "kueue-system", "wait", "--for=delete", "pod",
+                "-l", "control-plane=controller-manager", "--timeout=120s", check=False)
+        elsewhere = kubectl("create", "--dry-run=server", "-f", "-",
+                            input=json.dumps(deployment), check=False)
+        rec["deployment_elsewhere"] = (elsewhere.returncode, elsewhere.stderr.strip()[:300])
+        refused = _refusal(DRY_RUN_JOBS, _built_job())
+        rec["run_job"] = (getattr(refused, "status", None),
+                          getattr(refused, "server_message", None))
+    finally:
+        kubectl("-n", "kueue-system", "scale", "deploy/kueue-controller-manager", "--replicas=1")
+        kubectl("-n", "kueue-system", "rollout", "status", "deploy/kueue-controller-manager",
+                "--timeout=300s", check=False, timeout=320)
+        _kind.wait_for(lambda: _refusal(DRY_RUN_JOBS, _built_job()), lambda err: err is None,
+                       what="Kueue's webhook answering again", timeout=120, interval=3)
+    observe("kueue-down", **rec)
+    assert rec["deployment_elsewhere"][0] == 0, (
+        f"with Kueue down a Deployment in `default` was refused: {rec['deployment_elsewhere']}")
+    assert rec["run_job"][0] is not None, (
+        "with Kueue down a run Job was admitted: Kueue's webhooks no longer guard the runs "
+        "namespace")

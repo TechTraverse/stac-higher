@@ -940,3 +940,13 @@ Asks A1–A6: **all taken** (A5's constants exist: `JOB_GONE_DETAIL`,
   `settled` (from 15 s). Only `settled` is asserted. The window is recorded
   as an observation and a `::warning::`, for the lead to rule on (ISSUES,
   R-8/R-11 strict enforcing mode, a possible executor mitigation).
+- **K6-R28 · Review fixes (R1–R8).** Each rule added in review has a rule id,
+  a mutation, a pure twin and a kind case. The Job policy now refuses
+  placement and host fields the executor never sets, requests that differ
+  from limits, and missing deadlines. Label rules admit an UPDATE that leaves
+  labels unchanged. A third policy limits Secret types. Kueue's webhooks are
+  narrowed to the runs namespace at install time
+  (`scripts/kueue-narrow-webhooks.py`, `infra/kueue/webhooks.txt`, checked by
+  `check-kueue.sh`); the kind leg proves that a Deployment elsewhere creates
+  with Kueue down. `KIND_MIN_TESTS = 61`, and xfails are allowed only when
+  named in `KIND_ALLOWED_XFAIL`.
