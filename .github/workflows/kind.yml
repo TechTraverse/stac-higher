@@ -1,0 +1,192 @@
+# K-6 (issue #14; process-compute spec §8): the Kubernetes executor meets a
+# real API server, kubelet and Kueue. A kind cluster (pinned node image) gets
+# the pinned Kueue release with infra/kueue/config/kind.yaml, K-5's
+# infra/kubernetes/ objects and infra/kueue/{common,kind}; the run image is
+# the real platform runtime, built and `kind load`ed; the integration suite
+# runs on the runner AS THE PIPELINE'S SERVICEACCOUNT (the admin kubeconfig is
+# the harness's only), and fails if anything skipped.
+#
+# NOT a required check: path-filtered (a skipped path-filtered workflow
+# reports nothing), plus a weekly run that catches upstream drift (K6-R14).
+# On failure: the `kind-diagnostics` artifact (never Secrets); always: the
+# `kind-evidence` artifact (JUnit XML and the recordings, observations.jsonl).
+name: Kind
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/kueue/**
+      - infra/kind/**
+      - infra/kubernetes/**
+      - infra/hardware-profiles/kind.json
+      - services/pipeline/src/pipeline/config.py
+      - services/pipeline/src/pipeline/process/executor.py
+      - services/pipeline/src/pipeline/process/factory.py
+      - services/pipeline/src/pipeline/process/hardware.py
+      - services/pipeline/src/pipeline/process/http_stream.py
+      - services/pipeline/src/pipeline/process/kube_api.py
+      - services/pipeline/src/pipeline/process/kubernetes_*.py
+      - services/pipeline/src/pipeline/process/launch.py
+      - services/pipeline/src/pipeline/process/reconcile.py
+      - services/pipeline/src/pipeline/process/watcher.py
+      - services/pipeline/tests/_admission_rules.py
+      - services/pipeline/tests/_kind.py
+      - services/pipeline/tests/_process_fake.py
+      - services/pipeline/tests/test_integration_kind_*.py
+      - services/pipeline/tests/test_kubernetes_rbac.py
+      - services/pipeline/uv.lock
+      - services/process-runtime/Dockerfile
+      - services/process-runtime/entrypoint.py
+      - services/process-runtime/docker-bake.hcl
+      - scripts/kind-up.sh
+      - scripts/kind-diagnostics.sh
+      - scripts/check-kueue.sh
+      - .github/scripts/kind-junit-gate.py
+      - .github/workflows/kind.yml
+  pull_request:
+    paths:
+      - infra/kueue/**
+      - infra/kind/**
+      - infra/kubernetes/**
+      - infra/hardware-profiles/kind.json
+      - services/pipeline/src/pipeline/config.py
+      - services/pipeline/src/pipeline/process/executor.py
+      - services/pipeline/src/pipeline/process/factory.py
+      - services/pipeline/src/pipeline/process/hardware.py
+      - services/pipeline/src/pipeline/process/http_stream.py
+      - services/pipeline/src/pipeline/process/kube_api.py
+      - services/pipeline/src/pipeline/process/kubernetes_*.py
+      - services/pipeline/src/pipeline/process/launch.py
+      - services/pipeline/src/pipeline/process/reconcile.py
+      - services/pipeline/src/pipeline/process/watcher.py
+      - services/pipeline/tests/_admission_rules.py
+      - services/pipeline/tests/_kind.py
+      - services/pipeline/tests/_process_fake.py
+      - services/pipeline/tests/test_integration_kind_*.py
+      - services/pipeline/tests/test_kubernetes_rbac.py
+      - services/pipeline/uv.lock
+      - services/process-runtime/Dockerfile
+      - services/process-runtime/entrypoint.py
+      - services/process-runtime/docker-bake.hcl
+      - scripts/kind-up.sh
+      - scripts/kind-diagnostics.sh
+      - scripts/check-kueue.sh
+      - .github/scripts/kind-junit-gate.py
+      - .github/workflows/kind.yml
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kind-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  static:
+    name: Kueue manifests · kubeconform
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: Install kubeconform
+        run: |
+          curl -sSfL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo install kubeconform /usr/local/bin/kubeconform
+      - name: Validate against Kueue's own CRDs
+        run: scripts/check-kueue.sh "$RUNNER_TEMP/check-kueue"
+
+  kind:
+    name: Kubernetes executor · kind + Kueue
+    needs: [static]
+    # Pinned like the e2e job (K6-R2): kind v0.33.0 on the ubuntu-latest
+    # image is unverified, and the runner must not change the cluster under
+    # the gate. Unpin when a weekly run on it is green.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/pipeline/uv.lock
+      - name: Install the pipeline
+        working-directory: services/pipeline
+        run: uv sync --frozen --extra dev
+      - uses: docker/setup-buildx-action@v4
+      # K6-R5: the real platform runtime, from its own context (the
+      # repo-root .dockerignore is not involved), reading the layer cache
+      # containers.yml writes and never writing it.
+      - name: Build the run image
+        uses: docker/bake-action@v6
+        with:
+          source: .
+          files: ./services/process-runtime/docker-bake.hcl
+          targets: runtime
+          load: true
+          set: |
+            runtime.tags=stac-higher-process-runtime:kind
+            runtime.platform=linux/amd64
+            runtime.cache-from=type=gha,scope=process-runtime
+      - name: Install kind and kubectl (pinned, checksummed)
+        run: |
+          set -euo pipefail
+          source infra/kind/versions.env
+          curl -sSfL -o kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  kind" | sha256sum -c -
+          curl -sSfL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  kubectl" | sha256sum -c -
+          sudo install kind kubectl /usr/local/bin/
+      - name: Create the cluster, install Kueue, apply RBAC, queues and policies
+        run: scripts/kind-up.sh "$RUNNER_TEMP/kind"
+      - name: Load the run image onto the node
+        run: kind load docker-image stac-higher-process-runtime:kind --name stac-higher
+      - name: Integration tests (as the pipeline ServiceAccount)
+        timeout-minutes: 25
+        working-directory: services/pipeline
+        env:
+          # K6-R16: the number of tests the two kind modules collect; raise it
+          # with every test added (a parametrized case counts once per case).
+          KIND_MIN_TESTS: "51"
+        run: |
+          set +e -uo pipefail  # the shell is -e by default: collect both results
+          set -a; source "$RUNNER_TEMP/kind/kind.env"; set +a
+          uv run pytest tests/test_integration_kind_executor.py tests/test_integration_kind_kueue.py \
+            -v -rA -p no:cacheprovider --junitxml="$RUNNER_TEMP/kind/junit.xml"
+          tests=$?
+          python3 -I "$GITHUB_WORKSPACE/.github/scripts/kind-junit-gate.py" \
+            "$RUNNER_TEMP/kind/junit.xml" "$KIND_MIN_TESTS" "$GITHUB_STEP_SUMMARY"
+          gate=$?
+          [ "$tests" -eq 0 ] && [ "$gate" -eq 0 ]
+      - name: Evidence (JUnit, recordings)
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/kind-evidence"
+          cp "$RUNNER_TEMP/kind/junit.xml" "$RUNNER_TEMP/kind/observations.jsonl" \
+            "$RUNNER_TEMP/kind-evidence/" 2>/dev/null || true
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kind-evidence
+          path: ${{ runner.temp }}/kind-evidence
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Diagnostics
+        if: failure()
+        run: scripts/kind-diagnostics.sh "$RUNNER_TEMP/kind-diagnostics" "$RUNNER_TEMP/kind/admin.kubeconfig"
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kind-diagnostics
+          path: ${{ runner.temp }}/kind-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
