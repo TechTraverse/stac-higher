@@ -14,3 +14,40 @@ metadata:
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
+{{- /* The allow policies: egress only, each selecting on BOTH run labels with matchLabels (K-5's label contract,
+infra/kubernetes/README.md; names and labels pinned by tests/contract-fixtures/process-k8s-cluster.json).
+DNS goes only to processRuns.network.dns (one address each, validateRuns); the object store to
+aws.s3PrefixListCidrs and processRuns.network.objectStore. No allow covers link-local: object-store CIDRs are
+refused when they could (validateRuns), and the scanner's 0.0.0.0/0 carves out 169.254.0.0/16 (IMDS, the Pod
+Identity agent). */ -}}
+{{- $net := .Values.processRuns.network -}}
+{{- $dnsRule := dict "to" $net.dns "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53)) -}}
+{{- $storePeers := list -}}
+{{- range $cidr := .Values.aws.s3PrefixListCidrs -}}
+{{- $storePeers = append $storePeers (dict "ipBlock" (dict "cidr" $cidr)) -}}
+{{- end -}}
+{{- $storePeers = concat $storePeers $net.objectStore -}}
+{{- $storePorts := list -}}
+{{- range $p := $net.objectStorePorts -}}
+{{- $storePorts = append $storePorts (dict "protocol" "TCP" "port" (int $p)) -}}
+{{- end -}}
+{{- $storeRule := dict "to" $storePeers "ports" $storePorts -}}
+{{- $scanRule := dict "to" (list (dict "ipBlock" (dict "cidr" "0.0.0.0/0" "except" (concat (list "169.254.0.0/16") $net.scannerEgressExcept)))) "ports" (list (dict "protocol" "TCP" "port" 443)) -}}
+{{- range $p := list (list "stac-higher-runs-process-isolated" "process" "isolated" (list $dnsRule $storeRule)) (list "stac-higher-runs-image-scan" "image_scan" "scanner" (list $dnsRule $storeRule $scanRule)) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ index $p 0 }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "stac-higher.labels" (dict "root" $ "component" "process-runs") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      stac-higher.run-kind: {{ index $p 1 }}
+      stac-higher.network-level: {{ index $p 2 }}
+  policyTypes: [Egress]
+  egress:
+    {{- toYaml (index $p 3) | nindent 4 }}
+{{- end }}

@@ -5,8 +5,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  CHART_DIR,
   REPO_DIR,
   helmReady,
+  ipv4Contains,
   loadYamlDir,
   renderChart,
   scenario,
@@ -188,5 +190,107 @@ describe.skipIf(!helmReady())("runs plane: namespace and RBAC", () => {
     const docs = render({ processRuns: { createNamespace: false } });
     expect(docs.filter((d) => d.kind === "Namespace")).toEqual([]);
     expect(inRuns(docs).some((d) => d.kind === "Role")).toBe(true);
+  });
+});
+
+/** A TS port of kubernetes_manifests.isolation_problem (K-5): null when the policy isolates every run pod. */
+function isolationProblem(policy: Doc | undefined): string | null {
+  if (!policy) return "does not exist";
+  const spec = policy.spec;
+  if (typeof spec !== "object" || spec === null || Array.isArray(spec)) return "has no spec";
+  const sel = spec.podSelector;
+  if (typeof sel !== "object" || sel === null || Array.isArray(sel) || Object.keys(sel).length !== 0) return "must select every pod";
+  const types = Array.isArray(spec.policyTypes) ? spec.policyTypes : [];
+  if (!types.includes("Ingress") || !types.includes("Egress")) return "must list Ingress and Egress";
+  if ((spec.ingress?.length ?? 0) > 0 || (spec.egress?.length ?? 0) > 0) return "allows traffic";
+  return null;
+}
+
+const runsPolicies = (docs: Doc[]) => inRuns(docs).filter((d) => d.kind === "NetworkPolicy");
+const policy = (docs: Doc[], name: string) => runsPolicies(docs).find((d) => d.metadata.name === name)!;
+const DNS_PORTS = [{ protocol: "UDP", port: 53 }, { protocol: "TCP", port: 53 }];
+const LINK_LOCAL = ["169.254.169.254", "169.254.170.23"];
+
+describe.skipIf(!helmReady())("runs plane: NetworkPolicies", () => {
+  it("the default-deny policy is exactly what the executor checks", () => {
+    const deny = policy(render(), FIXTURE.defaultDenyPolicy);
+    expect(isolationProblem(deny)).toBeNull();
+    expect(Object.keys(deny.spec).sort()).toEqual(["podSelector", "policyTypes"]);
+    // The port itself is checked against the executor's failure modes.
+    expect(isolationProblem({ ...deny, spec: { ...deny.spec, podSelector: { matchLabels: { a: "b" } } } })).not.toBeNull();
+    expect(isolationProblem({ ...deny, spec: { ...deny.spec, egress: [{}] } })).not.toBeNull();
+  });
+
+  it("no other policy can select run pods", () => {
+    for (const values of [{}, { networkPolicy: { enabled: false } }]) {
+      const pols = runsPolicies(render(values));
+      expect(pols.map((p) => p.metadata.name).sort()).toEqual(
+        [FIXTURE.defaultDenyPolicy, ...Object.keys(FIXTURE.allowPolicies)].sort(),
+      );
+      for (const [name, labels] of Object.entries(FIXTURE.allowPolicies)) {
+        const p = pols.find((x) => x.metadata.name === name)!;
+        expect(p.spec.podSelector).toEqual({ matchLabels: labels });
+        expect(p.spec.policyTypes).toEqual(["Egress"]);
+      }
+      for (const p of pols) expect(p.spec.ingress, p.metadata.name).toBeUndefined();
+    }
+  });
+
+  it("isolated runs reach DNS and the object store only", () => {
+    const minio = { podSelector: { matchLabels: { app: "minio" } }, namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "storage" } } };
+    const docs = render({
+      aws: { s3PrefixListCidrs: ["192.0.2.0/24", "198.51.100.0/24"] },
+      processRuns: { network: { objectStore: [minio], objectStorePorts: [443, 9000] } },
+    });
+    const egress = policy(docs, "stac-higher-runs-process-isolated").spec.egress;
+    expect(egress).toEqual([
+      { to: [{ ipBlock: { cidr: "10.100.0.10/32" } }], ports: DNS_PORTS },
+      {
+        to: [{ ipBlock: { cidr: "192.0.2.0/24" } }, { ipBlock: { cidr: "198.51.100.0/24" } }, minio],
+        ports: [{ protocol: "TCP", port: 443 }, { protocol: "TCP", port: 9000 }],
+      },
+    ]);
+  });
+
+  it("scans also get 443, never link-local", () => {
+    const docs = render({ processRuns: { network: { scannerEgressExcept: ["10.0.0.0/16"] } } });
+    const egress = policy(docs, "stac-higher-runs-image-scan").spec.egress;
+    expect(egress.slice(0, 2)).toEqual(policy(docs, "stac-higher-runs-process-isolated").spec.egress);
+    expect(egress[2]).toEqual({
+      to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16", "10.0.0.0/16"] } }],
+      ports: [{ protocol: "TCP", port: 443 }],
+    });
+    expect(egress).toHaveLength(3);
+  });
+
+  it.each([
+    ["base", {}],
+    ["r5", {}],
+    ["example", {}],
+  ])("no runs policy reaches link-local (%s)", (name) => {
+    const r =
+      name === "example"
+        ? renderChart({ valuesFiles: [join(CHART_DIR, "../../examples/aws-eks/values.yaml")] })
+        : renderChart({ valuesFiles: name === "r5" ? [join(CHART_DIR, "tests/values/r5-helm-values.yaml"), join(CHART_DIR, "tests/values/r5-deployment.yaml")] : scenario(name) });
+    expect(r.ok, r.stderr).toBe(true);
+    const blocks = runsPolicies(r.docs as Doc[]).flatMap((p) => (p.spec.egress ?? []).flatMap((e: any) => e.to ?? []))
+      .filter((peer: any) => peer.ipBlock)
+      .map((peer: any) => peer.ipBlock);
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const b of blocks) {
+      for (const ip of LINK_LOCAL) {
+        const open = ipv4Contains(b.cidr, ip) && !(b.except ?? []).some((e: string) => ipv4Contains(e, ip));
+        expect(open, `${b.cidr} reaches ${ip}`).toBe(false);
+      }
+    }
+  });
+
+  it("a kube-dns style DNS peer renders unchanged", () => {
+    const kubeDns = {
+      namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } },
+      podSelector: { matchLabels: { "k8s-app": "kube-dns" } },
+    };
+    const docs = render({ processRuns: { network: { dns: [kubeDns] } } });
+    expect(policy(docs, "stac-higher-runs-process-isolated").spec.egress[0]).toEqual({ to: [kubeDns], ports: DNS_PORTS });
   });
 });
