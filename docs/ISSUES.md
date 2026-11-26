@@ -1703,7 +1703,11 @@ without `activeDeadlineSeconds` or beyond the platform's maximum timeout (pod
 a memory-backed, sized `emptyDir` (node disk), probes and lifecycle hooks (a
 kubelet request from the node, outside NetworkPolicy), and any Job with an
 owner reference or that is not suspended on arrival (a Job controlled by a
-Kueue-managed Job is not suspended by Kueue and runs outside the quota); and a
+Kueue-managed Job is not suspended by Kueue and runs outside the quota), and
+any label or annotation in Kueue's domains (`kueue.x-k8s.io/`, its
+subdomains) beyond the Job's queue-name and priority-class labels, on the Job
+or its pod template (Kueue reads such keys to bind a Job to a prebuilt
+Workload, change its admission or its accounting); and a
 third policy admits only `Opaque` and `kubernetes.io/dockerconfigjson`
 Secrets (no ServiceAccount-token Secret).
 **Not bounded:** `nodeSelector`, `tolerations` and `runtimeClassName`, which

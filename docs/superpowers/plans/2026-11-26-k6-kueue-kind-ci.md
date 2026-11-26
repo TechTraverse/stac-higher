@@ -979,3 +979,20 @@ Asks A1–A6: **all taken** (A5's constants exist: `JOB_GONE_DETAIL`,
   The Kueue-down test waits for zero ready webhook endpoints. `KIND_MIN_TESTS`
   is 69. R-8 asks for a profile param resource to bound `nodeSelector`,
   `tolerations` and `runtimeClassName`.
+- **K6-R31 · `[kueue-keys]` (security review).** On Job CREATE, no label or
+  annotation key may match `^([^/]*\.)?kueue\.x-k8s\.io/` on the Job or
+  its pod template, except the Job's `queue-name` and `priority-class`
+  labels, which are the only Kueue keys `build_job` sets.
+  - Source read: Kueue v0.20.8 `pkg/controller/constants/constants.go`, which
+    defines prebuilt-workload-name, max-exec-time-seconds,
+    wait-for-pods-ready, priority-boost, workload-allowed-resource-flavors,
+    safe-to-forcefully-delete, job-owner-*, the `provreq.kueue.x-k8s.io/`
+    prefix and more; `pkg/constants` defines elastic-job and
+    resource-in-use.
+  - Kueue's mutating job webhook (`JobWebhook.Default`: default LocalQueue,
+    default WorkloadPriorityClass, suspend, managedBy, the elastic-job gate)
+    adds no key to a Job that already carries both labels.
+  - Three mutations: a prebuilt-workload label, a Kueue annotation on the
+    template, and a `provreq.kueue.x-k8s.io/` annotation.
+  - A static test ties the CEL's pattern and allowlist to the twin's.
+  - `KIND_MIN_TESTS = 72`.

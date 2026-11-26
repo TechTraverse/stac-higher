@@ -141,6 +141,29 @@ spec:
           has(e.secretRef.name) && e.secretRef.name == object.metadata.name))
       message: "[env-from] A run Job's containers may read only the Secret named after the Job (envFrom secretRef)."
       reason: Invalid
+    # Kueue reads many keys in its domains on a Job (v0.20.8
+    # pkg/controller/constants: prebuilt-workload-name, max-exec-time-seconds,
+    # wait-for-pods-ready, priority-boost, workload-allowed-resource-flavors,
+    # provreq.kueue.x-k8s.io/*, …; elsewhere elastic-job, job-min-parallelism,
+    # pod-group and topology keys) that change how it admits or accounts the
+    # Job. A run Job carries only queue-name and priority-class, on the Job;
+    # Kueue's mutating webhook adds none to a Job that already has both.
+    - expression: >-
+        !variables.create ||
+        ((!has(object.metadata.labels) || object.metadata.labels.all(k,
+            !k.matches('^([^/]*\\.)?kueue\\.x-k8s\\.io/') ||
+            k in ['kueue.x-k8s.io/queue-name', 'kueue.x-k8s.io/priority-class'])) &&
+         (!has(object.metadata.annotations) || object.metadata.annotations.all(k,
+            !k.matches('^([^/]*\\.)?kueue\\.x-k8s\\.io/'))) &&
+         (!has(object.spec.template.metadata) ||
+          ((!has(object.spec.template.metadata.labels) ||
+            object.spec.template.metadata.labels.all(k,
+              !k.matches('^([^/]*\\.)?kueue\\.x-k8s\\.io/'))) &&
+           (!has(object.spec.template.metadata.annotations) ||
+            object.spec.template.metadata.annotations.all(k,
+              !k.matches('^([^/]*\\.)?kueue\\.x-k8s\\.io/'))))))
+      message: "[kueue-keys] A run Job may carry only the kueue.x-k8s.io/queue-name and priority-class labels; no other Kueue label or annotation, on the Job or its pods."
+      reason: Invalid
     # Placement and priority are Kueue's and the profile's: no pinned node,
     # no pod priority (it would preempt other workloads), no affinity, spread,
     # gates, claims or pod-level resources; the scheduler and preemption

@@ -118,6 +118,21 @@ def _long_grace(job: dict) -> None:
     _pod(job)["terminationGracePeriodSeconds"] = 3600
 
 
+def _prebuilt_workload(job: dict) -> None:
+    # Bind the Job to an existing Workload instead of getting its own.
+    job["metadata"]["labels"]["kueue.x-k8s.io/prebuilt-workload-name"] = "someone-elses"
+
+
+def _kueue_template_annotation(job: dict) -> None:
+    job["spec"]["template"]["metadata"]["annotations"][
+        "kueue.x-k8s.io/workload-allowed-resource-flavors"] = "any-flavor"
+
+
+def _provreq_annotation(job: dict) -> None:
+    # A sibling Kueue domain.
+    job["metadata"]["annotations"] = {"provreq.kueue.x-k8s.io/maxRunDurationSeconds": "60"}
+
+
 def _drop_queue_label(job: dict) -> None:
     del job["metadata"]["labels"][QUEUE_LABEL]
 
@@ -245,6 +260,9 @@ JOB_RULES: tuple[JobRule, ...] = (
     JobRule("env-from", "envFrom", _foreign_env_from),
     JobRule("env-from", "envFrom", _config_map_env_from),
     JobRule("env-from", "envFrom", _prefixed_env_from),
+    JobRule("kueue-keys", "kueue keys", _prebuilt_workload),
+    JobRule("kueue-keys", "kueue keys", _kueue_template_annotation),
+    JobRule("kueue-keys", "kueue keys", _provreq_annotation),
     JobRule("placement", "placement", _pinned_node),
     JobRule("host", "host", _host_aliases),
     JobRule("resources", "resources", _under_declared_cpu),

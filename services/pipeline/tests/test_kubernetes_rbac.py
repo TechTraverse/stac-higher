@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 from pathlib import Path
 
 import pytest
@@ -239,6 +240,24 @@ MAX_GRACE_SECONDS = 30
 PROBE_FIELDS = ("livenessProbe", "readinessProbe", "startupProbe", "lifecycle")
 
 
+#: K-6 security review: a label or annotation key in Kueue's domains
+#: (kueue.x-k8s.io/ and its subdomains, e.g. provreq.kueue.x-k8s.io/). Kueue
+#: reads many such keys on a Job (prebuilt-workload-name, max-exec-time-seconds,
+#: job-min-parallelism, elastic-job, wait-for-pods-ready, …); a run Job may
+#: carry only the two the executor sets, on the Job itself.
+KUEUE_KEY = re.compile(r"^([^/]*\.)?kueue\.x-k8s\.io/")
+JOB_KUEUE_LABELS = ("kueue.x-k8s.io/queue-name", "kueue.x-k8s.io/priority-class")
+
+
+def _foreign_kueue_keys(job: dict) -> list[str]:
+    meta = job["metadata"]
+    template = job["spec"]["template"].get("metadata") or {}
+    keys = [k for k in meta.get("labels") or {} if k not in JOB_KUEUE_LABELS]
+    keys += list(meta.get("annotations") or {})
+    keys += list(template.get("labels") or {}) + list(template.get("annotations") or {})
+    return [k for k in keys if KUEUE_KEY.match(k)]
+
+
 def kueue_mutated(job: dict) -> dict:
     """The Job as validating admission sees it. Kueue's mutating job webhook
     (mjob, v0.20.8 ``ApplyDefaultForSuspend``) runs in the mutating phase,
@@ -297,6 +316,8 @@ def vap_job_violations(job: dict) -> list[str]:
         for source in container.get("envFrom") or []:
             if set(source) != {"secretRef"} or source["secretRef"].get("name") != name:
                 problems.append("envFrom")
+    if _foreign_kueue_keys(job):
+        problems.append("kueue keys")
     if _set_beyond_default(pod, PLACEMENT_FIELDS):
         problems.append("placement")
     if _set_beyond_default(pod, HOST_FIELDS):

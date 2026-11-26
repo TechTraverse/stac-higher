@@ -30,6 +30,8 @@ from pipeline.process.executor import PRIORITIES, RUN_ID_LABEL, RUN_KIND_LABEL
 from pipeline.process.hardware import kubernetes_backend, load_hardware_profiles
 from test_kubernetes_rbac import (
     HOST_FIELDS,
+    JOB_KUEUE_LABELS,
+    KUEUE_KEY,
     MAX_GRACE_SECONDS,
     MAX_JOB_DEADLINE_SECONDS,
     MAX_POD_DEADLINE_SECONDS,
@@ -314,6 +316,23 @@ def test_the_cel_and_k5s_pure_rules_are_the_same_rules():
     assert _pure_problems("vap_pod_update_violations") == {
         r.problem for r in rules.POD_UPDATE_RULES}
     assert _pure_problems("vap_secret_violations") == {r.problem for r in rules.SECRET_RULES}
+
+
+def test_the_kueue_keys_rule_is_the_twins():
+    """The CEL's key pattern and allowlist are the pure twin's, and the
+    allowlist is exactly the labels build_job sets in Kueue's domain."""
+    jobs = _one(_policies(), "ValidatingAdmissionPolicy", rules.JOB_POLICY)
+    [cel] = [v["expression"] for v in jobs["spec"]["validations"]
+             if rules.rule_id_of(v["message"]) == "kueue-keys"]
+    patterns = set(re.findall(r"matches\('([^']*)'\)", cel))
+    assert patterns == {KUEUE_KEY.pattern.replace("\\", "\\\\")}
+    [allowed] = re.findall(r"k in \[([^\]]*)\]", cel)
+    assert tuple(re.findall(r"'([^']*)'", allowed)) == JOB_KUEUE_LABELS
+    built = _built_job()
+    keys = [*built["metadata"]["labels"], *built["spec"]["template"]["metadata"]["labels"],
+            *built["spec"]["template"]["metadata"].get("annotations", {})]
+    assert {k for k in keys if KUEUE_KEY.match(k)} == set(JOB_KUEUE_LABELS)
+    assert KUEUE_KEY.match("provreq.kueue.x-k8s.io/x") and not KUEUE_KEY.match("kueue.io/x")
 
 
 def test_the_deadline_bounds_are_the_platforms():

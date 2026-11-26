@@ -150,7 +150,7 @@ jobs:
         env:
           # K6-R16: the number of tests the two kind modules collect; raise it
           # with every test added (a parametrized case counts once per case).
-          KIND_MIN_TESTS: "69"
+          KIND_MIN_TESTS: "72"
           # K6-R16: test functions allowed to xfail (comma-separated); empty.
           KIND_ALLOWED_XFAIL: ""
         run: |

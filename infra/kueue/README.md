@@ -64,7 +64,9 @@ node escapes NetworkPolicy); `activeDeadlineSeconds` on the Job (≤ 87 000 s)
 and its pods (≤ 86 400 s, the platform's maximum timeout) and a termination
 grace ≤ 30 s; no owner reference, and suspended on arrival (Kueue's mutating
 webhook, which runs first, suspends every queue-labelled Job except one whose
-controller owner is a Job Kueue manages; such a Job would escape the quota).
+controller owner is a Job Kueue manages; such a Job would escape the quota);
+no label or annotation in Kueue's domains but the Job's queue-name and
+priority-class labels (on the Job or its pod template).
 An UPDATE that leaves a Job's labels unchanged is always
 admitted (a Job that predates the policy can still be deleted).
 `nodeSelector`, `tolerations` and `runtimeClassName` come from the hardware
