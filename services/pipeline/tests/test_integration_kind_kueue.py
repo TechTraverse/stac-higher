@@ -490,16 +490,31 @@ def test_each_secret_rule_refuses_its_violation(rule):
 @pytest.mark.parametrize("rule", rules.JOB_RULES,
                          ids=[f"{r.rule_id}-{i}" for i, r in enumerate(rules.JOB_RULES)])
 def test_each_job_rule_refuses_its_violation(rule):
-    """K6-R21: the CEL catches what its pure twin catches (same mutation)."""
-    job = _built_job()
-    rule.mutate(job)
-    err = _refusal(DRY_RUN_JOBS, job)
-    assert err is not None, f"[{rule.rule_id}] the server admitted the violating Job"
-    observe("job-rule", rule=rule.rule_id, status=err.status, message=err.server_message)
-    assert err.status == 422, (err.status, err.server_message)
-    if not rule.api_may_answer_first:
-        assert f"[{rule.rule_id}]" in err.server_message, err.server_message
-        assert rules.JOB_POLICY in err.server_message, err.server_message
+    """K6-R21: the CEL catches what its pure twin catches (same mutation).
+    The API server names the first failing rule in policy order; a violation
+    that breaks more than one may name any of them (all are recorded)."""
+    ex = _kind.executor()
+    owner = None
+    if rule.owner:
+        # N1: a real, queue-labelled run Job to own the violating Job, so
+        # Kueue's webhook decides on suspension as it would in an attack.
+        owner = ex.submit(code_spec(printing(120)))
+    with _kind.reaping(ex, *([owner] if owner else [])):
+        job = _built_job()
+        rule.mutate(job)
+        if owner is not None:
+            uid = _kind.job_of(owner)["metadata"]["uid"]
+            job = json.loads(json.dumps(job).replace(rules.OWNER_NAME, owner.id)
+                             .replace(rules.OWNER_UID, uid))
+        err = _refusal(DRY_RUN_JOBS, job)
+        assert err is not None, f"[{rule.rule_id}] the server admitted the violating Job"
+        named = [i for i in rule.rule_ids if f"[{i}]" in err.server_message]
+        observe("job-rule", rule=rule.rule_id, expected=rule.rule_ids, named=named,
+                status=err.status, message=err.server_message)
+        assert err.status == 422, (err.status, err.server_message)
+        if not rule.api_may_answer_first:
+            assert named, (rule.rule_ids, err.server_message)
+            assert rules.JOB_POLICY in err.server_message, err.server_message
 
 
 def test_the_pipeline_may_change_a_run_pod_only_by_lowering_its_deadline():
@@ -716,6 +731,14 @@ def test_a_run_pod_cannot_reach_metadata_the_api_or_the_internet(network_control
 # Last in the module: it stops Kueue's controller and restores it.
 
 
+def _ready_webhook_endpoints() -> int:
+    slices = kget("endpointslices", namespace="kueue-system",
+                  selector="kubernetes.io/service-name=kueue-webhook-service") or {}
+    return sum(1 for item in slices.get("items") or []
+               for endpoint in item.get("endpoints") or []
+               if (endpoint.get("conditions") or {}).get("ready") is not False)
+
+
 def test_kueues_webhooks_reach_only_the_runs_namespace():
     """Installed through scripts/kueue-narrow-webhooks.py, every Kueue webhook
     with a namespace selector matches only the runs namespace, so with Kueue
@@ -749,8 +772,11 @@ def test_kueues_webhooks_reach_only_the_runs_namespace():
     rec: dict = {}
     try:
         kubectl("-n", "kueue-system", "scale", "deploy/kueue-controller-manager", "--replicas=0")
-        kubectl("-n", "kueue-system", "wait", "--for=delete", "pod",
-                "-l", "control-plane=controller-manager", "--timeout=120s", check=False)
+        # N5: Kueue is down only once its webhook Service has no ready endpoint
+        # (a terminating controller may still answer); fails the test if not.
+        _kind.wait_for(_ready_webhook_endpoints, lambda n: n == 0,
+                       what="Kueue's webhook Service with no ready endpoint", timeout=120,
+                       interval=2)
         elsewhere = kubectl("create", "--dry-run=server", "-f", "-",
                             input=json.dumps(deployment), check=False)
         rec["deployment_elsewhere"] = (elsewhere.returncode, elsewhere.stderr.strip()[:300])

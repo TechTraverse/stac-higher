@@ -961,3 +961,21 @@ Asks A1–A6: **all taken** (A5's constants exist: `JOB_GONE_DETAIL`,
   (`NETWORK_POLICY_ENFORCING_MODE=strict` on the VPC CNI; the Auto Mode
   NodeClass's `networkPolicy: DefaultDeny`, to be proven live) and adds the
   live check that a run connecting at t=0 is blocked.
+- **K6-R30 · Re-review fixes (N1–N7).** Four new Job CREATE rules, each with
+  a rule id, mutations, a pure twin and kind cases:
+  - `[suspended]`, then `[no-owner]` (in that order): no owner references,
+    and the Job must arrive suspended.
+    - The pure twin models Kueue's mutating webhook (`kueue_mutated`), which
+      runs before validating admission.
+    - Kueue leaves a Job unsuspended when its controller owner is a Job Kueue
+      manages; the kind case gives the violating Job a real run Job as its
+      controller owner, which shows that path.
+    - With no owner, an explicit `suspend: false` cannot reach the policy
+      unsuspended, because Kueue rewrites it.
+  - `[no-probes]`: no probes or lifecycle hooks.
+  - `[deadlines]`: now also bounded — pod 86 400 s, Job 87 000 s, grace 30 s.
+    A static test ties these numbers to the code.
+  - `[volumes]`: now memory-backed and sized only.
+  The Kueue-down test waits for zero ready webhook endpoints. `KIND_MIN_TESTS`
+  is 69. R-8 asks for a profile param resource to bound `nodeSelector`,
+  `tolerations` and `runtimeClassName`.

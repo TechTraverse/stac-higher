@@ -58,8 +58,14 @@ own labels with its run id; ServiceAccount `stac-higher-run` without a token;
 ephemeral containers; no `env`; `envFrom` only the Secret named after the
 Job; no placement or host setting the executor never makes (`nodeName`, pod
 priority, affinity, spread, gates, host namespaces, host aliases, DNS, …);
-requests equal to limits for cpu and memory; `activeDeadlineSeconds` on the
-Job and its pods. An UPDATE that leaves a Job's labels unchanged is always
+requests equal to limits for cpu and memory; only memory-backed, sized
+`emptyDir` volumes; no probes or lifecycle hooks (a kubelet request from the
+node escapes NetworkPolicy); `activeDeadlineSeconds` on the Job (≤ 87 000 s)
+and its pods (≤ 86 400 s, the platform's maximum timeout) and a termination
+grace ≤ 30 s; no owner reference, and suspended on arrival (Kueue's mutating
+webhook, which runs first, suspends every queue-labelled Job except one whose
+controller owner is a Job Kueue manages; such a Job would escape the quota).
+An UPDATE that leaves a Job's labels unchanged is always
 admitted (a Job that predates the policy can still be deleted).
 `nodeSelector`, `tolerations` and `runtimeClassName` come from the hardware
 profile and are not bounded (R-8: a param resource from the chart's

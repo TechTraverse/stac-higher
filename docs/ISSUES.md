@@ -1697,9 +1697,15 @@ pipeline afterwards (the pod-update rule). After review it also refuses, on
 Job CREATE, any placement or host setting the executor never makes (a pinned
 `nodeName`, a pod priority class, affinity, spread constraints, scheduling
 gates, host namespaces, host aliases, DNS settings, …), containers whose
-requests differ from their limits (Kueue counts requests), and a Job or pod
-without `activeDeadlineSeconds`; and a third policy admits only `Opaque` and
-`kubernetes.io/dockerconfigjson` Secrets (no ServiceAccount-token Secret).
+requests differ from their limits (Kueue counts requests), a Job or pod
+without `activeDeadlineSeconds` or beyond the platform's maximum timeout (pod
+86 400 s, Job 87 000 s), a termination grace above 30 s, a volume that is not
+a memory-backed, sized `emptyDir` (node disk), probes and lifecycle hooks (a
+kubelet request from the node, outside NetworkPolicy), and any Job with an
+owner reference or that is not suspended on arrival (a Job controlled by a
+Kueue-managed Job is not suspended by Kueue and runs outside the quota); and a
+third policy admits only `Opaque` and `kubernetes.io/dockerconfigjson`
+Secrets (no ServiceAccount-token Secret).
 **Not bounded:** `nodeSelector`, `tolerations` and `runtimeClassName`, which
 the executor copies from the hardware profile and Kueue mutates at admission;
 a compromised pipeline can place a run on any node those can reach. R-8 can

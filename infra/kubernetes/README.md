@@ -92,6 +92,16 @@ as-is.
   images are not supported on that cluster (I-183).
 - **Node PID limit.** Set the kubelet's `podPidsLimit`; runs have no per-pod
   PID limit of their own (I-180).
+- **Bound what the admission policy leaves open (I-184).** A run Job's
+  `nodeSelector`, `tolerations` and `runtimeClassName` come from the hardware
+  profile, so `infra/kueue/common/admission-policy.yaml` cannot fix them
+  without knowing the profiles. Render a param resource from the chart's
+  profile set (each profile's `backend.kubernetes` node selector,
+  tolerations and runtime class), bind the Job policy to it, and add one
+  rule: the pod template's three fields equal some profile's (Kueue's own
+  additions at admission are an UPDATE, which the shape rules do not check).
+- **Kueue installed with narrowed webhooks** (`scripts/kueue-narrow-webhooks.py`,
+  I-186) and the cluster's CNI in a strict enforcing mode (below, I-188).
 
 ## The admission policy (K-6, #14)
 
