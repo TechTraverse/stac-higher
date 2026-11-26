@@ -1,0 +1,5 @@
+# R-8: a cluster team owns the runs namespace and every cluster-scoped object; the chart renders only the runs
+# namespace's own objects (ServiceAccount, Role/RoleBinding, NetworkPolicies, LocalQueue).
+processRuns:
+  createNamespace: false
+  clusterObjects: false

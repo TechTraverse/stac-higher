@@ -11,8 +11,14 @@ on:
       - infra/compose.auth-enforced.yml
       - infra/proxy-policy/Dockerfile
       - scripts/check-helm.sh
+      - scripts/check-kueue.sh
       - app/src/__tests__/helm/**
       - .github/workflows/helm.yml
+      # R-8: the drift tests read these
+      - infra/kueue/**
+      - infra/kubernetes/**
+      - infra/hardware-profiles/**
+      - tests/contract-fixtures/process-k8s-cluster.json
   pull_request:
     paths:
       - infra/helm/**
@@ -22,8 +28,14 @@ on:
       - infra/compose.auth-enforced.yml
       - infra/proxy-policy/Dockerfile
       - scripts/check-helm.sh
+      - scripts/check-kueue.sh
       - app/src/__tests__/helm/**
       - .github/workflows/helm.yml
+      # R-8: the drift tests read these
+      - infra/kueue/**
+      - infra/kubernetes/**
+      - infra/hardware-profiles/**
+      - tests/contract-fixtures/process-k8s-cluster.json
   workflow_dispatch:
 
 permissions:
@@ -76,10 +88,20 @@ jobs:
           echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c -
           tar -xzf kubeconform.tar.gz kubeconform
           sudo install kubeconform /usr/local/bin/kubeconform
+      - uses: astral-sh/setup-uv@v10.0.1
+      # R-8: Kueue v0.20.8's own v1beta2 schemas (K6-R15: the datree catalog is not trusted for Kueue v0.20),
+      # generated from the release kueue.env pins; no kubeconform needed for this step.
+      - name: Kueue schemas
+        run: scripts/check-kueue.sh --schemas-only "$RUNNER_TEMP/kueue"
+      # -skip NodeClass (R-8 plan R8-R12): the catalog's eks.amazonaws.com NodeClass schema predates
+      # advancedCompute and is closed, so -strict would reject podPidsLimit; a render test pins the NodeClass
+      # and R-11 runs kubectl apply --dry-run=server on it. The Kueue location comes before the catalog.
       - name: kubeconform
         run: |
           kubeconform -strict -summary -kubernetes-version 1.34.0 \
+            -skip NodeClass \
             -schema-location default \
+            -schema-location "$RUNNER_TEMP/kueue/schemas/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/6ab3493622cd387923a2d0da5234f53e80e1bd28/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             rendered/*.yaml
       # The rendered output is scanned, not the chart directory: trivy

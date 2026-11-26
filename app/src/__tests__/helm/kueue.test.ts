@@ -322,3 +322,26 @@ describe.skipIf(!helmReady())("the placement policy (addendum A-R3)", () => {
     expect(placementList(render(KIND_VALUES))).toEqual([none]);
   });
 });
+
+describe.skipIf(!helmReady())("R-8 scenario files", () => {
+  it("kind-kueue reproduces infra/kueue/kind and kind.json", () => {
+    const docs = render({}, "kind-kueue");
+    const want = loadYamlDir(join(REPO_DIR, "infra/kueue/kind"));
+    expect(byKey(ofKinds(docs, ["ResourceFlavor", "ClusterQueue"]).map(stripChartMetadata))).toEqual(byKey(want));
+    expect(profilesOf(docs)).toEqual(KIND_JSON);
+  });
+
+  it("gpu-family carries the shared GPU family and profile", () => {
+    const docs = render({}, "gpu-family");
+    expect(profile(profilesOf(docs), "gpu-l4")).toEqual({ ...GPU_PROFILE, backend: { kubernetes: profile(profilesOf(render(gpuValues())), "gpu-l4").backend.kubernetes } });
+    expect(docs.filter((d) => d.kind === "ResourceFlavor").map((d) => d.metadata.name)).toEqual(["cpu-default", "gpu-l4"]);
+  });
+
+  it("cluster-owned and nodes-external render only what they own", () => {
+    const owned = render({}, "cluster-owned");
+    expect(owned.filter((d) => !d.metadata.namespace).map((d) => d.kind)).toEqual([]);
+    const ext = render({}, "nodes-external");
+    expect(ext.filter((d) => d.kind === "NodePool" || d.kind === "NodeClass")).toEqual([]);
+    expect(ext.some((d) => d.kind === "ClusterQueue")).toBe(true);
+  });
+});

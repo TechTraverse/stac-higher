@@ -1,0 +1,4 @@
+# R-8: the cluster provides the runs nodes (self-managed Karpenter, README example); no NodeClass or NodePool.
+processRuns:
+  nodes:
+    enabled: false

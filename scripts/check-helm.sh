@@ -31,3 +31,7 @@ run existing-irsa "$vals/base.yaml" "$vals/existing-secrets.yaml" "$vals/irsa.ya
 run r5 "$vals/r5-helm-values.yaml" "$vals/r5-deployment.yaml"
 run demo-seed "$vals/base.yaml" "$vals/demo-seed.yaml"
 run example infra/examples/aws-eks/values.yaml
+run kind-kueue "$vals/base.yaml" "$vals/kind-kueue.yaml"
+run cluster-owned "$vals/base.yaml" "$vals/cluster-owned.yaml"
+run gpu-family "$vals/base.yaml" "$vals/gpu-family.yaml"
+run nodes-external "$vals/base.yaml" "$vals/nodes-external.yaml"
