@@ -108,8 +108,10 @@ spec:
       reason: Invalid
     - expression: >-
         !variables.create || !has(variables.pod.volumes) ||
-        variables.pod.volumes.all(v, has(v.emptyDir))
-      message: "[volumes] A run Job's pods may mount emptyDir volumes only."
+        variables.pod.volumes.all(v, has(v.emptyDir) &&
+          has(v.emptyDir.medium) && v.emptyDir.medium == 'Memory' &&
+          has(v.emptyDir.sizeLimit))
+      message: "[volumes] A run Job's pods may mount only memory-backed, sized emptyDir volumes."
       reason: Invalid
     - expression: >-
         !variables.create || !has(variables.pod.imagePullSecrets) ||
@@ -183,10 +185,44 @@ spec:
           c.resources.requests == c.resources.limits)
       message: "[resources] A run Job's containers must request exactly their cpu and memory limits."
       reason: Invalid
+    # Probes and lifecycle hooks run in the kubelet: an httpGet or tcpSocket
+    # with a host is a request from the node, outside every NetworkPolicy.
     - expression: >-
         !variables.create ||
-        (has(object.spec.activeDeadlineSeconds) && has(variables.pod.activeDeadlineSeconds))
-      message: "[deadlines] A run Job and its pods must carry activeDeadlineSeconds."
+        variables.pod.containers.all(c,
+          !has(c.livenessProbe) && !has(c.readinessProbe) && !has(c.startupProbe) &&
+          !has(c.lifecycle))
+      message: "[no-probes] A run Job's containers may not have probes or lifecycle hooks."
+      reason: Invalid
+    # A run's timeout is at most 86400 s (the app's TIMEOUT_SECONDS_MAX, the
+    # pipeline's MAX_TIMEOUT_SECONDS); the Job's deadline adds the executor's
+    # 600 s slack; a pod ignoring SIGTERM is killed within 30 s (the executor
+    # sets 10). test_kueue_manifests.py ties these numbers to the code.
+    - expression: >-
+        !variables.create ||
+        (has(object.spec.activeDeadlineSeconds) &&
+         object.spec.activeDeadlineSeconds <= 87000 &&
+         has(variables.pod.activeDeadlineSeconds) &&
+         variables.pod.activeDeadlineSeconds <= 86400 &&
+         has(variables.pod.terminationGracePeriodSeconds) &&
+         variables.pod.terminationGracePeriodSeconds <= 30)
+      message: "[deadlines] A run Job and its pods must carry activeDeadlineSeconds within the platform's maximum, and a termination grace of at most 30 s."
+      reason: Invalid
+    # Kueue's mutating job webhook runs before every validating policy and
+    # suspends a queue-labelled Job, so every Job the executor builds arrives
+    # here suspended (the kind leg's dry runs prove it). Kueue skips that --
+    # no suspension, no Workload, no quota -- for a Job whose controller owner
+    # is a Job it manages (v0.20.8 WorkloadShouldBeSuspended), and the
+    # pipeline can read a run Job's uid. The executor never sets an owner.
+    - expression: >-
+        !variables.create ||
+        (has(object.spec.suspend) && object.spec.suspend == true)
+      message: "[suspended] A run Job must reach admission suspended, so Kueue admits it."
+      reason: Invalid
+    - expression: >-
+        !variables.create || !has(object.metadata.ownerReferences) ||
+        size(object.metadata.ownerReferences) == 0
+      message: "[no-owner] A run Job may not have an owner (an owned Job escapes Kueue)."
       reason: Invalid
 ---
 apiVersion: admissionregistration.k8s.io/v1

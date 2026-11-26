@@ -9,6 +9,7 @@ Security ``restricted``."""
 from __future__ import annotations
 
 import asyncio
+import copy
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from pipeline.config import (
 )
 from pipeline.process import kubernetes_executor as kx
 from pipeline.process import kubernetes_manifests as km
+from pipeline.process.config import MAX_TIMEOUT_SECONDS
 from pipeline.process.executor import RegistryAuth, RunHandle
 
 INFRA = ROLE_PATH.parent
@@ -225,6 +227,40 @@ def _requests_equal_limits(container: dict) -> bool:
     return {"cpu", "memory"} <= set(limits) and requests == limits
 
 
+#: K-6 re-review N2: the deadlines a run Job may carry. A run's timeout is at
+#: most MAX_TIMEOUT_SECONDS (the app's TIMEOUT_SECONDS_MAX; the scan policy's
+#: own cap is the same); the Job's deadline adds the executor's slack; a pod
+#: ignoring SIGTERM is killed within the grace (the executor sets 10 s).
+MAX_POD_DEADLINE_SECONDS = MAX_TIMEOUT_SECONDS
+MAX_JOB_DEADLINE_SECONDS = MAX_TIMEOUT_SECONDS + km.JOB_DEADLINE_SLACK_SECONDS
+MAX_GRACE_SECONDS = 30
+#: N4: kubelet-run probes and hooks (an httpGet/tcpSocket with a host is a
+#: request from the node, outside every NetworkPolicy).
+PROBE_FIELDS = ("livenessProbe", "readinessProbe", "startupProbe", "lifecycle")
+
+
+def kueue_mutated(job: dict) -> dict:
+    """The Job as validating admission sees it. Kueue's mutating job webhook
+    (mjob, v0.20.8 ``ApplyDefaultForSuspend``) runs in the mutating phase,
+    before every validating policy, and suspends a Job with a queue label --
+    unless its controller owner is a Job Kueue manages
+    (``WorkloadShouldBeSuspended``). The model treats any controller owner as
+    Kueue-managed (in the tests it is a run Job)."""
+    job = copy.deepcopy(job)
+    labels = job["metadata"].get("labels") or {}
+    owned = any(o.get("controller") for o in job["metadata"].get("ownerReferences") or [])
+    if labels.get("kueue.x-k8s.io/queue-name") and not owned:
+        job["spec"]["suspend"] = True
+    return job
+
+
+def _disk_safe(volume: dict) -> bool:
+    """N3: memory-backed and sized, as the executor builds it."""
+    empty_dir = volume.get("emptyDir")
+    return (set(volume) == {"name", "emptyDir"} and isinstance(empty_dir, dict)
+            and empty_dir.get("medium") == "Memory" and "sizeLimit" in empty_dir)
+
+
 def vap_job_violations(job: dict) -> list[str]:
     """Job CREATE in the runs namespace."""
     problems = []
@@ -247,7 +283,7 @@ def vap_job_violations(job: dict) -> list[str]:
         problems.append("serviceAccountName")
     if pod.get("automountServiceAccountToken") is not False:
         problems.append("automountServiceAccountToken")
-    if any(set(v) != {"name", "emptyDir"} for v in pod.get("volumes") or []):
+    if not all(_disk_safe(v) for v in pod.get("volumes") or []):
         problems.append("volumes")
     for secret in pod.get("imagePullSecrets") or []:
         if secret.get("name") != f"{name}-pull":
@@ -267,8 +303,21 @@ def vap_job_violations(job: dict) -> list[str]:
         problems.append("host")
     if not all(_requests_equal_limits(c) for c in pod["containers"]):
         problems.append("resources")
-    if "activeDeadlineSeconds" not in job["spec"] or "activeDeadlineSeconds" not in pod:
+    if any(key in c for c in pod["containers"] for key in PROBE_FIELDS):
+        problems.append("probes")
+    job_deadline = job["spec"].get("activeDeadlineSeconds")
+    pod_deadline = pod.get("activeDeadlineSeconds")
+    if (job_deadline is None or job_deadline > MAX_JOB_DEADLINE_SECONDS
+            or pod_deadline is None or pod_deadline > MAX_POD_DEADLINE_SECONDS
+            or pod.get("terminationGracePeriodSeconds", 30) > MAX_GRACE_SECONDS):
         problems.append("deadlines")
+    # N1: Kueue does not suspend (or give a Workload to) a Job whose
+    # controller owner is a Job it manages; such a Job would run outside the
+    # quota. The executor's Jobs have no owner and are suspended by Kueue.
+    if job["spec"].get("suspend") is not True:
+        problems.append("suspended")
+    if job["metadata"].get("ownerReferences"):
+        problems.append("owner references")
     return problems
 
 
@@ -316,7 +365,8 @@ def test_every_built_job_passes_the_admission_policy(overrides):
     name = km.job_name(run.kind, run.run_id, "a1b2c3")  # the executor's own naming
     pull = f"{name}-pull" if run.registry_auth else None
     job = km.build_job(run, name=name, ctx=ctx, pull_secret=pull)
-    assert vap_job_violations(job) == []
+    assert "suspend" not in job["spec"] and "ownerReferences" not in job["metadata"]
+    assert vap_job_violations(kueue_mutated(job)) == []
 
 
 def test_the_admission_rules_catch_what_they_exist_for():
@@ -327,8 +377,9 @@ def test_the_admission_rules_catch_what_they_exist_for():
     pod["volumes"].append({"name": "s", "secret": {"secretName": "another-run"}})
     pod["containers"][0]["envFrom"].append({"secretRef": {"name": "another-run"}})
     del job["metadata"]["labels"]["kueue.x-k8s.io/queue-name"]
-    assert set(vap_job_violations(job)) == {"serviceAccountName", "volumes", "envFrom",
-                                            "queue label"}
+    # Without a queue label Kueue does not suspend the Job either.
+    assert set(vap_job_violations(kueue_mutated(job))) == {
+        "serviceAccountName", "volumes", "envFrom", "queue label", "suspended"}
 
 
 def test_the_executors_only_pod_update_passes_the_admission_policy():
@@ -351,3 +402,13 @@ def test_every_secret_the_executor_builds_passes_the_admission_policy():
                km.build_pull_secret(run, name=NAME, owner_uid="u", ctx=ctx)]
     assert [vap_secret_violations(s) for s in secrets] == [[], []]
     assert vap_secret_violations({"type": "kubernetes.io/service-account-token"})
+
+
+def test_the_deadline_bounds_admit_the_longest_run_the_platform_allows():
+    ctx = km.JobContext("stac-higher-runs", "process-runs", "stac-higher-run", {})
+    job = km.build_job(spec(timeout_seconds=MAX_TIMEOUT_SECONDS), name=NAME, ctx=ctx,
+                       pull_secret=None)
+    assert km.TERMINATION_GRACE_SECONDS <= MAX_GRACE_SECONDS
+    assert vap_job_violations(kueue_mutated(job)) == []
+    job["spec"]["template"]["spec"]["activeDeadlineSeconds"] += 1
+    assert vap_job_violations(kueue_mutated(job)) == ["deadlines"]

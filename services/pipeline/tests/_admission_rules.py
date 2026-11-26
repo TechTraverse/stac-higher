@@ -61,6 +61,61 @@ class JobRule:
     problem: str
     mutate: Callable[[dict], None]
     api_may_answer_first: bool = False
+    #: Other rules the same violation also breaks, as (rule id, problem), in
+    #: the policy's order (the API server reports the FIRST failing rule).
+    also: tuple[tuple[str, str], ...] = ()
+    #: The mutation names an owner Job (OWNER_NAME / OWNER_UID placeholders,
+    #: replaced by a real run Job's on kind).
+    owner: bool = False
+
+    @property
+    def problems(self) -> list[str]:
+        return [self.problem, *(problem for _id, problem in self.also)]
+
+    @property
+    def rule_ids(self) -> list[str]:
+        return [self.rule_id, *(rule_id for rule_id, _problem in self.also)]
+
+
+OWNER_NAME = "OWNER-JOB-NAME"
+OWNER_UID = "00000000-0000-4000-8000-0000000000ff"
+_SUSPENDED = ("suspended", "suspended")
+
+
+def _owner(controller: bool) -> Callable[[dict], None]:
+    def mutate(job: dict) -> None:
+        job["metadata"]["ownerReferences"] = [{
+            "apiVersion": "batch/v1", "kind": "Job", "name": OWNER_NAME, "uid": OWNER_UID,
+            "controller": controller, "blockOwnerDeletion": False,
+        }]
+    return mutate
+
+
+def _memory_without_size(job: dict) -> None:
+    del _pod(job)["volumes"][0]["emptyDir"]["sizeLimit"]
+
+
+def _disk_backed_scratch(job: dict) -> None:
+    del _pod(job)["volumes"][0]["emptyDir"]["medium"]  # node disk, not memory
+
+
+def _liveness_probe(job: dict) -> None:
+    # A kubelet-run request from the node, outside every NetworkPolicy.
+    _pod(job)["containers"][0]["livenessProbe"] = {
+        "httpGet": {"host": "169.254.169.254", "path": "/", "port": 80}}
+
+
+def _pre_stop_hook(job: dict) -> None:
+    _pod(job)["containers"][0]["lifecycle"] = {
+        "preStop": {"tcpSocket": {"host": "10.0.0.1", "port": 5432}}}
+
+
+def _over_long_job_deadline(job: dict) -> None:
+    job["spec"]["activeDeadlineSeconds"] = 10 * 86_400
+
+
+def _long_grace(job: dict) -> None:
+    _pod(job)["terminationGracePeriodSeconds"] = 3600
 
 
 def _drop_queue_label(job: dict) -> None:
@@ -167,7 +222,8 @@ def _foreign_env_from(job: dict) -> None:
 
 
 JOB_RULES: tuple[JobRule, ...] = (
-    JobRule("queue-label", "queue label", _drop_queue_label),
+    # Without a queue label Kueue does not suspend the Job either.
+    JobRule("queue-label", "queue label", _drop_queue_label, also=(_SUSPENDED,)),
     JobRule("priority-class", "priority class", _unknown_priority),
     JobRule("run-labels", "run labels", _scanner_process_run),
     JobRule("run-labels", "run labels", _scan_shaped_process_job),
@@ -182,6 +238,8 @@ JOB_RULES: tuple[JobRule, ...] = (
     JobRule("no-ephemeral-containers", "ephemeralContainers", _ephemeral_container,
             api_may_answer_first=True),
     JobRule("volumes", "volumes", _projected_token_volume),
+    JobRule("volumes", "volumes", _memory_without_size),
+    JobRule("volumes", "volumes", _disk_backed_scratch),
     JobRule("no-env", "env", _plain_env),
     JobRule("no-env", "env", _secret_key_env),
     JobRule("env-from", "envFrom", _foreign_env_from),
@@ -191,6 +249,16 @@ JOB_RULES: tuple[JobRule, ...] = (
     JobRule("host", "host", _host_aliases),
     JobRule("resources", "resources", _under_declared_cpu),
     JobRule("deadlines", "deadlines", _no_job_deadline),
+    JobRule("deadlines", "deadlines", _over_long_job_deadline),
+    JobRule("deadlines", "deadlines", _long_grace),
+    JobRule("no-probes", "probes", _liveness_probe),
+    JobRule("no-probes", "probes", _pre_stop_hook),
+    # Owned by a run Job but not its controller: Kueue still suspends it.
+    JobRule("no-owner", "owner references", _owner(controller=False), owner=True),
+    # Controlled by a run Job: Kueue leaves it unsuspended, so [suspended]
+    # (earlier in the policy) is what the API server reports.
+    JobRule("suspended", "suspended", _owner(controller=True), owner=True,
+            also=(("no-owner", "owner references"),)),
 )
 
 
@@ -276,7 +344,7 @@ SECRET_RULES: tuple[SecretRule, ...] = (
 )
 
 RULE_IDS: frozenset[str] = frozenset(
-    [r.rule_id for r in JOB_RULES] + [r.rule_id for r in POD_UPDATE_RULES]
+    [i for r in JOB_RULES for i in r.rule_ids] + [r.rule_id for r in POD_UPDATE_RULES]
     + [r.rule_id for r in SECRET_RULES]
 )
 

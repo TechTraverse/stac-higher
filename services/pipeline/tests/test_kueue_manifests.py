@@ -30,8 +30,12 @@ from pipeline.process.executor import PRIORITIES, RUN_ID_LABEL, RUN_KIND_LABEL
 from pipeline.process.hardware import kubernetes_backend, load_hardware_profiles
 from test_kubernetes_rbac import (
     HOST_FIELDS,
+    MAX_GRACE_SECONDS,
+    MAX_JOB_DEADLINE_SECONDS,
+    MAX_POD_DEADLINE_SECONDS,
     PLACEMENT_FIELDS,
     SECRET_TYPES,
+    kueue_mutated,
     vap_job_violations,
     vap_pod_update_violations,
     vap_secret_violations,
@@ -304,11 +308,26 @@ def test_the_cel_and_k5s_pure_rules_are_the_same_rules():
     assert yaml_ids == rules.RULE_IDS
     job_ids = {rules.rule_id_of(v["message"]) for v in _one(
         docs, "ValidatingAdmissionPolicy", rules.JOB_POLICY)["spec"]["validations"]}
-    assert job_ids == {r.rule_id for r in rules.JOB_RULES}
-    assert _pure_problems("vap_job_violations") == {r.problem for r in rules.JOB_RULES}
+    assert job_ids == {i for r in rules.JOB_RULES for i in r.rule_ids}
+    assert _pure_problems("vap_job_violations") == {
+        p for r in rules.JOB_RULES for p in r.problems}
     assert _pure_problems("vap_pod_update_violations") == {
         r.problem for r in rules.POD_UPDATE_RULES}
     assert _pure_problems("vap_secret_violations") == {r.problem for r in rules.SECRET_RULES}
+
+
+def test_the_deadline_bounds_are_the_platforms():
+    """N2: the CEL's numbers are MAX_TIMEOUT_SECONDS, plus the executor's Job
+    slack, and the grace bound."""
+    jobs = _one(_policies(), "ValidatingAdmissionPolicy", rules.JOB_POLICY)
+    [cel] = [v["expression"] for v in jobs["spec"]["validations"]
+             if rules.rule_id_of(v["message"]) == "deadlines"]
+    assert sorted(int(n) for n in re.findall(r"<= (\d+)", cel)) == sorted(
+        [MAX_JOB_DEADLINE_SECONDS, MAX_POD_DEADLINE_SECONDS, MAX_GRACE_SECONDS])
+    assert f"spec.activeDeadlineSeconds <= {MAX_JOB_DEADLINE_SECONDS}" in cel
+    assert f"pod.activeDeadlineSeconds <= {MAX_POD_DEADLINE_SECONDS}" in cel
+    assert f"terminationGracePeriodSeconds <= {MAX_GRACE_SECONDS}" in cel
+    assert km.TERMINATION_GRACE_SECONDS <= MAX_GRACE_SECONDS
 
 
 def test_the_placement_and_host_rules_name_every_field_the_twin_forbids():
@@ -343,9 +362,9 @@ def test_each_secret_mutation_breaks_exactly_its_rule(rule):
 @pytest.mark.parametrize("rule", rules.JOB_RULES, ids=lambda r: r.rule_id)
 def test_each_job_mutation_breaks_exactly_its_rule(rule):
     job = _built_job()
-    assert vap_job_violations(job) == []
+    assert vap_job_violations(kueue_mutated(job)) == []
     rule.mutate(job)
-    assert vap_job_violations(job) == [rule.problem]
+    assert vap_job_violations(kueue_mutated(job)) == rule.problems
 
 
 @pytest.mark.parametrize("rule", rules.POD_UPDATE_RULES, ids=lambda r: r.rule_id)
