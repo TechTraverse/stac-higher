@@ -1,0 +1,16 @@
+# K-5 (process-compute spec §6, §6.3; plan K5-R14): the namespace every
+# process-run and image-scan Job lives in. Pod Security `restricted` is
+# enforced as a backstop: the executor builds restricted-compliant pods
+# (uid 10001, no privilege escalation, every capability dropped,
+# RuntimeDefault seccomp, emptyDir volumes only), and anything else is
+# refused at admission.
+#
+# R-8 (#144) renders the same object from the chart's templates with a drift
+# test against this file; K-6 (#14) applies this directory to kind as-is.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stac-higher-runs
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

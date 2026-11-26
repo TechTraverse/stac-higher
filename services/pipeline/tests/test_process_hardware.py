@@ -265,3 +265,86 @@ def test_capacity_detail_names_the_profile_and_the_limit():
         capacity_detail("standard", 2)
         == "profile 'standard' is at its capacity of 2 on this host"
     )
+
+
+# ---------------------------------------------------------------------------
+# K-5: the profile's backend.kubernetes block (spec §3.4, plan addendum A8)
+# ---------------------------------------------------------------------------
+
+CHART_EKS_SET = (
+    Path(__file__).resolve().parents[3]
+    / "infra" / "helm" / "stac-higher" / "files" / "hardware-profiles" / "eks-cpu.json"
+)
+GPU_L4_BLOCK = {
+    "queue": "process-runs",
+    "node_selector": {"stac-higher.io/flavor": "gpu-l4"},
+    "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
+    "runtime_class": None,
+    "extended_resources": {"nvidia.com/gpu": "gpu_count"},
+}
+
+
+def test_an_absent_kubernetes_block_is_the_defaults():
+    from pipeline.process.hardware import KubernetesBackend, kubernetes_backend
+
+    assert kubernetes_backend(load_hardware_profiles(LOCAL_SET).standard) == KubernetesBackend()
+    for backend in ({}, {"kubernetes": None}, {"kubernetes": {}}, {"docker": {}}):
+        profile = parse_hardware_profiles(_one_profile(backend)).standard
+        assert kubernetes_backend(profile) == KubernetesBackend()
+    assert KubernetesBackend().queue is None
+
+
+def test_the_charts_eks_profiles_parse():
+    from pipeline.process.hardware import kubernetes_backend
+
+    profiles = load_hardware_profiles(CHART_EKS_SET)
+    assert {p.id for p in profiles.profiles} >= {"standard", "cpu-large"}
+    for profile in profiles.profiles:
+        block = kubernetes_backend(profile)
+        assert block.queue == "process-runs"
+        assert dict(block.node_selector) == {} and block.tolerations == ()
+        assert dict(block.extended_resources) == {} and block.runtime_class is None
+
+
+def test_a_gpu_block_parses():
+    from pipeline.process.hardware import kubernetes_backend
+
+    block = kubernetes_backend(
+        parse_hardware_profiles(_one_profile({"kubernetes": GPU_L4_BLOCK})).standard
+    )
+    assert block.queue == "process-runs"
+    assert dict(block.node_selector) == {"stac-higher.io/flavor": "gpu-l4"}
+    assert block.tolerations == (
+        {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"},
+    )
+    assert block.runtime_class is None
+    assert dict(block.extended_resources) == {"nvidia.com/gpu": "gpu_count"}
+    with_runtime = parse_hardware_profiles(
+        _one_profile({"kubernetes": {"runtime_class": "nvidia"}})
+    ).standard
+    assert kubernetes_backend(with_runtime).runtime_class == "nvidia"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "kubernetes",
+        {"queue": ""},
+        {"queue": 3},
+        {"node_selector": "gpu"},
+        {"node_selector": {"a": 1}},
+        {"tolerations": {"key": "x"}},
+        {"tolerations": ["x"]},
+        {"tolerations": [{"key": "x", "colour": "red"}]},
+        {"tolerations": [{"key": "x", "operator": "Like"}]},
+        {"tolerations": [{"key": "x", "effect": "Sometimes"}]},
+        {"tolerations": [{"key": "x", "tolerationSeconds": "10"}]},
+        {"runtime_class": 1},
+        {"runtime_class": ""},
+        {"extended_resources": {"nvidia.com/gpu": "cpu"}},
+        {"extended_resources": ["nvidia.com/gpu"]},
+    ],
+)
+def test_a_malformed_kubernetes_block_names_the_profile(bad):
+    with pytest.raises(HardwareProfileError, match=r"profile 'standard': backend\.kubernetes"):
+        parse_hardware_profiles(_one_profile({"kubernetes": bad}))

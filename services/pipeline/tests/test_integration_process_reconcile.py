@@ -411,3 +411,16 @@ async def test_list_submitted_runs_pages_by_id(slot):
             break
         after = page[-1].id
     assert seen == ids
+
+
+async def test_run_statuses_carry_the_current_handle(slot):
+    """K-5 review C1: the reaper tells a superseded submission from the
+    current one by the recorded handle."""
+    from pipeline.process.repo import RunLedgerState
+
+    repo = _repo()
+    submitted = await _submitted(slot, handle="job-current")
+    waiting = await _run(slot)
+    got = await repo.run_statuses([submitted, waiting])
+    assert got[submitted] == RunLedgerState("running", "job-current")
+    assert got[waiting].handle is None

@@ -1,0 +1,52 @@
+# K-5 (process-compute spec §6.3; plan K5-R10): exactly what the Kubernetes
+# executor calls in the runs namespace, and nothing else.
+#
+# - jobs: create (submit), get (status, cancel), list (list_launched, probe,
+#   the watch's starting resourceVersion), watch (watch), delete (cancel of a
+#   never-started run, reap).
+# - pods: list (status and logs find the Job's pod by label), patch (cancel
+#   lowers a started pod's activeDeadlineSeconds so it is stopped and KEPT).
+#   No get, no watch.
+# - pods/log: get (logs).
+# - secrets: create (submit), delete (reap). No get, list or watch: the
+#   pipeline has no DIRECT read of a run's environment. A compromised pipeline
+#   identity could still reach one indirectly through `jobs create` (a Job
+#   mounting another run's Secret, under another ServiceAccount); K-6's
+#   ValidatingAdmissionPolicy closes that (docs/ISSUES.md I-184).
+# - workloads (Kueue): list (status finds a Job's Workload by its job-uid
+#   label; the watch's starting resourceVersion), watch (watch). No get.
+# - networkpolicies: get, read-only (the executor refuses to start runs
+#   until the default-deny policy `stac-higher-runs-default-deny` exists and
+#   denies all ingress and egress to every run pod). One named object, so
+#   no list or watch.
+#
+# Namespaced Role, never a ClusterRole. The unit tests' fake API server
+# (services/pipeline/tests/_fake_kube.py) enforces this file, and
+# test_kubernetes_rbac.py fails when a rule goes unused.
+#
+# R-8 (#144) renders the same object from the chart's templates with a drift
+# test against this file; K-6 (#14) applies this directory to kind as-is.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stac-higher-pipeline
+  namespace: stac-higher-runs
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["workloads"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get"]

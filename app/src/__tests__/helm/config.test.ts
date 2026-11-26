@@ -198,6 +198,31 @@ describe.skipIf(!helmReady())("chart config layer", () => {
     expect(data(render(), "env-pipeline")).not.toHaveProperty("EGRESS_ALLOW_HOSTS");
   });
 
+  it("the pipeline gets the runs namespace and the registry mirror map (K-5)", () => {
+    const e = data(render(), "env-pipeline");
+    expect(e.PROCESS_K8S_NAMESPACE).toBe("stac-higher-runs");
+    expect(e).not.toHaveProperty("PROCESS_K8S_REGISTRY_MIRRORS");
+    expect(data(render({ processRuns: { namespace: "other" } }), "env-pipeline").PROCESS_K8S_NAMESPACE).toBe("other");
+    // A DNS-1123 label, as the pipeline requires (review C9).
+    for (const bad of ["Bad_NS", "-runs", "a".repeat(64)]) fails({ processRuns: { namespace: bad } }, "processRuns");
+
+    const prefixes = { "ghcr.io": "a.example/ghcr/", "docker.io": "a.example/hub", "quay.io": "" };
+    const m = data(render({ registry: { mirrorPrefixes: prefixes } }), "env-pipeline");
+    expect(JSON.parse(m.PROCESS_K8S_REGISTRY_MIRRORS)).toEqual({ "ghcr.io": "a.example/ghcr", "docker.io": "a.example/hub" });
+    const g = data(render({ registry: { mirrorPrefixes: prefixes }, global: { imageRegistry: "c.example/g/" } }), "env-pipeline");
+    expect(JSON.parse(g.PROCESS_K8S_REGISTRY_MIRRORS)["ghcr.io"]).toBe("c.example/g");
+
+    // The executor mirrors at Job creation; the refs stay upstream (deployment spec §5).
+    const d = data(render({}, "digests-mirror"), "env-pipeline");
+    expect(JSON.parse(d.PROCESS_K8S_REGISTRY_MIRRORS)).toEqual({
+      "ghcr.io": "000000000000.dkr.ecr.us-east-1.amazonaws.com/ghcr",
+      "docker.io": "000000000000.dkr.ecr.us-east-1.amazonaws.com/docker-hub",
+      "quay.io": "000000000000.dkr.ecr.us-east-1.amazonaws.com/quay",
+    });
+    expect(d.PROCESS_RUNTIME_IMAGE).toMatch(/^ghcr\.io\//);
+    expect(data(render(), "env-shared").PROCESS_EXECUTOR).toBe("kubernetes");
+  });
+
   it("refuses secret-looking extra env", () => {
     fails({ app: { env: { MY_TOKEN: "x" } } }, "app.env", "MY_TOKEN");
     fails({ pipeline: { env: { AWS_SECRET_ACCESS_KEY: "x" } } }, "pipeline.env", "AWS_SECRET_ACCESS_KEY");

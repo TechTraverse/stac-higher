@@ -15,6 +15,8 @@ correctness argument:
    container is submitted, so `running` is the only status a live container can
    legitimately have. Anything else — terminal, requeued by stall recovery,
    or no row at all — means whoever owned this container is gone.
+   A `running` row whose recorded handle differs from the launched one is
+   a superseded submission (K-5 review C1): its owner is gone too.
 2. **The age rule**, a backstop for a row wedged `running` that stall recovery
    cannot reach. The ceiling sits above the runtime config's own maximum
    timeout, so a legitimately long run is never killed by it.
@@ -37,6 +39,7 @@ from dataclasses import dataclass
 from pipeline.metrics import PROCESS_ORPHANS_REAPED
 from pipeline.process.config import MAX_TIMEOUT_SECONDS
 from pipeline.process.executor import Executor, ExecutorUnavailable
+from pipeline.process.hardware import HardwareProfileSet
 from pipeline.process.repo import ProcessRepo
 
 logger = logging.getLogger(__name__)
@@ -46,6 +49,22 @@ logger = logging.getLogger(__name__)
 #: independently: below the ceiling this would kill legal work, and a test
 #: pins the relationship so the two cannot drift apart.
 DEFAULT_REAP_MAX_AGE_SECONDS = MAX_TIMEOUT_SECONDS + 3600
+
+#: K-5 (K5-R22): a Job's own deadline is the run's timeout plus this slack
+#: (``kubernetes_manifests.JOB_DEADLINE_SLACK_SECONDS``, pinned equal by a test).
+_JOB_DEADLINE_SLACK_SECONDS = 600
+
+
+def reap_max_age_seconds(profiles: HardwareProfileSet | None) -> int:
+    """K-5 (K5-R22, I-176): the age ceiling counting the longest queue wait a
+    profile promises -- a Job pending in Kueue is old by creation time but
+    alive. ``MAX_TIMEOUT_SECONDS + Job slack + max(max_queue_wait_seconds) +
+    3600``; :data:`DEFAULT_REAP_MAX_AGE_SECONDS` without a profile set."""
+    if profiles is None or not profiles.profiles:
+        return DEFAULT_REAP_MAX_AGE_SECONDS
+    wait = max(p.max_queue_wait_seconds for p in profiles.profiles)
+    return MAX_TIMEOUT_SECONDS + _JOB_DEADLINE_SLACK_SECONDS + wait + 3600
+
 
 #: The one status that says "a live container is expected".
 LIVE_STATUS = "running"
@@ -88,24 +107,35 @@ async def process_reap_tick(
     # alone when it cannot: a missing row must never read as "orphan".
     process_ids = [e.run_id for e in launched if e.kind != "image_scan"]
     scan_ids = [e.run_id for e in launched if e.kind == "image_scan"]
-    statuses = await repo.run_statuses(process_ids)
+    ledger = await repo.run_statuses(process_ids)
     scans = (
         await scan_statuses(scan_ids) if scan_ids and scan_statuses is not None else {}
     )
 
     reaped = failed = 0
     for entry in launched:
+        superseded = False
         if entry.kind == "image_scan":
             if scan_statuses is None:
                 continue
             status = scans.get(entry.run_id)
         else:
-            status = statuses.get(entry.run_id)
+            state = ledger.get(entry.run_id)
+            status = state.status if state is not None else None
+            # K-5 review C1: a `running` row belongs to ONE submission. A
+            # launched run under any other handle is a superseded submission
+            # (a failed or crashed submit, then a resubmission) whose owner is
+            # gone. A NULL handle (between submit and record_submission) is
+            # never an orphan signal.
+            superseded = (
+                state is not None and status == LIVE_STATUS
+                and state.handle is not None and state.handle != entry.handle.id
+            )
         aged = (
             entry.created_at is not None
             and (at - entry.created_at).total_seconds() > max_age_seconds
         )
-        if status == LIVE_STATUS and not aged:
+        if status == LIVE_STATUS and not aged and not superseded:
             continue
         try:
             executor.reap(entry.handle)
@@ -131,6 +161,7 @@ async def process_reap_tick(
                 "run_status": status,
                 "kind": entry.kind,
                 "aged_out": aged,
+                "superseded": superseded,
             },
         )
     return ReapResult(seen=len(launched), reaped=reaped, failed=failed)

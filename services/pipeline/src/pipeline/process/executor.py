@@ -14,8 +14,8 @@ is shaped to make the invariants enforceable rather than merely intended:
   platform's object-store keys" is a property of the type, not a habit.
 - Limits ride on the spec and are applied by the backend at create time, so a
   run cannot opt out of them.
-- The backend enforces the run's timeout: server-side (a Kubernetes Job's
-  ``activeDeadlineSeconds``) or on read (Docker: ``status()`` kills a run past
+- The backend enforces the run's timeout: server-side (the Kubernetes run
+  pod's ``activeDeadlineSeconds``, K-5) or on read (Docker: ``status()`` kills a run past
   ``StartedAt + timeout`` and reports ``timed_out``). A wedged run fails
   itself; it never degrades the worker.
 - ``reap`` is always called by the caller, and backends must not rely on
@@ -71,12 +71,29 @@ from typing import ClassVar
 
 from pipeline.process.hardware import HardwareProfile
 
-#: Kueue's two priority classes (K-5/K-6) — unread until then.
+#: Kueue's two priority classes (K-5/K-6): the Kubernetes executor labels each
+#: run Job with one; Docker does not read them.
 PRIORITIES = ("interactive", "triggered")
 
 #: What a run is (C-2): a process run, judged against ``process_runs``, or an
 #: image scan, judged against ``image_scans``. The reaper keeps them apart.
 RUN_KINDS = ("process", "image_scan")
+
+#: Labels stamped on every run container (Docker) and every run Job, pod and
+#: Secret (Kubernetes). `RUN_ID_LABEL` is load-bearing: it is how the M3-W-1
+#: reaper finds what a dead worker left behind, and the only thing that
+#: distinguishes ours from a stranger's.
+RUN_ID_LABEL = "stac-higher.run-id"
+PROCESS_ID_LABEL = "stac-higher.process-id"
+#: C-2: what a run is ("process" | "image_scan"), so the reaper can judge a
+#: scan against image_scans instead of process_runs; R-8's NetworkPolicies
+#: select run pods on it (K-5).
+RUN_KIND_LABEL = "stac-higher.run-kind"
+#: C-2: a scan names the image it scans.
+IMAGE_ID_LABEL = "stac-higher.image-id"
+#: Spec §3.2 / §14 decision 1: the platform runtime's `runner` uid. Docker
+#: forces it on user images; Kubernetes on every run pod (K5-R14).
+RUN_UID = 10001
 
 
 class ExecutorError(Exception):
@@ -101,6 +118,14 @@ class HardwareUnavailable(ExecutorError):
     than the host has. Configuration, not a fault: the run dies naming the
     profile and never requeues. Deliberately NOT an
     :class:`ExecutorUnavailable`, whose branch never spends an attempt."""
+
+
+class RunRejected(HardwareUnavailable):
+    """The backend refused the run's definition (K-5, K5-R20): an API server
+    that answers a Job or Secret create as invalid (field validation, an
+    admission policy, Kueue's webhook), or an environment too large for a
+    Secret. Configuration, not an outage: the run dies naming the refusal
+    (the claim path's :class:`HardwareUnavailable` branch)."""
 
 
 class ImagePullFailed(ExecutorError):
@@ -152,6 +177,12 @@ class RunSpec:
     #: executor's network boundary (ADR 0013): runs attach to a dedicated
     #: restricted network, never the platform's own.
     network: str | None = None
+    #: K-5 (lead security ruling): the revision's GOES §4 network level and
+    #: hosts. Docker realises every accepted level as ``network``; the
+    #: Kubernetes executor labels the pod with the level (R-8's policies
+    #: select on it) and REFUSES a level or host list it cannot enforce.
+    network_level: str = "isolated"
+    network_hosts: tuple[str, ...] = ()
     # K-1 (process-compute spec §4): the hardware the run asked for, resolved
     # against the deployment's profile set at launch. Defaults keep every
     # existing construction valid. The Docker executor reads them for
@@ -160,7 +191,7 @@ class RunSpec:
     gpu_count: int = 0
     profile: HardwareProfile | None = None
     #: "interactive" for a UI test run, "triggered" otherwise — Kueue's two
-    #: priority classes (K-5/K-6); unread until then.
+    #: priority classes (K-5/K-6); read by the Kubernetes executor only.
     priority: str = "triggered"
     #: One of RUN_KINDS. A scan's ``process_id`` carries the IMAGE id.
     kind: str = "process"
@@ -273,6 +304,11 @@ class Executor(abc.ABC):
     #: The phase ``record_submission`` writes: what a just-submitted run is on
     #: this backend.
     submitted_phase: ClassVar[str] = "pending_capacity"
+    #: K-5 (K5-R19): does the claim admit this backend's runs against the
+    #: profiles' local ``docker.capacity`` (K-3)? True for a backend with no
+    #: scheduler of its own (Docker); False where the backend owns admission
+    #: (Kubernetes: Kueue's quota), so a profile is never gated twice.
+    enforces_local_capacity: ClassVar[bool] = False
 
     @abc.abstractmethod
     def submit(self, spec: RunSpec) -> RunHandle:
@@ -328,6 +364,13 @@ class Executor(abc.ABC):
     @property
     def supports_watch(self) -> bool:
         return type(self).watch is not Executor.watch
+
+    def probe(self) -> None:
+        """K-5 (K5-R17): is the backend reachable (and are we allowed to ask)?
+        Returns, or raises :class:`ExecutorUnavailable`. ``/health`` reports
+        the answer; it never decides the pipeline's health. Default: one
+        ``list_launched()``."""
+        self.list_launched()
 
 
 #: How a lost run reads when the backend gave no reason.

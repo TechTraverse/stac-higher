@@ -58,7 +58,7 @@ class Harness:
         return Reconciler(**kwargs)
 
     async def submitted(self, *, source_id=None, association_id=None, attempts=0,
-                        expires=None, cancel=False) -> SubmittedRun:
+                        expires=None, cancel=False, submitted_ago=30) -> SubmittedRun:
         run_id = await self.repo.enqueue_run(
             process_id="p1", revision_id="rev-1", source_id=source_id,
             input_items=[{"item_id": "a"}], deferred_until=None, is_test=source_id is None
@@ -69,7 +69,7 @@ class Harness:
         handle = MemoryExecutor.handle_for(run_id).id
         await self.repo.record_submission(
             run_id, claimed_at=run.claimed_at, handle=handle, backend="memory",
-            phase="starting", submitted_at=NOW - dt.timedelta(seconds=30),
+            phase="starting", submitted_at=NOW - dt.timedelta(seconds=submitted_ago),
             credentials_expire_at=expires,
         )
         if cancel:
@@ -170,7 +170,8 @@ async def test_a_cancel_the_backend_cannot_deliver_is_retried_later():
 async def test_a_pending_run_whose_credentials_would_expire_is_requeued():
     # timeout 900 + grace 300 = 1200 s needed; 1000 s left.
     h = Harness(MemoryExecutor(default_states=[RunState("pending_capacity", detail="queued")]))
-    run = await h.submitted(attempts=1, expires=NOW + dt.timedelta(seconds=1000))
+    run = await h.submitted(attempts=1, expires=NOW + dt.timedelta(seconds=1000),
+                            submitted_ago=120)
     assert await h.reconciler().reconcile(run) == "requeued"
     row = h.row(run.id)
     assert (row["status"], row["phase"], row["phase_detail"]) == (
@@ -187,6 +188,31 @@ async def test_a_pending_run_with_enough_credential_time_just_waits():
     run = await h.submitted(expires=NOW + dt.timedelta(seconds=1201))
     assert await h.reconciler().reconcile(run) == "phase"
     assert h.row(run.id)["phase_detail"] == "q" and h.executor.cancelled == []
+
+
+async def test_a_run_whose_profile_promises_no_wait_is_not_requeued_at_once():
+    """K-5 review C2: max_queue_wait 0 and timeout + grace >= 900 mint
+    exactly timeout + grace, so a just-submitted run already has less than
+    that left. Requeueing it then would re-mint and resubmit forever."""
+    h = Harness(MemoryExecutor(default_states=[RunState("pending_capacity", detail="q")]))
+    # submitted 30 s ago with timeout + grace (1200 s) of credentials
+    run = await h.submitted(expires=NOW + dt.timedelta(seconds=1170))
+    assert await h.reconciler().reconcile(run) == "phase"
+    assert h.executor.cancelled == []
+    # once it has waited the minimum, it is requeued
+    old = await h.submitted(expires=NOW + dt.timedelta(seconds=1139), submitted_ago=61)
+    assert await h.reconciler().reconcile(old) == "requeued"
+
+
+async def test_the_requeue_waits_out_the_promised_queue_wait():
+    """A profile promising 600 s of wait minted 600 s more: no requeue
+    before the run has waited that long."""
+    h = Harness(MemoryExecutor(default_states=[RunState("pending_capacity")]))
+    # minted at submission for 600 + 1200 = 1800 s; 300 s in
+    run = await h.submitted(expires=NOW + dt.timedelta(seconds=1500), submitted_ago=300)
+    assert await h.reconciler().reconcile(run) == "phase"
+    later = await h.submitted(expires=NOW + dt.timedelta(seconds=1190), submitted_ago=610)
+    assert await h.reconciler().reconcile(later) == "requeued"
 
 
 # -- row 5: lost ---------------------------------------------------------------
@@ -413,7 +439,8 @@ async def test_a_credential_requeue_that_merged_wakes_a_waiter():
     """P10: a merged (or cancelled) credential requeue freed a slot nobody
     is resubmitted into."""
     h = Harness(MemoryExecutor(default_states=[RunState("pending_capacity")]))
-    run = await h.submitted(source_id="s1", expires=NOW + dt.timedelta(seconds=10))
+    run = await h.submitted(source_id="s1", expires=NOW + dt.timedelta(seconds=10),
+                            submitted_ago=120)
     await h.repo.enqueue_run(
         process_id="p1", revision_id="rev-1", source_id="s1", input_items=[],
         deferred_until=None,

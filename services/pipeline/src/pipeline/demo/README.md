@@ -491,11 +491,12 @@ the S3 adapter documents.
 3. `images-seed` needs an operator bearer token for the app
    (`STAC_HIGHER_BEARER`, from `demoSeed.appBearer`) whose lifetime covers the
    run, and `goes-seed` first.
-4. The runs the seeds trigger (extractor, GeoColor, image scans) need the
-   Kubernetes executor (K-5, I-160). Until then `seed`, `goes-seed` and
-   `cube-seed` complete but every run they trigger fails at launch, and
-   `images-seed` waits out its scan timeout and fails the Job: leave it out
-   until K-5 (`docs/ISSUES.md` I-169).
+4. The runs the seeds trigger (extractor, GeoColor, image scans) run on the
+   Kubernetes executor (K-5), which starts nothing until R-8's runs-namespace
+   objects and K-6's Kueue objects exist (I-160). Until then `seed`,
+   `goes-seed` and `cube-seed` complete but every run they trigger waits,
+   requeued, and `images-seed` waits out its scan timeout and fails the Job:
+   leave it out until then (`docs/ISSUES.md` I-169).
 
 **Writes bypass the app, as on compose.** The seeds write catalog documents
 straight to stac-fastapi and platform rows straight to the database as the

@@ -1058,7 +1058,13 @@ log entirely (`error = "log unavailable"`), and an hour-long GPU run has no
 live tail for the operator watching it. A rolling capture (periodic
 `pods/log` with `sinceTime`, appended to the `log_ref` object) is the
 follow-on; not in the K queue.
-- Tracked in: spec §6.1; here.
+- K-5: `pods/log` serves only the container's CURRENT log file, and the
+  kubelet rotates at 10 MiB by default, so a run that prints more than that
+  loses the head of its log on Kubernetes (Docker keeps it). A run Kueue
+  preempts restarts in a fresh pod; the preempted execution's partial log is
+  gone with its pod. A disrupted pod (node loss, eviction) is usually gone
+  before the reconciler reads it: the requeued attempt records no log.
+- Tracked in: spec §6.1; `process/kubernetes_executor.py` (`logs`); here.
 
 ### I-95 · GovCloud GPU families lag commercial regions 🟡
 Verified 2026-09-02 against the EC2 instance-type region table: neither
@@ -1507,17 +1513,24 @@ goes back to `queued` without spending an attempt (K-4 plan R15, like
 K-5's evicted pod), every time. Something that keeps deleting run
 containers therefore loops the run at 60 s spacing with a WARNING each time
 (`process run lost by the executor`) instead of exhausting its budget.
+On Kubernetes the same holds for a node that keeps refusing the run's pod
+(a pod `Failed` with a `status.reason` and no terminated container).
 - Tracked in: `services/pipeline/src/pipeline/process/reconcile.py` (`_requeue_lost`).
 - Found in: K-4 (2026-11-25).
 
-### I-176 · The reaper's age ceiling ignores the queue wait 🟡
-The M3-W-1 reaper removes any run container older than
-`MAX_TIMEOUT_SECONDS + 3600` (`DEFAULT_REAP_MAX_AGE_SECONDS`), even one whose
-row is `running`. Docker never holds a submitted run for capacity, so that
-bound is enough today. K-5's Kubernetes backend can hold a submitted Job for
-up to a profile's `max_queue_wait_seconds`; its caller must pass
-`process_reap_tick(max_age_seconds=…)` widened by the longest queue wait.
-- Tracked in: `services/pipeline/src/pipeline/process/reaper.py`; K-5.
+### I-176 · The reaper's age ceiling counts the longest promised queue wait 🟡
+The M3-W-1 reaper removes any run container or Job older than its age
+ceiling, even one whose row is `running`. Since K-5 the ceiling is
+`MAX_TIMEOUT_SECONDS + 600 (the Job's deadline slack) +
+max(max_queue_wait_seconds) + 3600` over the deployment's profiles
+(`reap_max_age_seconds`), on both backends, and a `running` row's launched
+run under a handle other than the recorded one is reaped as a superseded
+submission (a failed or crashed submit; K-5 review); an unreadable profile file falls
+back to `MAX_TIMEOUT_SECONDS + 3600` and logs a WARNING. Residual: a Job
+that waits in Kueue longer than every profile promises (a quota drought) can
+be reaped while its row is still `running`; the reconciler then reads the
+Job as gone and requeues the run without spending an attempt.
+- Tracked in: `services/pipeline/src/pipeline/process/reaper.py`, `jobs/process.py` (`process_reap`).
 - Found in: K-4 (2026-11-25).
 
 ### I-177 · The 031 status CHECK is not validated 🟡
@@ -1531,6 +1544,144 @@ CONSTRAINT process_runs_status_check` (SHARE UPDATE EXCLUSIVE, no write
 block) — the same applies to `process_runs_phase_check`.
 - Tracked in: `app/src/lib/db/migrate.ts` (029, 031).
 - Found in: K-4 (2026-11-25).
+
+### I-178 · Nothing in the Kubernetes executor has met a real API server 🟡
+K-5 is proven against a fake API server (`tests/_fake_kube.py`) that
+enforces the pipeline's Role, speaks plain HTTP and emulates Kueue's
+webhook. Unverified until K-6's kind leg (#14): TLS to the API server with
+the mounted CA and a projected token; the Role under the real authorizer;
+Kueue's webhook suspending our Jobs and the Workload's conditions and
+labels; and two kubelet behaviours the executor relies on — that a pod
+killed by `activeDeadlineSeconds` (the run's timeout, and `cancel()`, which
+lowers it to 1 s) stays readable through `pods/log` until `reap`, and that
+the kill follows the 10 s grace. If the log is lost, the fallback is to read
+logs BEFORE the stop (K-4's cancel row) and replace
+`KubernetesExecutor._stop_keeping_the_log` with a foreground Job delete.
+- Tracked in: `services/pipeline/src/pipeline/process/kubernetes_executor.py`; GitHub #14.
+- Found in: K-5 (2026-11-26).
+
+### I-179 · On Kubernetes a run's duration includes its queue wait 🟡
+K-4's `started_at` means "claimed", and on Kubernetes a run is claimed (and
+`running`, phase *Waiting for capacity*) while Kueue holds it, so the UI's
+run duration and `pipeline_process_run_seconds` include the queue wait and
+node provisioning. Splitting them needs a `running_at` column (a migration);
+not built.
+- Tracked in: `services/pipeline/src/pipeline/process/reconcile.py` (`PROCESS_RUN_SECONDS`).
+- Found in: K-5 (2026-11-26).
+
+### I-180 · Run pods on Kubernetes: what differs from Docker 🟡
+- **Read-only root.** A user image that writes into its own `WORKDIR` works
+  on Docker (writable root) and fails on Kubernetes; only `/tmp` (and the
+  platform images' working directory) is writable, memory-backed and counted
+  against `memory_mb`. `HOME` is `/tmp` on a user image.
+- **The API address is visible.** The kubelet injects
+  `KUBERNETES_SERVICE_HOST/PORT` into every container (service links are off,
+  so nothing else). The run can see the address; under the namespace's
+  default-deny egress it cannot reach it unless a policy allows it, and it has
+  no token to authenticate with.
+- **No per-run PID limit** on either backend. A fork bomb is bounded only by
+  the node's kubelet `podPidsLimit` (Docker: the daemon's defaults); R-8's
+  node configuration should set one.
+- **The timeout counts the image pull.** A pod's `activeDeadlineSeconds`
+  runs from the pod's `startTime`, which precedes the pull, so a large image
+  eats into the run's timeout; Docker counts from container start.
+- **An orphan-deleted Job leaves its Secret.** A Job deleted with
+  `propagationPolicy=Orphan` (by hand) keeps its env Secret, holding live
+  run credentials until they expire; the executor always deletes in the
+  foreground and deletes the Secrets explicitly on reap.
+- **The scanner's Grype DB update cannot write** (`/opt/grype-db` is on the
+  read-only root) and falls back to the baked database; #68 owns the
+  scanner pod's update path.
+- **CPU is always capped.** Requests equal limits, so default-profile
+  extractor runs, uncapped on Docker (I-170), get their profile's CPU.
+- Tracked in: `services/pipeline/src/pipeline/process/kubernetes_manifests.py`; #68.
+- Found in: K-5 (2026-11-26).
+
+### I-181 · Kubernetes start failures and waits cost time and attempts 🟡
+- **An unpullable image** (`ErrImagePull`, `ImagePullBackOff`) or a pod
+  whose config cannot be created is failed 5 minutes after the pod started
+  (found by the run tick, so up to a minute later), spending an attempt per
+  try; Docker fails it at submit. `InvalidImageName` fails at once.
+- **A credential requeue goes to the back of the queue.** Each one cancels
+  the pending Job and submits a new one, which Kueue queues behind every
+  Workload created since (BestEffortFIFO). Under a deep backlog a run can
+  requeue once per promised wait, each time an STS mint plus a Job create and
+  delete, losing its position each time. The requeue fires only after the
+  run has waited the queue wait its credentials were minted for, and at
+  least 60 s, so a profile promising no wait cannot loop.
+- **The credential requeue sees only waiting for capacity.** A pod that is
+  scheduled but waits for its image is `starting`, so K-4's row 3 does not
+  requeue it as its credentials run short; it spends the credential grace
+  instead.
+- **An inadmissible Workload** (a profile naming a LocalQueue that does not
+  exist, a misconfigured flavor) pends with Kueue's message as the row's
+  detail until K-4's credential requeue fires, then repeats — visible only
+  in that detail.
+- **No queue position.** Kueue's visibility API (`positionInLocalQueue`) is
+  not read; the Role does not grant it.
+- Tracked in: `services/pipeline/src/pipeline/process/kubernetes_executor.py` (`_job_state`).
+- Found in: K-5 (2026-11-26).
+
+### I-182 · Switching `PROCESS_EXECUTOR` strands runs in flight 🟡
+A Reconciler only reconciles runs its own backend submitted
+(`executor_backend`), so runs submitted on Docker are never collected by a
+pipeline restarted with `PROCESS_EXECUTOR=kubernetes`, and vice versa. Drain
+first: stop triggers and wait until no run is `running`. Not built. Related:
+when the selected executor cannot be built (no API URL), the run tick returns
+before its sweep, so already-submitted runs freeze where they are; the tick
+logs one WARNING a minute and `/health` reports `executor.reachable: false`.
+Two pipelines with different `PROCESS_EXECUTOR` values on one database are
+not supported either: each reaper removes the other backend's runs, whose
+recorded handle never matches what it launched.
+- Tracked in: `services/pipeline/src/pipeline/process/reconcile.py`, `docs/processes.md`, the chart README.
+- Found in: K-5 (2026-11-26).
+
+### I-183 · On Kubernetes runs are `isolated` only, and user images skip the mirror 🟡
+- **Network.** The executor refuses to start any run unless the runs
+  namespace has the NetworkPolicy `stac-higher-runs-default-deny` (deny all
+  ingress and egress to every run pod); R-8 renders it and the allow
+  policies, selected by `stac-higher.run-kind` and
+  `stac-higher.network-level`. The check proves the policy OBJECT exists
+  with `podSelector: {}`, both policy types and no rules; it cannot prove
+  the CNI enforces it (on EKS the VPC CNI / Auto Mode network policy
+  enforcement is off unless enabled), and it cannot see a second, additive
+  policy that allows more. Deleting or widening the policies opens egress
+  for pods already running, whatever the executor's 60 s cache holds. R-8's
+  drift test and the live checks (K-6's kind leg, R-11) carry those. It
+  enforces only the `isolated` level: a run
+  whose revision asks for `inputs`, `open` or a `hosts` list is refused
+  (`dead`, naming the reason) rather than run with wider or narrower access,
+  because NetworkPolicy has no FQDN egress (spec §6.2). Today
+  `PROCESS_NETWORK_MAX` refuses those levels anyway; raising it on a cluster
+  makes such runs die instead of running.
+- **Images.** The registry mirror map rewrites only platform images; a
+  user's own image is pulled from its own registry (a pull-through cache
+  holds the deployment's upstream credentials). On a cluster whose nodes
+  can reach only the mirror, user images cannot be pulled. This narrows the
+  deployment spec §5's "the executor rewrites … every `container_images`
+  row".
+- Tracked in: `services/pipeline/src/pipeline/process/kubernetes_manifests.py`; GitHub #144.
+- Found in: K-5 review (2026-11-26).
+
+### I-184 · What a compromised pipeline identity can do in the runs namespace 🟡
+The pipeline's Role has no direct read of a Secret, but `jobs create`,
+`pods patch` and `secrets create` in the runs namespace are enough, for an
+attacker holding the pipeline's token, to: run a Job under another
+ServiceAccount in the namespace, mount or `envFrom` another run's Secret,
+create ServiceAccount-token Secrets, relabel a pod into the `scanner`
+egress policy, change a running pod's image (`pods patch`), or create a
+Job without the Kueue queue label (bypassing quota). Bounds: the runs
+namespace holds no Secrets but runs' own and no ServiceAccount with RBAC
+(`infra/kubernetes/README.md`), and K-6's ValidatingAdmissionPolicy (#14)
+admits on Job CREATE only `serviceAccountName: stac-higher-run`,
+`automountServiceAccountToken: false`, `emptyDir` volumes, `envFrom` naming
+only the Job's own Secret, image pull Secrets named `{job}-pull`, the queue
+label and a known priority class; and on Pod UPDATE by the pipeline's
+ServiceAccount only a lowered `spec.activeDeadlineSeconds`. Every Job the
+executor builds is checked against those rules in
+`tests/test_kubernetes_rbac.py`. Until K-6 lands, the residual stands.
+- Tracked in: `infra/kubernetes/pipeline-role.yaml`; GitHub #14.
+- Found in: K-5 review (2026-11-26).
 
 ### I-133 · CodeQL and dependency review are skipped, not passing 🟡
 Both need GitHub Advanced Security on a private repo, which this repo does not
@@ -1611,6 +1762,11 @@ images up to ~1 GB, so the held slot is minutes, not the 900 s bound. Not a
 reason to build a second executor shape (ADR 0021 option A). Fix: move the
 scan verdict (`images/drain.py`) onto the Reconciler's submit-then-reconcile
 path (the watcher already ignores `run-kind=image_scan` events).
+- K-5: on Kubernetes a scan is a Job at Kueue priority `triggered` in the
+  default LocalQueue, so an admission scan can wait behind a queue of
+  triggered runs, and `run_to_exit`'s clock counts that wait and the pod's
+  scheduling against the scan's policy timeout: a long queue can time a scan
+  out before it runs. The same move to the Reconciler fixes both.
 - Tracked in: `jobs/image_scans.py`, `images/scan_launch.py`; GitHub #203.
 
 ### I-125 · Anonymous Docker Hub pulls share a 100-per-6-hour budget per IP 🟡
@@ -2059,16 +2215,20 @@ but the chart does not set it: it would make `/api/proxy` require
 `X-Proxy-Auth`, and no client sends that header, which would break browsing
 external catalogs.
 
-### I-160 · The pipeline runs the Docker executor until K-5 🟡
+### I-160 · A cluster cannot run a process until R-8's and K-6's objects exist 🟡
 
-`PROCESS_EXECUTOR=kubernetes` is set and unread today. In a cluster, process
-runs fail at launch (no socket proxy). K-5 adds its own settings (runs
-namespace, etc.) to the chart. Since K-4 the pipeline also starts the Docker
-run watcher, which cannot reach a proxy in a cluster: it retries with backoff
-up to once a minute and logs `run watcher stream failed; reconnecting` each
-time, until K-5's executor factory replaces it.
+The pipeline half is K-5: `PROCESS_EXECUTOR=kubernetes` (set by the chart)
+selects the Kubernetes executor, and the chart passes
+`PROCESS_K8S_NAMESPACE` and `PROCESS_K8S_REGISTRY_MIRRORS`. What a cluster
+still lacks before a run can start: the runs namespace, the run
+ServiceAccount, the pipeline's Role and RoleBinding (`infra/kubernetes/`,
+rendered by R-8 with a drift test), the runs NetworkPolicies including
+`stac-higher-runs-default-deny` (without it the executor starts nothing and
+`/health` names the policy), and Kueue's LocalQueue, ClusterQueue, flavors
+and priority classes (K-6). Until then every run requeues without spending
+an attempt and the run tick logs why once a minute.
 
-Tracked in: GitHub #13.
+Tracked in: GitHub #144.
 
 ### I-161 · Read-only root filesystems and the open app port are render-verified defaults 🟡
 
@@ -2138,17 +2298,17 @@ render tests and pytest only; the first live run is R-11. Known gaps and
 accepted deviations:
 
 - **Process runs.** The extractor, GeoColor and the image scans the seeds
-  trigger need the Kubernetes executor (I-160). Before K-5 `seed`,
-  `goes-seed` and `cube-seed` complete and every run they trigger fails at
-  launch.
-- **`images-seed` fails the Job before K-5.** It waits for scans that never
+  trigger run on the Kubernetes executor, which starts nothing before R-8
+  and K-6 are deployed (R-11; I-160). Until then `seed`, `goes-seed` and
+  `cube-seed` complete and every run they trigger waits, requeued.
+- **`images-seed` fails the Job before R-8 and K-6 are deployed.** It waits for scans that never
   run, then refuses to deploy an image that is not `approved`, so its
   container exits non-zero after `--scan-timeout` (1800 s by default). The
   Job runs with `backoffLimit: 0`, so that failure is final and does not
   re-run the seeds before it: a pod retry would start from the first seed
   and replace every demo process's revisions and run history on each attempt.
   Start-up ordering is handled inside the pod instead (`--wait-ready`). Leave
-  `images-seed` out of `demoSeed.seeds` until K-5.
+  `images-seed` out of `demoSeed.seeds` until then.
 - **Writes bypass the app.** As on compose, the seeds write catalog documents
   straight to stac-fastapi and `stac_higher` rows straight to the database as
   the owner role, not through the BFF (ADR 0008) or an audited API route, so

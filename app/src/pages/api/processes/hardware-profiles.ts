@@ -9,10 +9,8 @@ import type { APIRoute } from "astro";
 
 import { authzError } from "@/lib/authz/guard";
 import { jsonResponse } from "@/lib/http/response";
+import { getExecutorBackend } from "@/lib/processes/executor";
 import { loadHardwareProfiles, publicProfiles } from "@/lib/processes/hardware";
-
-/** K-5 replaces the constant with `PROCESS_EXECUTOR`. */
-const EXECUTOR_BACKEND = "docker";
 
 export const GET: APIRoute = async ({ locals }) => {
   const auth = locals.auth;
@@ -20,7 +18,11 @@ export const GET: APIRoute = async ({ locals }) => {
     return authzError(401, "unauthenticated", "Authentication required to list hardware profiles");
   }
   try {
-    return jsonResponse(200, { backend: EXECUTOR_BACKEND, profiles: publicProfiles(loadHardwareProfiles()) });
+    // K-5: read per request, so the answer is the deployment's PROCESS_EXECUTOR.
+    return jsonResponse(200, {
+      backend: getExecutorBackend(),
+      profiles: publicProfiles(loadHardwareProfiles()),
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return jsonResponse(500, { error: message });

@@ -1106,4 +1106,24 @@ describe("GET /api/processes/hardware-profiles (K-1)", () => {
     const res = await call(hardwareProfilesRoute, anon);
     expect(res.status).toBe(401);
   });
+
+  describe("the executor backend (K-5)", () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("reports PROCESS_EXECUTOR, docker by default", async () => {
+      vi.stubEnv("PROCESS_EXECUTOR", "");
+      expect((await (await call(hardwareProfilesRoute, member)).json()).backend).toBe("docker");
+      vi.stubEnv("PROCESS_EXECUTOR", "kubernetes");
+      expect((await (await call(hardwareProfilesRoute, member)).json()).backend).toBe(
+        "kubernetes",
+      );
+    });
+
+    it("an unknown value is a 500 naming the variable", async () => {
+      vi.stubEnv("PROCESS_EXECUTOR", "ecs");
+      const res = await call(hardwareProfilesRoute, member);
+      expect(res.status).toBe(500);
+      expect((await res.json()).error).toMatch(/PROCESS_EXECUTOR/);
+    });
+  });
 });

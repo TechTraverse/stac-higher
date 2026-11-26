@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 WATCHER_RECONNECT_SECONDS = 5.0
 #: Consecutive failed connects back off to this (a deployment with no event
-#: source at all — the Helm chart until K-5, I-160 — logs once a minute,
+#: source at all — a Kubernetes executor whose API is unreachable — logs once a minute,
 #: not every 5 s).
 WATCHER_MAX_RECONNECT_SECONDS = 60.0
 #: A stream silent this long is treated as dead and reopened (review P9): a

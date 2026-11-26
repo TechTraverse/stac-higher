@@ -46,6 +46,8 @@ class MemoryExecutor(Executor):
 
     name: str = "memory"
     submitted_phase: str = "starting"
+    #: Docker's admission, for the capacity tests (K-5, K5-R19).
+    enforces_local_capacity = True
     #: Per run id, the states ``status()`` returns in order; the last repeats.
     states: dict[str, list[RunState]] = field(default_factory=dict)
     #: The script for a run without its own entry in ``states``.

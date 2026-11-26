@@ -23,7 +23,10 @@ class HttpStreamError(Exception):
 
 
 async def _readline(reader: asyncio.StreamReader) -> bytes:
-    line = await reader.readline()
+    try:
+        line = await reader.readline()
+    except ValueError as err:  # LimitOverrunError: longer than the reader's limit
+        raise HttpStreamError("line too long") from err
     if len(line) > MAX_LINE_BYTES:
         raise HttpStreamError("line too long")
     return line

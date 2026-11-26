@@ -125,3 +125,17 @@ def test_a_broken_image_policy_is_reported_but_not_a_503(tmp_path):
     policy = response.json()["image_policy"]
     assert policy == {"file": str(missing), "ok": False, "version": None, "error": policy["error"]}
     assert "policy.json" in policy["error"]
+
+
+def test_health_reports_the_executor():
+    """K-5 (K5-R17): informational, like image_policy -- never a 503."""
+    report = {"name": "kubernetes", "reachable": False, "error": "no API"}
+
+    async def executor_status():
+        return report
+
+    client = TestClient(create_health_app(InMemoryQueue(), executor_status=executor_status))
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["executor"] == report
+    assert make_client(InMemoryQueue(), HeartbeatState()).get("/health").json()["executor"] is None

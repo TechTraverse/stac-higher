@@ -49,7 +49,12 @@ from urllib.parse import urlparse
 
 from pipeline.images.reference import is_image_digest, is_image_reference
 from pipeline.process.executor import (
+    IMAGE_ID_LABEL,
+    PROCESS_ID_LABEL,
     RESYNC,
+    RUN_ID_LABEL,
+    RUN_KIND_LABEL,
+    RUN_UID,
     Executor,
     ExecutorUnavailable,
     ExitStatus,
@@ -82,16 +87,10 @@ API_VERSION = "v1.43"
 #: module. See services/process-runtime/.
 CODE_ENV_VAR = "STAC_HIGHER_PROCESS_CODE_B64"
 
-#: Labels stamped on every run container. `RUN_ID_LABEL` is load-bearing:
-#: it is how the M3-W-1 reaper finds containers a dead worker left behind,
-#: and the only thing that distinguishes ours from a stranger's.
-RUN_ID_LABEL = "stac-higher.run-id"
-PROCESS_ID_LABEL = "stac-higher.process-id"
-#: C-2: what a container is ("process" | "image_scan"), so the reaper can
-#: judge a scan against image_scans instead of process_runs.
-RUN_KIND_LABEL = "stac-higher.run-kind"
-#: C-2: a scan container names the image it scans.
-IMAGE_ID_LABEL = "stac-higher.image-id"
+#: The run labels (`RUN_ID_LABEL`, `PROCESS_ID_LABEL`, `RUN_KIND_LABEL`,
+#: `IMAGE_ID_LABEL`) live in `executor.py` since K-5 and are re-exported
+#: here, where existing callers import them.
+
 #: K-4 (R10): every container carries its run's timeout, so ``status()`` can
 #: enforce it on read and a restarted worker recomputes the verdict.
 TIMEOUT_LABEL = "stac-higher.timeout-seconds"
@@ -108,7 +107,7 @@ EVENT_FILTERS = {
 }
 #: Spec §3.2 / §14 decision 1: every user image runs as the platform
 #: runtime's `runner` uid, whatever its own USER says.
-USER_IMAGE_USER = "10001:10001"
+USER_IMAGE_USER = f"{RUN_UID}:{RUN_UID}"
 _CONTAINER_NAME_PREFIX = {"process": "stac-run-", "image_scan": "stac-scan-"}
 
 #: Docker reports a SIGKILLed container as 137. It cannot distinguish OUR
@@ -232,6 +231,9 @@ class DockerExecutor(Executor):
     #: K-4 A5: `submit` returns after `POST /start` succeeded, so the
     #: container is running (or already exited) — never queued for capacity.
     submitted_phase = "running"
+    #: K-5 (K5-R19): the daemon has no scheduler; the claim admits Docker
+    #: runs against the profiles' `docker.capacity` (K-3).
+    enforces_local_capacity = True
     #: A pull streams progress, so this bounds each socket read, not the
     #: whole pull. Generous: a first pull of a large user image is slow.
     pull_timeout_seconds: int = 900

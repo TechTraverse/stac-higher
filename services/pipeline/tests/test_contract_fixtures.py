@@ -682,3 +682,12 @@ def test_process_run_status_vocabulary_matches_golden():
     assert fixture["cancel_channel"] == ledger.CANCEL_CHANNEL
     assert set(ledger.OPEN_STATUSES) | set(ledger.TERMINAL_STATUSES) == set(ledger.STATUSES)
     assert not set(ledger.OPEN_STATUSES) & set(ledger.TERMINAL_STATUSES)
+
+
+def test_process_executor_vocabulary_matches_golden():
+    """K-5: PROCESS_EXECUTOR's values (and executor_backend's) on both sides."""
+    from pipeline.config import DEFAULT_PROCESS_EXECUTOR, PROCESS_EXECUTORS
+
+    fixture = _load("process-executor.json")
+    assert tuple(fixture["backends"]) == PROCESS_EXECUTORS
+    assert fixture["default"] == DEFAULT_PROCESS_EXECUTOR

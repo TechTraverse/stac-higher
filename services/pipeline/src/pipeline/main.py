@@ -43,6 +43,7 @@ from pipeline.jobs import (
     staging_cleanup,
 )
 from pipeline.log import configure_logging
+from pipeline.process.factory import ExecutorProbe
 from pipeline.queue.procrastinate_backend import ProcrastinateQueue
 from pipeline.stac.pgstac_writer import close_writer_pools
 
@@ -164,7 +165,7 @@ async def run(settings: Settings) -> None:
 
         server = uvicorn.Server(
             uvicorn.Config(
-                create_health_app(queue),
+                create_health_app(queue, executor_status=ExecutorProbe(settings)),
                 host="0.0.0.0",  # container-internal bind
                 port=settings.health_port,
                 log_config=None,  # propagate uvicorn logs to our JSON handler

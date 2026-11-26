@@ -265,6 +265,13 @@ are not in the registry (I-107).
   pipeline's `STATUSES`, `TERMINAL_STATUSES`, `CANCELLABLE_STATUSES` and
   `CANCEL_CHANNEL` in `pipeline/process/ledger.py`
   (`test_contract_fixtures.py`) consume it.
+- `process-executor.json` (K-5) is style `pinned-enum`. `backends` is the
+  `PROCESS_EXECUTOR` vocabulary (and what `process_runs.executor_backend`
+  holds); `default` is the backend used when the variable is unset. The
+  pipeline's `PROCESS_EXECUTORS` / `DEFAULT_PROCESS_EXECUTOR` in
+  `pipeline/config.py` (`test_contract_fixtures.py`) and the app's
+  `PROCESS_EXECUTOR_BACKENDS` / `DEFAULT_EXECUTOR_BACKEND` in
+  `app/src/lib/processes/executor.ts` (`contract-fixtures.test.ts`) consume it.
 
 ## Additional fixture styles (R queue, R-1/R-2)
 

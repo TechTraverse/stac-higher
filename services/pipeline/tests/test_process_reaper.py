@@ -68,9 +68,11 @@ class LedgerRepo(FakeProcessRepo):
         self.asked: list[str] = []
 
     async def run_statuses(self, run_ids):
+        from pipeline.process.repo import RunLedgerState
+
         self.order.append("statuses")
         self.asked = list(run_ids)
-        return {r: self.statuses[r] for r in run_ids if r in self.statuses}
+        return {r: RunLedgerState(self.statuses[r]) for r in run_ids if r in self.statuses}
 
 
 async def tick(executor, repo, **kwargs):
@@ -345,3 +347,73 @@ async def test_without_a_scan_ledger_scan_containers_are_never_judged():
     result = await process_reap_tick(executor=executor, repo=LedgerRepo({}), now=NOW)
     assert result.reaped == 1
     assert "reap:c-s1" not in executor.order
+
+
+def test_the_reap_ceiling_counts_the_longest_queue_wait():
+    """K-5 (K5-R22, I-176): a Job pending in Kueue is old but alive."""
+    import dataclasses
+
+    from pipeline.process import kubernetes_manifests, reaper
+    from pipeline.process.config import MAX_TIMEOUT_SECONDS
+    from pipeline.process.hardware import load_hardware_profiles
+    from pipeline.process.reaper import DEFAULT_REAP_MAX_AGE_SECONDS, reap_max_age_seconds
+
+    base = load_hardware_profiles()
+    waits = (900, 7200)
+    profiles = dataclasses.replace(base, profiles=tuple(
+        dataclasses.replace(p, max_queue_wait_seconds=waits[i % 2])
+        for i, p in enumerate(base.profiles)
+    ))
+    assert reap_max_age_seconds(profiles) == MAX_TIMEOUT_SECONDS + 600 + 7200 + 3600
+    assert reap_max_age_seconds(None) == DEFAULT_REAP_MAX_AGE_SECONDS
+    assert reap_max_age_seconds(profiles) > DEFAULT_REAP_MAX_AGE_SECONDS
+    assert reaper._JOB_DEADLINE_SLACK_SECONDS == kubernetes_manifests.JOB_DEADLINE_SLACK_SECONDS
+
+
+# -- review C1: a superseded submission is an orphan ----------------------------
+
+
+class HandleLedgerRepo(LedgerRepo):
+    """run_statuses with the recorded handle (K-5 review C1)."""
+
+    def __init__(self, statuses, handles):
+        super().__init__(statuses)
+        self.handles = handles
+
+    async def run_statuses(self, run_ids):
+        from pipeline.process.repo import RunLedgerState
+
+        self.asked = list(run_ids)
+        return {
+            r: RunLedgerState(self.statuses[r], self.handles.get(r))
+            for r in run_ids if r in self.statuses
+        }
+
+
+async def test_a_running_run_resubmitted_under_another_handle_orphans_the_old_one():
+    executor = RecordingExecutor([
+        launched("r1", container="job-old"), launched("r1", container="job-new"),
+    ])
+    repo = HandleLedgerRepo({"r1": "running"}, {"r1": "job-new"})
+    result = await tick(executor, repo)
+    assert executor.reaped == ["job-old"] and result.reaped == 1
+
+
+async def test_a_running_run_whose_handle_is_not_recorded_yet_keeps_its_job():
+    """Between submit and record_submission the handle is NULL: never an
+    orphan signal (the reaper lists before it reads the ledger)."""
+    executor = RecordingExecutor([launched("r1", container="job-new")])
+    repo = HandleLedgerRepo({"r1": "running"}, {})
+    assert (await tick(executor, repo)).reaped == 0
+
+
+def test_docker_lists_the_same_identifier_it_records():
+    """The comparison is sound on Docker: submit's handle and list_launched's
+    are both the container's full Id."""
+    import inspect
+
+    from pipeline.process import docker_executor
+
+    source = inspect.getsource(docker_executor.DockerExecutor)
+    assert "return RunHandle(id=container_id, backend=self.name)" in source
+    assert "handle=RunHandle(id=container_id, backend=self.name)" in source

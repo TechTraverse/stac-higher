@@ -25,7 +25,7 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from pipeline.process.hardware import DEFAULT_HARDWARE_PROFILE
 from pipeline.process.ledger import (
@@ -73,6 +73,15 @@ _EXTRACT_POOL = "\x00extract-pool"
 def capacity_exempt(*, is_extract: bool, profile: str) -> bool:
     """The exemption rule in Python (the fake and the launch path use it)."""
     return is_extract and profile == DEFAULT_HARDWARE_PROFILE
+
+
+class RunLedgerState(NamedTuple):
+    """What the reaper reads per run: its status and, once submitted, the
+    executor handle of its CURRENT submission (None before
+    ``record_submission`` and after a requeue)."""
+
+    status: str
+    handle: str | None = None
 
 
 @dataclass(frozen=True)
@@ -526,12 +535,15 @@ class ProcessRepo(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def run_statuses(self, run_ids: Sequence[str]) -> dict[str, str]:
-        """Current ledger status for each of ``run_ids`` that still exists.
+    async def run_statuses(self, run_ids: Sequence[str]) -> dict[str, RunLedgerState]:
+        """Current ledger status and recorded executor handle for each of
+        ``run_ids`` that still exists.
 
         A read, never a write — the M3-W-1 reaper's only use of the ledger.
         Run ids with no row are simply ABSENT from the result, which the
-        reaper reads as the strongest orphan signal there is.
+        reaper reads as the strongest orphan signal there is. The handle
+        (K-5 review C1) lets it tell the CURRENT submission of a `running`
+        run from a superseded one.
         """
 
     @abc.abstractmethod
@@ -1444,18 +1456,18 @@ class PgProcessRepo(ProcessRepo):
 
     async def run_statuses(  # pragma: no cover
         self, run_ids: Sequence[str]
-    ) -> dict[str, str]:
+    ) -> dict[str, RunLedgerState]:
         ids = list(run_ids)
         if not ids:
             return {}
         async with await self._connect() as conn:
             cur = await conn.execute(
-                "SELECT id::text, status FROM stac_higher.process_runs"
+                "SELECT id::text, status, executor_handle FROM stac_higher.process_runs"
                 " WHERE id = ANY(%s::uuid[])",
                 (ids,),
             )
             rows = await cur.fetchall()
-        return {row[0]: row[1] for row in rows}
+        return {row[0]: RunLedgerState(row[1], row[2]) for row in rows}
 
     async def record_source_run(  # pragma: no cover
         self, source_id: str, *, succeeded: bool, at: dt.datetime

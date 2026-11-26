@@ -71,6 +71,23 @@
 {{- $_ := set $pipe "PROCESS_RUNTIME_IMAGE" (include "stac-higher.imageRef" (dict "root" . "key" "process-runtime")) -}}
 {{- $_ := set $pipe "PROCESS_RUNTIME_IMAGE_STACTOOLS" (include "stac-higher.imageRef" (dict "root" . "key" "process-runtime-stactools")) -}}
 {{- $_ := set $pipe "IMAGE_SCANNER_IMAGE" (include "stac-higher.imageRef" (dict "root" . "key" "image-scanner")) -}}
+{{- /* K-5: the Kubernetes executor's runs namespace, and the registry mirror
+     map it applies to PLATFORM images at Job creation (the image refs above
+     stay upstream). Same rule as stac-higher.mirrorRef: global.imageRegistry
+     wins for ghcr.io; empty prefixes are dropped (the pipeline refuses one). */ -}}
+{{- $_ := set $pipe "PROCESS_K8S_NAMESPACE" $v.processRuns.namespace -}}
+{{- $mirrors := dict -}}
+{{- range $host, $prefix := ($v.registry.mirrorPrefixes | default dict) -}}
+{{- if $prefix -}}
+{{- $_ := set $mirrors $host (trimSuffix "/" $prefix) -}}
+{{- end -}}
+{{- end -}}
+{{- if $v.global.imageRegistry -}}
+{{- $_ := set $mirrors "ghcr.io" (trimSuffix "/" $v.global.imageRegistry) -}}
+{{- end -}}
+{{- if $mirrors -}}
+{{- $_ := set $pipe "PROCESS_K8S_REGISTRY_MIRRORS" (toJson $mirrors) -}}
+{{- end -}}
 {{- if $v.pipeline.egressAllowHosts -}}
 {{- $_ := set $pipe "EGRESS_ALLOW_HOSTS" (join "," $v.pipeline.egressAllowHosts) -}}
 {{- end -}}

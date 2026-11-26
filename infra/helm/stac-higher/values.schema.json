@@ -422,7 +422,9 @@
       "type": "object",
       "properties": {
         "namespace": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         },
         "networkMax": {
           "type": "string"

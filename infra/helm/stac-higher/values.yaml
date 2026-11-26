@@ -12,7 +12,7 @@ global:
 
 registry:
   host: "" # R-5: ECR registry host (informational in R-6)
-  mirrorPrefixes: {} # R-5: {ghcr.io, docker.io, quay.io} -> prefix; pull rewrite falls back to it when global.imageRegistry is blank
+  mirrorPrefixes: {} # R-5: {ghcr.io, docker.io, quay.io} -> prefix; pull rewrite falls back to it when global.imageRegistry is blank; K-5: -> PROCESS_K8S_REGISTRY_MIRRORS (platform run images only)
 
 aws:
   partition: aws # R-5: informational in R-6
@@ -110,7 +110,7 @@ demoDestination:
   credentialsSecretArn: "" # R-5 (when on): consumed by R-10
 
 processRuns:
-  namespace: stac-higher-runs # R-8 creates it
+  namespace: stac-higher-runs # R-8 creates it; K-5: -> PROCESS_K8S_NAMESPACE (pipeline)
   networkMax: isolated # -> PROCESS_NETWORK_MAX (shared ConfigMap: app + pipeline)
   credentialGraceSeconds: 300 # -> PROCESS_CREDENTIAL_GRACE_SECONDS (shared ConfigMap: app + pipeline)
   extractMaxRunning: 4 # K-4: integer >= 1 -> PROCESS_EXTRACT_MAX_RUNNING (pipeline): exempt extractor runs admitted at once

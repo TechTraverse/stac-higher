@@ -81,6 +81,12 @@ OUTCOMES = (
 
 _ACTIVE_PHASES = ("pending_capacity", "starting", "running")
 
+#: K-5 review C2: a pending run is never requeued for its credentials before
+#: it has waited at least this long, nor before the queue wait its profile
+#: promised (and its credentials were minted for). Without it a profile with
+#: ``max_queue_wait_seconds: 0`` requeues, re-mints and resubmits forever.
+CREDENTIAL_REQUEUE_MIN_PENDING_SECONDS = 60
+
 
 class RunBatch(Protocol):
     """What ``on_dead`` / ``fail_extract_batch`` read off a run."""
@@ -290,12 +296,23 @@ class Reconciler:
 
     def _credentials_expiring(self, run: SubmittedRun) -> bool:
         """Spec §5.4: a run still pending with less than timeout + grace left
-        on its credentials could not finish if it started now."""
+        on its credentials could not finish if it started now. K-5 review
+        C2: only once it has waited the queue wait its credentials were
+        minted for (``expires - submitted - timeout - grace``), and at least
+        :data:`CREDENTIAL_REQUEUE_MIN_PENDING_SECONDS`."""
         if run.credentials_expire_at is None:
             return False
         _attempts, timeout = self._budget(run)
         needed = dt.timedelta(seconds=timeout + self.settings.process_credential_grace_seconds)
-        return run.credentials_expire_at - self.clock() < needed
+        now = self.clock()
+        if run.submitted_at is not None:
+            promised_wait = run.credentials_expire_at - run.submitted_at - needed
+            minimum = max(
+                dt.timedelta(seconds=CREDENTIAL_REQUEUE_MIN_PENDING_SECONDS), promised_wait
+            )
+            if now - run.submitted_at < minimum:
+                return False
+        return run.credentials_expire_at - now < needed
 
     async def _requeue_for_credentials(self, run: SubmittedRun, handle: RunHandle) -> str:
         """Row 3: cancel the pending submission, requeue with the attempt

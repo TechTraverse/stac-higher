@@ -1538,3 +1538,24 @@ def test_status_reports_when_the_run_exited():
     late = T0 + dt.timedelta(seconds=61)
     killed = _at(FakeApi({"/json": _inspect("running", timeout=60)}), late)
     assert killed.status(RunHandle(id="c1")).finished_at == late
+
+
+def test_the_spec_carries_the_revisions_network_level_and_hosts():
+    """K-5 (addendum A18): the Kubernetes executor labels and enforces the
+    level, so the spec must carry it (Docker keeps reading `network`)."""
+    creds = RunCredentials(
+        "AK", "SK", "TOK", "stac-higher", run_staging_prefix(RUN), None, "us-east-1"
+    )
+    runtime = parse_process_runtime(
+        {"kind": "inline_python", "network": {"level": "hosts", "hosts": ["a.example"]}}
+    )
+    spec = build_run_spec(
+        settings(), run_id=RUN, process_id=PROC, runtime=runtime, code="print(1)", env={},
+        credentials=creds,
+    )
+    assert (spec.network_level, spec.network_hosts) == ("hosts", ("a.example",))
+    plain = build_run_spec(
+        settings(), run_id=RUN, process_id=PROC, runtime=ProcessRuntime(kind="inline_python"),
+        code="print(1)", env={}, credentials=creds,
+    )
+    assert (plain.network_level, plain.network_hosts) == ("isolated", ())
