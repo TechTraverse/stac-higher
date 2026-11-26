@@ -597,7 +597,7 @@ class FakeProcessRepo(ProcessRepo):
                 recovered += 1
         return self.stalled_reset + recovered
 
-    async def run_statuses(self, run_ids: Sequence[str]) -> dict[str, str]:
+    async def run_statuses(self, run_ids: Sequence[str]) -> dict:
         return {}
 
     async def record_source_run(

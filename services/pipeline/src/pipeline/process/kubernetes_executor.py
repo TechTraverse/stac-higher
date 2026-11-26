@@ -109,6 +109,9 @@ DETAIL_MAX_CHARS = 500
 JOB_GONE_DETAIL = "the run's Job no longer exists"
 JOB_DELETING_DETAIL = "the run's Job is being deleted outside the platform"
 DISRUPTION_EXIT = "the run's pod was disrupted"
+#: Review C3: the node refused the pod before any container ran
+#: (``UnexpectedAdmissionError``, ``OutOf<resource>``, ``NodeAffinity``, …).
+POD_FAILED_PREFIX = "the run's pod failed"
 PREEMPTED_PREFIX = "preempted: "
 WAITING_FOR_NODE_PREFIX = "waiting for a node: "
 DEACTIVATED_PREFIX = "Kueue deactivated the run: "
@@ -280,6 +283,12 @@ def _job_state(job: Mapping, workload: Mapping | None, pod: Mapping | None, *,
                 "exited", exit=ExitStatus(code if code is not None else -1, error=error),
                 finished_at=finished,
             )
+        if pod_status.get("phase") == "Failed" and pod_status.get("reason"):
+            # row 6b (review C3): the node refused the pod before any
+            # container ran -- infrastructure, requeued without an attempt.
+            return RunState("lost", detail=_clip(
+                f"{POD_FAILED_PREFIX} ({pod_status['reason']}): "
+                f"{pod_status.get('message') or ''}"))
         return RunState("exited", exit=ExitStatus(-1, error=_clip(  # row 7
             f"the run's Job failed ({job_reason or 'Failed'}): {failed.get('message') or ''}"
         )), finished_at=finished)
@@ -497,9 +506,17 @@ class KubernetesExecutor(Executor):
         self.require_isolation()
         try:
             created = self.api.create(self._jobs, job)
-        except KubeApiError as err:
-            if err.status == 422:
+        except ExecutorUnavailable as err:
+            status = err.status if isinstance(err, KubeApiError) else None
+            if status == 422:
                 raise RunRejected(f"the cluster rejected run {spec.run_id}'s Job: {err}") from err
+            if status != 409:
+                # Review C1: the API server may have created the Job and lost
+                # the answer (a timeout, a 5xx after the write). The name is
+                # ours alone (per submission), so remove it rather than leave
+                # a Secret-less Job holding Kueue quota. A 409 names an
+                # existing Job this submission did not create: leave it.
+                self._discard_job(name, spec.run_id)
             raise
         uid = str((created.get("metadata") or {}).get("uid") or "")
         if not uid:
@@ -706,7 +723,9 @@ class KubernetesExecutor(Executor):
             )
         except KubeNotFound:
             workload_rv = None  # Kueue not installed: Jobs only
-        yield RESYNC
+        # Review C4: the watches start BEFORE the RESYNC is handed out, so a
+        # long sweep cannot outlast the watch cache's window (and loop on
+        # 410); what changes meanwhile waits in the queue.
         queue: asyncio.Queue[RunEvent] = asyncio.Queue()
         pumps = [asyncio.create_task(
             self._pump(self._jobs, RUN_ID_LABEL, job_rv, _job_event, queue)
@@ -717,6 +736,7 @@ class KubernetesExecutor(Executor):
             ))
         getter: asyncio.Task | None = None
         try:
+            yield RESYNC
             while True:
                 getter = asyncio.create_task(queue.get())
                 done, _pending = await asyncio.wait(

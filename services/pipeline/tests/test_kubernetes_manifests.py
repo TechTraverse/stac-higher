@@ -290,36 +290,23 @@ def test_network_refusal():
         assert repr(level) in km.network_refusal(_spec(network_level=level))
 
 
-@pytest.mark.parametrize(
-    ("selector", "labels", "want"),
-    [
-        ({}, {"a": "b"}, True),
-        ({"matchLabels": {"a": "b"}}, {"a": "b", "c": "d"}, True),
-        ({"matchLabels": {"a": "b"}}, {"a": "x"}, False),
-        ({"matchExpressions": [{"key": "a", "operator": "Exists"}]}, {"a": "1"}, True),
-        ({"matchExpressions": [{"key": "a", "operator": "Exists"}]}, {}, False),
-        ({"matchExpressions": [{"key": "a", "operator": "In", "values": ["1"]}]},
-         {"a": "1"}, True),
-        ({"matchExpressions": [{"key": "a", "operator": "NotIn", "values": ["1"]}]},
-         {"a": "1"}, False),
-        ({"matchExpressions": [{"key": "a", "operator": "DoesNotExist"}]}, {}, True),
-        ({"matchExpressions": [{"key": "a", "operator": "Like"}]}, {"a": "1"}, False),
-        (None, {"a": "1"}, False),
-    ],
-)
-def test_selector_matches(selector, labels, want):
-    assert km.selector_matches(selector, labels) is want
-
-
 def test_isolation_problem():
     ok = {"spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}}
     assert km.isolation_problem(ok, "ns") is None
-    by_kind = {"spec": {
-        "podSelector": {"matchExpressions": [
-            {"key": "stac-higher.run-kind", "operator": "Exists"}]},
-        "policyTypes": ["Egress", "Ingress"], "ingress": [], "egress": [],
-    }}
-    assert km.isolation_problem(by_kind, "ns") is None
+    explicit_empty = {"spec": {"podSelector": {}, "policyTypes": ["Egress", "Ingress"],
+                               "ingress": [], "egress": []}}
+    assert km.isolation_problem(explicit_empty, "ns") is None
+    # Review C5: only `podSelector: {}` -- a selector that matches the
+    # executor's sample labels can still select no real pod.
+    for selector in (
+        {"matchExpressions": [{"key": "stac-higher.run-kind", "operator": "Exists"}]},
+        {"matchExpressions": [{"key": "stac-higher.run-id", "operator": "In",
+                               "values": ["r", "s"]}]},
+        {"matchExpressions": [{"key": "job-name", "operator": "DoesNotExist"}]},
+        None,
+    ):
+        policy = {"spec": {"podSelector": selector, "policyTypes": ["Ingress", "Egress"]}}
+        assert "podSelector: {}" in km.isolation_problem(policy, "ns")
     missing = km.isolation_problem(None, "ns")
     assert "'ns'" in missing and km.DEFAULT_DENY_POLICY in missing
     assert "does not exist" in missing

@@ -330,3 +330,21 @@ def test_the_pure_mapping_is_callable_directly():
     job = {"metadata": {"name": NAME}, "spec": {"suspend": True}, "status": {}}
     state = kx._job_state(job, None, None, now=NOW)
     assert state.phase == "pending_capacity"
+
+
+@pytest.mark.parametrize(
+    ("reason", "message"),
+    [
+        ("UnexpectedAdmissionError", "Allocate failed due to no healthy devices"),
+        ("OutOfnvidia.com/gpu", "Node didn't have enough resource"),
+        ("NodeAffinity", "Pod Predicate NodeAffinity failed"),
+    ],
+)
+def test_a_pod_the_node_refused_is_lost_not_an_attempt(submitted, fake, reason, message):
+    """Review C3: the kubelet refused the pod before any container ran --
+    infrastructure, so requeue without spending an attempt."""
+    fake.add_pod(NAME, phase="Failed", reason=reason, message=message)
+    _fail(fake)
+    state = submitted.status(HANDLE)
+    assert state.phase == "lost" and state.exit is None
+    assert state.detail == f"{kx.POD_FAILED_PREFIX} ({reason}): {message}"

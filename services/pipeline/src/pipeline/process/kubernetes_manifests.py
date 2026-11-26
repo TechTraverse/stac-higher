@@ -180,63 +180,25 @@ def network_refusal(spec: RunSpec) -> str | None:
     return None
 
 
-def selector_matches(selector: object, labels: Mapping[str, str]) -> bool:
-    """A Kubernetes ``LabelSelector`` (matchLabels + matchExpressions) against
-    a label set. An empty selector matches everything; anything malformed
-    matches nothing (fail closed)."""
-    if not isinstance(selector, dict):
-        return False
-    match_labels = selector.get("matchLabels") or {}
-    expressions = selector.get("matchExpressions") or []
-    if not isinstance(match_labels, dict) or not isinstance(expressions, list):
-        return False
-    if any(labels.get(k) != v for k, v in match_labels.items()):
-        return False
-    for expr in expressions:
-        if not isinstance(expr, dict):
-            return False
-        key, op = expr.get("key"), expr.get("operator")
-        values = expr.get("values") or []
-        if op == "In" and labels.get(key) not in values:
-            return False
-        if op == "NotIn" and key in labels and labels[key] in values:
-            return False
-        if op == "Exists" and key not in labels:
-            return False
-        if op == "DoesNotExist" and key in labels:
-            return False
-        if op not in ("In", "NotIn", "Exists", "DoesNotExist"):
-            return False
-    return True
-
-
-#: Representative label sets of every kind of run pod the executor builds.
-_SAMPLE_RUN_POD_LABELS: tuple[dict[str, str], ...] = (
-    *(
-        {RUN_ID_LABEL: "r", RUN_KIND_LABEL: "process", PROCESS_ID_LABEL: "p",
-         NETWORK_LEVEL_LABEL: level}
-        for level in ENFORCEABLE_NETWORK_LEVELS
-    ),
-    {RUN_ID_LABEL: "s", RUN_KIND_LABEL: "image_scan", IMAGE_ID_LABEL: "i",
-     NETWORK_LEVEL_LABEL: SCANNER_NETWORK_LEVEL},
-)
-
-
 def isolation_problem(policy: dict | None, namespace: str) -> str | None:
     """Why ``policy`` (the namespace's :data:`DEFAULT_DENY_POLICY`, None when
     absent) does not isolate run pods, or None when it does: it must select
-    every run pod the executor builds, list both ``Ingress`` and ``Egress``
-    in ``policyTypes``, and allow nothing."""
+    EVERY pod in the namespace (``podSelector: {}`` exactly -- review C5: a
+    narrower selector that happens to match sample labels can select no
+    real pod; the namespace holds only run pods), list both ``Ingress`` and
+    ``Egress`` in ``policyTypes``, and allow nothing. This proves the object,
+    not that the CNI enforces it (I-183)."""
     where = f"namespace {namespace!r} NetworkPolicy {DEFAULT_DENY_POLICY!r}"
     if policy is None:
         return f"network isolation is not in place: {where} does not exist (R-8 renders it)"
     spec = policy.get("spec") if isinstance(policy, dict) else None
     if not isinstance(spec, dict):
         return f"network isolation is not in place: {where} has no spec"
-    if not all(
-        selector_matches(spec.get("podSelector"), labels) for labels in _SAMPLE_RUN_POD_LABELS
-    ):
-        return f"network isolation is not in place: {where} does not select every run pod"
+    if spec.get("podSelector") != {}:
+        return (
+            f"network isolation is not in place: {where} must select every pod in the "
+            "namespace (podSelector: {})"
+        )
     types = spec.get("policyTypes") or []
     if not isinstance(types, list) or not {"Ingress", "Egress"} <= set(types):
         return (

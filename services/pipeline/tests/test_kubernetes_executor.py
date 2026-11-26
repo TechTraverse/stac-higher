@@ -376,9 +376,10 @@ def test_no_run_starts_without_the_default_deny_policy(token_file):
     ("policy_spec", "why"),
     [
         ({"podSelector": {"matchLabels": {"app": "x"}}, "policyTypes": ["Ingress", "Egress"]},
-         "does not select every run pod"),
-        ({"podSelector": {"matchLabels": {"stac-higher.run-kind": "process"}},
-          "policyTypes": ["Ingress", "Egress"]}, "does not select every run pod"),
+         "podSelector: {}"),
+        ({"podSelector": {"matchExpressions": [
+            {"key": "stac-higher.run-kind", "operator": "Exists"}]},
+          "policyTypes": ["Ingress", "Egress"]}, "podSelector: {}"),
         ({"podSelector": {}, "policyTypes": ["Ingress"]}, "Ingress and Egress"),
         ({"podSelector": {}, "policyTypes": ["Ingress", "Egress"], "egress": [{}]},
          "allows traffic"),
@@ -451,3 +452,42 @@ def test_from_settings_reads_the_k8s_settings(tmp_path):
     assert ex.submitted_phase == "pending_capacity"
     assert ex.enforces_local_capacity is False
 
+
+
+# -- review C1: an orphaned Job from a failed submit -----------------------------
+
+
+def test_a_job_create_whose_answer_was_lost_is_discarded(executor, fake):
+    """The POST succeeded server-side but the client saw a timeout: the Job
+    (no Secret yet) must not sit in Kueue's queue holding quota."""
+    real_create = executor.api.create
+
+    def create(path, body, *, redact=False):
+        created = real_create(path, body, redact=redact)
+        if path.endswith("/jobs"):
+            raise ExecutorUnavailable("kubernetes POST jobs unreachable: timed out")
+        return created
+
+    executor.api.create = create
+    with pytest.raises(ExecutorUnavailable):
+        executor.submit(spec())
+    assert fake.objects(*JOBS) == {} and fake.objects(*WORKLOADS) == {}
+
+
+@pytest.mark.parametrize("code", [500, 504])
+def test_a_failed_job_create_tries_to_remove_what_it_may_have_created(executor, fake, code):
+    fake.fail_next("POST", "jobs", code)
+    with pytest.raises(ExecutorUnavailable):
+        executor.submit(spec())
+    deletes = [c for c in fake.calls if c.method == "DELETE"]
+    assert len(deletes) == 1 and deletes[0].path.endswith(f"/jobs/{NAME}")
+
+
+@pytest.mark.parametrize("code", [409, 422])
+def test_a_conflict_or_rejection_deletes_nothing(executor, fake, code):
+    """409: the name belongs to an existing Job we must not touch; 422:
+    nothing was created."""
+    fake.fail_next("POST", "jobs", code)
+    with pytest.raises((ExecutorUnavailable, RunRejected)):
+        executor.submit(spec())
+    assert not [c for c in fake.calls if c.method == "DELETE"]

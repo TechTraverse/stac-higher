@@ -239,3 +239,13 @@ def test_supports_watch():
     assert KubernetesExecutor.supports_watch.fget(
         KubernetesExecutor.__new__(KubernetesExecutor)
     ) is True
+
+
+async def test_the_watches_open_before_the_resync_is_handled(executor, fake):
+    """Review C4: a long RESYNC sweep must not outlast the watch cache's
+    window: the watches start before RESYNC is yielded."""
+    agen = executor.watch()
+    assert await agen.__anext__() == RESYNC
+    await asyncio.sleep(0.3)  # the consumer is still "sweeping"
+    assert _watches(fake, "jobs") and _watches(fake, "workloads")
+    await agen.aclose()
