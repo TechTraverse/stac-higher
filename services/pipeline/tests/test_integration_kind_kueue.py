@@ -37,6 +37,7 @@ from pipeline.process.executor import (
     RegistryAuth,
     RunHandle,
     RunRejected,
+    RunState,
 )
 from pipeline.process.kube_api import KubeApiError
 from pipeline.process.reconcile import Reconciler
@@ -216,9 +217,18 @@ async def _preemption() -> dict:
 def preemption() -> dict:
     _kind.clean_namespace()
     try:
-        return asyncio.run(_preemption())
+        rec = asyncio.run(_preemption())
     finally:
         _kind.clean_namespace()
+    # A scenario that broke early still answers every test (with its error).
+    for key in ("preempted", "reconcile_while_preempted", "row_while_preempted", "a_final",
+                "final_reconcile", "final_row", "logs_stored", "readmitted_evicted"):
+        rec.setdefault(key, None)
+    if rec["a_final"] is None:
+        rec["a_final"] = RunState("missing", detail=rec.get("scenario_error"))
+    rec["row_while_preempted"] = rec["row_while_preempted"] or {}
+    rec["final_row"] = rec["final_row"] or {}
+    return rec
 
 
 def test_preemption_leaves_the_job_unfailed(preemption):
@@ -243,7 +253,8 @@ def test_preemption_leaves_the_job_unfailed(preemption):
 
 def test_preemption_spends_no_attempt(preemption):
     """Item 10 through K-4's real Reconciler: the row stays running, attempt 1."""
-    assert preemption.get("reconcile_while_preempted") in ("phase", "unchanged"), preemption
+    assert preemption["reconcile_while_preempted"] in ("phase", "unchanged"), (
+        preemption.get("scenario_error"), preemption["a_states"])
     row = preemption["row_while_preempted"]
     assert row["status"] == "running" and row["attempts"] == 1, row
     assert row["phase"] == "pending_capacity" and row["executor_handle"] == preemption["a"], row
